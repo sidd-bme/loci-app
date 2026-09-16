@@ -1,6 +1,7 @@
 # Loci project and release state
 
 Current release: **v0.1.0-beta.1** (Public Beta)
+*Internal bundle version: `0.1.0` (as identified in `desktop/package.json` and build manifests, mapped to distribution tag `v0.1.0-beta.1`).*
 
 Loci is a local-first desktop imaging workbench for life-science and biomedical research. This document records current release qualifications, supported workflows, scientific boundaries, and known beta limitations.
 
@@ -28,6 +29,7 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 - **Traceable scientific exports:**
   - Export packages with original-value arrays, spatial calibration, source hashes, and resolved parameter manifests.
   - Rendered figures and full-resolution 16-bit TIFF exports recording exact display settings.
+  - Session preservation via portable `.loci-study` bundles.
 
 ---
 
@@ -40,13 +42,16 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - **Packaging unit tests:** Node packaging safety and bundle integrity (**10 tests passed**).
   - **Python engine suite:** Ruff linting clean; Pytest suite (**916 passed, 12 skipped** for optional GPU/external dependencies).
   - **Regression runner suite:** Runner unit tests (**10 passed**).
-  - **Packaged UI regression journeys:** Verified against staged macOS application bundle:
+  - **Packaged UI regression journeys:** Verified against staged macOS application bundle (`Loci.app`):
     - *Journey 1 (research-workbench):* 2D/3D object picking, multichannel puncta, review table, project persistence, and reopen (**passed, 17 checkpoints**).
     - *Journey 2 (workbench-refresh):* Pointer drag reordering, worker refresh, batch palette recoloring, undo restoration, and A/B comparison (**passed, 11 assertions**).
     - *Journey 3 (field-assay-workflow):* Fluorescence field assay quantification, background subtraction, manual override counts, and review gates (**passed**).
 
-### Platform boundaries:
+### Hosted CI status:
+- Hosted GitHub Actions CI is currently **intentionally paused** due to account spending limits (run `35055420283` failed at schedule time with `The job was not started because recent account payments have failed or your spending limit needs to be increased`).
+- Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) remain the active qualification authority.
 
+### Platform boundaries:
 - **macOS:** Tested on Apple Silicon (macOS 14+). Intel x86_64 builds require manual compilation from source.
 - **Windows x64:** Local build scripts (`build-engine.ps1`, `package:windows:local`) are maintained. Automated Windows CI is currently paused for release stabilization.
 - **Linux x64:** Python engine runs under Python 3.11–3.13; desktop packaging is planned for upcoming releases.
@@ -68,13 +73,13 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 ## 4. Known beta limitations
 
 1. **First-launch initialization (cold start):**
-   On the very first launch after installation, the bundled Python analysis worker unpacks and verifies its internal components. This initial startup may take **75–85 seconds** before the welcome screen appears. Subsequent launches warm up and start normally.
-2. **macOS Gatekeeper warning (ad-hoc signing):**
-   The public beta binary is signed with an ad-hoc integrity signature. Because it is not yet signed with an Apple Developer ID certificate or notarized by Apple, macOS will show a security warning ("unidentified developer") on first open. To open:
-   ```bash
-   xattr -cr /Applications/Loci.app
-   ```
-   Or right-click (Control-click) `Loci.app` in Finder and select **Open**.
+   On the very first launch after installation, an initial startup delay of approximately **75–85 seconds** has been observed (tested on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components and the analysis environment initializes. Profiling of the exact breakdown between system verification and engine initialization remains ongoing; subsequent launches warm up and open faster once cached by macOS.
+2. **macOS Gatekeeper warning (ad-hoc signing & unnotarized status):**
+   The public beta binary is signed with an ad-hoc integrity signature and is **not notarized** by Apple. Because it is not signed with an Apple Developer ID certificate, macOS Gatekeeper blocks direct double-click launching on downloaded files. To open:
+   - Method 1: Right-click (Control-click) `Loci.app` in Finder and select **Open**.
+   - Method 2: In **System Settings → Privacy & Security**, locate the security notice under Security and click **Open Anyway**.
+   - Method 3: In Terminal, remove quarantine for Loci specifically: `xattr -d com.apple.quarantine /Applications/Loci.app`.
+   *Note: Centrally managed Macs with strict MDM configuration profiles may block unnotarized binaries without administrative approval.*
 3. **Memory bounds on massive datasets:**
    Whole-slide images and large 3D/4D volumes use progressive pyramid levels and bounded tile decoders. Rendering extremely large volumes at 100% ray-sampling quality on systems with 8 GB unified memory may trigger automatic downsampling to protect system responsiveness.
 

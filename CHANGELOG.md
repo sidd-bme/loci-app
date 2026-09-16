@@ -32,5 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Pinned interface design skills (`impeccable`, `make-interfaces-feel-better`).
 
 #### Known Beta Limitations
-- First launch on macOS unpacks the bundled Python analysis worker, requiring ~75–85 seconds before the application warms up.
-- macOS beta binary uses an ad-hoc local integrity signature; users must clear Gatekeeper quarantine (`xattr -cr /Applications/Loci.app`) or open via right-click.
+- First launch on macOS may exhibit an initial startup delay of approximately 75–85 seconds (observed on Apple Silicon M1 with 8 GB RAM) during initial component verification and runtime initialization; subsequent launches open faster once cached by macOS.
+- macOS beta binary uses an ad-hoc local integrity signature and is unnotarized; macOS Gatekeeper requires standard user approval on first open (Control-click → Open, System Settings → Privacy & Security → Open Anyway, or `xattr -d com.apple.quarantine /Applications/Loci.app`).
+- Deep learning checkpoints (Cellpose-SAM) are not bundled; users supply official checkpoints directly. Commercial rights to third-party model weights remain subject to upstream licenses.

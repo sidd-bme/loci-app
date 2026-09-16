@@ -19,12 +19,10 @@ If you believe you have discovered a security vulnerability in Loci (including r
 
 ### Response timeline
 
-- **Initial acknowledgment:** Within 48 hours.
-- **Assessment & reproduction:** Within 5 business days.
-- **Fix & advisory:** Handled through coordinated disclosure.
+Vulnerability reports will be acknowledged upon review, assessed in a local test environment, and addressed through coordinated disclosure. Fixes are prioritized based on severity and data-isolation impact.
 
 ## Security & Privacy Invariants
 
-- **Local-first guarantee:** Loci does not include telemetry, tracking, or remote error reporting.
+- **Local-first guarantee:** Core viewing and built-in analysis execute entirely locally without telemetry, tracking, or remote error reporting.
 - **Path containment:** Raw source paths and local host filesystem details are redacted from export payloads and logs.
-- **Model safety:** Loci never silently downloads or executes remote untrusted code or weights. Checkpoints require explicit user import and checksum verification.
+- **Model safety:** Loci never silently downloads or executes remote untrusted code or weights. Checkpoints require explicit user provisioning and checksum verification.
