@@ -1,0 +1,96 @@
+{
+  "schema": "loci.product-demo/v1",
+  "title": "Loci — Research imaging. Locally.",
+  "output": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "video_codec": "h264",
+    "audio": "none",
+    "transition_seconds": 0.45
+  },
+  "capture_rules": {
+    "runtime": "final packaged Loci application only",
+    "source_data": "approved public fixtures only",
+    "forbid": [
+      "protected laboratory or patient data",
+      "synthetic scientific imagery",
+      "mocked application UI",
+      "clinical, diagnostic, accuracy, or performance claims"
+    ]
+  },
+  "segments": [
+    {
+      "id": "01-welcome",
+      "file": "01-welcome.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Research imaging. Locally.",
+      "capture": "Open-data welcome state; no recent-study names or source paths visible.",
+      "fixture_ref": "none — application shell only"
+    },
+    {
+      "id": "02-open-phase",
+      "file": "02-open-phase.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Open supported image data directly.",
+      "capture": "Open the public Phase cell.ome.tiff fixture, then fit and make one short pan/zoom movement.",
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "03-annotate-phase",
+      "file": "03-annotate-phase.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Annotate and inspect raw sources.",
+      "capture": "Show a reversible raw annotation and the built-in illustrative adaptive result on the public phase fixture. Do not show an accuracy metric.",
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "04-native-svs",
+      "file": "04-native-svs.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Navigate native detail.",
+      "capture": "Open the public CMU-1-Small-Region.svs fixture, then make one measured zoom movement.",
+      "fixture_ref": "cmu-small-region-svs-cc0"
+    },
+    {
+      "id": "05-multichannel",
+      "file": "05-multichannel.mp4",
+      "kind": "clip",
+      "duration_seconds": 11,
+      "caption": "View explicit channels in context.",
+      "capture": "Open the public Kidney fluorescence.ome.tiff fixture, select a documented Z plane, and make one channel-display adjustment. Do not name dyes from appearance.",
+      "fixture_ref": "kidney-ome-cc0"
+    },
+    {
+      "id": "06-raw-volume",
+      "file": "06-raw-volume.mp4",
+      "kind": "clip",
+      "duration_seconds": 11,
+      "caption": "Explore raw volume and MPR.",
+      "capture": "Use the same public Kidney fluorescence.ome.tiff fixture in raw volume/MPR, then make one short camera or slice movement.",
+      "fixture_ref": "kidney-ome-cc0"
+    },
+    {
+      "id": "07-results",
+      "file": "07-results.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Keep source and result records together.",
+      "capture": "Show result review and export availability only after the relevant on-screen reviewed state is true. Keep source-information panels and private paths closed.",
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "08-close",
+      "file": "08-close.mp4",
+      "kind": "clip",
+      "duration_seconds": 10,
+      "caption": "Loci. Research imaging. Locally.",
+      "capture": "Final real welcome or workbench state, clean of transient dialogs, tooltips, paths, and private metadata.",
+      "fixture_ref": "phase-ome-cc0"
+    }
+  ]
+}

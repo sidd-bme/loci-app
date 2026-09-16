@@ -1,0 +1,18 @@
+# Non-Torch packages for the Python 3.11 Vanda environment.
+# PyTorch is intentionally absent: it must come from the reviewed Vanda module
+# and is verified as exactly 2.1.2 by both PBS launchers.
+flatbuffers==25.12.19
+imageio==2.37.4
+lazy-loader==0.5
+ml-dtypes==0.5.4
+networkx==3.1
+numpy==1.26.4
+onnx==1.22.0
+onnxruntime==1.29.0
+packaging==23.1
+pillow==10.0.0
+protobuf==7.36.0
+scikit-image==0.24.0
+scipy==1.11.1
+tifffile==2026.3.3
+typing-extensions==4.16.0

@@ -1,0 +1,123 @@
+#!/bin/bash
+#PBS -N loci-native-train
+#PBS -q auto_free
+#PBS -l select=1:ncpus=8:mem=48gb:ngpus=1
+#PBS -l walltime=24:00:00
+#PBS -j oe
+
+set -euo pipefail
+umask 027
+
+: "${PBS_O_WORKDIR:?PBS must provide PBS_O_WORKDIR}"
+: "${LOCI_PYTORCH_MODULE:?Set LOCI_PYTORCH_MODULE to the pinned Vanda PyTorch module name}"
+: "${LOCI_MODEL_ENV:?Set LOCI_MODEL_ENV to the prepared loci-modeling virtual environment}"
+: "${LOCI_MODEL_MANIFEST:?Set LOCI_MODEL_MANIFEST to the immutable JSON manifest}"
+: "${LOCI_RAW_ROOT:?Set LOCI_RAW_ROOT to the read-only raw-image root}"
+: "${LOCI_MASK_ROOT:?Set LOCI_MASK_ROOT to the read-only instance-mask root}"
+: "${LOCI_MODEL_OUTPUT:?Set LOCI_MODEL_OUTPUT outside both source roots}"
+: "${LOCI_PROFILE_ID:?Set LOCI_PROFILE_ID to a lowercase path-free profile identifier}"
+: "${LOCI_PROFILE_VERSION:?Set LOCI_PROFILE_VERSION to an explicit semantic version}"
+: "${LOCI_PROFILE_DISPLAY_NAME:?Set LOCI_PROFILE_DISPLAY_NAME to the user-facing model name}"
+: "${LOCI_CODE_REVISION:?Set LOCI_CODE_REVISION to the exact reviewed code revision}"
+
+unset PYTHONHOME PYTHONPATH
+module purge
+module load "${LOCI_PYTORCH_MODULE}"
+
+source "${LOCI_MODEL_ENV}/bin/activate"
+# EasyBuild module paths precede virtual-environment packages on Vanda. Put
+# the isolated environment first so its reviewed NumPy/ONNX versions win while
+# the module-provided CUDA PyTorch remains available as the fallback.
+model_site="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+export PYTHONPATH="${model_site}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONNOUSERSITE=1
+cd "${PBS_O_WORKDIR}"
+
+python - <<'PY'
+import platform
+import sysconfig
+import tempfile
+from pathlib import Path
+
+import numpy
+import onnx
+import onnxruntime
+import scipy
+import skimage
+import tifffile
+import torch
+from google import protobuf
+from PIL import __version__ as pillow_version
+
+from loci_modeling.contracts import ModelConfig, PostprocessConfig
+from loci_modeling.export import export_onnx
+from loci_modeling.model import LociResidualUNet
+
+environment_site = Path(sysconfig.get_paths()["purelib"])
+if (environment_site / "torch").exists() or any(environment_site.glob("torch-*.dist-info")):
+    raise RuntimeError(
+        "LOCI_MODEL_ENV must not contain PyTorch; load torch==2.1.2 from the Vanda module"
+    )
+actual = torch.__version__.split("+", 1)[0]
+if actual != "2.1.2":
+    raise RuntimeError(f"Expected module-provided torch==2.1.2, received {torch.__version__}")
+if platform.python_version() != "3.11.3":
+    raise RuntimeError(f"Expected module Python 3.11.3, received {platform.python_version()}")
+if torch.version.cuda != "12.1":
+    raise RuntimeError(f"Expected PyTorch CUDA 12.1, received {torch.version.cuda}")
+if torch.backends.cudnn.version() != 8902:
+    raise RuntimeError(
+        f"Expected cuDNN runtime 8.9.2, received {torch.backends.cudnn.version()}"
+    )
+if not torch.cuda.is_available():
+    raise RuntimeError("PBS allocated a GPU but CUDA is unavailable to module-provided PyTorch")
+expected_versions = {
+    "numpy": (numpy.__version__, "1.26.4"),
+    "onnx": (onnx.__version__, "1.22.0"),
+    "onnxruntime": (onnxruntime.__version__, "1.29.0"),
+    "pillow": (pillow_version, "10.0.0"),
+    "protobuf": (protobuf.__version__, "7.36.0"),
+    "scipy": (scipy.__version__, "1.11.1"),
+    "scikit-image": (skimage.__version__, "0.24.0"),
+    "tifffile": (tifffile.__version__, "2026.3.3"),
+}
+for dependency, (actual_version, expected_version) in expected_versions.items():
+    if actual_version != expected_version:
+        raise RuntimeError(
+            f"Expected {dependency}=={expected_version}, received {actual_version}"
+        )
+
+torch.manual_seed(20260829)
+probe = LociResidualUNet(ModelConfig(base_channels=8, depth=2, dropout=0.0))
+with tempfile.TemporaryDirectory(prefix="loci-onnx-preflight-") as temporary_dir:
+    export_onnx(
+        probe,
+        Path(temporary_dir) / "probe.onnx",
+        example_size=32,
+        postprocess_config=PostprocessConfig(min_area_px=4, offset_scale_px=16.0),
+        verify_runtime=True,
+    )
+print("Loci Vanda environment and ONNX preflight passed", flush=True)
+PY
+
+train_args=(
+    train
+    --manifest "${LOCI_MODEL_MANIFEST}"
+    --raw-root "${LOCI_RAW_ROOT}"
+    --mask-root "${LOCI_MASK_ROOT}"
+    --output-dir "${LOCI_MODEL_OUTPUT}"
+    --profile-id "${LOCI_PROFILE_ID}"
+    --profile-version "${LOCI_PROFILE_VERSION}"
+    --display-name "${LOCI_PROFILE_DISPLAY_NAME}"
+    --code-revision "${LOCI_CODE_REVISION}"
+    --device cuda
+)
+
+if [[ "${LOCI_EVALUATE_TEST:-0}" == "1" ]]; then
+    train_args+=(--evaluate-test)
+elif [[ "${LOCI_EVALUATE_TEST:-0}" != "0" ]]; then
+    echo "LOCI_EVALUATE_TEST must be 0 or 1" >&2
+    exit 2
+fi
+
+python -m loci_modeling "${train_args[@]}"

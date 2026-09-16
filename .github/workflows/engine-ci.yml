@@ -1,0 +1,268 @@
+name: Loci CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - name: Install engine
+        working-directory: engine
+        run: uv sync --frozen --extra dev --extra onnx
+      - name: Static checks
+        working-directory: engine
+        run: |
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          uv run ruff check .
+      - name: Tests
+        working-directory: engine
+        run: uv run pytest --cov=loci_engine --cov-report=term-missing
+      - name: Developer harness tests
+        run: |
+          PYTHONPATH=. uv run --project engine pytest scripts/tests
+          uv run --project engine ruff check \
+            scripts/__init__.py \
+            scripts/dev_snapshot.py \
+            scripts/tests/test_dev_snapshot.py \
+            scripts/cellpose_compatibility_benchmark.py \
+            scripts/release_evidence.py \
+            scripts/release_python_inventory.py \
+            scripts/release_supply_chain.py \
+            scripts/release_validate_cyclonedx.py \
+            scripts/verify_frozen_engine_bundle.py \
+            scripts/tests/test_cellpose_compatibility_benchmark.py \
+            scripts/tests/test_release_evidence.py \
+            scripts/tests/test_release_supply_chain.py \
+            scripts/tests/test_verify_frozen_engine_bundle.py
+          uv run --project engine ruff format --check \
+            scripts/__init__.py \
+            scripts/dev_snapshot.py \
+            scripts/tests/test_dev_snapshot.py \
+            scripts/cellpose_compatibility_benchmark.py \
+            scripts/release_evidence.py \
+            scripts/release_python_inventory.py \
+            scripts/release_supply_chain.py \
+            scripts/release_validate_cyclonedx.py \
+            scripts/verify_frozen_engine_bundle.py \
+            scripts/tests/test_cellpose_compatibility_benchmark.py \
+            scripts/tests/test_release_evidence.py \
+            scripts/tests/test_release_supply_chain.py \
+            scripts/tests/test_verify_frozen_engine_bundle.py
+      - name: Audit Python dependencies
+        working-directory: engine
+        run: uv run --with pip-audit==2.10.1 pip-audit
+
+  modeling:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.7"
+          python-version: "3.11"
+          enable-cache: true
+          cache-dependency-glob: modeling/uv.lock
+      - name: Install native-model developer pipeline
+        working-directory: modeling
+        run: uv sync --python 3.11 --frozen --extra dev --extra export
+      - name: Static checks
+        working-directory: modeling
+        run: |
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3, 11)'
+          uv run ruff check .
+          uv run ruff format --check .
+          bash -n scripts/vanda_train.pbs
+          bash -n scripts/vanda_gpu_smoke.pbs
+          bash -n scripts/vanda_real_data_smoke.pbs
+      - name: Synthetic and ONNX tests
+        working-directory: modeling
+        run: uv run pytest
+
+  desktop:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Dependency audit
+        working-directory: desktop
+        run: npm audit --audit-level=high
+      - name: Type and renderer tests
+        working-directory: desktop
+        run: npm run check
+
+  package-macos:
+    needs: [engine, desktop]
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build frozen engine
+        run: ./scripts/build-engine.sh
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Package local signed app
+        working-directory: desktop
+        run: npm run package:mac:local
+      - name: Verify bundle, worker, and notices
+        working-directory: desktop
+        run: |
+          APP=out/local-adhoc/Loci-darwin-arm64/Loci.app
+          codesign --verify --deep --strict "$APP"
+          test -x "$APP/Contents/Resources/loci-engine/loci-engine"
+          test -s "$APP/Contents/Resources/notices/THIRD_PARTY_NOTICES.md"
+          test -s "$APP/Contents/Resources/notices/LICENSES.chromium.html"
+          "$APP/Contents/Resources/loci-engine/loci-engine" <<<'{"id":"ci-health","method":"health","params":{}}'
+      - name: Generate and verify release supply-chain evidence
+        run: |
+          SUPPLY_OUTPUT="$RUNNER_TEMP/loci-release-supply-chain"
+          python3 scripts/release_supply_chain.py generate \
+            --app "$PWD/desktop/out/local-adhoc/Loci-darwin-arm64/Loci.app" \
+            --repository "$PWD" \
+            --output-dir "$SUPPLY_OUTPUT"
+          python3 scripts/release_supply_chain.py check \
+            --app "$PWD/desktop/out/local-adhoc/Loci-darwin-arm64/Loci.app" \
+            --repository "$PWD" \
+            --output-dir "$SUPPLY_OUTPUT"
+          test -s "$SUPPLY_OUTPUT/desktop.cdx.json"
+          test -s "$SUPPLY_OUTPUT/engine.cdx.json"
+          test -s "$SUPPLY_OUTPUT/dependency-licences.zip"
+      - name: Exercise packaged folder import
+        run: |
+          mkdir -p "$RUNNER_TEMP/loci-fixture/nested"
+          engine/.venv/bin/python - <<'PY'
+          from pathlib import Path
+          import numpy as np
+          from PIL import Image
+
+          target = Path("${{ runner.temp }}") / "loci-fixture" / "nested" / "cells.png"
+          yy, xx = np.mgrid[:1536, :1536]
+          image = np.full((1536, 1536), 225, dtype=np.uint8)
+          for cy in range(128, 1536, 256):
+              for cx in range(128, 1536, 256):
+                  image[(xx - cx) ** 2 + (yy - cy) ** 2 < 45 ** 2] = 55
+          Image.fromarray(image).save(target)
+          PY
+          cd desktop
+          LOCI_QA_FOLDER="$RUNNER_TEMP/loci-fixture" npm run qa:folder-import:mac
+      - name: Exercise packaged segmentation, export, and recursive batch journey
+        working-directory: desktop
+        run: LOCI_QA_IMAGE="$RUNNER_TEMP/loci-fixture/nested/cells.png" LOCI_QA_OUTPUT_ROOT="$RUNNER_TEMP/loci-core-qa" npm run qa:packaged:mac
+      - name: Exercise packaged quantitative, temporal, medical, and portable study journeys
+        run: |
+          engine/.venv/bin/python scripts/create_research_qa_fixtures.py --root "$RUNNER_TEMP/loci-research-fixtures"
+          cd desktop
+          LOCI_QA_RESEARCH_FIXTURES="$RUNNER_TEMP/loci-research-fixtures" node tests/research-workbench.qa.mjs
+      - name: Retain synthetic research journey diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: loci-macos-research-journey-diagnostics
+          path: |
+            .loci/qa/research-*/screenshots/*.png
+            .loci/qa/research-*/qa-report.json
+            .loci/qa/research-*/failure-ui.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+  package-windows:
+    needs: [engine, desktop]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Build and smoke-test frozen Windows engine
+        shell: pwsh
+        run: ./scripts/build-engine.ps1
+      - name: Exercise Windows process resource limits
+        working-directory: engine
+        shell: pwsh
+        run: uv run --frozen pytest -q tests/test_resource_limits.py
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Build unsigned Windows qualification installer and ZIP
+        working-directory: desktop
+        run: npm run make:windows:local
+      - name: Verify packaged worker, notices, installer, and ZIP
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $App = Resolve-Path "out/local-unsigned/Loci-win32-x64"
+          $Worker = Join-Path $App "resources/loci-engine/loci-engine.exe"
+          $Notices = Join-Path $App "resources/notices"
+          if (-not (Test-Path -LiteralPath $Worker -PathType Leaf)) { throw "Packaged worker is missing" }
+          foreach ($Name in @("LOCI_LICENSE", "LOCI_NOTICE", "THIRD_PARTY_NOTICES.md", "ELECTRON_LICENSE", "LICENSES.chromium.html")) {
+            $Notice = Join-Path $Notices $Name
+            if (-not (Test-Path -LiteralPath $Notice -PathType Leaf) -or (Get-Item $Notice).Length -eq 0) {
+              throw "Packaged notice is missing or empty: $Name"
+            }
+          }
+          $Health = ('{"id":"ci-health","method":"health","params":{}}' | & $Worker) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $Health.result.status -ne "ready") { throw "Packaged worker health failed" }
+          $Discover = (& $Worker --cli discover) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $Discover.schema -ne "loci.operations/v1") { throw "Packaged CLI discover failed" }
+          $Squirrel = @(Get-ChildItem "out/local-unsigned/make/squirrel.windows/x64" -File)
+          $Setup = @($Squirrel | Where-Object Name -Like "*Setup.exe")
+          $Packages = @($Squirrel | Where-Object Extension -EQ ".nupkg")
+          if ($Setup.Count -ne 1 -or $Packages.Count -ne 1 -or -not (Test-Path "out/local-unsigned/make/squirrel.windows/x64/RELEASES")) {
+            throw "Squirrel.Windows output set is incomplete"
+          }
+          $Zip = @(Get-ChildItem "out/local-unsigned/make/zip/win32/x64" -Filter "*.zip" -File)
+          if ($Zip.Count -ne 1) { throw "Windows ZIP output is missing or ambiguous" }
+          $Artifacts = @($Setup[0].FullName, $Packages[0].FullName, $Zip[0].FullName)
+          Get-FileHash -Algorithm SHA256 -LiteralPath $Artifacts
+      - name: Retain private unsigned qualification artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: loci-windows-x64-unsigned-qualification
+          path: |
+            desktop/out/local-unsigned/make/squirrel.windows/x64/
+            desktop/out/local-unsigned/make/zip/win32/x64/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,29 @@
+.manual-backdrop { z-index: 80; }
+.user-guide-dialog { display: grid; grid-template-rows: auto minmax(0, 1fr); width: min(1040px, 100%); height: min(800px, calc(100vh - 40px)); overflow: hidden; border-radius: 12px; background: var(--graphite-900); color: var(--ink); box-shadow: var(--shadow-elevated); }
+.user-guide-dialog #user-guide-title { display: flex; align-items: center; gap: 10px; }
+.manual-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 0; }
+.manual-sidebar { padding: 16px 12px; min-height: 0; overflow: auto; background: var(--graphite-925); border-right: 1px solid var(--line); }
+.manual-search { display: flex; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink-muted); }
+.manual-search input { width: 100%; min-width: 0; border: 0; outline-offset: 5px; background: transparent; color: var(--ink); font-size: 12px; }
+.manual-sidebar nav { display: grid; gap: 4px; margin: 16px 0; }
+.manual-sidebar nav button { min-height: 40px; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-secondary); text-align: left; line-height: 1.4; cursor: pointer; }
+.manual-sidebar nav button:hover, .manual-sidebar nav button[aria-current] { background: var(--mineral-wash); color: var(--ink); }
+.manual-sidebar > small { display: block; padding: 5px 10px; color: var(--ink-muted); line-height: 1.5; }
+.manual-article { overflow: auto; min-height: 0; padding: 12px clamp(20px, 4vw, 48px) 48px; font-size: 14px; line-height: 1.75; color: var(--ink-secondary); }
+.manual-article > section { scroll-margin-block-start: 20px; padding-block: 12px 28px; }
+.manual-article > section + section { border-top: 1px solid var(--line); }
+.manual-article h2 { color: var(--ink); font-size: 23px; font-weight: 570; line-height: 1.3; letter-spacing: -.025em; margin-block: 18px; text-wrap: balance; }
+.manual-article h3 { color: var(--ink); font-size: 17px; margin-block: 26px 10px; }
+.manual-article p { margin-block: 12px; }
+.manual-article strong { color: var(--ink); font-weight: 620; }
+.manual-article li { padding-left: 4px; margin-block: 8px; }
+.manual-article a { color: var(--mineral-bright); text-underline-offset: 3px; }
+.manual-article code { color: var(--ink); background: var(--graphite-800); border-radius: 3px; padding: 1px 4px; font-size: .9em; overflow-wrap: anywhere; }
+.manual-article pre { padding: 12px; overflow: auto; background: var(--graphite-850); border: 1px solid var(--line); border-radius: 6px; }
+.manual-article pre code { background: transparent; padding: 0; }
+.manual-table { overflow: auto; margin-block: 18px; border: 1px solid var(--line); border-radius: 6px; }
+.manual-table table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.6; }
+.manual-table th, .manual-table td { padding: 9px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.manual-table th { color: var(--ink); background: var(--graphite-850); }
+.user-guide-dialog button:focus-visible, .user-guide-dialog a:focus-visible, .user-guide-dialog input:focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
+@media (max-width: 760px) { .manual-layout { grid-template-columns: 170px minmax(0, 1fr); } .manual-sidebar { padding-inline: 7px; } .manual-article { padding-inline: 18px; font-size: 13px; } }

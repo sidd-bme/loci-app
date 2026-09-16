@@ -1,0 +1,15 @@
+.annotation-workflow-intro { color: var(--ink-secondary); font-size: 12px; line-height: 1.55; margin: 8px 0 16px; }
+.transect-form { display: flex; flex-direction: column; gap: 9px; margin: 14px 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.transect-form h3 { margin: 0; font-size: 12px; font-weight: 500; color: var(--ink); }
+.transect-form label { font-size: 11px; color: var(--ink-secondary); }
+.transect-form input, .transect-form select { margin-top: 4px; }
+.source-annotations .annotation-tools { flex-wrap: wrap; }
+.source-annotations .annotation-tools svg { width: 16px; height: 16px; stroke-width: 1.5; }
+.transects-summary { margin: 16px 0; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12px; }
+.transects-summary h3 { margin: 0 0 6px; font-size: 12px; }
+.transects-summary p { margin: 0 0 10px; color: var(--ink-secondary); line-height: 1.5; }
+.transect-class-summaries { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 0; font-variant-numeric: tabular-nums; }
+.transect-class-summaries strong { display: block; margin-bottom: 4px; }
+.transects-summary > button { width: 100%; justify-content: center; }
+
+.source-annotations .annotation-tools-icons button { flex: 0 0 32px; min-width: 32px; padding: 6px; }

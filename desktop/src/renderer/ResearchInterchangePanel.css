@@ -1,0 +1,45 @@
+.research-interchange fieldset {
+  margin: 10px 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.research-interchange legend {
+  padding: 0 4px;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+}
+
+.research-interchange-file input {
+  width: 100%;
+}
+
+.research-interchange-binding {
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.research-interchange-binding code {
+  color: var(--ink-secondary);
+}
+
+.research-interchange .research-check {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 7px;
+  align-items: center;
+  text-transform: none;
+}
+
+.research-interchange .research-check small {
+  grid-column: 2;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.research-interchange-note {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 8px;
+  font-size: 11px;
+}

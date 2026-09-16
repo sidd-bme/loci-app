@@ -1,0 +1,33 @@
+.DS_Store
+._*
+node_modules/
+.vite/
+out/
+dist/
+release/
+coverage/
+playwright-report/
+test-results/
+*.log
+
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+engine/build/
+engine/dist/
+*.spec
+
+.loci/
+*.loci-project
+
+# Local laboratory data and derived assay outputs stay local.
+/data/
+*.local/
+
+# Optional shared-local skill; pinned installation record is tracked separately.
+# Upstream redistribution licence has not been established.
+/.agents/skills/transitions-dev/

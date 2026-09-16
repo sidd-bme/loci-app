@@ -1,0 +1,55 @@
+.research-agent-card {
+  margin: 10px 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.research-agent-card h3 {
+  margin-top: 0;
+}
+
+.research-agent-card pre {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink-secondary);
+  font-size: 11px;
+}
+
+.research-agent-disclosure {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  text-transform: none !important;
+}
+
+.research-agent-disclosure span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.research-agent-disclosure input,
+.research-agent-confirm input {
+  width: auto;
+}
+
+.research-agent-disclosure small {
+  color: var(--ink-muted);
+  line-height: 1.35;
+}
+
+.research-agent-confirm {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 7px !important;
+  padding: 9px;
+  border: 1px solid var(--line-strong);
+  text-transform: none !important;
+}
+
+.research-agent-ready {
+  border-color: var(--mineral);
+  background: var(--mineral-wash);
+}

@@ -1,0 +1,60 @@
+.research-surface {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: auto;
+  color: var(--ink);
+  background: #090e12;
+}
+.research-surface-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.research-surface-controls label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+.research-surface-controls input {
+  width: 82px;
+}
+.research-surface-controls input,
+.research-surface-controls select {
+  background: var(--graphite-800);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  padding: 5px;
+  border-radius: 4px;
+}
+.research-surface canvas {
+  flex: 1;
+  display: block;
+  min-width: 0;
+  min-height: 260px;
+  width: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+.research-surface canvas:active {
+  cursor: grabbing;
+}
+.research-surface canvas:focus-visible {
+  outline: 2px solid var(--processing);
+  outline-offset: -2px;
+}
+.research-surface p {
+  margin: 10px;
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+.research-surface-caption {
+  font-size: 11px !important;
+}

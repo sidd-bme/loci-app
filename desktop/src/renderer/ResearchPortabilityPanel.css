@@ -1,0 +1,52 @@
+.research-portability {
+  position: relative;
+}
+
+.research-portability > .research-panel + .research-panel {
+  border-top: 1px solid var(--line);
+}
+
+.research-portability-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0 !important;
+  list-style: none;
+}
+
+.research-portability-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 7px !important;
+}
+
+.research-portability-list li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.research-portability-list small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-muted);
+}
+
+.research-portability-note {
+  border-left: 2px solid var(--line-strong);
+  padding-left: 8px;
+  font-size: 11px;
+}
+
+.research-portability-status {
+  position: sticky;
+  bottom: 0;
+  margin: 0;
+  border-top: 1px solid var(--line-strong);
+  background: var(--graphite-850);
+  color: var(--ink-secondary);
+  padding: 9px 12px;
+}

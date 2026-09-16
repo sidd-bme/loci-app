@@ -1,0 +1,35 @@
+.research-quantification-tabs {
+  grid-template-columns: repeat(6, minmax(max-content, 1fr));
+  overflow-x: auto;
+}
+
+.research-quantification fieldset {
+  margin: 10px 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.research-quantification legend {
+  color: var(--ink-secondary);
+}
+
+.research-quantification textarea {
+  min-height: 58px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--graphite-850);
+  color: var(--ink);
+  padding: 5px;
+}
+
+.research-gate {
+  margin-top: 8px;
+  padding: 8px;
+  border-left: 3px solid var(--line-strong);
+}
+
+.research-quantification .research-kv {
+  margin-top: 10px;
+}

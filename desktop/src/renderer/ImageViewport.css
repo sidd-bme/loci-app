@@ -1,0 +1,108 @@
+.image-viewport { position: relative; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: #151515; touch-action: none; outline-offset: -3px; }
+.image-viewport > canvas { display: block; width: 100%; height: 100%; }
+.image-view-tools { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; border: 1px solid #555; border-radius: 9px; padding: 4px; background: #252525f2; color: #f3f3f3; }
+.image-view-tools button { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 4px 7px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 12px; }
+.image-view-tools button:hover, .image-view-tools button:focus-visible { background: #454545; }
+.image-view-tools svg { width: 16px; height: 16px; }
+.image-view-tools output { min-width: 44px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.image-view-loading { position: absolute; top: 14px; left: 14px; padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: 12px; }
+.image-view-loading button { margin-left: 8px; border: 0; background: transparent; color: #b9e6de; }
+.image-drawing-status { position: absolute; top: 58px; left: 14px; max-width: min(360px, calc(100% - 28px)); padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: 12px; line-height: 1.45; pointer-events: none; }
+.image-view-readout { position: absolute; bottom: 12px; left: 14px; display: flex; align-items: end; gap: 16px; color: #f4f4f4; font-size: 11px; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.image-scale-bar { display: grid; text-align: center; gap: 4px; }
+.image-scale-bar i { display: block; border: solid #f4f4f4; border-width: 0 1px 2px; height: 5px; }
+.image-navigator-panel {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--graphite-900, #1b1b1b) 85%, transparent);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  border: 1px solid color-mix(in srgb, var(--line-strong, #555) 70%, rgba(255, 255, 255, 0.1));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  user-select: none;
+}
+.image-navigator-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: grab;
+  touch-action: none;
+  background: color-mix(in srgb, var(--graphite-850, #222) 60%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--line, #444) 60%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-secondary, #ccc);
+  letter-spacing: 0.02em;
+}
+.image-navigator-header:active {
+  cursor: grabbing;
+}
+.image-navigator-handle {
+  opacity: 0.6;
+  font-size: 11px;
+}
+.image-navigator-title {
+  flex: 1;
+}
+.image-navigator-reset {
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted, #888);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 11px;
+  line-height: 1;
+  border-radius: 3px;
+}
+.image-navigator-reset:hover {
+  color: var(--ink, #fff);
+  background: rgba(255, 255, 255, 0.1);
+}
+.image-navigator-body {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: #111;
+  cursor: pointer;
+}
+.image-navigator-body img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.image-navigator-body i {
+  position: absolute;
+  border: 1px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+.image-navigator-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.image-navigator-resize-handle::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid rgba(255, 255, 255, 0.4);
+  border-bottom: 1.5px solid rgba(255, 255, 255, 0.4);
+}
+.image-viewport.is-fullscreen { width: 100vw; height: 100vh; }
+.image-view-unavailable { position: absolute; left: 20%; right: 20%; top: 45%; color: #ededed; text-align: center; font-size: 13px; line-height: 1.6; }
+@media (max-width: 800px) { .image-view-tools { top: 8px; } .image-view-loading { top: 52px; } }

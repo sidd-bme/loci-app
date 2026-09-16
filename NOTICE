@@ -1,0 +1,12 @@
+Loci
+Copyright 2026 Loci contributors
+
+Loci is licensed under the Apache License, Version 2.0. The full licence text
+is in the LICENSE file at the repository root.
+
+Current Loci distributions may include the separately licensed Cellpose 4.2.1.1
+runtime. The original Cellpose-SAM (`cpsam`) and Cellpose-SAM v2 (`cpsam_v2`)
+checkpoints are user-provided official artifacts obtained separately; neither is
+bundled or silently downloaded by Loci. Neither the Cellpose runtime nor its
+model artifacts are relicensed by the Apache-2.0 licence for Loci. See
+THIRD_PARTY_NOTICES.md for the applicable attribution and provenance notes.

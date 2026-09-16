@@ -1,0 +1,97 @@
+.research-native-viewport {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--canvas);
+}
+
+.research-native-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--graphite-900) 94%, transparent);
+  color: var(--ink-muted);
+  font-size: var(--type-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.research-native-controls label,
+.research-native-zoom {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.research-native-controls select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.research-native-controls output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.research-native-controls button {
+  min-width: 36px;
+  min-height: 36px;
+  justify-content: center;
+  padding: 4px 6px;
+}
+
+.research-native-stage {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background-color: #090d0b;
+  background-image:
+    linear-gradient(rgba(114, 148, 137, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(114, 148, 137, 0.08) 1px, transparent 1px),
+    radial-gradient(circle at center, #151d19, #070a08 72%);
+  background-size: 24px 24px, 24px 24px, 100% 100%;
+  cursor: grab;
+  outline-offset: -3px;
+  touch-action: none;
+  user-select: none;
+}
+
+.research-native-stage.is-dragging {
+  cursor: grabbing;
+}
+
+.research-native-stage img {
+  max-width: none;
+  max-height: none;
+  flex: 0 0 auto;
+  image-rendering: auto;
+  transform-origin: center;
+}
+
+.research-native-help {
+  margin: 0;
+  padding: 5px 10px;
+  border-top: 1px solid var(--line);
+  background: var(--graphite-900);
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+  line-height: 1.4;
+}
+
+.research-native-loading {
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 8px 10px;
+  background: var(--graphite-900);
+  color: var(--ink-secondary);
+}

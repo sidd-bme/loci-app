@@ -1,0 +1,210 @@
+{
+  "schema": "loci.public-product-media/v1",
+  "runtime_commit": "8d2b009dc8eb10a39ee92b595696924563b993c2",
+  "capture_harness_sha256": "5f2daa8b1a4daacd7a6593b6dd438bf032f29af0772efacb420a99272a5cf5bf",
+  "manifest_sha256": "baf7aa97d394c1f72a565cc11eca0466b8824cfe5f031378e24ec24672c27747",
+  "packaged_app": {
+    "application_artifact_sha256": "890673ce757f6c9171a6fa3bb97f343a0fa611280e557f03d834dd755eac3b18",
+    "executable_sha256": "7ff5a3ddd36acb2834c3956cf73c6c7ab4f7f23c652a1a70076ab733bbc6790c",
+    "worker_sha256": "ba208199aa853118f8582c4d0a87160085a194130e59fbe9d70a2824d3a29916"
+  },
+  "capture_receipt_sha256": "629699a541740a69dd292e24899351b1c1320320d2b5abc7256ba209d3a02579",
+  "public_visual_receipt_sha256": "ea9d7352cafb70466bb202649f2d8ae7ed5f1a6a914ca0ae37a033da76661497",
+  "capture_status": "passed",
+  "renderer_page_errors": [],
+  "renderer_console_errors": [],
+  "network_requests": [],
+  "screenshots": [
+    {
+      "file": "welcome.png",
+      "sha256": "8b3f5b1a4d2084b1ac6d0b9fca29d49099c04402a588d0d46bb1cc6be2fc07b7",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "01-readme-welcome.png"
+    },
+    {
+      "file": "annotation.png",
+      "sha256": "a6471f821cf82faae445f623949b7fbd7910814bf3ea6b6fe9b20ec6913293d4",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "03-readme-phase-raw-annotation.png"
+    },
+    {
+      "file": "segmentation.png",
+      "sha256": "6b37eb049072da1e19814da079392656269d45635ec78a4cc1b68cb8e6112438",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "04-readme-phase-illustrative-segmentation.png"
+    },
+    {
+      "file": "native-slide.png",
+      "sha256": "d260da489727e2fa35e3eb2052e5e356edaabf628f801c0ed65d96fb1362ccc0",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "05-readme-native-svs-histology.png"
+    },
+    {
+      "file": "multichannel.png",
+      "sha256": "8be3c523c1562275c5d74a84cfb2176f2a130bf9952b3bf8c6a8600c26852527",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "06-readme-multichannel-kidney.png"
+    },
+    {
+      "file": "raw-volume.png",
+      "sha256": "bbec8d06957fb500ba888599b6b5adc1a71f69b27d51d44bf71c8750d12da98a",
+      "width": 3200,
+      "height": 1800,
+      "captured_file": "07-readme-raw3d-kidney.png"
+    }
+  ],
+  "fixtures": [
+    {
+      "file": "kidney.tif",
+      "url": "https://gitlab.com/scikit-image/data/-/raw/2cdc5ce89b334d28f06a58c9f0ca21aa6992a5ba/kidney-tissue-fluorescence.tif",
+      "sha256": "80c0799bc58b08cf6eaa53ecd202305eb42fd7bc73746cb6c5064dbeae7e8476",
+      "licence": "CC0-1.0",
+      "credit": "Genevieve Buckley, Monash Micro Imaging, 2018"
+    },
+    {
+      "file": "cell.png",
+      "url": "https://gitlab.com/scikit-image/data/-/raw/5c090b56df3988d988ff97928e2ef2d2cbe38e1b/cell.png",
+      "sha256": "8d23a7fb81f7cc877cd09f330357fc7f595651306e84e17252f6e0a1b3f61515",
+      "licence": "CC0-1.0",
+      "credit": "Paul Mueller et al., Optics Express 2018, doi:10.1364/OE.26.010729"
+    },
+    {
+      "file": "Kidney fluorescence.ome.tiff",
+      "sha256": "83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564",
+      "conversion": "Exact pixels; source TIFF observed ZCYX reordered to TCZYX; calibration from documentation, no intensity changes",
+      "documentation": "https://scikit-image.org/docs/stable/api/skimage.data.html",
+      "licence": "CC0-1.0"
+    },
+    {
+      "file": "Phase cell.ome.tiff",
+      "sha256": "f5f1565e990650a87cabf7e6e8db1fd6da40b430b5fab52e3f598314d428cf76",
+      "conversion": "Exact uint8 YX pixels from cell.png written to tiled OME-TIFF; 0.107 micrometre XY spacing from documentation; no intensity changes",
+      "documentation": "https://scikit-image.org/docs/stable/api/skimage.data.html",
+      "licence": "CC0-1.0"
+    },
+    {
+      "file": "CMU-1-Small-Region.svs",
+      "sha256": "ed92d5a9f2e86df67640d6f92ce3e231419ce127131697fbbce42ad5e002c8a7",
+      "licence": "CC0-1.0",
+      "source": "https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/CMU-1-Small-Region.svs",
+      "licence_evidence": "https://openslide.cs.cmu.edu/download/openslide-testdata/index.json",
+      "credit": "OpenSlide public test data"
+    }
+  ],
+  "scope": "Actual packaged UI on three public CC0 fixtures; illustrative analysis, not biological or clinical validation.",
+  "volume_display": {
+    "component": "450 nm emission",
+    "colour": "#00d7ff",
+    "opacity": 0.2,
+    "other_volume_components_visible": false,
+    "two_dimensional_scene_components_visible": 3,
+    "preparation_included_in_movie": false
+  },
+  "video": {
+    "file": "loci-product-demo-1080p.mp4",
+    "sha256": "f0f9b75ab331b85d32c546832bff4b0fdda23b3807077e838b0cd573f129457f",
+    "width": 1920,
+    "height": 1080,
+    "codec": "h264",
+    "duration": 78.866667
+  },
+  "poster": {
+    "file": "loci-product-demo-poster.png",
+    "sha256": "c0601f37fd4595ecf07edd46e8fd2b1139727efc9e96cdf0f84db1e9428f75d0",
+    "width": 1920,
+    "height": 1080,
+    "codec": "png",
+    "duration": 0
+  },
+  "render_receipt_sha256": "823b86cd38c364191ef4b4dbfa04ae7d40545a62dfcb54342a85ac33b7623c5a",
+  "renderer_sha256": "eb07da25a36fdcbdf93b20a7b3535150b3b6d9180afd2c7cdf188e7c03e03f1d",
+  "transitions": "7 image crossfades of 0.45 seconds; mutually exclusive caption windows",
+  "audio": "none",
+  "clips": [
+    {
+      "id": "01-welcome",
+      "sha256": "e28d6959b9cd81cd20483d253c1ec2a89a45dd03ce795453ffae0254d68da8d9",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "none \u2014 application shell only"
+    },
+    {
+      "id": "02-open-phase",
+      "sha256": "4308f4d935db50b1da227bb7ed5f3c9aa39a455c52f8baf2f2230cc69c84729c",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "03-annotate-phase",
+      "sha256": "b4690eeb394e07908291174cf632aae2e6efceed7b8b53050f14804e312502b3",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "04-native-svs",
+      "sha256": "23447b469cfaab72621bdbbd75b898f0589d5f2e3d79566ae034a451d0e46653",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "cmu-small-region-svs-cc0"
+    },
+    {
+      "id": "05-multichannel",
+      "sha256": "b0c05baa79fc723d2c824910713e9f2b72e1dd860cbe6404228b36d637eb55fa",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 11,
+      "used_duration_seconds": 11,
+      "fixture_ref": "kidney-ome-cc0"
+    },
+    {
+      "id": "06-raw-volume",
+      "sha256": "2eec9a53ac394ac91354a6d4157f042517ed2ac10dfcaf64a2f05bc02baed490",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 11,
+      "used_duration_seconds": 11,
+      "fixture_ref": "kidney-ome-cc0"
+    },
+    {
+      "id": "07-results",
+      "sha256": "97d2a4d2f5b0b883d2726b3409644c73110daa21b99e699781685f7650343d0b",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "phase-ome-cc0"
+    },
+    {
+      "id": "08-close",
+      "sha256": "26afb645ec56421b10731427c7540695c17a840ca491ee6272df3db6fa67d602",
+      "width": 1600,
+      "height": 900,
+      "codec": "h264",
+      "input_duration_seconds": 10,
+      "used_duration_seconds": 10,
+      "fixture_ref": "phase-ome-cc0"
+    }
+  ]
+}
