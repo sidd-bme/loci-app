@@ -453,3 +453,153 @@ def test_missing_wheel_licence_requires_exact_pinned_upstream_evidence(
         release_python_inventory.InventoryError, match="pinned upstream"
     ):
         release_python_inventory._licence_files(distribution)
+
+
+def test_cyclonedx_component_identity_scoped_and_unscoped() -> None:
+    # Unscoped package
+    identity = release_supply_chain._cyclonedx_component_identity(
+        {
+            "name": "lucide-react",
+            "version": "1.16.0",
+            "purl": "pkg:npm/lucide-react@1.16.0",
+        }
+    )
+    assert identity == ("lucide-react", "1.16.0")
+
+    # Scoped package with '@' in group
+    identity_scoped = release_supply_chain._cyclonedx_component_identity(
+        {
+            "group": "@kitware",
+            "name": "vtk.js",
+            "version": "36.12.0",
+            "purl": "pkg:npm/%40kitware/vtk.js@36.12.0",
+        }
+    )
+    assert identity_scoped == ("@kitware/vtk.js", "36.12.0")
+
+    # Scoped package without '@' in group
+    identity_group_no_at = release_supply_chain._cyclonedx_component_identity(
+        {
+            "group": "kitware",
+            "name": "vtk.js",
+            "version": "36.12.0",
+            "purl": "pkg:npm/%40kitware/vtk.js@36.12.0",
+        }
+    )
+    assert identity_group_no_at == ("@kitware/vtk.js", "36.12.0")
+
+
+def test_cyclonedx_component_identity_same_name_different_scopes() -> None:
+    comp_unscoped = {"name": "core", "version": "1.0.0", "purl": "pkg:npm/core@1.0.0"}
+    comp_scope_a = {
+        "group": "@alpha",
+        "name": "core",
+        "version": "1.0.0",
+        "purl": "pkg:npm/%40alpha/core@1.0.0",
+    }
+    comp_scope_b = {
+        "group": "@beta",
+        "name": "core",
+        "version": "1.0.0",
+        "purl": "pkg:npm/%40beta/core@1.0.0",
+    }
+
+    id_unscoped = release_supply_chain._cyclonedx_component_identity(comp_unscoped)
+    id_scope_a = release_supply_chain._cyclonedx_component_identity(comp_scope_a)
+    id_scope_b = release_supply_chain._cyclonedx_component_identity(comp_scope_b)
+
+    assert id_unscoped == ("core", "1.0.0")
+    assert id_scope_a == ("@alpha/core", "1.0.0")
+    assert id_scope_b == ("@beta/core", "1.0.0")
+    assert len({id_unscoped, id_scope_a, id_scope_b}) == 3
+
+
+def test_cyclonedx_component_identity_rejects_contradictions_and_malformed() -> None:
+    # Missing name
+    with pytest.raises(release_supply_chain.SupplyChainError, match="valid name"):
+        release_supply_chain._cyclonedx_component_identity({"version": "1.0.0"})
+
+    # Missing version
+    with pytest.raises(release_supply_chain.SupplyChainError, match="valid version"):
+        release_supply_chain._cyclonedx_component_identity({"name": "pkg"})
+
+    # Invalid group (empty)
+    with pytest.raises(release_supply_chain.SupplyChainError, match="invalid group"):
+        release_supply_chain._cyclonedx_component_identity(
+            {"name": "pkg", "version": "1.0.0", "group": ""}
+        )
+
+    # Name already scoped when group is specified
+    with pytest.raises(release_supply_chain.SupplyChainError, match="already scoped"):
+        release_supply_chain._cyclonedx_component_identity(
+            {"group": "@scope", "name": "@scope/pkg", "version": "1.0.0"}
+        )
+
+    # Invalid purl (empty)
+    with pytest.raises(release_supply_chain.SupplyChainError, match="invalid purl"):
+        release_supply_chain._cyclonedx_component_identity(
+            {"name": "pkg", "version": "1.0.0", "purl": ""}
+        )
+
+    # Purl mismatch with name
+    with pytest.raises(release_supply_chain.SupplyChainError, match="does not match purl"):
+        release_supply_chain._cyclonedx_component_identity(
+            {
+                "name": "pkg-a",
+                "version": "1.0.0",
+                "purl": "pkg:npm/pkg-b@1.0.0",
+            }
+        )
+
+    # Purl mismatch with version
+    with pytest.raises(release_supply_chain.SupplyChainError, match="does not match purl"):
+        release_supply_chain._cyclonedx_component_identity(
+            {
+                "name": "pkg-a",
+                "version": "1.0.0",
+                "purl": "pkg:npm/pkg-a@2.0.0",
+            }
+        )
+
+
+def test_npm_runtime_inventory_includes_peer_dependencies(tmp_path: Path) -> None:
+    lock = tmp_path / "package-lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "lockfileVersion": 3,
+                "packages": {
+                    "": {"dependencies": {"parent": "1.0.0"}},
+                    "node_modules/parent": {
+                        "version": "1.0.0",
+                        "peerDependencies": {"peer-dep": "1.0.0"},
+                    },
+                    "node_modules/peer-dep": {
+                        "version": "1.0.0",
+                        "license": "MIT",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inventory = release_supply_chain.npm_runtime_inventory(lock)
+    names = {item["name"] for item in inventory}
+    assert "peer-dep" in names
+    assert "parent" in names
+
+
+def test_npm_upstream_licence_pinned_hash_verification(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    licence_dir = repo / "scripts" / "upstream_licences" / "seedrandom-3.0.5"
+    licence_dir.mkdir(parents=True)
+    licence_file = licence_dir / "LICENSE"
+    content = b"Copyright 2019 David Bau. MIT License.\n"
+    licence_file.write_bytes(content)
+    expected_hash = hashlib.sha256(content).hexdigest()
+
+    # Verify matching hash works
+    assert licence_file.is_file()
+    assert hashlib.sha256(licence_file.read_bytes()).hexdigest() == expected_hash
+

@@ -28,7 +28,7 @@
 > **Public Beta · Research Use Only (RUO)**
 > Loci is research software intended exclusively for laboratory and scientific research. It is **not** a certified medical device and is **not** cleared for clinical diagnosis, patient management, or clinical decision-making.
 >
-> **Beta Installation Notice:** This initial release is signed with an ad-hoc local signature and is **not notarized** by Apple. On first launch, macOS Gatekeeper requires standard user approval (Control-click → Open or System Settings). First launch on Apple Silicon Macs may observe an initial startup delay (~75–85 seconds observed on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components. See [Installation](#installation-macos-public-beta) below.
+> **Beta Installation Notice:** This initial release is signed with an ad-hoc local signature and is **not notarized** by Apple. On first launch, macOS Gatekeeper blocks direct opening. On macOS 15 (Sequoia) and modern macOS releases, approve the application via **System Settings → Privacy & Security → Open Anyway** (or right-click → Open on supported configurations). First launch on Apple Silicon Macs may observe an initial startup delay (~75–85 seconds observed on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components. See [Installation](#installation-macos-public-beta) below.
 
 ---
 
@@ -133,12 +133,13 @@ Biomedical images are large, sensitive, and scientifically irreplaceable. Loci i
    ```
 3. Unzip the archive and move `Loci.app` to your `/Applications` folder.
 4. **First-launch Gatekeeper approval:** Because this initial beta release uses an ad-hoc local integrity signature and is **not notarized** by Apple, macOS Gatekeeper blocks direct double-click launching on downloaded files. Follow the standard Apple-documented approval procedure:
-   - **Method 1 (Finder):** In Finder, open `/Applications`, right-click (or Control-click) `Loci.app`, and select **Open**. In the prompt that appears, click **Open**.
-   - **Method 2 (System Settings):** If macOS reports that the app cannot be opened, open **System Settings → Privacy & Security**, scroll down to the **Security** section where `Loci.app` is listed, and click **Open Anyway**.
-   - **Method 3 (Terminal):** Alternatively, remove the quarantine flag specifically for the Loci application:
-     ```bash
-     xattr -d com.apple.quarantine /Applications/Loci.app
-     ```
+   - **On macOS 15 (Sequoia) and modern macOS versions:**
+     1. Double-click `Loci.app` in `/Applications` once. macOS will display a prompt stating that the app cannot be opened because it is not from an identified developer. Click **Done** or **OK**.
+     2. Open **System Settings → Privacy & Security**.
+     3. Scroll down to the **Security** section. You will see: *"Loci.app was blocked from use because it is not from an identified developer."*
+     4. Click **Open Anyway**, enter your Mac password or Touch ID when prompted, and click **Open**.
+   - **On earlier macOS versions (macOS 14 Sonoma and earlier):**
+     Right-click (or Control-click) `Loci.app` in `/Applications` and select **Open**. In the dialog that appears, click **Open**. *(Note: macOS Sequoia restricts this shortcut by default in favor of System Settings approval).*
    *Note for managed Macs: On institutional or enterprise-managed Macs with centrally enforced MDM configuration profiles, running unnotarized applications may require your organization's IT administrator to grant an exception.*
 5. **Initial startup timing:** On first launch on Apple Silicon Macs, an initial startup delay of approximately **75–85 seconds** has been observed (tested on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components and the analysis environment initializes. Subsequent launches open faster once cached by the system.
 
@@ -148,7 +149,7 @@ Biomedical images are large, sensitive, and scientifically irreplaceable. Loci i
 1. **Open an image:** Launch Loci and drag a supported image (e.g. multi-channel TIFF or OME-TIFF) into the workbench window.
 2. **Adjust channels:** Open the **View → Image & channels** panel in the left toolbar to toggle channel visibility, assign false colors, and adjust display window/level ranges.
 3. **Run segmentation:** Switch to **Analyze → Segment & measure**, select the built-in **Adaptive Watershed** profile, adjust parameter thresholds if desired, and click **Segment image**.
-4. **Inspect objects:** Switch to **Results → Review & export** to view the interactive measurement table and quantitative summaries. Click any row in the table or click an object directly in the viewport to highlight and inspect its measurements.
+4. **Inspect objects & review measurements:** Switch to **Results → Review & export** to inspect the interactive measurement table, morphology metrics, and quantitative summaries. Click any row in the table or click an object directly in the viewport to highlight and inspect its measurements. **Perform human visual and numerical review of all detected objects and boundary alignments before proceeding to export.**
 5. **Export results:** In **Review & export**, click **Export** to export tabular CSV summaries, 16-bit TIFF label arrays, or rendered figure images with SHA-256 provenance manifests.
 6. **Save study:** Choose **File → Save research study as** to save your workspace session as a `.loci-study` bundle for exact reopening and reproducibility.
 

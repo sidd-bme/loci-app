@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -50,6 +51,12 @@ CHROME_VERSION_PATTERN = re.compile(
 )
 MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+NPM_UPSTREAM_LICENCES: dict[tuple[str, str], tuple[str, str]] = {
+    ("seedrandom", "3.0.5"): (
+        "seedrandom-3.0.5/LICENSE",
+        "54624bc262234371635aacf512f779e523fc06412869108d0758b71569f7c41a",
+    ),
+}
 
 
 class SupplyChainError(RuntimeError):
@@ -267,7 +274,7 @@ def npm_runtime_inventory(lock_path: Path) -> list[dict[str, object]]:
             )
         dependencies: list[str] = []
         raw_dependencies: dict[str, object] = {}
-        for key in ("dependencies", "optionalDependencies"):
+        for key in ("dependencies", "optionalDependencies", "peerDependencies"):
             value = raw.get(key)
             if isinstance(value, dict):
                 raw_dependencies.update(value)
@@ -343,6 +350,41 @@ def _electron_versions(app: Path, repository: Path) -> tuple[str, str]:
     return electron_version, match.group(1).decode("ascii")
 
 
+def _cyclonedx_component_identity(component: Mapping[str, Any]) -> tuple[str, str]:
+    name = component.get("name")
+    version = component.get("version")
+    if not isinstance(name, str) or not name:
+        raise SupplyChainError("CycloneDX component is missing a valid name")
+    if not isinstance(version, str) or not version:
+        raise SupplyChainError(f"CycloneDX component {name} is missing a valid version")
+
+    group = component.get("group")
+    if group is not None:
+        if not isinstance(group, str) or not group:
+            raise SupplyChainError(f"CycloneDX component {name} has an invalid group")
+        if name.startswith("@"):
+            raise SupplyChainError(
+                f"contradictory CycloneDX identity: name {name} already scoped when group {group} is specified"
+            )
+        scope = group if group.startswith("@") else f"@{group}"
+        full_name = f"{scope}/{name}"
+    else:
+        full_name = name
+
+    purl = component.get("purl")
+    if purl is not None:
+        if not isinstance(purl, str) or not purl:
+            raise SupplyChainError(f"CycloneDX component {full_name} has an invalid purl")
+        unquoted = urllib.parse.unquote(purl).split("?")[0].split("#")[0]
+        expected_purl = f"pkg:npm/{full_name}@{version}"
+        if unquoted != expected_purl:
+            raise SupplyChainError(
+                f"contradictory CycloneDX identity: {full_name}@{version} does not match purl {purl}"
+            )
+
+    return full_name, version
+
+
 def _build_desktop_sbom(
     repository: Path,
     app: Path,
@@ -383,13 +425,20 @@ def _build_desktop_sbom(
     document = _read_json(destination, label="generated desktop SBOM")
     inventory = npm_runtime_inventory(desktop / "package-lock.json")
     sbom_components = {
-        (component.get("name"), component.get("version"))
+        _cyclonedx_component_identity(component)
         for component in _all_cyclonedx_components(document.get("components"))
     }
     expected_components = {(item["name"], item["version"]) for item in inventory}
     if sbom_components != expected_components:
+        missing = sorted(expected_components - sbom_components)
+        unexpected = sorted(sbom_components - expected_components)
+        details = []
+        if missing:
+            details.append(f"missing from CycloneDX: {missing}")
+        if unexpected:
+            details.append(f"unexpected in CycloneDX: {unexpected}")
         raise SupplyChainError(
-            "CycloneDX desktop inventory does not exactly match the locked runtime closure"
+            f"CycloneDX desktop inventory does not exactly match the locked runtime closure: {'; '.join(details)}"
         )
 
     electron_version, chromium_version = _electron_versions(app, repository)
@@ -716,17 +765,37 @@ def _build_licence_payloads(
                 f"installed npm package does not match lock: {raw['package_path']}"
             )
         sources = _node_licence_files(package_root)
+        upstream_info = NPM_UPSTREAM_LICENCES.get((str(raw["name"]), str(raw["version"])))
+        upstream_source: Path | None = None
         if not sources:
-            raise SupplyChainError(
-                f"npm runtime dependency has no licence evidence: {raw['name']}"
-            )
+            if upstream_info is not None:
+                relative_path, expected_hash = upstream_info
+                upstream_source = repository / "scripts" / "upstream_licences" / relative_path
+                if not upstream_source.is_file():
+                    raise SupplyChainError(
+                        f"pinned upstream licence file is missing: {upstream_source}"
+                    )
+                actual_hash = hashlib.sha256(upstream_source.read_bytes()).hexdigest()
+                if actual_hash != expected_hash:
+                    raise SupplyChainError(
+                        f"pinned upstream licence hash mismatch for {raw['name']}@{raw['version']}: "
+                        f"expected {expected_hash}, got {actual_hash}"
+                    )
+                sources = [upstream_source]
+            else:
+                raise SupplyChainError(
+                    f"npm runtime dependency has no licence evidence: {raw['name']}"
+                )
         component_root = (
             f"licenses/npm/{_safe_archive_segment(str(raw['name']))}-"
             f"{_safe_archive_segment(str(raw['version']))}"
         )
         evidence: list[dict[str, object]] = []
         for source in sources:
-            relative = source.relative_to(package_root).as_posix()
+            if upstream_source is not None and source == upstream_source:
+                relative = source.name
+            else:
+                relative = source.relative_to(package_root).as_posix()
             archive_path = f"{component_root}/{relative}"
             record, payload = _source_payload(source, archive_path)
             if archive_path in payloads:

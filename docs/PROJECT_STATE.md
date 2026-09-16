@@ -48,7 +48,7 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
     - *Journey 3 (field-assay-workflow):* Fluorescence field assay quantification, background subtraction, manual override counts, and review gates (**passed**).
 
 ### Hosted CI status:
-- Hosted GitHub Actions CI is currently **intentionally paused** due to account spending limits (run `35055420283` failed at schedule time with `The job was not started because recent account payments have failed or your spending limit needs to be increased`).
+- Hosted GitHub Actions CI jobs for run `35055420283` were refused at schedule time due to account billing and spending limits (`The job was not started because recent account payments have failed or your spending limit needs to be increased`). Because the jobs never executed, workflow syntax validity and remote test outcomes cannot be inferred from this run.
 - Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) remain the active qualification authority.
 
 ### Platform boundaries:
@@ -75,10 +75,9 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 1. **First-launch initialization (cold start):**
    On the very first launch after installation, an initial startup delay of approximately **75–85 seconds** has been observed (tested on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components and the analysis environment initializes. Profiling of the exact breakdown between system verification and engine initialization remains ongoing; subsequent launches warm up and open faster once cached by macOS.
 2. **macOS Gatekeeper warning (ad-hoc signing & unnotarized status):**
-   The public beta binary is signed with an ad-hoc integrity signature and is **not notarized** by Apple. Because it is not signed with an Apple Developer ID certificate, macOS Gatekeeper blocks direct double-click launching on downloaded files. To open:
-   - Method 1: Right-click (Control-click) `Loci.app` in Finder and select **Open**.
-   - Method 2: In **System Settings → Privacy & Security**, locate the security notice under Security and click **Open Anyway**.
-   - Method 3: In Terminal, remove quarantine for Loci specifically: `xattr -d com.apple.quarantine /Applications/Loci.app`.
+   The public beta binary is signed with an ad-hoc integrity signature and is **not notarized** by Apple. Because it is not signed with an Apple Developer ID certificate, macOS Gatekeeper blocks direct double-click launching on downloaded files.
+   - On macOS 15 (Sequoia) and modern macOS releases, approve the application via **System Settings → Privacy & Security → Open Anyway** after the initial blocked launch attempt.
+   - On earlier macOS versions, right-click (Control-click) → **Open** in Finder may provide a direct open prompt, though this shortcut is restricted on Sequoia.
    *Note: Centrally managed Macs with strict MDM configuration profiles may block unnotarized binaries without administrative approval.*
 3. **Memory bounds on massive datasets:**
    Whole-slide images and large 3D/4D volumes use progressive pyramid levels and bounded tile decoders. Rendering extremely large volumes at 100% ray-sampling quality on systems with 8 GB unified memory may trigger automatic downsampling to protect system responsiveness.
