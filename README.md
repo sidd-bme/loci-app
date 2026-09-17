@@ -43,22 +43,22 @@ Viewing and core analysis require **no account, no subscription, and no network 
 ## Product tour
 
 <!-- HERO_MEDIA_START: Media assets can be replaced here for launch -->
-![Loci product walkthrough preview](docs/media/raw-volume_2.png)
+![Loci product walkthrough preview](docs/media/multichannel_2.png)
 
 
 <!-- HERO_MEDIA_END -->
 
 | Multichannel fluorescence | Native whole-slide detail |
 | :---: | :---: |
-| ![Multichannel fluorescence viewing](docs/media/multichannel.png) | ![Aperio SVS whole slide inspection](docs/media/native-slide.png) |
+| ![Multichannel fluorescence viewing](docs/media/multichannel.png) | ![Aperio SVS whole slide inspection](docs/media/native-slide_2.png) |
 | *C/Z/T navigation with explicit cyan, magenta, and yellow false-coloring.* | *Navigate gigapixel slides at native resolution without flattening.* |
 
 | Classical segmentation & review | 3D ray-cast volume & MPR |
 | :---: | :---: |
-| ![Illustrative adaptive watershed result](docs/media/segmentation.png) | ![Raw volume rendering and orthogonal reslicing](docs/media/raw-volume.png) |
+| ![Illustrative adaptive watershed result](docs/media/segmentation_2.png) | ![Raw volume rendering and orthogonal reslicing](docs/media/raw-volume_2.png) |
 | *Discrete object selection, quantitative review tables, and recipe presets.* | *Direct GPU ray-casting and linked orthogonal multi-planar reslicing.* |
 
-*All screenshots and video recordings use rights-cleared public **CC0-1.0** scientific fixtures. See [media credits and provenance](docs/media/README.md).*
+*All screenshots and video recordings use rights-cleared public scientific fixtures.*
 
 ---
 
