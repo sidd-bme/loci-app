@@ -19,7 +19,6 @@
 
 <p align="center">
   <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1"><strong>Download for Apple Silicon Mac (v0.1.0-beta.1)</strong></a> •
-  <a href="docs/media/loci-product-demo-1080p.mp4"><strong>Watch demo video (1 min 19 s)</strong></a> •
   <a href="#quick-workflow"><strong>Quick workflow</strong></a> •
   <a href="#origin--motivation"><strong>Origin</strong></a>
 </p>
