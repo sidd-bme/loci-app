@@ -174,7 +174,6 @@ For developers, contributors, and technical evaluators interested in internal en
 - **Discrete Object Picking:** Viewport canvas picking queries spatial label identities (`result_label_at`) preserving camera scale and active layer hierarchy.
 - **Numerical Integrity:** Quantitative review tables reject non-finite and `NaN` values at the engine boundary and enforce unit consistency across area, volume, and intensity metrics.
 - **Analysis Engine:** Bundled Python 3.12 worker frozen with PyInstaller. Exposes deterministically verifiable operations via JSON-RPC, including classical SciPy/scikit-image routines and Model Context Protocol (MCP) tool bindings.
-- **Hosted CI Note:** Hosted GitHub Actions workflows are currently paused due to account spending limits; local qualification scripts and regression suites serve as the qualification authority for releases.
 
 ---
 
