@@ -43,11 +43,9 @@ Viewing and core analysis require **no account, no subscription, and no network 
 ## Product tour
 
 <!-- HERO_MEDIA_START: Media assets can be replaced here for launch -->
-[![Loci product walkthrough preview](docs/media/multichannel.png)](docs/media/loci-product-demo-1080p.mp4)
+[![Loci product walkthrough preview](docs/media/multichannel.png)]
 
-<p align="center">
-  <strong><a href="docs/media/loci-product-demo-1080p.mp4">Watch the product demo video (1 min 19 s)</a></strong>
-</p>
+
 <!-- HERO_MEDIA_END -->
 
 | Multichannel fluorescence | Native whole-slide detail |
