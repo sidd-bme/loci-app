@@ -63,7 +63,7 @@ Viewing and core analysis require **no account, no subscription, and no network 
 
 ## Origin & motivation
 
-Loci began by helping a small Singapore startup improve its cell-counting workflow using the images and equipment it already had. It grew into an effort to make adaptable scientific image-analysis tools accessible to more labs. I use it in my own research and am refining it through early feedback from researchers working across skin research, 3D imaging and cell culture. GPT-6 Astra in Codex has been central to development. These are early workflow evaluations, not biological/clinical validation.
+Loci began by helping a small Singapore startup improve its cell-counting workflow using the images and equipment it already had. It grew into an effort to make adaptable scientific image-analysis tools accessible to more labs. I use it in my own research and am refining it through early feedback from researchers working across skin research, 3D imaging and cell culture. These are only early workflow evaluations and not biological/clinical validation, and Loci is always improving through testing between various life science labs, institutions, and clinician scientists.
 
 ---
 
