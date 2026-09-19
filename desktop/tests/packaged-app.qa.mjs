@@ -152,7 +152,7 @@ async function selectResult(id) {
   assert.ok(result, "The requested result is not in this study");
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
-  const sourceButton = page.locator('.research-sources > button').filter({ has: page.getByText(resultSource.name, { exact: true }) });
+  const sourceButton = page.locator('.research-sources button[data-source-id]').filter({ has: page.getByText(resultSource.name, { exact: true }) });
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
   await page.locator(`[data-result-id="${id}"]`).click();
   await page.locator(`[data-result-id="${id}"][aria-pressed="true"]`).waitFor();

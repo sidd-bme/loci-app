@@ -79,14 +79,20 @@ const electronApp = await electron.launch({
 });
 
 async function closeWithConfirmedQuit() {
-  await electronApp.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  });
-  const closed = electronApp.waitForEvent("close", { timeout: 30_000 });
-  await electronApp.evaluate(({ app }) => app.quit());
-  await closed;
+  try {
+    await electronApp.evaluate(({ dialog }) => {
+      dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
+    });
+    const closed = electronApp.waitForEvent("close", { timeout: 15_000 });
+    await electronApp.evaluate(({ app }) => app.quit());
+    await closed;
+  } catch (err) {
+    await electronApp.close().catch(() => {});
+    throw err;
+  }
 }
 
+let primaryFailure = null;
 try {
   const page = await electronApp.firstWindow();
   const errors = [];
@@ -106,12 +112,14 @@ try {
   }
   assert.equal(observedSourceCount, expectedCount,
     "The folder snapshot did not reach the authorized supported-image count within 120 seconds.");
+  const sourceSelector = ".research-sources button[data-source-id] .research-source-name";
   await page.waitForFunction(
-    (count) => document.querySelectorAll(".research-sources > button > .research-source-name").length === count,
+    (selector, count) => document.querySelectorAll(selector).length === count,
+    sourceSelector,
     expectedCount,
     { timeout: 120_000 },
   );
-  const renderedSourceCount = await page.locator(".research-sources > button > .research-source-name").count();
+  const renderedSourceCount = await page.locator(sourceSelector).count();
   assert.equal(renderedSourceCount, expectedCount);
   const snapshot = await page.evaluate(() => window.lociResearch.getSnapshot());
   assert.equal(new Set(snapshot.sources.map((source) => source.id)).size, expectedCount);
@@ -128,6 +136,28 @@ try {
     sourceFolder,
     status: "passed",
   }, null, 2)}\n`);
+} catch (err) {
+  primaryFailure = err;
+  try {
+    const page = await electronApp.firstWindow();
+    if (page && !page.isClosed()) {
+      await page.screenshot({ path: path.join(runRoot, "failure.png") }).catch(() => {});
+      const html = await page.content().catch(() => "");
+      if (html) await fs.writeFile(path.join(runRoot, "failure-page.html"), html, "utf8").catch(() => {});
+      const snapshot = await page.evaluate(() => window.lociResearch?.getSnapshot?.()).catch(() => null);
+      if (snapshot) {
+        await fs.writeFile(path.join(runRoot, "failure-snapshot.json"), JSON.stringify(snapshot, null, 2), "utf8").catch(() => {});
+      }
+    }
+  } catch (diagErr) {
+    console.error("Warning: failed to capture failure diagnostics:", diagErr.message);
+  }
+  throw err;
 } finally {
-  await closeWithConfirmedQuit();
+  try {
+    await closeWithConfirmedQuit();
+  } catch (quitErr) {
+    if (!primaryFailure) throw quitErr;
+    console.error("Warning: clean application shutdown failed:", quitErr.message);
+  }
 }
