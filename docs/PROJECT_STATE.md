@@ -1,5 +1,25 @@
 # Loci project and release state
 
+## Agent setup handoff — 2026-09-19
+
+- **Editor/status:** Codex/Astra; handoff-ready, documentation/configuration only.
+- **Task branch/base:** `codex/loci-agent-coordination` -> `main`; setup-only PR.
+  This dated entry records setup scope; later product tasks update the current
+  handoff using COLLABORATION.md and retain this as history.
+- **Outcome:** shared model roles, bounded Gemini tasks, ChatGPT review packets,
+  two-worker Codex routing and deliberate repository transfers. Start with
+  [COLLABORATION.md](COLLABORATION.md), [MODEL_ROLES.md](MODEL_ROLES.md) and
+  [NEW_AGENT_PROMPT.md](NEW_AGENT_PROMPT.md).
+- **Scope:** no runtime, data, app bundle, release, CI or scientific changes.
+  The existing public-beta-hardening PR remains separate and is not accepted or merged by this setup. Published beta artifacts and their qualification claims are unchanged.
+- **Checks:** Markdown references, TOML parsing, reviewed diff and scope checks;
+  no application suites or performance/quality benchmarks for this setup.
+- **Next owner/action:** Astra chooses the requested milestone after reconciling
+  the actual branch, open PRs and dirty files. Gemini takes an explicit work package.
+  Preserve the branch-specific runtime handoff and evidence below.
+
+## Runtime/release record (branch-specific)
+
 Current release: **v0.1.0-beta.1** (Public Beta)
 *Internal bundle version: `0.1.0` (as identified in `desktop/package.json` and build manifests, mapped to distribution tag `v0.1.0-beta.1`).*
 

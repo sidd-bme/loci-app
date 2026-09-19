@@ -1,7 +1,10 @@
 # Loci development entry point
 
-Read `AGENTS.md`, `docs/COLLABORATION.md`, and the current handoff at the top of
-`docs/PROJECT_STATE.md` before changing this repository. Read `docs/BUILDING.md`
-for builds. These shared files apply across tools and models; do not maintain a
-separate status or policy copy here. Verify current Git and working-tree state
-rather than relying on a previous chat.
+Read AGENTS.md and the Gemini role in docs/MODEL_ROLES.md. Before substantive
+work, read the current handoff in docs/PROJECT_STATE.md and the relevant parts
+of docs/COLLABORATION.md. Build from current files and Git, not a previous chat.
+
+Astra in Codex is integration lead. Gemini works within an explicit work package;
+without one, inspect read-only and propose a bounded task. Keep policy and status
+in the canonical files, not here. Antigravity's workspace rule points here;
+explicitly reading this file also works when rule auto-loading is unavailable.
