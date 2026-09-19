@@ -542,7 +542,9 @@ def test_cyclonedx_component_identity_rejects_contradictions_and_malformed() -> 
         )
 
     # Purl mismatch with name
-    with pytest.raises(release_supply_chain.SupplyChainError, match="does not match purl"):
+    with pytest.raises(
+        release_supply_chain.SupplyChainError, match="does not match purl"
+    ):
         release_supply_chain._cyclonedx_component_identity(
             {
                 "name": "pkg-a",
@@ -552,7 +554,9 @@ def test_cyclonedx_component_identity_rejects_contradictions_and_malformed() -> 
         )
 
     # Purl mismatch with version
-    with pytest.raises(release_supply_chain.SupplyChainError, match="does not match purl"):
+    with pytest.raises(
+        release_supply_chain.SupplyChainError, match="does not match purl"
+    ):
         release_supply_chain._cyclonedx_component_identity(
             {
                 "name": "pkg-a",
@@ -602,4 +606,3 @@ def test_npm_upstream_licence_pinned_hash_verification(tmp_path: Path) -> None:
     # Verify matching hash works
     assert licence_file.is_file()
     assert hashlib.sha256(licence_file.read_bytes()).hexdigest() == expected_hash
-

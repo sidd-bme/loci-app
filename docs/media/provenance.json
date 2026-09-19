@@ -206,5 +206,35 @@
       "used_duration_seconds": 10,
       "fixture_ref": "phase-ome-cc0"
     }
+  ],
+  "ui_gallery_screenshots": [
+    {
+      "file": "multichannel_2.png",
+      "sha256": "fc48de80fc7463674b510116ff26141b6717d73059196598fa465082ba6f4b9d",
+      "width": 3360,
+      "height": 2100,
+      "description": "Multichannel fluorescence acquisition session (KM_LNG_00PY_...) showing channel controls and tiled acquisition boundaries."
+    },
+    {
+      "file": "native-slide_2.png",
+      "sha256": "8dcb06a822c099f783864d630f452a741465f32b33fbbd0fa66cd255192b278a",
+      "width": 3360,
+      "height": 2100,
+      "description": "Multiscale hierarchical bioimage pyramid slide inspection in Bitplane Imaris (.ims) format (CSM_10_A2_6_Merged_ch00_SV.ims, 3 channels) at native resolution."
+    },
+    {
+      "file": "segmentation_2.png",
+      "sha256": "d433ee20d3802a74c7b46f6ce3d0283c2b2e618ef2d06b851926452565e2e7ea",
+      "width": 3360,
+      "height": 2100,
+      "description": "Cellpose-SAM deep learning segmentation on a user-selected sub-region of a cell culture image (FBS3.jpg), showing 200 detected object outlines and quantitative measurements table."
+    },
+    {
+      "file": "raw-volume_2.png",
+      "sha256": "3a5f76e67ec9aba4d12d201ec5520a129754d4809e04528b2324eb4c7496cbe7",
+      "width": 3360,
+      "height": 2100,
+      "description": "Medical volumetric MRI dataset (chris_t2.nii.gz, NIfTI format) in four-pane mode showing linked orthogonal multi-planar reslicing (MPR) and 3D GPU ray-cast volume."
+    }
   ]
 }

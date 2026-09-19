@@ -117,6 +117,8 @@ jobs:
     needs: [engine, desktop]
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      LOCI_PACKAGED_APP: ${{ github.workspace }}/.loci/builds/staging/Loci-darwin-arm64/Loci.app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
@@ -141,7 +143,7 @@ jobs:
       - name: Verify bundle, worker, and notices
         working-directory: desktop
         run: |
-          APP=out/local-adhoc/Loci-darwin-arm64/Loci.app
+          APP="$LOCI_PACKAGED_APP"
           codesign --verify --deep --strict "$APP"
           test -x "$APP/Contents/Resources/loci-engine/loci-engine"
           test -s "$APP/Contents/Resources/notices/THIRD_PARTY_NOTICES.md"
@@ -151,11 +153,11 @@ jobs:
         run: |
           SUPPLY_OUTPUT="$RUNNER_TEMP/loci-release-supply-chain"
           python3 scripts/release_supply_chain.py generate \
-            --app "$PWD/desktop/out/local-adhoc/Loci-darwin-arm64/Loci.app" \
+            --app "$LOCI_PACKAGED_APP" \
             --repository "$PWD" \
             --output-dir "$SUPPLY_OUTPUT"
           python3 scripts/release_supply_chain.py check \
-            --app "$PWD/desktop/out/local-adhoc/Loci-darwin-arm64/Loci.app" \
+            --app "$LOCI_PACKAGED_APP" \
             --repository "$PWD" \
             --output-dir "$SUPPLY_OUTPUT"
           test -s "$SUPPLY_OUTPUT/desktop.cdx.json"
@@ -178,15 +180,15 @@ jobs:
           Image.fromarray(image).save(target)
           PY
           cd desktop
-          LOCI_QA_FOLDER="$RUNNER_TEMP/loci-fixture" npm run qa:folder-import:mac
+          LOCI_QA_FOLDER="$RUNNER_TEMP/loci-fixture" LOCI_PACKAGED_APP="$LOCI_PACKAGED_APP" npm run qa:folder-import:mac
       - name: Exercise packaged segmentation, export, and recursive batch journey
         working-directory: desktop
-        run: LOCI_QA_IMAGE="$RUNNER_TEMP/loci-fixture/nested/cells.png" LOCI_QA_OUTPUT_ROOT="$RUNNER_TEMP/loci-core-qa" npm run qa:packaged:mac
+        run: LOCI_QA_IMAGE="$RUNNER_TEMP/loci-fixture/nested/cells.png" LOCI_QA_OUTPUT_ROOT="$RUNNER_TEMP/loci-core-qa" LOCI_PACKAGED_APP="$LOCI_PACKAGED_APP" npm run qa:packaged:mac
       - name: Exercise packaged quantitative, temporal, medical, and portable study journeys
         run: |
           engine/.venv/bin/python scripts/create_research_qa_fixtures.py --root "$RUNNER_TEMP/loci-research-fixtures"
           cd desktop
-          LOCI_QA_RESEARCH_FIXTURES="$RUNNER_TEMP/loci-research-fixtures" node tests/research-workbench.qa.mjs
+          LOCI_QA_RESEARCH_FIXTURES="$RUNNER_TEMP/loci-research-fixtures" LOCI_PACKAGED_APP="$LOCI_PACKAGED_APP" node tests/research-workbench.qa.mjs
       - name: Retain synthetic research journey diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

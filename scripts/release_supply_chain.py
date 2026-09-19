@@ -374,7 +374,9 @@ def _cyclonedx_component_identity(component: Mapping[str, Any]) -> tuple[str, st
     purl = component.get("purl")
     if purl is not None:
         if not isinstance(purl, str) or not purl:
-            raise SupplyChainError(f"CycloneDX component {full_name} has an invalid purl")
+            raise SupplyChainError(
+                f"CycloneDX component {full_name} has an invalid purl"
+            )
         unquoted = urllib.parse.unquote(purl).split("?")[0].split("#")[0]
         expected_purl = f"pkg:npm/{full_name}@{version}"
         if unquoted != expected_purl:
@@ -765,12 +767,16 @@ def _build_licence_payloads(
                 f"installed npm package does not match lock: {raw['package_path']}"
             )
         sources = _node_licence_files(package_root)
-        upstream_info = NPM_UPSTREAM_LICENCES.get((str(raw["name"]), str(raw["version"])))
+        upstream_info = NPM_UPSTREAM_LICENCES.get(
+            (str(raw["name"]), str(raw["version"]))
+        )
         upstream_source: Path | None = None
         if not sources:
             if upstream_info is not None:
                 relative_path, expected_hash = upstream_info
-                upstream_source = repository / "scripts" / "upstream_licences" / relative_path
+                upstream_source = (
+                    repository / "scripts" / "upstream_licences" / relative_path
+                )
                 if not upstream_source.is_file():
                     raise SupplyChainError(
                         f"pinned upstream licence file is missing: {upstream_source}"

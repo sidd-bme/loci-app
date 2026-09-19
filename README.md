@@ -27,7 +27,7 @@
 > **Public Beta · Research Use Only (RUO)**
 > Loci is research software intended exclusively for laboratory and scientific research. It is **not** a certified medical device and is **not** cleared for clinical diagnosis, patient management, or clinical decision-making.
 >
-> **Beta Installation Notice:** This initial release is signed with an ad-hoc local signature and is **not notarized** by Apple. On first launch, macOS Gatekeeper blocks direct opening. On macOS 15 (Sequoia) and modern macOS releases, approve the application via **System Settings → Privacy & Security → Open Anyway** (or right-click → Open on supported configurations). First launch on Apple Silicon Macs may observe an initial startup delay (~75–85 seconds observed on Apple Silicon M1 with 8 GB RAM) while macOS verifies application components. See [Installation](#installation-macos-public-beta) below.
+> **Beta Installation Notice:** This initial release uses an ad-hoc local signature and is not notarized by Apple. First launch requires a one-time Gatekeeper approval in macOS System Settings and an initial startup delay (~75–85 s) while macOS verifies components. See [Installation & Gatekeeper instructions](#installation-macos-public-beta) below.
 
 ---
 
@@ -42,22 +42,22 @@ Viewing and core analysis require **no account, no subscription, and no network 
 ## Product tour
 
 <!-- HERO_MEDIA_START: Media assets can be replaced here for launch -->
-![Loci product walkthrough preview](docs/media/multichannel_2.png)
+![Loci product walkthrough preview](docs/media/multichannel.png)
 
 
 <!-- HERO_MEDIA_END -->
 
-| Multichannel fluorescence | Native whole-slide detail |
+| Multichannel fluorescence | Native multiscale slide detail |
 | :---: | :---: |
-| ![Multichannel fluorescence viewing](docs/media/multichannel.png) | ![Aperio SVS whole slide inspection](docs/media/native-slide_2.png) |
-| *C/Z/T navigation with explicit cyan, magenta, and yellow false-coloring.* | *Navigate gigapixel slides at native resolution without flattening.* |
+| ![Multichannel fluorescence viewing](docs/media/multichannel.png) | ![Multiscale hierarchical slide inspection](docs/media/native-slide_2.png) |
+| *C/Z/T navigation with explicit cyan, magenta, and yellow false-coloring.* | *Navigate gigapixel slides and hierarchical pyramids at native resolution without flattening.* |
 
-| Classical segmentation & review | 3D ray-cast volume & MPR |
+| Cell segmentation & measurements | 3D volumes and linked slices |
 | :---: | :---: |
-| ![Illustrative adaptive watershed result](docs/media/segmentation_2.png) | ![Raw volume rendering and orthogonal reslicing](docs/media/raw-volume_2.png) |
-| *Discrete object selection, quantitative review tables, and recipe presets.* | *Direct GPU ray-casting and linked orthogonal multi-planar reslicing.* |
+| ![Cellpose-SAM segmentation with selected region and measurements](docs/media/segmentation_2.png) | ![3D volume rendering and orthogonal reslicing](docs/media/raw-volume_2.png) |
+| *Discrete object selection, quantitative review tables, and region-scoped segmentation.* | *Direct GPU ray-casting and linked orthogonal multi-planar reslicing.* |
 
-*All screenshots and video recordings use rights-cleared public scientific fixtures.*
+*All screenshots and video recordings use rights-cleared public scientific fixtures. See [media credits and provenance](docs/media/README.md).*
 
 ---
 
@@ -122,12 +122,13 @@ Biomedical images are large, sensitive, and scientifically irreplaceable. Loci i
 
 ### Installation (macOS Public Beta)
 
-1. Download **`Loci-0.1.0-beta.1-darwin-arm64.zip`** from the [GitHub Releases](https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1) page.
+1. Download **`Loci-0.1.0-beta.1-darwin-arm64-repack1.zip`** (recommended) from the [GitHub Releases](https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1) page.
 2. *(Recommended)* Verify the SHA-256 checksum in Terminal:
    ```bash
-   shasum -a 256 Loci-0.1.0-beta.1-darwin-arm64.zip
-   # Expected: 5d1943627605ce40dfba27694a22f03b33884bd42d703a1d49ca054d2f926ece
+   shasum -a 256 Loci-0.1.0-beta.1-darwin-arm64-repack1.zip
+   # Expected: cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0
    ```
+   *(Note: The original archive `Loci-0.1.0-beta.1-darwin-arm64.zip` with SHA-256 `5d1943627605ce40dfba27694a22f03b33884bd42d703a1d49ca054d2f926ece` is retained on the release for provenance and historical continuity. The binary contents, code signature, and analysis behavior of the application are identical between both archives; `repack1` cleans archive-level AppleDouble metadata without modifying the application bundle).*
 3. Unzip the archive and move `Loci.app` to your `/Applications` folder.
 4. **First-launch Gatekeeper approval:** Because this initial beta release uses an ad-hoc local integrity signature and is **not notarized** by Apple, macOS Gatekeeper blocks direct double-click launching on downloaded files. Follow the standard Apple-documented approval procedure:
    - **On macOS 15 (Sequoia) and modern macOS versions:**

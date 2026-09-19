@@ -7,6 +7,23 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 
 ---
 
+## Current handoff & release status
+
+- **Public distribution:**
+  - Recommended download: **`Loci-0.1.0-beta.1-darwin-arm64-repack1.zip`** (SHA-256: `cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0`).
+  - Historical provenance archive: **`Loci-0.1.0-beta.1-darwin-arm64.zip`** (SHA-256: `5d1943627605ce40dfba27694a22f03b33884bd42d703a1d49ca054d2f926ece`) retained on the GitHub release for continuity.
+  - Both archives contain identical `Loci.app` application binaries, identical code signatures, and identical analysis behavior. The `repack1` package eliminates archive-level AppleDouble metadata to achieve exact correspondence with the inspected application bundle.
+  - Release evidence report (`macos-release-evidence-repack1.json`), SBOMs (`desktop.cdx.json`, `engine.cdx.json`), and dependency license archive (`dependency-licences.zip`) are published on the release.
+- **CI & automation diagnostics:**
+  - *Run 35055420283:* Refused at schedule time due to account billing and spending limits.
+  - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Resolved by running the repository's `ruff format` and aligning the `package-macos` job's `LOCI_PACKAGED_APP` staging path.
+- **Verification boundaries:**
+  - *Software & supply-chain qualification:* Automated desktop test suite (825 tests), engine test suite (916 tests), script tests (68 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
+  - *Disclosed operational limitations:* Ad-hoc local code signature (no Apple Developer ID), unnotarized status (requires macOS Gatekeeper approval via System Settings), first-launch startup delay (~75–85 s), and absence of independent clean-Mac attestation.
+  - *Scientific integrity:* Automated test passes verify software build integrity, API contracts, and deterministic algorithm execution on specific test fixtures; they do **not** constitute biological or clinical validation.
+
+---
+
 ## 1. Release status & supported scope
 
 ### Implemented & verified capabilities
@@ -41,15 +58,17 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - **Desktop test suite:** TypeScript typecheck and Vitest suite (**825 tests / 92 files passed**).
   - **Packaging unit tests:** Node packaging safety and bundle integrity (**10 tests passed**).
   - **Python engine suite:** Ruff linting clean; Pytest suite (**916 passed, 12 skipped** for optional GPU/external dependencies).
+  - **Harness & supply-chain script tests:** Pytest suite for release supply chain and packaging tools (**68 passed**).
   - **Regression runner suite:** Runner unit tests (**10 passed**).
   - **Packaged UI regression journeys:** Verified against staged macOS application bundle (`Loci.app`):
     - *Journey 1 (research-workbench):* 2D/3D object picking, multichannel puncta, review table, project persistence, and reopen (**passed, 17 checkpoints**).
     - *Journey 2 (workbench-refresh):* Pointer drag reordering, worker refresh, batch palette recoloring, undo restoration, and A/B comparison (**passed, 11 assertions**).
     - *Journey 3 (field-assay-workflow):* Fluorescence field assay quantification, background subtraction, manual override counts, and review gates (**passed**).
 
-### Hosted CI status:
-- Hosted GitHub Actions CI jobs for run `35055420283` were refused at schedule time due to account billing and spending limits (`The job was not started because recent account payments have failed or your spending limit needs to be increased`). Because the jobs never executed, workflow syntax validity and remote test outcomes cannot be inferred from this run.
-- Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) remain the active qualification authority.
+### Hosted CI status & history:
+- **Run 35055420283:** Jobs were refused at schedule time due to account billing and spending limits (`The job was not started because recent account payments have failed or your spending limit needs to be increased`). Retained as historical record.
+- **Run 35170082289:** Engine and script unit tests executed and passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Packaging workflow staging path (`LOCI_PACKAGED_APP`) was also identified as misaligned with packager output. Both issues resolved in the current tree.
+- **Qualification authority:** Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) serve as the local qualification authority. Remote CI verifies repository workflow syntax, automated linting, and continuous regression suites.
 
 ### Platform boundaries:
 - **macOS:** Tested on Apple Silicon (macOS 14+). Intel x86_64 builds require manual compilation from source.
