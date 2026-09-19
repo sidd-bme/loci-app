@@ -112,6 +112,32 @@ describe("sanitizeRendererError and ResearchError", () => {
 
     const tmpError = "Failed to read /tmp/scratch/buffer.raw: unexpected EOF";
     expect(sanitizeRendererError(tmpError)).toBe("Failed to read [local path redacted]: unexpected EOF");
+
+    const dataError = "Error: /data/research/image.tif: failed";
+    expect(sanitizeRendererError(dataError)).toBe("Error: [local path redacted]: failed");
+
+    const srvError = "Cannot read /srv/images/slice.svs: io error";
+    expect(sanitizeRendererError(srvError)).toBe("Cannot read [local path redacted]: io error");
+
+    const procError = "Kernel info /proc/sys/kernel: error";
+    expect(sanitizeRendererError(procError)).toBe("Kernel info [local path redacted]: error");
+  });
+
+  it("redacts paths with commas in directory or file names", () => {
+    const commaDir = "Failed to open /home/alice/my, data/file.tif: unsupported tile format";
+    expect(sanitizeRendererError(commaDir)).toBe("Failed to open [local path redacted]: unsupported tile format");
+
+    const commaQuoted = "Failed to load '/home/alice/my, data/file.tif': corrupt";
+    expect(sanitizeRendererError(commaQuoted)).toBe("Failed to load '[local path redacted]': corrupt");
+
+    const commaFile = "Failed to open /data/project/sample, 1.tif: corrupt";
+    expect(sanitizeRendererError(commaFile)).toBe("Failed to open [local path redacted]: corrupt");
+
+    const sentenceWithComma = "Error at /home/alice/a.tif, please check permissions";
+    expect(sanitizeRendererError(sentenceWithComma)).toBe("Error at [local path redacted], please check permissions");
+
+    const multiPaths = "Files: /home/alice/a.tif, /home/bob/b.tif";
+    expect(sanitizeRendererError(multiPaths)).toBe("Files: [local path redacted], [local path redacted]");
   });
 
   it("redacts Windows drive letters and UNC network paths", () => {

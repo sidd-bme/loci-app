@@ -107,11 +107,11 @@ export function sanitizeRendererError(error: string): string {
   return error
     .replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
     .replace(
-      /(["'`])(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|etc|usr|[^\s"'`\r\n]+\/)\/)[^\r\n"'`]*\1/g,
+      /(["'`])(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|srv|data|proc|sys|etc|usr|[^\s"'`\r\n]+\/)\/)[^\r\n"'`]*\1/g,
       "$1[local path redacted]$1",
     )
     .replace(
-      /(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|etc|usr)\/)(?:[^:\r\n,"'`)]|:(?!\s))+/g,
+      /(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|srv|data|proc|sys|etc|usr)\/)(?:(?:[^:\r\n"'`)\\/,]|,(?!\s*\/))+[\\/])*(?:[^:\r\n,"'`)\\/]|:(?!\s)|,(?!\s)|,(?=\s*[^:\r\n,"'`)\\/]+\.[A-Za-z0-9]{1,8}(?::|\s|$)))+/g,
       "[local path redacted]",
     )
     .slice(0, 4000);
