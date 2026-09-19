@@ -23,9 +23,14 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - *Run 35055420283:* Refused at schedule time due to account billing and spending limits.
   - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`.
   - *Run 35418184299:* Executed on GitHub Actions for commit `02c9eeb`. `desktop` (passed, 1m38s), `modeling` (passed, 25s), `engine` (passed, 1m49s, with Ruff formatting and developer harness clean), and `package-windows` (passed, 10m29s) all succeeded. In `package-macos`, frozen engine build, signed app packaging, codesign verification, worker health, and supply-chain SBOM checks against `LOCI_PACKAGED_APP` all passed; `Exercise packaged folder import` failed on a direct-child DOM selector mismatch (`.research-sources > button > .research-source-name`) in `desktop/tests/folder-import.smoke.mjs`.
-  - *Hardening pass:* Repaired brittle direct-child selectors across `folder-import.smoke.mjs`, `packaged-app.qa.mjs`, and `image-first-figure.qa.mjs` using robust `button[data-source-id]` locators; added diagnostic screenshot/HTML capture and graceful process cleanup; added release asset verification tooling in `scripts/release_evidence.py` with offline pytest coverage.
+  - *Hardening pass:*
+    - Fixed Playwright `page.waitForFunction` argument structure in `folder-import.smoke.mjs` (passing `{ selector, count }` as single parameter) and supported configurable `LOCI_QA_TIMEOUT_MS`.
+    - Executed packaged folder import against synthetic multi-image fixture (passed: 2/2 sources imported and rendered in 20.7s) and deliberate failure diagnostic test with corrupt fixture (verified safe capture and retention of `failure.png` and `failure-page.html`).
+    - Fixed path traversal vulnerabilities in `scripts/release_evidence.py` `verify_release_assets` and added conflict detection for `--report` and `--checksums` digests.
+    - Sanitized renderer error paths in `ContextHelp.tsx` covering paths with commas in directory names and additional Unix roots (`/data/`, `/srv/`, `/proc/`, `/sys/`).
+    - Executed downstream packaged core regression journeys 1, 2, and 3 via `scripts/run-core-regressions.mjs --mode=packaged` (all 3 passed, bound to inspected `Loci.app` bundle identities).
 - **Verification boundaries:**
-  - *Software & supply-chain qualification:* Automated desktop test suite (828 tests across 93 files), engine test suite (916 tests), script tests (72 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
+  - *Software & supply-chain qualification:* Automated desktop test suite (837 tests across 93 files passed), engine test suite (916 tests passed, 12 skipped), harness & supply-chain script tests (73 tests passed), local packaged UI regression journeys (Journeys 1, 2, 3 passed), and folder import smoke test passed.
   - *Disclosed operational limitations:* Ad-hoc local code signature (no Apple Developer ID), unnotarized status (requires macOS Gatekeeper approval via System Settings), first-launch startup delay (~75–85 s), and absence of independent clean-Mac attestation.
   - *Scientific integrity:* Automated test passes verify software build integrity, API contracts, and deterministic algorithm execution on specific test fixtures; they do **not** constitute biological or clinical validation.
 
@@ -62,12 +67,13 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 ### Verified in this release:
 
 - **macOS (Apple Silicon arm64):**
-  - **Desktop test suite:** TypeScript typecheck and Vitest suite (**825 tests / 92 files passed**).
+  - **Desktop test suite:** TypeScript typecheck and Vitest suite (**837 tests / 93 files passed**).
   - **Packaging unit tests:** Node packaging safety and bundle integrity (**10 tests passed**).
   - **Python engine suite:** Ruff linting clean; Pytest suite (**916 passed, 12 skipped** for optional GPU/external dependencies).
-  - **Harness & supply-chain script tests:** Pytest suite for release supply chain and packaging tools (**68 passed**).
+  - **Harness & supply-chain script tests:** Pytest suite for release supply chain and packaging tools (**73 passed**).
   - **Regression runner suite:** Runner unit tests (**10 passed**).
-  - **Packaged UI regression journeys:** Verified against staged macOS application bundle (`Loci.app`):
+  - **Packaged UI regression journeys:** Verified against verified release bundle (`Loci.app`, repack1 SHA-256: `cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0`):
+    - *Folder import smoke test:* Staged macOS application bundle imports and renders supported folder images without analysis execution (**passed, 2 sources**); failure diagnostics verified via synthetic corrupt fixture.
     - *Journey 1 (research-workbench):* 2D/3D object picking, multichannel puncta, review table, project persistence, and reopen (**passed, 17 checkpoints**).
     - *Journey 2 (workbench-refresh):* Pointer drag reordering, worker refresh, batch palette recoloring, undo restoration, and A/B comparison (**passed, 11 assertions**).
     - *Journey 3 (field-assay-workflow):* Fluorescence field assay quantification, background subtraction, manual override counts, and review gates (**passed**).
