@@ -1546,14 +1546,39 @@ def verify_release_assets(
     failures: list[str] = []
 
     for name, expected_sha256 in sorted(expected_checksums.items()):
+        if (
+            not name
+            or Path(name).name != name
+            or ".." in Path(name).parts
+            or Path(name).is_absolute()
+        ):
+            failures.append(
+                f"Release asset name '{name}' must be a simple filename without path traversal"
+            )
+            continue
+
+        try:
+            asset_path = (assets_directory / name).resolve()
+            asset_path.relative_to(assets_directory.resolve())
+        except (ValueError, RuntimeError):
+            failures.append(
+                f"Release asset name '{name}' escapes assets directory: {assets_directory}"
+            )
+            continue
+
         if not _is_sha256(expected_sha256):
             failures.append(f"Invalid expected SHA-256 for '{name}': {expected_sha256}")
             continue
 
-        asset_path = assets_directory / name
         if not asset_path.exists():
             failures.append(
                 f"Missing required release asset: '{name}' in {assets_directory}"
+            )
+            continue
+
+        if asset_path.is_symlink() or not asset_path.is_file():
+            failures.append(
+                f"Release asset '{name}' must be a regular file, not a symlink or directory: {asset_path}"
             )
             continue
 
@@ -1661,7 +1686,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                         raise EvidenceError(
                             "Checksums file must contain a JSON object mapping filename to SHA-256."
                         )
-                    expected.update({str(k): str(v) for k, v in loaded.items()})
+                    for k, v in loaded.items():
+                        str_k, str_v = str(k), str(v).lower()
+                        if str_k in expected and expected[str_k].lower() != str_v:
+                            raise EvidenceError(
+                                f"Conflicting expected SHA-256 for '{str_k}': report specifies "
+                                f"{expected[str_k]}, checksums file specifies {str_v}"
+                            )
+                        expected[str_k] = str_v
                 except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                     raise EvidenceError(
                         f"Checksums file is not valid UTF-8 JSON: {checksums_path}"

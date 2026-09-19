@@ -854,6 +854,33 @@ def test_verify_release_assets_missing_and_invalid(tmp_path: Path) -> None:
     assert result_invalid["valid"] is False
     assert any("Invalid expected SHA-256" in msg for msg in result_invalid["failures"])
 
+    # Path traversal rejection
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_bytes(b"outside")
+    outside_hash = release_evidence.fingerprint_file(outside_file, label="outside")[
+        "sha256"
+    ]
+    result_traversal = release_evidence.verify_release_assets(
+        assets_dir,
+        {"../secret.txt": str(outside_hash)},
+    )
+    assert result_traversal["valid"] is False
+    assert any(
+        "path traversal" in msg or "escapes" in msg
+        for msg in result_traversal["failures"]
+    )
+
+    # Absolute path rejection
+    result_absolute = release_evidence.verify_release_assets(
+        assets_dir,
+        {"/etc/passwd": "a" * 64},
+    )
+    assert result_absolute["valid"] is False
+    assert any(
+        "path traversal" in msg or "escapes" in msg
+        for msg in result_absolute["failures"]
+    )
+
     # Non-existent assets directory
     with pytest.raises(release_evidence.EvidenceError, match="not a directory"):
         release_evidence.verify_release_assets(
@@ -918,3 +945,44 @@ def test_verify_assets_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     captured_err = capsys.readouterr()
     assert code_no_manifest == 2
     assert "Specify either --checksums or --report" in captured_err.err
+
+
+def test_verify_assets_cli_conflicting_checksums(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+
+    # Create dummy report with consistent public_readiness
+    report_file = tmp_path / "report.json"
+    dummy_report = {
+        "schema": release_evidence.REPORT_SCHEMA,
+        "repository": {},
+        "application": {},
+        "sboms": {"desktop": {"sha256": "1" * 64}},
+    }
+    failures = release_evidence.public_readiness_failures(dummy_report)
+    dummy_report["public_readiness"] = {"ready": not failures, "failures": failures}
+    release_evidence.atomic_write_json(report_file, dummy_report, overwrite=False)
+
+    # Checksums file has conflicting hash for desktop.cdx.json
+    checksums_file = tmp_path / "conflicting.json"
+    checksums_file.write_text(
+        json.dumps({"desktop.cdx.json": "2" * 64}),
+        encoding="utf-8",
+    )
+
+    code = release_evidence.main(
+        [
+            "verify-assets",
+            "--directory",
+            os.fspath(assets_dir),
+            "--report",
+            os.fspath(report_file),
+            "--checksums",
+            os.fspath(checksums_file),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Conflicting expected SHA-256 for 'desktop.cdx.json'" in captured.err
