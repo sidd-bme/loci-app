@@ -19,7 +19,9 @@ without pretending it has identical capability or authority.
 | Antigravity implementer | Gemini 3.8 Flash High | One assigned work package with explicit paths, base and acceptance checks |
 | ChatGPT adviser | GPT-6 Pro / Astra Pro as available | Read-only architecture alternatives, plan critique or high-value review of a pinned evidence packet |
 
-Astra Medium is the usage-conscious project default. Low can suit straightforward
+Astra Medium is the recommended starting effort, selected in the Codex picker.
+The project config deliberately does not pin lead reasoning effort, because a
+project value overrides the picker's saved user setting. Low can suit straightforward
 coordination or follow-ups. Select High for difficult sustained implementation and
 cross-system reasoning; Extra High for ambiguous architecture, scientific meaning
 or consequential final review. Max/Ultra are deliberate, not everyday settings.

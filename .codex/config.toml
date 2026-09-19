@@ -1,6 +1,6 @@
-# Loci lead: normal coordination and development; raise effort for hard decisions. Explicit session choices may override.
+# Loci lead model and speed. Choose reasoning effort in the Codex picker.
+# Do not pin lead effort here: project config overrides the picker's saved user setting.
 model = "gpt-6-astra"
-model_reasoning_effort = "medium"
 service_tier = "default"
 
 [agents]
