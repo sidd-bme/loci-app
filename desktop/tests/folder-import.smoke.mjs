@@ -102,7 +102,8 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, sourceFolder);
   await page.getByRole("button", { name: "Open folder", exact: true }).click();
-  const snapshotDeadline = performance.now() + 120_000;
+  const snapshotTimeoutMs = Number(process.env.LOCI_QA_TIMEOUT_MS ?? "120000");
+  const snapshotDeadline = performance.now() + snapshotTimeoutMs;
   let observedSourceCount = null;
   while (performance.now() < snapshotDeadline) {
     observedSourceCount = await page.evaluate(async () =>
@@ -111,13 +112,12 @@ try {
     await page.waitForTimeout(100);
   }
   assert.equal(observedSourceCount, expectedCount,
-    "The folder snapshot did not reach the authorized supported-image count within 120 seconds.");
+    `The folder snapshot did not reach the authorized supported-image count within ${snapshotTimeoutMs / 1000} seconds.`);
   const sourceSelector = ".research-sources button[data-source-id] .research-source-name";
   await page.waitForFunction(
-    (selector, count) => document.querySelectorAll(selector).length === count,
-    sourceSelector,
-    expectedCount,
-    { timeout: 120_000 },
+    ({ selector, count }) => document.querySelectorAll(selector).length === count,
+    { selector: sourceSelector, count: expectedCount },
+    { timeout: snapshotTimeoutMs },
   );
   const renderedSourceCount = await page.locator(sourceSelector).count();
   assert.equal(renderedSourceCount, expectedCount);
