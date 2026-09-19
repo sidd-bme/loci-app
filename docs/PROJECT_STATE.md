@@ -16,7 +16,8 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - Release evidence report (`macos-release-evidence-repack1.json`), SBOMs (`desktop.cdx.json`, `engine.cdx.json`), and dependency license archive (`dependency-licences.zip`) are published on the release.
 - **CI & automation diagnostics:**
   - *Run 35055420283:* Refused at schedule time due to account billing and spending limits.
-  - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Resolved by running the repository's `ruff format` and aligning the `package-macos` job's `LOCI_PACKAGED_APP` staging path.
+  - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`.
+  - *Run 35418184299:* Executed on GitHub Actions for commit `02c9eeb`. `desktop` (passed, 1m38s), `modeling` (passed, 25s), `engine` (passed, 1m49s, with Ruff formatting and developer harness clean), and `package-windows` (passed, 10m29s) all succeeded. In `package-macos`, frozen engine build, signed app packaging, codesign verification, worker health, and supply-chain SBOM checks against `LOCI_PACKAGED_APP` all passed; `Exercise packaged folder import` failed on a direct-child DOM selector mismatch (`.research-sources > button > .research-source-name`) in `desktop/tests/folder-import.smoke.mjs`.
 - **Verification boundaries:**
   - *Software & supply-chain qualification:* Automated desktop test suite (825 tests), engine test suite (916 tests), script tests (68 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
   - *Disclosed operational limitations:* Ad-hoc local code signature (no Apple Developer ID), unnotarized status (requires macOS Gatekeeper approval via System Settings), first-launch startup delay (~75–85 s), and absence of independent clean-Mac attestation.
@@ -67,7 +68,8 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 
 ### Hosted CI status & history:
 - **Run 35055420283:** Jobs were refused at schedule time due to account billing and spending limits (`The job was not started because recent account payments have failed or your spending limit needs to be increased`). Retained as historical record.
-- **Run 35170082289:** Engine and script unit tests executed and passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Packaging workflow staging path (`LOCI_PACKAGED_APP`) was also identified as misaligned with packager output. Both issues resolved in the current tree.
+- **Run 35170082289:** Engine and script unit tests executed and passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Packaging workflow staging path (`LOCI_PACKAGED_APP`) was also identified as misaligned with packager output. Both issues resolved in commit `02c9eeb`.
+- **Run 35418184299:** Confirmed resolution of Ruff formatting failures in remote CI: `desktop`, `modeling`, `engine`, and `package-windows` all succeeded. In `package-macos`, staging and supply chain verification passed cleanly against `LOCI_PACKAGED_APP`; smoke test failure in `Exercise packaged folder import` isolated to direct-child selector assumption in `desktop/tests/folder-import.smoke.mjs`.
 - **Qualification authority:** Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) serve as the local qualification authority. Remote CI verifies repository workflow syntax, automated linting, and continuous regression suites.
 
 ### Platform boundaries:
