@@ -34,7 +34,8 @@ handoff. Work only on the filled-in Loci work package below:
 [paste the exact contract prepared by Astra, including repo/base/allowed files]
 First verify origin, HEAD, branch, worktree and dirty files against the assignment.
 Implement and repair within that scope, preserving all scientific/trust invariants.
-Do not expand scope, change policy/acceptance, add silent fallbacks, push or merge.
+Do not add silent fallbacks. Do not expand scope, change policy/acceptance, push
+or merge unless the owner explicitly reassigns that authority.
 Run the assigned checks and return the actual patch/commits, tested identity,
 commands/results, real UI evidence when required, failures and remaining work.
 If a boundary must change, describe the smallest needed extension to Astra.
