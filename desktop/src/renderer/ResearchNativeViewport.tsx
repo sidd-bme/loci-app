@@ -1,5 +1,6 @@
 import { Minus, Plus } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
   ResearchDimensions,
@@ -216,7 +217,7 @@ function exactSelectionMatches(
 
 function safeMessage(error: unknown): string {
   return error instanceof Error && error.message
-    ? error.message.replace(/\/?(?:Users|Volumes)\/[^\s]+/gu, "selected source")
+    ? sanitizeRendererError(error.message)
     : "Could not render this native region.";
 }
 

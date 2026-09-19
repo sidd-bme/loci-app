@@ -894,6 +894,60 @@ def test_verify_release_assets_missing_and_invalid(tmp_path: Path) -> None:
         release_evidence.verify_release_assets(assets_dir, {})
 
 
+def test_verify_release_assets_rejects_symlinks_and_directories(tmp_path: Path) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    target_file = assets_dir / "actual.txt"
+    target_file.write_text("actual content", encoding="utf-8")
+    actual_hash = release_evidence.fingerprint_file(target_file, label="target")[
+        "sha256"
+    ]
+
+    # Symlink pointing to a file within the same assets directory
+    internal_symlink = assets_dir / "internal_link.txt"
+    internal_symlink.symlink_to("actual.txt")
+    result_internal = release_evidence.verify_release_assets(
+        assets_dir,
+        {"internal_link.txt": str(actual_hash)},
+    )
+    assert result_internal["valid"] is False
+    assert any(
+        "must be a regular file, not a symlink or directory" in msg
+        for msg in result_internal["failures"]
+    )
+
+    # Symlink pointing to a file outside the assets directory
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("outside content", encoding="utf-8")
+    outside_hash = release_evidence.fingerprint_file(outside_file, label="outside")[
+        "sha256"
+    ]
+    external_symlink = assets_dir / "external_link.txt"
+    external_symlink.symlink_to(outside_file)
+    result_external = release_evidence.verify_release_assets(
+        assets_dir,
+        {"external_link.txt": str(outside_hash)},
+    )
+    assert result_external["valid"] is False
+    assert any(
+        "must be a regular file, not a symlink or directory" in msg or "escapes" in msg
+        for msg in result_external["failures"]
+    )
+
+    # Directory instead of file
+    sub_dir = assets_dir / "sub_directory"
+    sub_dir.mkdir()
+    result_dir = release_evidence.verify_release_assets(
+        assets_dir,
+        {"sub_directory": "a" * 64},
+    )
+    assert result_dir["valid"] is False
+    assert any(
+        "must be a regular file, not a symlink or directory" in msg
+        for msg in result_dir["failures"]
+    )
+
+
 def test_extract_expected_checksums_from_report() -> None:
     report = {
         "sboms": {

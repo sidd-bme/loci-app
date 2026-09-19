@@ -1557,8 +1557,16 @@ def verify_release_assets(
             )
             continue
 
+        raw_path = assets_directory / name
+        if raw_path.is_symlink():
+            failures.append(
+                f"Release asset '{name}' must be a regular file, not a symlink or directory: "
+                f"{raw_path}"
+            )
+            continue
+
         try:
-            asset_path = (assets_directory / name).resolve()
+            asset_path = raw_path.resolve()
             asset_path.relative_to(assets_directory.resolve())
         except (ValueError, RuntimeError):
             failures.append(
@@ -1570,15 +1578,16 @@ def verify_release_assets(
             failures.append(f"Invalid expected SHA-256 for '{name}': {expected_sha256}")
             continue
 
-        if not asset_path.exists():
+        if not raw_path.exists():
             failures.append(
                 f"Missing required release asset: '{name}' in {assets_directory}"
             )
             continue
 
-        if asset_path.is_symlink() or not asset_path.is_file():
+        if not raw_path.is_file() or not asset_path.is_file():
             failures.append(
-                f"Release asset '{name}' must be a regular file, not a symlink or directory: {asset_path}"
+                f"Release asset '{name}' must be a regular file, not a symlink or directory: "
+                f"{raw_path}"
             )
             continue
 

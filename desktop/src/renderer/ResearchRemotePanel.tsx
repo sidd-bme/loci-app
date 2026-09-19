@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
   ResearchRecipe,
@@ -72,7 +73,7 @@ function nullable(value: string): string | null {
 
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : "The remote operation failed.";
-  return message.replace(/\/(?:Users|Volumes|home|scratch|opt)\/[^\s]+/g, "[private path]");
+  return sanitizeRendererError(message);
 }
 
 function readProfiles(value: unknown): RemoteProfile[] {

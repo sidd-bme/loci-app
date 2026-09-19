@@ -62,10 +62,11 @@ async function countSupportedImages(directory) {
 
 const expectedCount = await countSupportedImages(sourceFolder);
 assert.ok(expectedCount > 0, "The authorized folder contains no supported images.");
+const outputRoot = process.env.LOCI_QA_OUTPUT_ROOT
+  ? path.resolve(process.env.LOCI_QA_OUTPUT_ROOT)
+  : path.join(projectRoot, ".loci", "qa");
 const runRoot = path.join(
-  projectRoot,
-  ".loci",
-  "qa",
+  outputRoot,
   `folder-import-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`,
 );
 await fs.mkdir(runRoot, { recursive: true });

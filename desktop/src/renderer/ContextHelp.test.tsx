@@ -103,6 +103,14 @@ describe("sanitizeRendererError and ResearchError", () => {
     const raw = "Failed to open /Users/alice/my experiment/specimen.tif: unsupported tile format";
     const sanitized = sanitizeRendererError(raw);
     expect(sanitized).toBe("Failed to open [local path redacted]: unsupported tile format");
+    expect(sanitized).not.toContain("selected source");
+    expect(sanitized).not.toContain("experiment/specimen.tif");
+
+    const volumesRaw = "Could not load /Volumes/sid/Laboratory Data/specimen_01.ome.tiff: file corrupted";
+    const sanitizedVolumes = sanitizeRendererError(volumesRaw);
+    expect(sanitizedVolumes).toBe("Could not load [local path redacted]: file corrupted");
+    expect(sanitizedVolumes).not.toContain("selected source");
+    expect(sanitizedVolumes).not.toContain("Laboratory Data");
   });
 
   it("redacts Linux paths including /home/ and system roots", () => {
