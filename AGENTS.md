@@ -12,6 +12,8 @@ map or documentation stack.
 
 ## Cross-tool continuity
 
+Use `docs/MODEL_ROLES.md` for role-specific authority and task-fit effort.
+
 Follow `docs/COLLABORATION.md` for shared-checkout ownership, startup, validation
 and handoff. Maintain the current handoff at the top of `docs/PROJECT_STATE.md`;
 do not create model-specific status logs. Shared development skills are cataloged
@@ -91,19 +93,19 @@ without a supported control.
   before being labelled qualified. Historical evidence cannot qualify changed
   runtime behaviour.
 
-## Delegation
+## Delegation and completion
 
-Delegate bounded independent work when it improves speed or quality. Choose an
-available model and effort explicitly; do not inherit Astra or maximum effort
-by default. Starting points: `gpt-5.3-codex-spark` low/medium for narrow lookup;
-`gpt-5.6-luna` low/medium for simple isolated changes; `gpt-5.6-terra` medium for
-ordinary engineering; `gpt-5.6-sol` medium/high for difficult cross-file or
-invariant-sensitive work. Use `gpt-6-astra` for subtasks whose ambiguity or risk
-justifies it, increasing effort only when needed. These are routing heuristics,
-not guarantees; escalate on evidence. Use bounded context when the host requires
-it for model overrides.
+Astra is the integration lead for authorized Loci milestones: it owns planning,
+UI/UX/DX, scientific/architectural decisions, accepted changes and final evidence.
+Use `docs/MODEL_ROLES.md` for Codex worker routing, Gemini's bounded role and
+ChatGPT Pro advisory review. These role limits do not weaken common safeguards.
 
-Give each worker a clear scope, acceptance criteria, and file ownership. Require
-evidence, commands/results, and unresolved risks. The lead agent reviews the
-actual diff or source evidence, resolves disagreements, and verifies integration
-before accepting work; a worker's completion claim alone is insufficient.
+Delegate bounded independent tasks when worthwhile; at most two concurrent Codex
+workers, with explicit model/effort, scope, base, acceptance checks and ownership.
+No routine reviewer chains or recursive worker delegation. The lead inspects actual
+diffs and decisive evidence and verifies integration. Models do not share chat
+memory; use the repository handoff and a pinned work-package/evidence packet.
+
+For a substantial milestone, finish implementation, proportionate checks, real-app
+review where affected, repairs and authorized PR integration. Do not stop at a
+plan or first patch. Preserve and report genuine external qualification gaps.

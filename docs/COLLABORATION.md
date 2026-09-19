@@ -1,118 +1,149 @@
 # Shared development and handoff
 
-This protocol applies to development in Codex, Antigravity, Claude, Gemini and
-human editors. Repository files and verified Git state carry continuity; private
-chat history is not required. The current user request governs task scope.
+Repository files and verified Git state carry continuity across Codex,
+Antigravity and advisory ChatGPT sessions. The current user request defines scope.
+AGENTS.md supplies common boundaries; MODEL_ROLES.md adds role-specific authority.
 
-## One source of truth
+## One source of truth per repository
 
 | Information | Canonical location |
 | --- | --- |
-| Repository boundaries | `AGENTS.md` |
-| Current editor, task, next action, unresolved work, latest qualified app | Current handoff at the top of `docs/PROJECT_STATE.md` |
-| Product direction and supported behavior | `README.md`, `docs/CAPABILITY_MATRIX.md`, relevant contracts/ADRs |
-| Shared task-fit design skills | `.agents/skills/README.md` |
-| Build commands and artifact evidence requirements | `docs/BUILDING.md` |
-| Durable code changes | Git commits and the existing PR for that branch |
-| Test logs, large screenshots, app bundles and fixture outputs | Local output directory outside Git or under `.loci/` |
+| Boundaries | `AGENTS.md` |
+| Current integration owner, task, branch/PR, next action, failures | Top of `docs/PROJECT_STATE.md` |
+| Model authority and effort routing | [MODEL_ROLES.md](MODEL_ROLES.md) |
+| Product behavior and design decisions | README, relevant contracts and ADRs |
+| Build commands and qualification | [BUILDING.md](BUILDING.md) and existing receipts |
+| Active work-package contract | Existing task/PR body; compact reference in current handoff |
+| Source changes | Reviewed commits and the existing PR for that work |
+| Large logs, screenshots, generated data and bundles | Ignored local evidence/build directories, never source Git |
 
-`CLAUDE.md` and `GEMINI.md` are pointers to this protocol. Do not copy policy or
-status into them. Tool-specific automatic loading is not assumed: explicitly
-read the canonical files when adopting an existing thread. `docs/AGENT_ACCESS.md`
-describes assistants operating the app, not this development protocol.
+GEMINI.md and any tool-specific rule are entry pointers, not separate policy or
+status copies. Use `.agents/skills/README.md` and `docs/WORKSPACE_LAYOUT.md` when
+present on this branch; older branches may not contain them. Read selected skill
+references only when relevant. `docs/AGENT_ACCESS.md` governs operating the app,
+not development-agent coordination.
 
 ## Start or resume
 
-1. Read `AGENTS.md`, the current handoff in `docs/PROJECT_STATE.md`, and the
-   affected contracts. For builds, read `docs/BUILDING.md`.
-2. Inspect `git status -sb`, `git log -5 --oneline`, `git diff --stat`,
-   `git diff --cached --stat` and `git worktree list`. Fetch origin when available;
-   inspect the branch's upstream difference and current PR/base. Never assume
-   that `main`, a chat's old commit, or a recently built app is current.
-3. Compare the last handoff commit with HEAD and inspect the intervening diff.
-   Account for staged, unstaged and untracked work separately. Validate another
-   agent's changes from code and appropriate tests, not its completion message.
-4. Set a concrete completion criterion. Update the current handoff with editor,
-   task, branch/base, touched scope and a UTC timestamp before substantial edits.
-   Record unknown ownership explicitly instead of claiming the checkout is idle.
+Start substantive work read-only: inspect origin, branch, HEAD, upstream and base,
+`git status -sb`, staged/unstaged diffs, relevant untracked paths, recent commits,
+worktrees and the actual PR. Fetch when available; say when offline. Use
+`scripts/dev_snapshot.py` if it exists on this branch. Read the current handoff
+and affected contracts. Compare their recorded source with the actual tree;
+never assume main or a recently built app contains the latest work.
 
-### Optional read-only observation
+Define a concrete completion criterion. The integration owner records task,
+branch/base, owned scope and UTC time at the top of PROJECT_STATE before substantial
+work. Preserve earlier evidence below it. Do not replace verified history with an
+optimistic completion summary. Small documentation edits need no full repository
+map, broad test run or separate planning artifact.
 
-From the repository root, run `python3 scripts/dev_snapshot.py`. It reports the
-current branch/commit, local upstream difference, worktrees and staged/unstaged/
-untracked paths without fetching, changing files or launching anything. Ignored
-files and source contents are not included. Add `--app /absolute/path/Loci.app`
-to hash the three recorded macOS app artifacts; this does not validate a build.
-Use `--repo /absolute/path/to/worktree` when inspecting a different checkout.
-Output is JSON on stdout; retain it in a named local evidence folder if useful,
-then link it from the handoff. It does not replace `PROJECT_STATE.md`, test receipts,
-manual diff review or editor coordination. A missing upstream is not a clean remote,
-and the helper never asserts remote freshness or an atomic dirty-tree identity.
+## Ownership and concurrency
 
-## Shared checkout and ownership
+Astra is the integration owner unless the user assigns otherwise. One writer and
+one build/test owner per checkout. Sequential model switching is the default:
+finish or stop the previous writer and publish its handoff before the next writes.
+Ownership notes are coordination, not filesystem locks. Unknown ownership means
+read-only inspection until reconciled; never terminate another editor's work.
 
-Use one active writer and one build/test owner per checkout. Switching tools is
-sequential: finish or stop the previous writer and publish its handoff before the
-next writes. A note is coordination, not an enforced filesystem lock. If another
-writer is active or ownership is uncertain, inspect read-only and resolve ownership
-before overlapping edits. Do not kill another editor's app, test or build process.
-For intentional parallel implementation use separate worktrees and explicit file
-ownership; coordinate shared dependencies, output directories and integration.
+For deliberate parallel implementation, pin each worker's base commit, owned files
+and worktree. Temporary worktrees are permitted; they are not competing canonical
+products. Workers do not write the integration handoff or shared build output.
+Astra reviews and integrates patches into the designated branch; untested worker
+commits are not accepted merely because they merge. Do not run heavy verification
+or packaging alongside Electron timing tests on constrained hardware.
 
-Preserve unrelated changes. Never stash everything, reset, clean, switch branches
-under another writer, overwrite an open app, force-push, or delete branches to make
-a dashboard appear clean. Reconcile unique commits first. A dirty tree is acceptable
-at handoff only when each outstanding change and its owner/status is recorded.
+Preserve unrelated changes: no blanket stash, reset/clean, force-push, branch switch
+under another writer, deletion of unique work or replacement of an in-use app.
+Before removing a temporary worktree, reconcile tracked, untracked and ignored
+artifacts. Use the existing layout/build procedure where available.
 
-## Implement and validate
+## Work-package contract and return
 
-Keep changes coherent and fit the shared product direction. Record decisions that
-change behavior, scientific meaning or support boundaries in the relevant contract
-or decision document. Do not turn subjective suggestions into factual guarantees.
-Follow `AGENTS.md` for tests and safety; do not run application suites for prose-only
-edits. Keep failures and unchanged test limits visible. Historical green runs apply
-only to their recorded source and artifact identities.
-
-Use `docs/BUILDING.md` for packaging and build records. A source commit, frozen
-worker, packaged app, currently running app and installed app can all differ.
-Report them separately. On the 8 GB Mac, serialize heavyweight verification,
-packaging, engine suites and Electron performance QA; do not run signature scans
-concurrently with timing tests. Never silently synchronize away optional runtimes.
-
-## Finish, pause or switch models
-
-Update the current handoff in place; retain dated completed evidence below it.
-Use this compact structure, including explicit `none` or `not verified` values:
+Astra fills this in for Gemini, a Codex worker or an external adviser. Keep it in
+the current task/PR, linking from the handoff; do not create a second task ledger.
 
 ```text
-Updated (UTC):
-Editor/tool and task reference:
-Status: active / handoff-ready / blocked
-Objective and completion criterion:
-Branch, base and PR:
-Starting commit; latest implementation commit:
-Changed behavior and relevant files:
-Checks: command, result, tested commit/tree, log/receipt location:
-Build: worker source identity; desktop source identity; app path and hashes:
-Working tree: staged / unstaged / untracked changes, ownership and disposition:
-Open failures, decisions, constraints and next action:
-Git sync: pushed commit or local-only; fetch/offline status:
+Task and role; repo URL/visibility; checkout/worktree:
+Starting commit; target branch/PR/base; dirty-state exclusions:
+User-visible outcome and why it matters:
+Allowed paths and interfaces; forbidden scope:
+Relevant files/contracts/decisions (only those needed):
+Acceptance checks; numerical expectations and UI states when relevant:
+Commit/push authority; owner of integration and shared builds:
+Stop/escalate if: base mismatch, new boundary needed, meaningful repeated failure:
+Return: changed files + diff/commit, commands/results and tested tree, receipts,
+        failures/limitations, remaining local work, next action:
 ```
 
-For an uncommitted tested tree, retain its patch (including relevant untracked
-source), hash and starting commit in the local evidence folder. Do not include
-protected data or credentials. Prefer committing the reviewed source before
-building so the identity is unambiguous. A later documentation-only commit does
-not retroactively become the runtime's tested commit.
+Unfilled critical fields mean read-only scoping, not inferred permission to edit
+unrelated files. Workers can fix within the assigned boundary without asking for
+every implementation choice. Stop only the dependent action when a real ambiguity
+needs resolution; continue independent authorized work.
 
-Stage only reviewed files, check the staged diff, and commit coherent changes.
-Update the existing PR rather than creating duplicate PRs for every model switch.
-Push when authorized and read back the remote head/body. Preserve the current
-hosted-CI/Windows pause; use `[skip ci]` while that pause applies. Do not merge past
-existing review/release gates or describe a draft as released. When offline, leave
-an explicit local-only handoff. Keep binaries and large qualification artifacts
-out of Git; record which evidence requires this shared Mac rather than a fresh
-GitHub clone. The final chat response links to the shared handoff and states the
-next action; it is not the only record of work.
+## ChatGPT Pro evidence packet
 
-Keep active builds, evidence, and local scratch files outside Git to preserve repository hygiene.
+Use a dated, task-specific packet when the adviser cannot inspect the exact repo.
+Record repository/visibility, commit and branch, relevant dirty patch identity,
+question to decide, current behavior/constraints, proposed alternatives, exact
+relevant source/contract excerpts, real screenshots if UI is involved, test/failure
+evidence, unresolved assumptions, and explicit excluded/missing material. Use
+permalinks pinned to the commit for accessible GitHub files. The adviser receives
+only content authorized for that service; public work never receives private
+history or laboratory data. A summary without the relevant code supports planning,
+not a claim of exhaustive code review.
+
+Label the reply as a proposal. Astra verifies file references and rechecks the
+diff since the packet before adopting it. Reuse current contracts and state;
+regenerate changed portions rather than uploading the entire repository each turn.
+No tool automatically synchronizes chat memory between subscriptions.
+
+## Implement, verify, finish
+
+Complete the requested user journey, proportionate source/numerical checks and
+real app inspection where affected, fix relevant defects, review the resulting
+diff and integrate under the task's authority. Apply AGENTS.md and BUILDING.md;
+do not weaken checks or inflate timeouts to obtain green results. Keep source,
+worker, package, running and installed identities distinct. Retain failures and
+record exact tested commits/patches and artifact hashes. Historical green checks
+cannot qualify changed behavior. A blocked external qualification does not stop
+independent authorized engineering and remains a visible limitation.
+
+At completion, interruption or model switch update the single current handoff:
+
+```text
+Updated (UTC); editor/tool/task; status (active/handoff-ready/blocked):
+Objective and completion criterion; repo/branch/base/PR:
+Starting commit; latest implementation commit; accepted/pending work packages:
+Changed behavior and relevant files:
+Checks: commands/results, tested commit or dirty-patch hash, receipt locations:
+Build: worker/desktop identities, app path/hashes or not built:
+Working tree: staged/unstaged/untracked paths, ownership/disposition:
+Failures, decisions, constraints, next action and next owner:
+Git sync: pushed SHA/local-only, remote freshness; counterpart transfer if any:
+```
+
+Use coherent reviewed commits, explicit path staging and the existing PR for the
+work. Read back remote HEAD and PR base/diff. Keep draft/acceptance state honest.
+Astra may commit, push and merge completed authorized development through normal
+PRs when applicable gates pass; this does not authorize release, paid capacity,
+visibility changes or bypassing protections. Preserve current repo-specific CI
+and platform pauses; use `[skip ci]` while required. Check actual rulesets and
+branch protections rather than inferring them from prose. Git policy files are
+not server-side enforcement.
+
+## Public and development repositories
+
+Verify the origin before every push or transfer. The public repository owns its
+published sources, issues, contribution docs and release claims. A development
+checkout may contain newer or divergent experiments; never replace the public
+tree with it wholesale or mirror private Git history.
+
+Move fixes deliberately in either direction: identify source commit and target
+base, inspect the complete diff and dependencies, exclude private paths/data and
+unapproved assets, apply a reviewed patch or appropriate cherry-pick, then validate
+in the target tree. Record source/target commit mapping in the relevant PR/handoff.
+A public bug fix may need a development backport; a development feature is not
+public until it passes the public repository's applicable gates. Keep state and
+release evidence specific to each repo; synchronize only the portable shared
+protocol where appropriate. Do not merge unrelated open PRs as housekeeping.
