@@ -13,13 +13,19 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - Recommended download: **`Loci-0.1.0-beta.1-darwin-arm64-repack1.zip`** (SHA-256: `cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0`).
   - Historical provenance archive: **`Loci-0.1.0-beta.1-darwin-arm64.zip`** (SHA-256: `5d1943627605ce40dfba27694a22f03b33884bd42d703a1d49ca054d2f926ece`) retained on the GitHub release for continuity.
   - Both archives contain identical `Loci.app` application binaries, identical code signatures, and identical analysis behavior. The `repack1` package eliminates archive-level AppleDouble metadata to achieve exact correspondence with the inspected application bundle.
-  - Release evidence report (`macos-release-evidence-repack1.json`), SBOMs (`desktop.cdx.json`, `engine.cdx.json`), and dependency license archive (`dependency-licences.zip`) are published on the release.
+  - Verified auxiliary release assets published on GitHub release `v0.1.0-beta.1`:
+    - `macos-release-evidence-repack1.json` (`dac4939bd500910b7ffc7b925be84d2aa5d45464977675553e9621ef44121ac1`)
+    - `desktop.cdx.json` (`0735b45a3d521bdf88126bc41c0355d824a3e399990df1c1523c84149e4b2c64`)
+    - `engine.cdx.json` (`620fcacbe76803f36a09d3e0a956f25f33ed355fb5985f01f7bab8960df0e6f6`)
+    - `dependency-licences.zip` (`f975b0dca19e82b22545556e0905103a1dd53f96f4fbb5264fa30954c848c3f1`)
+    *(Note: All four auxiliary assets match their byte digests recorded in `macos-release-evidence-repack1.json` and verified via `release_evidence.py verify-assets`.)*
 - **CI & automation diagnostics:**
   - *Run 35055420283:* Refused at schedule time due to account billing and spending limits.
   - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`.
   - *Run 35418184299:* Executed on GitHub Actions for commit `02c9eeb`. `desktop` (passed, 1m38s), `modeling` (passed, 25s), `engine` (passed, 1m49s, with Ruff formatting and developer harness clean), and `package-windows` (passed, 10m29s) all succeeded. In `package-macos`, frozen engine build, signed app packaging, codesign verification, worker health, and supply-chain SBOM checks against `LOCI_PACKAGED_APP` all passed; `Exercise packaged folder import` failed on a direct-child DOM selector mismatch (`.research-sources > button > .research-source-name`) in `desktop/tests/folder-import.smoke.mjs`.
+  - *Hardening pass:* Repaired brittle direct-child selectors across `folder-import.smoke.mjs`, `packaged-app.qa.mjs`, and `image-first-figure.qa.mjs` using robust `button[data-source-id]` locators; added diagnostic screenshot/HTML capture and graceful process cleanup; added release asset verification tooling in `scripts/release_evidence.py` with offline pytest coverage.
 - **Verification boundaries:**
-  - *Software & supply-chain qualification:* Automated desktop test suite (825 tests), engine test suite (916 tests), script tests (68 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
+  - *Software & supply-chain qualification:* Automated desktop test suite (828 tests across 93 files), engine test suite (916 tests), script tests (72 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
   - *Disclosed operational limitations:* Ad-hoc local code signature (no Apple Developer ID), unnotarized status (requires macOS Gatekeeper approval via System Settings), first-launch startup delay (~75–85 s), and absence of independent clean-Mac attestation.
   - *Scientific integrity:* Automated test passes verify software build integrity, API contracts, and deterministic algorithm execution on specific test fixtures; they do **not** constitute biological or clinical validation.
 

@@ -797,3 +797,124 @@ def test_paths_and_sbom_labels_are_unambiguous(tmp_path: Path) -> None:
         release_evidence._parse_sbom_arguments(
             [f"desktop={tmp_path / 'one.json'}", f"desktop={tmp_path / 'two.json'}"]
         )
+
+
+def test_verify_release_assets_success_and_mismatch(tmp_path: Path) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    file_a = assets_dir / "desktop.cdx.json"
+    file_a.write_text("desktop-sbom-content", encoding="utf-8")
+    hash_a = release_evidence.fingerprint_file(file_a, label="file_a")["sha256"]
+
+    file_b = assets_dir / "engine.cdx.json"
+    file_b.write_text("engine-sbom-content", encoding="utf-8")
+    hash_b = release_evidence.fingerprint_file(file_b, label="file_b")["sha256"]
+
+    # Successful verification
+    result = release_evidence.verify_release_assets(
+        assets_dir,
+        {"desktop.cdx.json": str(hash_a), "engine.cdx.json": str(hash_b)},
+    )
+    assert result["valid"] is True
+    assert len(result["failures"]) == 0
+    assert len(result["verified"]) == 2
+    assert all(item["status"] == "matched" for item in result["verified"])
+
+    # Checksum mismatch
+    result_mismatch = release_evidence.verify_release_assets(
+        assets_dir,
+        {"desktop.cdx.json": "0" * 64, "engine.cdx.json": str(hash_b)},
+    )
+    assert result_mismatch["valid"] is False
+    assert any(
+        "Checksum mismatch for 'desktop.cdx.json'" in msg
+        for msg in result_mismatch["failures"]
+    )
+
+
+def test_verify_release_assets_missing_and_invalid(tmp_path: Path) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+
+    # Missing file
+    result_missing = release_evidence.verify_release_assets(
+        assets_dir,
+        {"nonexistent.zip": "a" * 64},
+    )
+    assert result_missing["valid"] is False
+    assert any(
+        "Missing required release asset" in msg for msg in result_missing["failures"]
+    )
+
+    # Invalid sha256 pattern
+    result_invalid = release_evidence.verify_release_assets(
+        assets_dir,
+        {"invalid.json": "not-a-sha256"},
+    )
+    assert result_invalid["valid"] is False
+    assert any("Invalid expected SHA-256" in msg for msg in result_invalid["failures"])
+
+    # Non-existent assets directory
+    with pytest.raises(release_evidence.EvidenceError, match="not a directory"):
+        release_evidence.verify_release_assets(
+            tmp_path / "nowhere", {"file.zip": "a" * 64}
+        )
+
+    # Empty expected checksums
+    with pytest.raises(
+        release_evidence.EvidenceError, match="No expected asset checksums"
+    ):
+        release_evidence.verify_release_assets(assets_dir, {})
+
+
+def test_extract_expected_checksums_from_report() -> None:
+    report = {
+        "sboms": {
+            "desktop": {"sha256": "1" * 64},
+            "engine": {"sha256": "2" * 64},
+        },
+        "license_archive": {"sha256": "3" * 64},
+    }
+    extracted = release_evidence.extract_expected_checksums_from_report(report)
+    assert extracted == {
+        "desktop.cdx.json": "1" * 64,
+        "engine.cdx.json": "2" * 64,
+        "dependency-licences.zip": "3" * 64,
+    }
+
+
+def test_verify_assets_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    asset = assets_dir / "test.zip"
+    asset.write_bytes(b"content")
+    digest = release_evidence.fingerprint_file(asset, label="asset")["sha256"]
+
+    checksums_file = tmp_path / "checksums.json"
+    checksums_file.write_text(
+        json.dumps({"test.zip": digest}),
+        encoding="utf-8",
+    )
+
+    # CLI success
+    code = release_evidence.main(
+        [
+            "verify-assets",
+            "--directory",
+            os.fspath(assets_dir),
+            "--checksums",
+            os.fspath(checksums_file),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "[OK] test.zip" in captured.out
+    assert "All 1 release assets verified successfully" in captured.out
+
+    # CLI failure: missing required argument
+    code_no_manifest = release_evidence.main(
+        ["verify-assets", "--directory", os.fspath(assets_dir)]
+    )
+    captured_err = capsys.readouterr()
+    assert code_no_manifest == 2
+    assert "Specify either --checksums or --report" in captured_err.err
