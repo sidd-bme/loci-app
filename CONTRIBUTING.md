@@ -48,6 +48,22 @@ npm start
 - Ensure documentation is updated alongside code changes.
 - Avoid introducing binary assets, model weights, or private test images into the Git history. Use synthetic numpy/fixture generators in tests.
 
-## Multi-Agent Development
+## Repository layout
 
-Loci supports model-neutral development across human contributors and AI assistants. Please review [AGENTS.md](AGENTS.md) and [docs/COLLABORATION.md](docs/COLLABORATION.md) for shared conventions and boundary rules.
+| Directory | Purpose |
+| --- | --- |
+| `desktop/` | Electron application, React interface and desktop tests |
+| `engine/` | Python image processing, measurements and scientific tests |
+| `modeling/` | Model packaging, evaluation and supporting tools |
+| `docs/` | User guides, format references and architecture decisions |
+| `scripts/` | Build, verification and maintenance utilities |
+
+## Feedback and documentation
+
+A useful issue describes the workflow, Loci version, operating system, expected
+result and what happened. Prefer a small public or synthetic example when reporting
+an image-related problem. Do not upload confidential research or patient data.
+Report security concerns through [SECURITY.md](SECURITY.md).
+
+Documentation improvements are welcome. For documentation-only changes, check
+links, examples and formatting; application tests are needed when behaviour changes.

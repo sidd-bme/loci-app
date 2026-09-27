@@ -1,0 +1,26 @@
+{
+  "description": "Maintainer-provided real application captures, authorized for repository presentation on 2026-09-27. Copied unchanged. Exact application build and underlying dataset licences are not established by this record.",
+  "screenshots": [
+    {
+      "file": "embryo-volume.png",
+      "provided_filename": "embryo_fluorescence.png",
+      "sha256": "7ca49b94ed8ae62295384d236a2a5f96e5731120131771eb08f7c7e0012f03eb",
+      "width": 3360,
+      "height": 2100
+    },
+    {
+      "file": "linked-volume-slices.png",
+      "provided_filename": "T2_MRI.png",
+      "sha256": "3a5f76e67ec9aba4d12d201ec5520a129754d4809e04528b2324eb4c7496cbe7",
+      "width": 3360,
+      "height": 2100
+    },
+    {
+      "file": "channel-controls.png",
+      "provided_filename": "fluorescence_multichannel_control_panel.png",
+      "sha256": "66f8885980b9ef473ffe640167c0e55e5230fcf9942f8fbf6875a690791e434e",
+      "width": 3360,
+      "height": 2100
+    }
+  ]
+}
