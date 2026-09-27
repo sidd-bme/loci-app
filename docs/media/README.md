@@ -1,6 +1,10 @@
 # Product media and image credits
 
-These screenshots and the silent, captioned product video show the packaged
+The homepage features `multichannel.png`, `native-slide.png` and `raw-volume.png`
+from the public sample suite below. Existing recordings are retained as archive
+material and are not part of the homepage presentation.
+
+These screenshots and the archived, captioned product video show the packaged
 macOS application. They demonstrate actual viewing, annotation, illustrative
 analysis, review, and display controls. They do not establish biological
 accuracy, clinical suitability, or completed release qualification. See the
@@ -11,7 +15,7 @@ and the **UI polish gallery**.
 
 ---
 
-## 1. Automated CC0 fixture suite & demo video
+## 1. Public sample screenshots and archived recordings
 
 The baseline screenshots and captioned product video were generated under
 automated test harnesses from three rights-cleared, public **CC0-1.0** fixtures.
@@ -57,5 +61,5 @@ These screenshots were captured during interface refinement passes on real inter
 ## 3. Provenance & licensing
 
 - Exact SHA-256 checksums, dimensions, and capture metadata for all media assets are recorded in [provenance.json](provenance.json).
-- The underlying scientific fixtures retain their CC0-1.0 dedication.
+- The three baseline scientific fixtures listed in section 1 retain their CC0-1.0 dedication. This statement does not assign a licence to the separate UI polish gallery.
 - Loci application code, interface designs, and packaging are licensed under [Apache-2.0](../../LICENSE).

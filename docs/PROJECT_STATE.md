@@ -1,5 +1,19 @@
 # Loci project and release state
 
+## Public presentation — 2026-09-27
+
+- Scope: concise screenshot-led homepage, documentation index, dedicated installation
+  guide and contributor navigation. No application, release or dependency changes.
+- Branch: `codex/public-presentation`, based on public `main` at
+  `30131ea765b1ee8629b583fcb803b0dd76783d27`. Existing hardening PR #1 and its local
+  commits remain separate; no private development history is transferred.
+- Featured media: unchanged public-sample screenshots with recorded hashes and
+  credits. Existing untracked `docs/media/native-slide_annotation.png` is preserved.
+- Acceptance: verify local links/anchors, image hashes, rendered desktop/mobile
+  presentation and release download references before public PR integration.
+- Published download remains v0.1.0-beta.1; no new release or application qualification
+  is implied by this documentation refresh.
+
 ## Agent setup handoff — 2026-09-19
 
 - **Editor/status:** Codex/Astra; handoff-ready, documentation/configuration only.
