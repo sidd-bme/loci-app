@@ -9,8 +9,10 @@
   commits remain separate; no private development history is transferred.
 - Featured media: unchanged public-sample screenshots with recorded hashes and
   credits. Existing untracked `docs/media/native-slide_annotation.png` is preserved.
-- Acceptance: verify local links/anchors, image hashes, rendered desktop/mobile
-  presentation and release download references before public PR integration.
+- Checks passed: 51 local links/anchors, all three featured media hashes, release
+  asset references and actual GitHub desktop rendering of the opening and gallery.
+  Documentation-only scope; no application suite or new build required. Mobile
+  viewport was not separately exercised.
 - Published download remains v0.1.0-beta.1; no new release or application qualification
   is implied by this documentation refresh.
 
