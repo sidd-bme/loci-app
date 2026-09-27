@@ -13,7 +13,7 @@
   <a href="https://github.com/sidd-bme/loci-app/issues">Feedback</a>
 </p>
 
-![Multichannel fluorescence in Loci, with channel colours and Z-plane controls](docs/media/multichannel.png)
+![Multichannel embryo volume in Loci’s 3D viewer](docs/media/embryo-volume.png)
 
 Loci brings viewing, annotation, segmentation and quantitative review into one desktop workspace. Work with fluorescence images, histology and 3D volumes while keeping your original data intact. Core viewing and analysis run locally, with no account or cloud service required.
 
@@ -24,12 +24,17 @@ Loci brings viewing, annotation, segmentation and quantitative review into one d
 - **Segment and measure.** Use classical methods or configured Cellpose models, then inspect individual objects and their measurements.
 - **Keep the context.** Review results, export tables and figures, and save studies with their analysis settings and source references.
 
-| Histology, in detail | A different perspective |
+| Fluorescence, channel by channel | Histology, in detail |
 | :--- | :--- |
-| ![Histology viewed at native resolution in Loci](docs/media/native-slide.png) | ![Fluorescence volume rendered in Loci's 3D viewer](docs/media/raw-volume.png) |
-| Inspect tissue and define regions on the source image. | Explore Z-stacks in 3D and linked slice views. |
+| ![Multichannel fluorescence with colour and plane controls](docs/media/multichannel.png) | ![Histology viewed at native resolution in Loci](docs/media/native-slide.png) |
+| Tune channels and explore individual planes. | Inspect tissue and define regions on the source image. |
 
-<sub>Real application screenshots using public sample data. [Image credits](docs/media/README.md).</sub>
+| Volumes, from every angle | Display controls, together |
+| :--- | :--- |
+| ![MRI volume with linked orthogonal slices and a 3D view](docs/media/linked-volume-slices.png) | ![Per-channel histograms, colour, range and opacity controls](docs/media/channel-controls.png) |
+| Connect 3D structure with linked slice views. | Adjust colour, contrast and opacity with channel histograms. |
+
+<sub>Real application captures, including development builds. The downloadable beta may differ. [Image credits](docs/media/README.md).</sub>
 
 ## Try Loci
 

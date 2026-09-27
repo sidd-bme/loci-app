@@ -7,9 +7,11 @@
 - Branch: `codex/public-presentation`, based on public `main` at
   `30131ea765b1ee8629b583fcb803b0dd76783d27`. Existing hardening PR #1 and its local
   commits remain separate; no private development history is transferred.
-- Featured media: unchanged public-sample screenshots with recorded hashes and
-  credits. Existing untracked `docs/media/native-slide_annotation.png` is preserved.
-- Checks passed: 51 local links/anchors, all three featured media hashes, release
+- Featured media: two public-sample screenshots and three unchanged, maintainer-
+  authorized captures highlighting 3D, linked slices and channel controls, with
+  hashes and separate credits. Existing untracked `docs/media/native-slide_annotation.png`
+  is preserved.
+- Checks passed: 53 local links/anchors, three new capture hashes and baseline media hashes, release
   asset references and actual GitHub desktop rendering of the opening and gallery.
   Documentation-only scope; no application suite or new build required. Mobile
   viewport was not separately exercised.

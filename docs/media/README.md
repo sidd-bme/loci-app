@@ -1,17 +1,27 @@
 # Product media and image credits
 
-The homepage features `multichannel.png`, `native-slide.png` and `raw-volume.png`
-from the public sample suite below. Existing recordings are retained as archive
-material and are not part of the homepage presentation.
+The homepage combines public-sample fluorescence and histology screenshots with
+maintainer-provided captures of 3D microscopy, linked volume slices and channel
+controls. Captures show the real application, including development builds; they
+are not a version-specific feature guarantee for the downloadable beta. Existing
+recordings are retained as archive material and are not featured on the homepage.
 
-These screenshots and the archived, captioned product video show the packaged
-macOS application. They demonstrate actual viewing, annotation, illustrative
-analysis, review, and display controls. They do not establish biological
-accuracy, clinical suitability, or completed release qualification. See the
-[current verification record](../PROJECT_STATE.md).
+### Maintainer-provided presentation captures
 
-The repository maintains two sets of media: the **automated CC0 fixture suite**
-and the **UI polish gallery**.
+| File | View |
+| --- | --- |
+| `embryo-volume.png` | Multichannel embryo fluorescence in the 3D viewer. |
+| `linked-volume-slices.png` | A NIfTI volume with three orthogonal slices and a 3D view. |
+| `channel-controls.png` | Per-channel histograms, colour, range, gamma and opacity controls. |
+
+These captures were supplied and authorized by the maintainer for this repository
+on 27 September 2026 and copied without modification. Exact build identity and
+underlying dataset licences were not supplied; the CC0 statement below does not
+apply to them. Original filenames, dimensions and hashes are recorded in
+[presentation-captures.json](presentation-captures.json).
+
+The older media collections below retain their original provenance. Screenshots
+illustrate the interface, not biological accuracy or clinical validation.
 
 ---
 
@@ -60,6 +70,6 @@ These screenshots were captured during interface refinement passes on real inter
 
 ## 3. Provenance & licensing
 
-- Exact SHA-256 checksums, dimensions, and capture metadata for all media assets are recorded in [provenance.json](provenance.json).
+- Exact SHA-256 checksums, dimensions, and capture metadata for the original media collections are recorded in [provenance.json](provenance.json); the new presentation captures have their separate manifest above.
 - The three baseline scientific fixtures listed in section 1 retain their CC0-1.0 dedication. This statement does not assign a licence to the separate UI polish gallery.
 - Loci application code, interface designs, and packaging are licensed under [Apache-2.0](../../LICENSE).
