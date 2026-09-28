@@ -11,6 +11,7 @@
   <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1">Download the beta</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="https://github.com/sidd-bme/loci-app/issues">Feedback</a>
+  <a href="https://ko-fi.com/lociimaging">Support :D</a>
 </p>
 
 ![Multichannel embryo volume in Loci’s 3D viewer](docs/media/embryo-volume.png)
