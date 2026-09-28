@@ -152,7 +152,7 @@ async function selectResult(id) {
   assert.ok(result, "The requested result is not in this study");
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
-  const sourceButton = page.locator('.research-sources > button').filter({ has: page.getByText(resultSource.name, { exact: true }) });
+  const sourceButton = page.locator('.research-sources button[data-source-id]').filter({ has: page.getByText(resultSource.name, { exact: true }) });
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
   await page.locator(`[data-result-id="${id}"]`).click();
   await page.locator(`[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
@@ -303,6 +303,9 @@ ref=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickl
 base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickle=False); assert np.unique(got[got>0]).size==int(sys.argv[3]); assert np.any(base!=got); assert np.all(base[200:,200:]==got[200:,200:]); print(json.dumps({'changes_local_to_declared_correction_margin':True,'changed_pixels':int(np.count_nonzero(base!=got))}))`, referenceLabels, path.join(correctedExport, "labels.npy"), String(expectedCount + 1)])).stdout);
   receipts.corrections.numerical = corrected;
   const saved = await snapshot(); await close(); await launch();
+  if (await page.locator('main.image-first-empty').isVisible()) {
+    await page.getByRole("button", { name: "Open study", exact: true }).click();
+  }
   const reopened = await until(snapshot, (s) => s?.results.length === saved.results.length, "exact reviewed reopen");
   assert.deepEqual(reopened.sources, saved.sources); assert.deepEqual(reopened.results, saved.results);
   assert.deepEqual((await record(vertex.id)).provenance, finalRecord.provenance);

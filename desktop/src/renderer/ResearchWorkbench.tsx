@@ -71,7 +71,7 @@ import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPa
 import { SourceExportPanel } from "./SourceExportPanel";
 import { SourceViewStore, type SavedSourceView } from "./source-view-store";
 import type { Camera } from "./viewer-camera";
-import { ContextHelp, ResearchError } from "./ContextHelp";
+import { ContextHelp, ResearchError, sanitizeRendererError } from "./ContextHelp";
 import { DEFAULT_PREFERENCES, type UserPreferences } from "./preferences";
 import {
   ResearchCellposePanel,
@@ -202,8 +202,7 @@ function savedStudyComparison(snapshot: ResearchSnapshot): StudyComparisonReceip
 
 function message(error: unknown, fallback: string): string {
   const value = error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
-  return value.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
-    .replace(/\/?(?:Users|Volumes)\/[^\s]+/g, "selected source").slice(0, 1000);
+  return sanitizeRendererError(value);
 }
 function meta(source: ResearchSource) {
   const value = source.metadata ?? {};

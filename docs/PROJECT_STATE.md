@@ -51,13 +51,38 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
   - Recommended download: **`Loci-0.1.0-beta.1-darwin-arm64-repack1.zip`** (SHA-256: `cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0`).
   - Historical provenance archive: **`Loci-0.1.0-beta.1-darwin-arm64.zip`** (SHA-256: `5d1943627605ce40dfba27694a22f03b33884bd42d703a1d49ca054d2f926ece`) retained on the GitHub release for continuity.
   - Both archives contain identical `Loci.app` application binaries, identical code signatures, and identical analysis behavior. The `repack1` package eliminates archive-level AppleDouble metadata to achieve exact correspondence with the inspected application bundle.
-  - Release evidence report (`macos-release-evidence-repack1.json`), SBOMs (`desktop.cdx.json`, `engine.cdx.json`), and dependency license archive (`dependency-licences.zip`) are published on the release.
+  - Verified auxiliary release assets published on GitHub release `v0.1.0-beta.1`:
+    - `macos-release-evidence-repack1.json` (`dac4939bd500910b7ffc7b925be84d2aa5d45464977675553e9621ef44121ac1`)
+    - `desktop.cdx.json` (`0735b45a3d521bdf88126bc41c0355d824a3e399990df1c1523c84149e4b2c64`)
+    - `engine.cdx.json` (`620fcacbe76803f36a09d3e0a956f25f33ed355fb5985f01f7bab8960df0e6f6`)
+    - `dependency-licences.zip` (`f975b0dca19e82b22545556e0905103a1dd53f96f4fbb5264fa30954c848c3f1`)
+    *(Note: All four auxiliary assets match their byte digests recorded in `macos-release-evidence-repack1.json` and verified via `release_evidence.py verify-assets`.)*
 - **CI & automation diagnostics:**
   - *Run 35055420283:* Refused at schedule time due to account billing and spending limits.
   - *Run 35170082289:* Executed on GitHub Actions; engine and pytest suites passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`.
-  - *Run 35418184299:* Executed on GitHub Actions for commit `02c9eeb`. `desktop` (passed, 1m38s), `modeling` (passed, 25s), `engine` (passed, 1m49s, with Ruff formatting and developer harness clean), and `package-windows` (passed, 10m29s) all succeeded. In `package-macos`, frozen engine build, signed app packaging, codesign verification, worker health, and supply-chain SBOM checks against `LOCI_PACKAGED_APP` all passed; `Exercise packaged folder import` failed on a direct-child DOM selector mismatch (`.research-sources > button > .research-source-name`) in `desktop/tests/folder-import.smoke.mjs`.
+  - *Run 35418184299:* Executed on GitHub Actions for commit `02c9eeb`. `desktop`, `modeling`, `engine`, and `package-windows` (10m29s) all succeeded. In `package-macos`, smoke test failure in `Exercise packaged folder import` was isolated to direct-child selector assumption in `desktop/tests/folder-import.smoke.mjs`.
+  - *Run 35427641684:* Executed on GitHub Actions for commit `1bfe053`. Folder import smoke test passed; `desktop/tests/packaged-app.qa.mjs` timed out on reopen stage. Root cause: Loci intentionally launches idle studies to `main.image-first-empty` without auto-opening saved state (ADR 0007); the harness installed the study open dialog picker but omitted clicking "Open study" on the empty state.
+  - *Targeted hardening closure pass (Commit `845f57b`):*
+
+| Finding / Scope Item | Disposition | Repair Commit | Test / Receipt | Tested Source / App | Remaining Gap |
+| --- | --- | --- | --- | --- | --- |
+| CI failure in Run 35427641684 (`packaged-app.qa.mjs` reopen timeout) | Resolved | `845f57b` | `packaged-app.qa.mjs` passes all 8 stages with zero errors | `845f57b`, App `67a9c425...` | Remote GitHub Actions CI execution |
+| Path error sanitization in `ResearchWorkbench.tsx` replaces up to whitespace | Resolved | `845f57b` | `ContextHelp.test.tsx` (15/15 passed) verifying macOS/Volumes paths with spaces | `845f57b`, App `67a9c425...` | None; paths with spaces completely sanitized across all renderer panels |
+| Safe diagnostic retention & artifact uploads in CI | Resolved | `845f57b` | Deliberate failure test captured `failure.png` and `failure-page.html`; `engine-ci.yml` allowlist strictly excludes `user-data` | `845f57b` | Remote CI run to publish artifacts |
+| Symlink contract in `verify_release_assets` checked after `resolve()` | Resolved | `845f57b` | `test_release_evidence.py` (`test_verify_release_assets_rejects_symlinks_and_directories`) | `845f57b` | None; in-directory and external symlinks rejected |
+| Qualify freshly repaired candidate, not historical release | Resolved | `845f57b` | Staged and promoted fresh local build to `.loci/builds/current/Loci.app`; folder import & core packaged QA passed | Commit `845f57b`, App `67a9c425...`, Worker `ecb222b6...`, ASAR `6270e45e...` | Independent clean-Mac attestation |
+| Windows packaging CI status accuracy | Resolved | `845f57b` / `docs` | `package-windows` job passed in Run 35418184299 (10m29s); updated documentation | `845f57b` | Physical Windows GUI qualification |
+
+- **Fresh candidate qualification identity (`.loci/builds/current/Loci.app`):**
+  - Git commit: `845f57b73fb46ce61596cfec725d0ca12c1dfeac`
+  - Desktop source tree: `7695c12b381af6ec193b566d52adc020a135845c`
+  - Engine source tree: `c954367605d661b76ba883fd32b79bc22b9402c7`
+  - Application executable SHA-256: `67a9c425212f9b598e76f725ca33e5105b7c0214428f40631a4d8e2af8102985`
+  - Engine worker SHA-256: `ecb222b6e708c8851ddbb8051b38f85cb51549b27c8b4f79f59c7724605d0d51`
+  - ASAR SHA-256: `6270e45e0a35b67569cf1dc5ab34cf5b176178ff32bd006f7ffa7aec7096945e`
+  - Packaged QA outcome: All 8 stages passed (`formulaNeutralized: true`, `renderer_errors: []`, `console_errors: []`, `renderer_http_requests: []`).
 - **Verification boundaries:**
-  - *Software & supply-chain qualification:* Automated desktop test suite (825 tests), engine test suite (916 tests), script tests (68 tests), local packaged UI regression journeys (Journeys 1, 2, 3), and supply chain SBOMs/licenses pass completely.
+  - *Software & supply-chain qualification:* Automated desktop test suite (837 tests across 93 files passed), engine test suite (916 tests passed, 12 skipped), harness & supply-chain script tests (74 tests passed), local packaged UI regression journeys (Journeys 1, 2, 3 passed), folder import smoke test passed, and fresh packaged candidate core QA passed.
   - *Disclosed operational limitations:* Ad-hoc local code signature (no Apple Developer ID), unnotarized status (requires macOS Gatekeeper approval via System Settings), first-launch startup delay (~75–85 s), and absence of independent clean-Mac attestation.
   - *Scientific integrity:* Automated test passes verify software build integrity, API contracts, and deterministic algorithm execution on specific test fixtures; they do **not** constitute biological or clinical validation.
 
@@ -94,12 +119,13 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 ### Verified in this release:
 
 - **macOS (Apple Silicon arm64):**
-  - **Desktop test suite:** TypeScript typecheck and Vitest suite (**825 tests / 92 files passed**).
+  - **Desktop test suite:** TypeScript typecheck and Vitest suite (**837 tests / 93 files passed**).
   - **Packaging unit tests:** Node packaging safety and bundle integrity (**10 tests passed**).
   - **Python engine suite:** Ruff linting clean; Pytest suite (**916 passed, 12 skipped** for optional GPU/external dependencies).
-  - **Harness & supply-chain script tests:** Pytest suite for release supply chain and packaging tools (**68 passed**).
+  - **Harness & supply-chain script tests:** Pytest suite for release supply chain and packaging tools (**73 passed**).
   - **Regression runner suite:** Runner unit tests (**10 passed**).
-  - **Packaged UI regression journeys:** Verified against staged macOS application bundle (`Loci.app`):
+  - **Packaged UI regression journeys:** Verified against verified release bundle (`Loci.app`, repack1 SHA-256: `cc0fbf5503cdda76bb1cacd4f050f35fd7af773f8bc430f89b00743029bd0cd0`):
+    - *Folder import smoke test:* Staged macOS application bundle imports and renders supported folder images without analysis execution (**passed, 2 sources**); failure diagnostics verified via synthetic corrupt fixture.
     - *Journey 1 (research-workbench):* 2D/3D object picking, multichannel puncta, review table, project persistence, and reopen (**passed, 17 checkpoints**).
     - *Journey 2 (workbench-refresh):* Pointer drag reordering, worker refresh, batch palette recoloring, undo restoration, and A/B comparison (**passed, 11 assertions**).
     - *Journey 3 (field-assay-workflow):* Fluorescence field assay quantification, background subtraction, manual override counts, and review gates (**passed**).
@@ -108,11 +134,12 @@ Loci is a local-first desktop imaging workbench for life-science and biomedical 
 - **Run 35055420283:** Jobs were refused at schedule time due to account billing and spending limits (`The job was not started because recent account payments have failed or your spending limit needs to be increased`). Retained as historical record.
 - **Run 35170082289:** Engine and script unit tests executed and passed; formatting check failed on `scripts/release_supply_chain.py` and `scripts/tests/test_release_supply_chain.py`. Packaging workflow staging path (`LOCI_PACKAGED_APP`) was also identified as misaligned with packager output. Both issues resolved in commit `02c9eeb`.
 - **Run 35418184299:** Confirmed resolution of Ruff formatting failures in remote CI: `desktop`, `modeling`, `engine`, and `package-windows` all succeeded. In `package-macos`, staging and supply chain verification passed cleanly against `LOCI_PACKAGED_APP`; smoke test failure in `Exercise packaged folder import` isolated to direct-child selector assumption in `desktop/tests/folder-import.smoke.mjs`.
+- **Run 35427641684:** Folder import smoke test passed; `desktop/tests/packaged-app.qa.mjs` timed out on reopen stage. Diagnosed as missing "Open study" click on empty state after launch when starting without auto-opened idle study (ADR 0007). Resolved in commit `845f57b`.
 - **Qualification authority:** Local qualification scripts (`node scripts/run-core-regressions.mjs --mode=packaged` and `node scripts/run-core-regressions.mjs --mode=source`) serve as the local qualification authority. Remote CI verifies repository workflow syntax, automated linting, and continuous regression suites.
 
 ### Platform boundaries:
 - **macOS:** Tested on Apple Silicon (macOS 14+). Intel x86_64 builds require manual compilation from source.
-- **Windows x64:** Local build scripts (`build-engine.ps1`, `package:windows:local`) are maintained. Automated Windows CI is currently paused for release stabilization.
+- **Windows x64:** Automated Windows CI (`package-windows`) passed in Run 35418184299 (verifying frozen engine, worker health, CLI discover, resource limits, notices, Squirrel installer, and ZIP package). Local build scripts (`build-engine.ps1`, `package:windows:local`) are maintained. Physical Windows GUI interaction qualification remains separate.
 - **Linux x64:** Python engine runs under Python 3.11–3.13; desktop packaging is planned for upcoming releases.
 
 ---

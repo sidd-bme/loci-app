@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
   ResearchResult,
@@ -87,7 +88,7 @@ function seedOnPlane(seed: Seed3D, plane: Plane, index: number): Point | null {
 
 function safeMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message
-    ? error.message.replace(/\/?(?:Users|Volumes)\/[^\s]+/g, "selected source")
+    ? sanitizeRendererError(error.message)
     : fallback;
 }
 

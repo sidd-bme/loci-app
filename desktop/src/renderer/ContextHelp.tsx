@@ -103,15 +103,42 @@ export function ContextHelp({ enabled = true }: { enabled?: boolean }) {
   </div>, document.fullscreenElement ?? document.body) : null;
 }
 
-export function ResearchError({ error, onDismiss }: { error: string; onDismiss: () => void }) {
-  const details = error.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
-    .replace(/(?:\/(?:Users|Volumes|private)\/|[A-Za-z]:[\\/])[^\n]+/g, "[local path redacted]")
+export function sanitizeRendererError(error: string): string {
+  return error
+    .replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
+    .replace(
+      /(["'`])(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|srv|data|proc|sys|etc|usr|[^\s"'`\r\n]+\/)\/)[^\r\n"'`]*\1/g,
+      "$1[local path redacted]$1",
+    )
+    .replace(
+      /(?:(?:[A-Za-z]:[\\/])|(?:\\\\)|\/(?:Users|Volumes|private|home|root|var|tmp|opt|mnt|media|srv|data|proc|sys|etc|usr)\/)(?:(?:[^:\r\n"'`)\\/,]|,(?!\s*\/))+[\\/])*(?:[^:\r\n,"'`)\\/]|:(?!\s)|,(?!\s)|,(?=\s*[^:\r\n,"'`)\\/]+\.[A-Za-z0-9]{1,8}(?::|\s|$)))+/g,
+      "[local path redacted]",
+    )
     .slice(0, 4000);
+}
+
+export function ResearchError({ error, onDismiss }: { error: string; onDismiss: () => void }) {
+  const details = sanitizeRendererError(error);
   const first = details.split("\n")[0];
-  const summary = /source.*chang|fingerprint|checksum/i.test(first) ? "This source has changed. Reopen an intact copy to continue." :
-    /existing plain directory|symlink|unavailable.*study/i.test(first) ? "This study is unavailable. Locate it again or open another image." :
-    first.length > 180 ? "This action could not be completed. Open details for the reason." : first;
-  return <div role="alert" className="research-alert recoverable-error"><div><span>{summary}</span>
-    <details><summary>Details</summary><pre>{details}</pre></details></div>
-    <button aria-label="Dismiss" onClick={onDismiss}>×</button></div>;
+  const summary = /source.*chang|fingerprint|checksum/i.test(first)
+    ? "This source has changed. Reopen an intact copy to continue."
+    : /existing plain directory|symlink|unavailable.*study/i.test(first)
+      ? "This study is unavailable. Locate it again or open another image."
+      : first.length > 180
+        ? "This action could not be completed. Open details for the reason."
+        : first;
+  return (
+    <div role="alert" className="research-alert recoverable-error">
+      <div>
+        <span>{summary}</span>
+        <details>
+          <summary>Details</summary>
+          <pre>{details}</pre>
+        </details>
+      </div>
+      <button aria-label="Dismiss" onClick={onDismiss}>
+        ×
+      </button>
+    </div>
+  );
 }

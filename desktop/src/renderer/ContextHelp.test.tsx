@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ContextHelp } from "./ContextHelp";
+import { ContextHelp, ResearchError, sanitizeRendererError } from "./ContextHelp";
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
@@ -96,4 +96,132 @@ it("dismisses a tip using its visible close control", () => {
   fireEvent.click(screen.getByRole("button", { name: "Close tip" }));
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(owner).not.toHaveAttribute("aria-describedby");
+});
+
+describe("sanitizeRendererError and ResearchError", () => {
+  it("redacts macOS paths with spaces while preserving subsequent error context", () => {
+    const raw = "Failed to open /Users/alice/my experiment/specimen.tif: unsupported tile format";
+    const sanitized = sanitizeRendererError(raw);
+    expect(sanitized).toBe("Failed to open [local path redacted]: unsupported tile format");
+    expect(sanitized).not.toContain("selected source");
+    expect(sanitized).not.toContain("experiment/specimen.tif");
+
+    const volumesRaw = "Could not load /Volumes/sid/Laboratory Data/specimen_01.ome.tiff: file corrupted";
+    const sanitizedVolumes = sanitizeRendererError(volumesRaw);
+    expect(sanitizedVolumes).toBe("Could not load [local path redacted]: file corrupted");
+    expect(sanitizedVolumes).not.toContain("selected source");
+    expect(sanitizedVolumes).not.toContain("Laboratory Data");
+  });
+
+  it("redacts Linux paths including /home/ and system roots", () => {
+    const raw = "Error: /home/bob/project/data.ims: HDF5 header damaged";
+    const sanitized = sanitizeRendererError(raw);
+    expect(sanitized).toBe("Error: [local path redacted]: HDF5 header damaged");
+
+    const tmpError = "Failed to read /tmp/scratch/buffer.raw: unexpected EOF";
+    expect(sanitizeRendererError(tmpError)).toBe("Failed to read [local path redacted]: unexpected EOF");
+
+    const dataError = "Error: /data/research/image.tif: failed";
+    expect(sanitizeRendererError(dataError)).toBe("Error: [local path redacted]: failed");
+
+    const srvError = "Cannot read /srv/images/slice.svs: io error";
+    expect(sanitizeRendererError(srvError)).toBe("Cannot read [local path redacted]: io error");
+
+    const procError = "Kernel info /proc/sys/kernel: error";
+    expect(sanitizeRendererError(procError)).toBe("Kernel info [local path redacted]: error");
+  });
+
+  it("redacts paths with commas in directory or file names", () => {
+    const commaDir = "Failed to open /home/alice/my, data/file.tif: unsupported tile format";
+    expect(sanitizeRendererError(commaDir)).toBe("Failed to open [local path redacted]: unsupported tile format");
+
+    const commaQuoted = "Failed to load '/home/alice/my, data/file.tif': corrupt";
+    expect(sanitizeRendererError(commaQuoted)).toBe("Failed to load '[local path redacted]': corrupt");
+
+    const commaFile = "Failed to open /data/project/sample, 1.tif: corrupt";
+    expect(sanitizeRendererError(commaFile)).toBe("Failed to open [local path redacted]: corrupt");
+
+    const sentenceWithComma = "Error at /home/alice/a.tif, please check permissions";
+    expect(sanitizeRendererError(sentenceWithComma)).toBe("Error at [local path redacted], please check permissions");
+
+    const multiPaths = "Files: /home/alice/a.tif, /home/bob/b.tif";
+    expect(sanitizeRendererError(multiPaths)).toBe("Files: [local path redacted], [local path redacted]");
+  });
+
+  it("redacts Windows drive letters and UNC network paths", () => {
+    const driveError = "Cannot access C:\\Users\\bob\\data\\test.ndpi: file locked";
+    expect(sanitizeRendererError(driveError)).toBe("Cannot access [local path redacted]: file locked");
+
+    const uncError = "Cannot access \\\\server\\share\\data\\test.ndpi: network timeout";
+    expect(sanitizeRendererError(uncError)).toBe("Cannot access [local path redacted]: network timeout");
+  });
+
+  it("redacts quoted paths with single, double, or backtick quotes preserving delimiters and context", () => {
+    const single = "Failed to load '/Users/sid/my lab/image.tif': corrupt file";
+    expect(sanitizeRendererError(single)).toBe("Failed to load '[local path redacted]': corrupt file");
+
+    const double = 'Failed to load "/home/alice/test with spaces.tif": bad magic';
+    expect(sanitizeRendererError(double)).toBe('Failed to load "[local path redacted]": bad magic');
+
+    const backtick = "Failed to load `C:\\Data\\specimen.tif`: invalid compression";
+    expect(sanitizeRendererError(backtick)).toBe("Failed to load `[local path redacted]`: invalid compression");
+  });
+
+  it("strips IPC remote method wrapper prefix", () => {
+    const raw = "Error invoking remote method 'loci-research-view': Error: Failed to open /Volumes/Ext/img.tif: corrupt";
+    expect(sanitizeRendererError(raw)).toBe("Failed to open [local path redacted]: corrupt");
+  });
+
+  it("preserves safe non-path errors untouched", () => {
+    const nonPathErrors = [
+      "Value out of range: 10 > 5",
+      "Division by zero in calculation",
+      "Saved display settings do not match this source.",
+      "HTTP 404: Not Found",
+      "Channel index 3 is greater than total channels 2",
+    ];
+    for (const err of nonPathErrors) {
+      expect(sanitizeRendererError(err)).toBe(err);
+    }
+  });
+
+  it("renders ResearchError with alert role, redacted details, and responsive dismiss control", () => {
+    const onDismiss = vi.fn();
+    render(
+      <ResearchError
+        error="Failed to open /Users/researcher/data/image.tif: file corrupted"
+        onDismiss={onDismiss}
+      />
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent("Failed to open [local path redacted]: file corrupted");
+
+    // Path must not appear in plaintext anywhere in the rendered alert
+    expect(alert.textContent).not.toContain("/Users/researcher/data/image.tif");
+
+    // Dismissing calls the onDismiss callback
+    const dismissButton = screen.getByRole("button", { name: "Dismiss" });
+    fireEvent.click(dismissButton);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("provides tailored summaries for source changes and unavailable studies", () => {
+    const { rerender } = render(
+      <ResearchError
+        error="Source sha256 checksum mismatch for /Volumes/Ext/sample.tif: expected abc, got def"
+        onDismiss={() => {}}
+      />
+    );
+    expect(screen.getByText("This source has changed. Reopen an intact copy to continue.")).toBeInTheDocument();
+
+    rerender(
+      <ResearchError
+        error="Target study path is an unavailable study directory"
+        onDismiss={() => {}}
+      />
+    );
+    expect(screen.getByText("This study is unavailable. Locate it again or open another image.")).toBeInTheDocument();
+  });
 });

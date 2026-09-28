@@ -95,7 +95,7 @@ async function idle() {
     !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
 }
 async function choose(file) {
-  await page.locator('.research-sources > button').filter({ hasText: path.basename(file) }).click();
+  await page.locator('.research-sources button[data-source-id]').filter({ hasText: path.basename(file) }).click();
   await idle();
   await selectWorkbenchTool(page, "Display");
 }
