@@ -29,7 +29,7 @@ Loci brings viewing, annotation, segmentation and quantitative review into one d
 | ![Multichannel fluorescence with colour and plane controls](docs/media/multichannel.png) | ![Histology viewed at native resolution in Loci](docs/media/native-slide.png) |
 | Tune channels and explore individual planes. | Inspect tissue and define regions on the source image. |
 
-| Volumes from every angle | Advances display controls |
+| Volumes from every angle | Advanced display controls |
 | :--- | :--- |
 | ![MRI volume with linked orthogonal slices and a 3D view](docs/media/linked-volume-slices.png) | ![Per-channel histograms, colour, range and opacity controls](docs/media/channel-controls.png) |
 | Connect 3D structure with linked slice views. | Adjust colour, contrast and opacity with channel histograms. |
