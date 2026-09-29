@@ -2,22 +2,22 @@
 
 Repository files and verified Git state carry continuity across Codex,
 Antigravity and advisory ChatGPT sessions. The current user request defines scope.
-AGENTS.md supplies common boundaries; MODEL_ROLES.md adds role-specific authority.
+.github/development/AGENTS.md supplies common boundaries; MODEL_ROLES.md adds role-specific authority.
 
 ## One source of truth per repository
 
 | Information | Canonical location |
 | --- | --- |
-| Boundaries | `AGENTS.md` |
+| Boundaries | `.github/development/AGENTS.md` |
 | Current integration owner, task, branch/PR, next action, failures | Top of `docs/PROJECT_STATE.md` |
 | Model authority and effort routing | [MODEL_ROLES.md](MODEL_ROLES.md) |
 | Product behavior and design decisions | README, relevant contracts and ADRs |
-| Build commands and qualification | [BUILDING.md](BUILDING.md) and existing receipts |
+| Build commands and qualification | [BUILDING.md](../../docs/BUILDING.md) and existing receipts |
 | Active work-package contract | Existing task/PR body; compact reference in current handoff |
 | Source changes | Reviewed commits and the existing PR for that work |
 | Large logs, screenshots, generated data and bundles | Ignored local evidence/build directories, never source Git |
 
-GEMINI.md and any tool-specific rule are entry pointers, not separate policy or
+.github/development/GEMINI.md and any tool-specific rule are entry pointers, not separate policy or
 status copies. Use `.agents/skills/README.md` and `docs/WORKSPACE_LAYOUT.md` when
 present on this branch; older branches may not contain them. Read selected skill
 references only when relevant. `docs/AGENT_ACCESS.md` governs operating the app,
@@ -102,7 +102,7 @@ No tool automatically synchronizes chat memory between subscriptions.
 
 Complete the requested user journey, proportionate source/numerical checks and
 real app inspection where affected, fix relevant defects, review the resulting
-diff and integrate under the task's authority. Apply AGENTS.md and BUILDING.md;
+diff and integrate under the task's authority. Apply .github/development/AGENTS.md and BUILDING.md;
 do not weaken checks or inflate timeouts to obtain green results. Keep source,
 worker, package, running and installed identities distinct. Retain failures and
 record exact tested commits/patches and artifact hashes. Historical green checks

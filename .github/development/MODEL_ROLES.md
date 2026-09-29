@@ -1,7 +1,7 @@
 # Model roles for Loci
 
 These are starting heuristics for this project, not model benchmarks. User task
-scope and AGENTS.md apply to every role. Do not claim to change a running model
+scope and .github/development/AGENTS.md apply to every role. Do not claim to change a running model
 or reasoning setting through prose. Use the app's supported model control.
 These are agent instructions; human contributors do not need any AI subscription.
 If a model is unavailable, report that and use an explicitly assigned alternative
@@ -125,8 +125,8 @@ Codex uses `.codex/config.toml` in a trusted checkout; explicit app/session choi
 may override defaults. Reopen a task and check the picker after setup. Existing
 skills, plugins and permission settings are not replaced by these roles.
 Antigravity workspace guidance is `.agents/rules/loci-coordination.md`; select
-Always On in Customizations -> Rules if needed, or explicitly read GEMINI.md in
-the task prompt. Do not assume root GEMINI.md alone auto-loads in every desktop
+Always On in Customizations -> Rules if needed, or explicitly read .github/development/GEMINI.md in
+the task prompt. Do not assume root .github/development/GEMINI.md alone auto-loads in every desktop
 version. The owner's machine may also have a scoped global entry pointer.
 
 Source basis, checked 2026-09-19:

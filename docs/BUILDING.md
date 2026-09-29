@@ -2,7 +2,7 @@
 
 ## Build identity and handoff
 
-Use [the shared collaboration protocol](COLLABORATION.md). The current verified
+The current verified
 app and its evidence are listed at the top of [project state](PROJECT_STATE.md).
 Do not infer freshness from an app's name, modification time or version alone.
 
