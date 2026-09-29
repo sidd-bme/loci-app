@@ -31,3 +31,8 @@ engine/dist/
 # Optional shared-local skill; pinned installation record is tracked separately.
 # Upstream redistribution licence has not been established.
 /.agents/skills/transitions-dev/
+
+# Local tool entry points; maintained copies live under .github/development/.
+/AGENTS.md
+/GEMINI.md
+/CLAUDE.md

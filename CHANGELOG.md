@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Non-destructive workspace autosave and portable `.loci-study` persistence.
   - Publication-quality rendered figures, 16-bit TIFF array exports, and tabular CSV summaries with cryptographic SHA-256 manifests.
 - **Multi-Agent Infrastructure:**
-  - Model-neutral collaboration guidelines in `AGENTS.md` and `docs/COLLABORATION.md`.
+  - Model-neutral collaboration guidelines in `.github/development/AGENTS.md` and `.github/development/COLLABORATION.md`.
   - Pinned interface design skills (`impeccable`, `make-interfaces-feel-better`).
 
 #### Known Beta Limitations

@@ -8,8 +8,8 @@ Use [COLLABORATION.md](COLLABORATION.md) for the work-package/evidence templates
 
 ```text
 Act as Loci's integration lead for this milestone: [concrete outcome].
-Read AGENTS.md, the current handoff in docs/PROJECT_STATE.md, and the relevant
-sections of docs/COLLABORATION.md and docs/MODEL_ROLES.md. Inspect current Git,
+Read .github/development/AGENTS.md, the current handoff in docs/PROJECT_STATE.md, and the relevant
+sections of .github/development/COLLABORATION.md and .github/development/MODEL_ROLES.md. Inspect current Git,
 PR, dirty work and affected contracts. Preserve unrelated work.
 Choose the plan and UI/UX/DX implementation details. Define done as an integrated,
 working user journey with appropriate source/numerical checks, actual app visual
@@ -29,7 +29,7 @@ work). Use New Worktree for concurrent editing and verify its starting commit;
 use Local only for an explicitly exclusive sequential handoff.
 
 ```text
-Read GEMINI.md, AGENTS.md, docs/MODEL_ROLES.md (Gemini role) and the current
+Read .github/development/GEMINI.md, .github/development/AGENTS.md, .github/development/MODEL_ROLES.md (Gemini role) and the current
 handoff. Work only on the filled-in Loci work package below:
 [paste the exact contract prepared by Astra, including repo/base/allowed files]
 First verify origin, HEAD, branch, worktree and dirty files against the assignment.

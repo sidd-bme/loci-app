@@ -1,5 +1,14 @@
 # Loci project and release state
 
+## Public repository organization — 2026-09-29
+
+- Moved tool entry points and coordination guides under `.github/development/`;
+  preserved local ignored entry points, skills, configuration and Git history.
+- Documentation/link checks only; no application development or release.
+- Based on public main `377d0cca3fb709b6e5b09b69aa07e2a801e9572f`; preserves
+  the maintainer's newer README/support edits and untracked annotation screenshot.
+
+
 ## Public presentation — 2026-09-27
 
 - Scope: concise screenshot-led homepage, documentation index, dedicated installation
@@ -26,8 +35,8 @@
   handoff using COLLABORATION.md and retain this as history.
 - **Outcome:** shared model roles, bounded Gemini tasks, ChatGPT review packets,
   two-worker Codex routing and deliberate repository transfers. Start with
-  [COLLABORATION.md](COLLABORATION.md), [MODEL_ROLES.md](MODEL_ROLES.md) and
-  [NEW_AGENT_PROMPT.md](NEW_AGENT_PROMPT.md).
+  [COLLABORATION.md](../.github/development/COLLABORATION.md), [MODEL_ROLES.md](../.github/development/MODEL_ROLES.md) and
+  [NEW_AGENT_PROMPT.md](../.github/development/NEW_AGENT_PROMPT.md).
 - **Scope:** no runtime, data, app bundle, release, CI or scientific changes.
   The existing public-beta-hardening PR remains separate and is not accepted or merged by this setup. Published beta artifacts and their qualification claims are unchanged.
 - **Checks:** Markdown references, TOML parsing, reviewed diff and scope checks;

@@ -12,9 +12,9 @@ map or documentation stack.
 
 ## Cross-tool continuity
 
-Use `docs/MODEL_ROLES.md` for role-specific authority and task-fit effort.
+Use `.github/development/MODEL_ROLES.md` for role-specific authority and task-fit effort.
 
-Follow `docs/COLLABORATION.md` for shared-checkout ownership, startup, validation
+Follow `.github/development/COLLABORATION.md` for shared-checkout ownership, startup, validation
 and handoff. Maintain the current handoff at the top of `docs/PROJECT_STATE.md`;
 do not create model-specific status logs. Shared development skills are cataloged
 in `.agents/skills/README.md`; use them selectively across all tools. Build identities and qualification
@@ -97,7 +97,7 @@ without a supported control.
 
 Astra is the integration lead for authorized Loci milestones: it owns planning,
 UI/UX/DX, scientific/architectural decisions, accepted changes and final evidence.
-Use `docs/MODEL_ROLES.md` for Codex worker routing, Gemini's bounded role and
+Use `.github/development/MODEL_ROLES.md` for Codex worker routing, Gemini's bounded role and
 ChatGPT Pro advisory review. These role limits do not weaken common safeguards.
 
 Delegate bounded independent tasks when worthwhile; at most two concurrent Codex
