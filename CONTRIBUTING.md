@@ -41,10 +41,11 @@ npm start
 
 - Create a feature branch from `main`.
 - Write small, focused commits with descriptive messages following Conventional Commits (e.g., `feat: ...`, `fix: ...`, `test: ...`, `docs: ...`).
-- Run the core regression runner to verify that all suites pass:
+- For changes spanning the desktop and engine, run the combined source regression runner. It checks those two suites; it does not build or test the packaged app:
   ```bash
   node scripts/run-core-regressions.mjs --mode=source
   ```
+- For a focused change, run the checks for the affected layer described in the [extension guide](docs/EXTENDING_LOCI.md). Packaging and changed desktop-to-engine journeys need the matching packaged check in [Building Loci](docs/BUILDING.md).
 - Ensure documentation is updated alongside code changes.
 - Avoid introducing binary assets, model weights, or private test images into the Git history. Use synthetic numpy/fixture generators in tests.
 
@@ -66,4 +67,6 @@ an image-related problem. Do not upload confidential research or patient data.
 Report security concerns through [SECURITY.md](SECURITY.md).
 
 Documentation improvements are welcome. For documentation-only changes, check
-links, examples and formatting; application tests are needed when behaviour changes.
+links, anchors and examples; application tests are needed when behaviour changes.
+See the [extension guide](docs/EXTENDING_LOCI.md) before choosing where a new
+analysis workflow or desktop action belongs.

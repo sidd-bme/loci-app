@@ -35,7 +35,7 @@ Loci brings viewing, annotation, segmentation and quantitative review into one d
 | ![MRI volume with linked orthogonal slices and a 3D view](docs/media/linked-volume-slices.png) | ![Per-channel histograms, colour, range and opacity controls](docs/media/channel-controls.png) |
 | Connect 3D structure with linked slice views. | Adjust colour, contrast and opacity with channel histograms. |
 
-<sub>Real application captures, including development builds. The downloadable beta may differ. [Image credits](docs/media/README.md).</sub>
+<sub>Real application captures, including development builds. The published download remains v0.1.0-beta.1; current source and screenshots can show newer work. See the [release record](docs/PROJECT_STATE.md) for its exact scope. [Image credits](docs/media/README.md).</sub>
 
 ## Try Loci
 
@@ -49,7 +49,7 @@ The installation guide covers macOS approval for this beta. For image formats, m
 
 Loci began with a practical cell-counting workflow and grew into a broader imaging workspace. The aim is to make everyday image analysis easier to navigate, with source data, analysis settings and results kept connected.
 
-Researchers, image analysts and developers are welcome to [share feedback](https://github.com/sidd-bme/loci-app/issues) or [contribute](CONTRIBUTING.md).
+Researchers, image analysts and developers are welcome to [share feedback](https://github.com/sidd-bme/loci-app/issues) or [contribute](CONTRIBUTING.md). Developers can start with the [extension guide](docs/EXTENDING_LOCI.md).
 
 ---
 

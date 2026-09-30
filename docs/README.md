@@ -29,6 +29,6 @@ The [capability matrix](CAPABILITY_MATRIX.md) records format-specific boundaries
 
 ## Develop and contribute
 
-Start with [contributing](../CONTRIBUTING.md) for setup and tests, or [building Loci](BUILDING.md) for packaging. [Architecture](ADR-0001-desktop-architecture.md) explains how the desktop and analysis engine fit together; the [roadmap](ROADMAP.md) describes future direction.
+Start with [contributing](../CONTRIBUTING.md) for setup and checks, or the [extension guide](EXTENDING_LOCI.md) for where a workflow belongs and how to verify it. Use [building Loci](BUILDING.md) for packaging. [Architecture](ADR-0001-desktop-architecture.md) explains how the desktop and analysis engine fit together; the [roadmap](ROADMAP.md) describes future direction.
 
 [Image credits](media/README.md) · [Licence](../LICENSE) · [Security](../SECURITY.md) · [Back to Loci](../README.md)
