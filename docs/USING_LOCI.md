@@ -2,7 +2,7 @@
 
 Loci is a local-first workbench for inspecting scientific images and creating traceable derived results. It leaves original image files where they are, and keeps display settings, annotations, results, reviews, and exports as separate work. Loci does not identify a stain or fluorophore from appearance, diagnose a sample, or establish biological or clinical validity.
 
-This manual describes the implemented image-first workspace. It is bundled with the application and opens offline with `F1` or **Settings → User guide → Open user guide**. The manual has a searchable contents pane. The [capability matrix](CAPABILITY_MATRIX.md) defines supported source subsets and limits; [project state](PROJECT_STATE.md) records current qualification status.
+This manual describes the implemented image-first workspace. It is bundled with the application and opens offline with `F1` or **Settings → User guide → Open user guide**. The manual has a searchable contents pane. The [capability matrix](CAPABILITY_MATRIX.md) defines supported source subsets and limits; [release status](RELEASE_STATUS.md) records published beta status.
 
 ## Contents
 
@@ -179,4 +179,4 @@ Drag the left edge of the tools panel to resize it. With that divider focused, u
 
 Under **Viewing & help**, turn the viewer scale bar, overview navigator, and contextual guidance on or off. A viewer scale bar still appears only when the source declares usable calibration. Under **Saving & export**, set the default rendered-figure DPI and review the distinction between rendered figures, derived results, and recoverable local sessions. Under **User guide**, open this bundled manual. `F1` opens it directly; search its contents for terms such as `histogram`, `batch`, `MPR`, or `recovery`.
 
-If a control is unavailable, read the inline prerequisite. Common reasons are an unsupported source subset, missing or incompatible geometry/calibration, incomplete analysis scope, absent depth/time dimension, source identity mismatch, missing model/runtime provisioning, or an unreviewed result. Preserve the shown error wording when seeking support, but do not include protected source data or private filesystem paths. Consult the [capability matrix](CAPABILITY_MATRIX.md) for supported formats and resource boundaries and [project state](PROJECT_STATE.md) for current qualification evidence.
+If a control is unavailable, read the inline prerequisite. Common reasons are an unsupported source subset, missing or incompatible geometry/calibration, incomplete analysis scope, absent depth/time dimension, source identity mismatch, missing model/runtime provisioning, or an unreviewed result. Preserve the shown error wording when seeking support, but do not include protected source data or private filesystem paths. Consult the [capability matrix](CAPABILITY_MATRIX.md) for supported formats and resource boundaries and [release status](RELEASE_STATUS.md) for published beta limitations.

@@ -1,9 +1,0 @@
-# Loci lead model and speed. Choose reasoning effort in the Codex picker.
-# Do not pin lead effort here: project config overrides the picker's saved user setting.
-model = "gpt-6-astra"
-service_tier = "default"
-
-[agents]
-max_concurrent_threads_per_session = 2
-default_subagent_model = "gpt-5.6-terra"
-default_subagent_reasoning_effort = "medium"

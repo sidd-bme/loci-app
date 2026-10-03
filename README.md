@@ -35,7 +35,7 @@ Loci brings viewing, annotation, segmentation and quantitative review into one d
 | ![MRI volume with linked orthogonal slices and a 3D view](docs/media/linked-volume-slices.png) | ![Per-channel histograms, colour, range and opacity controls](docs/media/channel-controls.png) |
 | Connect 3D structure with linked slice views. | Adjust colour, contrast and opacity with channel histograms. |
 
-<sub>Real application captures, including development builds. The published download remains v0.1.0-beta.1; current source and screenshots can show newer work. See the [release record](docs/PROJECT_STATE.md) for its exact scope. [Image credits](docs/media/README.md).</sub>
+<sub>Real application captures, including development builds. The published download remains v0.1.0-beta.1; current source and screenshots can show newer work. See the [release record](docs/RELEASE_STATUS.md) for its exact scope. [Image credits](docs/media/README.md).</sub>
 
 ## Try Loci
 

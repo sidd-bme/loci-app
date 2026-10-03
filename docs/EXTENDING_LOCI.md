@@ -2,7 +2,7 @@
 
 This guide is for researchers and developers adding a bounded analysis workflow
 to the current source tree. The downloadable application remains **v0.1.0-beta.1**;
-the repository may contain newer development code. Check the [release record](PROJECT_STATE.md)
+the repository may contain newer development code. Check the [release record](RELEASE_STATUS.md)
 before attributing source-tree behavior to that download.
 
 ## Put the behavior at the right boundary

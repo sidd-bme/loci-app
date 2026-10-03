@@ -28,11 +28,18 @@ engine/dist/
 /data/
 *.local/
 
-# Optional shared-local skill; pinned installation record is tracked separately.
-# Upstream redistribution licence has not been established.
-/.agents/skills/transitions-dev/
-
-# Local tool entry points; maintained copies live under .github/development/.
+# Maintainer development coordination stays local.
+/.agents/
+/.codex/
+/.github/development/
 /AGENTS.md
 /GEMINI.md
 /CLAUDE.md
+/docs/ADR-*.md
+/docs/PRODUCT_FOUNDATION.md
+/docs/PROJECT_STATE.md
+/docs/RESEARCH_DECISIONS_2026-09.md
+/docs/ROADMAP.md
+/scripts/dev_snapshot.py
+/scripts/tests/test_dev_snapshot.py
+/docs/workflows/epidermal_thickness_model_feasibility.md

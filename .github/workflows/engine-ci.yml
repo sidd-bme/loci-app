@@ -36,8 +36,6 @@ jobs:
           PYTHONPATH=. uv run --project engine pytest scripts/tests
           uv run --project engine ruff check \
             scripts/__init__.py \
-            scripts/dev_snapshot.py \
-            scripts/tests/test_dev_snapshot.py \
             scripts/cellpose_compatibility_benchmark.py \
             scripts/release_evidence.py \
             scripts/release_python_inventory.py \
@@ -50,8 +48,6 @@ jobs:
             scripts/tests/test_verify_frozen_engine_bundle.py
           uv run --project engine ruff format --check \
             scripts/__init__.py \
-            scripts/dev_snapshot.py \
-            scripts/tests/test_dev_snapshot.py \
             scripts/cellpose_compatibility_benchmark.py \
             scripts/release_evidence.py \
             scripts/release_python_inventory.py \
@@ -103,6 +99,10 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
+      - name: Public repository surface
+        run: |
+          node --test scripts/tests/check-public-surface.node-test.mjs
+          node scripts/check-public-surface.mjs
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci

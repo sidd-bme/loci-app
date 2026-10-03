@@ -139,6 +139,5 @@ MouseLand provides written clarification covering pretrained-weight commercial
 use. Requiring users to supply a checkpoint does not remove that training
 lineage concern. Any future commercial model path must use a Loci-native model
 trained from random initialization and validated only on images and annotations
-with explicit commercial rights. The active decision is
-[ADR 0003](ADR-0003-open-source-cellpose-integration.md); ADR 0002 remains
-historical context.
+with explicit commercial rights. This remains a release boundary; see
+[release requirements](RELEASE_CONTRACT.md) for model and provenance requirements.

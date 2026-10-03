@@ -4,6 +4,6 @@ export function isLociManualLink(value: string): boolean {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname === "github.com" && !url.port &&
       !url.username && !url.password && !url.search &&
-      /^\/sidd-bme\/Loci\/blob\/main\/docs\/[A-Za-z0-9_.-]+\.md$/.test(url.pathname);
+      /^\/sidd-bme\/loci-app\/blob\/main\/docs\/[A-Za-z0-9_.-]+\.md$/.test(url.pathname);
   } catch { return false; }
 }

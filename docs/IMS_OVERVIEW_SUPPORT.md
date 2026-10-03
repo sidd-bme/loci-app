@@ -1,7 +1,7 @@
 # Modern IMS support
 
 Updated for the image-first source implementation, 8 September 2026. Current
-packaged qualification is recorded in [PROJECT_STATE.md](PROJECT_STATE.md).
+published beta status is recorded in [release status](RELEASE_STATUS.md).
 This document's filename is retained for existing links; IMS is no longer
 restricted to the historical cell-viewer overview path.
 

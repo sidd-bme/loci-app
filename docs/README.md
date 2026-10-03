@@ -25,10 +25,10 @@ Guides for working with images, understanding results and developing Loci.
 - **Analysis:** [quantification](QUANTIFICATION.md), [counting policy](COUNTING_POLICY.md), [Cellpose setup and compatibility](CELLPOSE_COMPATIBILITY.md), [model packages](MODEL_PACKAGE_FORMAT.md).
 - **Sharing and compute:** [study interchange](RESEARCH_INTERCHANGE.md), [annotation interchange](ANNOTATION_INTERCHANGE.md), [remote workflow](REMOTE_WORKFLOW.md).
 
-The [capability matrix](CAPABILITY_MATRIX.md) records format-specific boundaries. The [release record](PROJECT_STATE.md) distinguishes published builds from development work; the [changelog](../CHANGELOG.md) tracks changes.
+The [capability matrix](CAPABILITY_MATRIX.md) records format-specific boundaries. The [release record](RELEASE_STATUS.md) distinguishes published builds from development work; the [changelog](../CHANGELOG.md) tracks changes.
 
 ## Develop and contribute
 
-Start with [contributing](../CONTRIBUTING.md) for setup and checks, or the [extension guide](EXTENDING_LOCI.md) for where a workflow belongs and how to verify it. Use [building Loci](BUILDING.md) for packaging. [Architecture](ADR-0001-desktop-architecture.md) explains how the desktop and analysis engine fit together; the [roadmap](ROADMAP.md) describes future direction.
+Start with [contributing](../CONTRIBUTING.md) for setup and checks, or the [extension guide](EXTENDING_LOCI.md) for where a workflow belongs and how to verify it. Use [building Loci](BUILDING.md) for packaging. The extension guide describes the desktop and analysis engine boundaries.
 
 [Image credits](media/README.md) · [Licence](../LICENSE) · [Security](../SECURITY.md) · [Back to Loci](../README.md)

@@ -56,7 +56,7 @@ npm start
 | `desktop/` | Electron application, React interface and desktop tests |
 | `engine/` | Python image processing, measurements and scientific tests |
 | `modeling/` | Model packaging, evaluation and supporting tools |
-| `docs/` | User guides, format references and architecture decisions |
+| `docs/` | User guides, format references and product contracts |
 | `scripts/` | Build, verification and maintenance utilities |
 
 ## Feedback and documentation
