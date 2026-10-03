@@ -3,11 +3,9 @@
 **Current source update:** 8 September 2026, image-first implementation.
 
 This matrix describes implemented subsets, not biological validation or public
-release clearance. Current verification and exact source/package identities are
-recorded in [PROJECT_STATE.md](PROJECT_STATE.md) and
-[project state](PROJECT_STATE.md). The prior packaged baseline
-`9e9dc6cf31ce128990e6d065e793dee51e8d077f` verifies its historical tree only;
-it does not qualify the image-first changes.
+release clearance. The [release status](RELEASE_STATUS.md) records the published
+beta artifacts and known limitations. Current source can differ from the beta;
+qualification applies only to the exact source and packaged artifact tested.
 
 `Implemented` identifies a code route and interface. `Bounded` identifies finite
 reads, memory, grids or supported variants. Source tests, actual packaged GUI
@@ -187,5 +185,5 @@ model-provided executable code, nonlinear/deformable registration, stitching,
 deconvolution, filament tracing, biological lineage inference, or in-product
 model training/adaptation. See the format-specific documents for narrower
 refusals, the [release contract](RELEASE_CONTRACT.md) for the adopted method set,
-and [project state](PROJECT_STATE.md) for acceptance evidence and remaining
-independent qualifications.
+and [release status](RELEASE_STATUS.md) for published beta limitations and remaining
+release gates.

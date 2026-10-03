@@ -5,6 +5,13 @@ All notable changes to Loci will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Clarified installation, release status and contributor documentation.
+- Corrected bundled-manual source links to open the public documentation.
+
+These source changes do not replace the existing beta download.
+
 ## [v0.1.0-beta.1] - 2026-09-16
 
 ### Initial Public Beta Release
@@ -27,9 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scientific Evidence & Persistence:**
   - Non-destructive workspace autosave and portable `.loci-study` persistence.
   - Publication-quality rendered figures, 16-bit TIFF array exports, and tabular CSV summaries with cryptographic SHA-256 manifests.
-- **Multi-Agent Infrastructure:**
-  - Model-neutral collaboration guidelines in `.github/development/AGENTS.md` and `.github/development/COLLABORATION.md`.
-  - Pinned interface design skills (`impeccable`, `make-interfaces-feel-better`).
 
 #### Known Beta Limitations
 - First launch on macOS may exhibit an initial startup delay of approximately 75–85 seconds (observed on Apple Silicon M1 with 8 GB RAM) during initial component verification and runtime initialization; subsequent launches open faster once cached by macOS.

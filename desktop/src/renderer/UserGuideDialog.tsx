@@ -14,7 +14,7 @@ const sections = guide.split(/^## /m).map((text, index) => {
 function safeLink(target: string): string | null {
   if (target.startsWith("#")) return `#manual-${target.slice(1)}`;
   if (/^https:\/\//i.test(target)) return target;
-  if (/^[A-Za-z0-9_.-]+\.md(?:#[A-Za-z0-9_-]+)?$/.test(target)) return `https://github.com/sidd-bme/Loci/blob/main/docs/${target}`;
+  if (/^[A-Za-z0-9_.-]+\.md(?:#[A-Za-z0-9_-]+)?$/.test(target)) return `https://github.com/sidd-bme/loci-app/blob/main/docs/${target}`;
   return null;
 }
 

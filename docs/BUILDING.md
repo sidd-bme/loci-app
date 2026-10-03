@@ -1,38 +1,31 @@
 # Building Loci
 
-## Build identity and handoff
+## Build identity and verification
 
-The current verified
-app and its evidence are listed at the top of [project state](PROJECT_STATE.md).
-Do not infer freshness from an app's name, modification time or version alone.
+See [release status](RELEASE_STATUS.md) for the published beta artifacts and
+limitations. A source build can differ from that beta. Record the source
+commit/tree, working-tree changes, Node/Python versions, lockfile identities,
+selected extras, platform, architecture and signing mode for each build.
 
-Before building, record branch/HEAD, relevant working-tree changes, Node/Python
-versions, lockfile identities, selected extras and the intended output directory.
-Prefer a reviewed source commit. Serialize builds against the shared `engine/dist`
-and desktop build directories; do not overwrite a bundle another process is using.
 Use `npm run package:mac:local` from `desktop/`. It uses the existing Forge API,
-config, signing hooks and resource checks, with the single candidate directory
+configuration, signing hooks and resource checks. Its candidate directory is
 `.loci/builds/staging/` inside the repository. It refuses occupied staging and a
-concurrent packaging lock; it never replaces the current app. See
-[project state](PROJECT_STATE.md) for qualification and promotion.
+concurrent packaging lock. Serialize builds that share `engine/dist` and desktop
+output directories, and preserve bundles that are in use.
 
-After building, record in the current handoff:
-
-- Frozen worker source commit/tree, desktop source commit/tree, exact commands,
-  platform/architecture and signing mode.
-- Absolute app path and SHA-256 of `Contents/MacOS/Loci`,
-  `Contents/Resources/app.asar` and `Contents/Resources/loci-engine/loci-engine`.
-- Signature verification result, matching frozen-bundle verification and packaged
-  journey receipts, fixture identities and every failed or skipped gate.
-- Whether the installed/running app was replaced; otherwise say it remains older.
+For the exact app tested, record SHA-256 hashes of `Contents/MacOS/Loci`,
+`Contents/Resources/app.asar` and `Contents/Resources/loci-engine/loci-engine`,
+signature and frozen-bundle verification results, packaged journey receipts,
+fixture identities, and failed or skipped gates. App names, timestamps and
+version numbers alone do not establish source identity.
 
 Run supported `desktop/tests/*.qa.mjs` journeys with `LOCI_PACKAGED_APP` pointing
-at that exact app and `LOCI_QA_OUTPUT_ROOT` at its evidence folder. Select journeys
-appropriate to the changed behavior; inspect each harness's fixture requirements.
-Complete signature scans and other heavy work before timing UI interactions.
-Reconcile receipt hashes with the app before calling it tested. A successful build
-is not a passing workflow or a release. Logs and bundles remain local; keep the
-portable identity/results summary and known gaps in project state.
+at that exact app and `LOCI_QA_OUTPUT_ROOT` at an output directory. Select journeys
+for the changed behavior and inspect their fixture requirements. Complete heavy
+signature scans before timing UI interactions. A successful build does not
+establish a passing workflow or authorize release. Keep logs, images and bundles
+out of source Git; include portable identities, results and limitations in the
+review or release evidence.
 
 ## Development
 
@@ -55,11 +48,10 @@ npm start
 ```
 
 These minimal development profiles can remove other optional extras from a shared
-virtual environment. For the qualified full worker profile, consistently use
+virtual environment. For the full worker build profile, consistently use
 `uv sync --frozen --extra dev --extra bundle --extra cellpose --extra onnx` and
-retain the same extras on subsequent `uv run` commands. Coordinate environment
-changes with the other editor. On the shared 8 GB Mac, set `VITEST_MAX_WORKERS=1`
-for desktop checks and keep heavy suites and packaged QA sequential.
+retain the same extras on subsequent `uv run` commands. On memory-constrained hosts, use `npx vitest run --maxWorkers=1`
+for desktop tests and keep heavy suites and packaged QA sequential.
 
 Node 24 and Python 3.11-3.13 are supported development baselines. The checked-in
 `engine/.python-version` pins reproducible engine and bundle work to Python 3.12. Source
@@ -246,4 +238,4 @@ assertion, not biological ground truth. Cellpose packaged QA currently allows
 up to 420 seconds for an analysis, but observed cold MPS runs can vary widely
 and have sometimes exceeded that limit. Treat a passing run as functional
 evidence, not resolution of the open performance gate documented in
-[project state](PROJECT_STATE.md).
+[release status](RELEASE_STATUS.md).

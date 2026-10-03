@@ -28,4 +28,4 @@ Continue with the [user guide](USING_LOCI.md) or [documentation index](README.md
 
 ## Release details
 
-The release page also retains the original archive and provides checksums, dependency licences and release evidence. `repack1` removes archive-level metadata; it does not change the application. Development source and screenshots can evolve between beta downloads. See the [release record](PROJECT_STATE.md) for artifact identities and qualification details.
+The release page also retains the original archive and provides checksums, dependency licences and release evidence. `repack1` removes archive-level metadata; it does not change the application. Development source and screenshots can evolve between beta downloads. See the [release record](RELEASE_STATUS.md) for artifact identities and qualification details.
