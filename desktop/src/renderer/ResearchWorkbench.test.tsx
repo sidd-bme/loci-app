@@ -644,6 +644,44 @@ describe("ResearchWorkbench", () => {
     );
   });
 
+  it.each(["empty", "loaded"] as const)("pauses contextual help during %s workspace error recovery and restores it after dismissal", async (state) => {
+    const failure = new Error("Study destination is unavailable");
+    const desktop = api(state === "empty"
+      ? { getSnapshot: vi.fn().mockResolvedValue(null), openStudy: vi.fn().mockRejectedValue(failure) }
+      : { saveAs: vi.fn().mockRejectedValue(failure) });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} onOpenSettings={vi.fn()} />);
+    await screen.findByRole("main", { name: state === "empty" ? "Loci workspace" : "Research workspace" });
+    if (state === "loaded") {
+      await waitFor(() => expect(screen.getByLabelText("Image viewer: Specimen")).toHaveAttribute("data-prepared", "true"));
+    }
+    const settings = screen.getByRole("button", { name: "Open settings" });
+    await waitFor(() => expect(settings).toHaveAttribute("data-loci-help", "Appearance and preferences"));
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    fireEvent.focusIn(settings);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Appearance and preferences");
+
+    fireEvent.click(screen.getByRole("button", { name: state === "empty" ? "Open study" : "Save study" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(failure.message);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    expect(settings).not.toHaveAttribute("aria-describedby");
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      fireEvent.focusIn(settings);
+      fireEvent.pointerOver(settings);
+      act(() => vi.advanceTimersByTime(500));
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      fireEvent.focusIn(settings);
+      act(() => vi.advanceTimersByTime(0));
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Appearance and preferences");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("locks the visible workspace while Save as study settles and always releases it", async () => {
     let settle!: {
       resolve: (value: ResearchSnapshot | null) => void;

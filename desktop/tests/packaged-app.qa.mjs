@@ -330,7 +330,29 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await page.locator('main[aria-busy="true"]').waitFor({ state: "detached" });
   assert.match(await page.locator('.research-alert[role="alert"]').innerText(), /unsupported|not a supported|could not|cannot/i);
   const wrongImport = await snapshot(); assert.equal(wrongImport.sources.length, 1); assert.equal(wrongImport.results.length, saved.results.length);
-  await shot("05b-wrong-import"); await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  const importAlert = page.locator('.research-alert[role="alert"]');
+  const dismissImport = importAlert.getByRole("button", { name: "Dismiss", exact: true });
+  const alertBounds = await importAlert.boundingBox();
+  const canvasBounds = await page.locator('.research-canvas').boundingBox();
+  assert.ok(alertBounds && canvasBounds, "Import recovery must remain in the visible canvas track");
+  assert.ok(alertBounds.x >= canvasBounds.x && alertBounds.x + alertBounds.width <= canvasBounds.x + canvasBounds.width,
+    "Import recovery must fit between the source panel and inspector");
+  assert.ok(alertBounds.y >= canvasBounds.y, "Import recovery must sit below the actual wrapped header");
+  const dismissHitTarget = await dismissImport.evaluate((button) => {
+    const bounds = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return hit === button || button.contains(hit);
+  });
+  assert.equal(dismissHitTarget, true, "Dismiss must receive pointer input above the inspector");
+  // Keyboard focus requests help immediately; errors must keep that overlay out of the recovery path.
+  await page.keyboard.press("Tab");
+  await page.getByRole("button", { name: "Open images", exact: true }).focus();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.getByRole("tooltip").count(), 0, "Context help must pause during error recovery");
+  await shot("05b-wrong-import");
+  await dismissImport.click();
+  await importAlert.waitFor({ state: "detached" });
+  receipts.invalid_import_recovery = { canvas_track: true, dismiss_hit_target: dismissHitTarget, context_help_paused: true };
   picker.sources = [sourceCopy]; await installPickers();
   // Batch continuation is supplied by the reviewed batch-export integration.
   // All pending requests must be durable before the first item executes.

@@ -2790,7 +2790,7 @@ export default function ResearchWorkbench({
           dragActive={emptyDropActive} busy={busy !== null || documentSwitching} />
         {(busy || documentSwitching) && <div className="welcome-progress" role="status">{documentSwitching ? "Updating workspace…" : "Opening images…"}</div>}
         {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
-        <ContextHelp enabled={preferences.viewer.contextualHelp} />
+        <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
       </main>
     );
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
@@ -2856,7 +2856,7 @@ export default function ResearchWorkbench({
         )}
       </header>
       {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
-      <ContextHelp enabled={preferences.viewer.contextualHelp} />
+      <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
       <div className="research-sources-pane">
         <aside className="research-sources">
           <div className="research-sources-header">
