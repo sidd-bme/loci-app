@@ -1,10 +1,27 @@
 # Product media and image credits
 
-The homepage combines public-sample fluorescence and histology screenshots with
+## October 2026 showcase
+
+The homepage features the [74-second Loci film and its credits](launch-credits.md),
+plus real application captures. The film is an edited tour, combining native
+views with arranged analysis graphics and recorded command-line output.
+
+- `histology-current.png`: native CMU-1 view; OpenSlide test data, CC0.
+- `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
+- `linked-mri-current.png`: native linked views of the MNI ICBM152 nonlinear asymmetric 2009b template; full notice in the film credits.
+- `launch-poster.png`: title card from the finished film.
+
+These three views were captured during development for the film. Current-build
+analysis captures will be identified separately. File hashes are recorded in the
+[showcase manifest](showcase.json).
+
+## Earlier media collections
+
+
+The earlier homepage combined public-sample fluorescence and histology screenshots with
 maintainer-provided captures of 3D microscopy, linked volume slices and channel
 controls. Captures show the real application, including development builds; they
-are not a version-specific feature guarantee for the downloadable beta. Existing
-recordings are retained as archive material and are not featured on the homepage.
+are not a version-specific feature guarantee for the downloadable beta. Earlier recordings are retained as archive material.
 
 ### Maintainer-provided presentation captures
 

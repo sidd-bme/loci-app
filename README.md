@@ -1,58 +1,75 @@
 <p align="center">
-  <img src="desktop/assets/Loci-icon-black.png" width="80" alt="Loci">
+  <img src="desktop/assets/loci-mark-128.png" width="72" alt="Loci">
 </p>
 
 <h1 align="center">Loci</h1>
-
-<p align="center"><strong>A workspace for scientific images.</strong></p>
-<p align="center">Explore microscopy, annotate regions, and turn images into measurements.</p>
+<p align="center"><strong>Bring your next image.</strong></p>
+<p align="center">A local workspace for microscopy, image analysis and the questions in between.</p>
 
 <p align="center">
-  <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1">Download the beta</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1">Download for macOS</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="https://github.com/sidd-bme/loci-app/issues">Feedback</a> ·
-  <a href="https://ko-fi.com/lociimaging">Support :D</a>
+  <a href="https://ko-fi.com/lociimaging">Support on Ko-fi</a>
 </p>
 
-![Multichannel embryo volume in Loci’s 3D viewer](docs/media/embryo-volume.png)
+[![Watch the Loci film — Bring your next image](docs/media/launch-poster.png)](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/Loci-film-1080p60.mp4)
 
-Loci brings viewing, annotation, segmentation and quantitative review into one desktop workspace. Work with fluorescence images, histology and 3D volumes while keeping your original data intact. Core viewing and analysis run locally, with no account or cloud service required.
+<p align="center"><a href="https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/Loci-film-1080p60.mp4">▶ Watch the 74-second tour</a></p>
 
-## From image to insight
+Loci brings your images, measurements and analysis tools into one desktop workspace. Move from a tissue overview to individual cells, explore a volume, refine a segmentation, and keep the results connected to the image they came from.
 
-- **Explore your images.** Navigate channels, Z-stacks and time points; adjust colour and contrast; inspect slides and volumes.
-- **Define what matters.** Draw regions, annotate structures and make calibrated measurements directly on the image.
-- **Segment and measure.** Use classical methods or configured Cellpose models, then inspect individual objects and their measurements.
-- **Keep the context.** Review results, export tables and figures, and save studies with their analysis settings and source references.
+Your original data stays intact. Core viewing and analysis run on your computer, with no account or cloud service required.
 
-| Fluorescence, channel by channel | Histology in detail |
+## See the whole picture
+
+Open microscopy images, whole-slide scans and 3D volumes. Navigate channels, depth and time, then set the colours and contrast that make the structures you care about easier to see.
+
+![Histology in Loci, with native image navigation and display controls](docs/media/histology-current.png)
+
+| Follow your channels | Explore in three dimensions |
 | :--- | :--- |
-| ![Multichannel fluorescence with colour and plane controls](docs/media/multichannel.png) | ![Histology viewed at native resolution in Loci](docs/media/native-slide.png) |
-| Tune channels and explore individual planes. | Inspect tissue and define regions on the source image. |
+| ![Multichannel fluorescence and channel controls](docs/media/multichannel.png) | ![Fluorescence volume with independent channel display controls](docs/media/fluorescence-volume-current.png) |
+| Adjust each channel without changing the source pixels. | Rotate a volume and tune its colour and opacity. |
 
-| Volumes from every angle | Advanced display controls |
+### Connect the slices
+
+Linked orthogonal views keep a point in context across the volume. Inspect the planes alongside a 3D view and move between them as you explore.
+
+![Linked axial, coronal and sagittal MRI template views beside a shaded 3D volume](docs/media/linked-mri-current.png)
+
+## From objects to answers
+
+Segment with classical methods or a configured Cellpose model. Inspect individual objects, filter their measurements, correct labels, and compare distributions in the statistics workspace. Save a study when you pause and return with the images, settings and results together.
+
+<!-- Current-build analysis screenshots are inserted after packaged verification. -->
+
+- **Measure in context.** Draw regions and annotations, inspect object measurements, and keep calibration and units alongside the results.
+- **Review and refine.** Edit labels, compare correction effects, and choose the results you want to export.
+- **Build a repeatable workflow.** Save recipes, run batches, and use the command line or local MCP connection for supported automation.
+- **Share the result.** Export tables, rendered figures and portable studies.
+
+## Start a study
+
+**[Download the development beta for Apple Silicon Macs](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)**, follow the **[installation guide](docs/INSTALLATION.md)**, then **[open your first image](docs/workflows/FIRST_STUDY.md)**.
+
+This beta is unnotarized, so macOS requires an explicit first-launch approval. Model weights are supplied separately. The guides cover both steps.
+
+| Learn | Make it your own |
 | :--- | :--- |
-| ![MRI volume with linked orthogonal slices and a 3D view](docs/media/linked-volume-slices.png) | ![Per-channel histograms, colour, range and opacity controls](docs/media/channel-controls.png) |
-| Connect 3D structure with linked slice views. | Adjust colour, contrast and opacity with channel histograms. |
+| [User manual](docs/USING_LOCI.md) | [Command line](docs/CLI.md) |
+| [Formats and capabilities](docs/CAPABILITY_MATRIX.md) | [Local agent and MCP access](docs/AGENT_ACCESS.md) |
+| [Analysis workflows](docs/WORKFLOWS.md) | [Build from source](docs/BUILDING.md) |
+| [What's new](CHANGELOG.md) | [Contribute](CONTRIBUTING.md) |
 
-<sub>Real application captures, including development builds. The published download remains v0.1.0-beta.1; current source and screenshots can show newer work. See the [release record](docs/RELEASE_STATUS.md) for its exact scope. [Image credits](docs/media/README.md).</sub>
+## Made for everyday research
 
-## Try Loci
+Loci started with a practical cell-counting workflow. It is growing into the imaging workspace I wanted to use: approachable enough for a quick look, with room to follow an analysis further.
 
-The current download is **v0.1.0-beta.1 for Apple Silicon Macs**. Loci is actively developed, and feedback from research workflows helps shape each iteration.
-
-**[Download for macOS](https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1)** → **[Install & first launch](docs/INSTALLATION.md)** → **[Start your first study](docs/USING_LOCI.md#start-save-and-return)**
-
-The installation guide covers macOS approval for this beta. For image formats, model setup and workflow details, browse the [documentation](docs/README.md).
-
-## Built around research
-
-Loci began with a practical cell-counting workflow and grew into a broader imaging workspace. The aim is to make everyday image analysis easier to navigate, with source data, analysis settings and results kept connected.
-
-Researchers, image analysts and developers are welcome to [share feedback](https://github.com/sidd-bme/loci-app/issues) or [contribute](CONTRIBUTING.md). Developers can start with the [extension guide](docs/EXTENDING_LOCI.md).
+Found a rough edge, have a workflow in mind, or want to help? [Open an issue](https://github.com/sidd-bme/loci-app/issues). If Loci is useful to you, [supporting it on Ko-fi](https://ko-fi.com/lociimaging) helps keep the project moving.
 
 ---
 
-[Apache-2.0](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Security](SECURITY.md)
+[Apache-2.0](LICENSE) · [Image and film credits](docs/media/README.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Security](SECURITY.md)
 
-<sub>Beta research software; not intended for clinical diagnosis.</sub>
+<sub>Research software in active development; not intended for clinical diagnosis.</sub>

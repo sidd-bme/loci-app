@@ -5,12 +5,28 @@ All notable changes to Loci will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.2.0-beta.1] - 2026-10-12
 
-- Clarified installation, release status and contributor documentation.
-- Corrected bundled-manual source links to open the public documentation.
+### Added
 
-These source changes do not replace the existing beta download.
+- Independent image windows with a shared control panel, synchronized display settings and source annotations.
+- Object population queries, linked selection, enlarged statistics views and figure export.
+- External label adoption, correction-effect reports and large-result exchange.
+- Visual workflow editing, reusable recipes and explicit resource controls.
+- A persistent terminal interface, readable command output, local agent setup and expanded MCP guidance.
+- A first-study walkthrough and updated workflow guides.
+
+### Improved
+
+- Responsive plane navigation, per-view cancellation and session annotation drafts.
+- Multichannel volume display, calibrated measurements and source recovery.
+- Renderer error privacy, release-asset checksum verification and packaged regression coverage.
+
+### Development beta
+
+The macOS Apple Silicon download uses an ad-hoc integrity signature and is
+unnotarized. Model checkpoints are not bundled. See the [release record](docs/RELEASE_STATUS.md)
+for the candidate's checks and [installation guide](docs/INSTALLATION.md) for first launch.
 
 ## [v0.1.0-beta.1] - 2026-09-16
 
