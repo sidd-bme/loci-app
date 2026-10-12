@@ -65,7 +65,7 @@ const MODEL_MANIFEST_DEFINITIONS: readonly ModelManifest[] = [
     schemaVersion: MODEL_MANIFEST_SCHEMA,
     modelId: "loci-classical",
     name: "Loci Adaptive Watershed",
-    version: "0.1.0",
+    version: "0.2.0",
     artifact: {
       sha256: null,
       sizeBytes: null,
@@ -74,7 +74,7 @@ const MODEL_MANIFEST_DEFINITIONS: readonly ModelManifest[] = [
     },
     runtime: {
       backend: "loci-engine:adaptive-watershed",
-      requiredVersion: "0.1.0",
+      requiredVersion: "0.2.0",
     },
     intendedDomain: {
       summary:

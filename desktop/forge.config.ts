@@ -15,23 +15,25 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { MakerSquirrel } from "@electron-forge/maker-squirrel";
 import { MakerZIP } from "@electron-forge/maker-zip";
 import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-natives";
 import { VitePlugin } from "@electron-forge/plugin-vite";
-import type { OsxSignOptions } from "@electron/packager";
+import type { HookFunctionArgs, PackagerOsxSignOptions } from "@electron/packager";
 import type { ForgeConfig } from "@electron-forge/shared-types";
 
-type FailClosedOsxSignOptions = OsxSignOptions & {
+type FailClosedOsxSignOptions = PackagerOsxSignOptions & {
   continueOnError: false;
 };
 
+const configDirectory = path.dirname(fileURLToPath(import.meta.url));
 const productName = "Loci";
-const defaultEngineResource = path.resolve(__dirname, "..", "engine", "dist", "loci-engine");
+const defaultEngineResource = path.resolve(configDirectory, "..", "engine", "dist", "loci-engine");
 const sourceEngineResource = path.resolve(process.env.LOCI_ENGINE_RESOURCE ?? defaultEngineResource);
-const entitlementsDirectory = path.resolve(__dirname, "assets", "entitlements");
+const entitlementsDirectory = path.resolve(configDirectory, "assets", "entitlements");
 const emptyEntitlements = path.join(entitlementsDirectory, "empty.plist");
 const jitEntitlements = path.join(entitlementsDirectory, "jit.plist");
 const pluginEntitlements = path.join(entitlementsDirectory, "plugin.plist");
@@ -206,13 +208,7 @@ const inheritedPrivacyKeys = [
   "NSUSBUsageDescription",
 ] as const;
 
-function hardenPackagedResources(
-  buildPath: string,
-  _electronVersion: string,
-  platform: string,
-  arch: string,
-  callback: (error?: Error | null) => void,
-): void {
+function hardenPackagedResources({ buildPath, platform, arch }: HookFunctionArgs): void {
   try {
     if ((platform === "darwin" || platform === "mas") && macSignMode !== "adhoc-local") {
       throw new Error(
@@ -295,7 +291,7 @@ function hardenPackagedResources(
       const cliDirectory = path.join(resourcesDirectory, "bin");
       mkdirSync(cliDirectory, { recursive: true });
       const cliLauncher = path.join(cliDirectory, "loci");
-      copyFileSync(path.resolve(__dirname, "assets", "loci-cli"), cliLauncher);
+      copyFileSync(path.resolve(configDirectory, "assets", "loci-cli"), cliLauncher);
       chmodSync(cliLauncher, 0o755);
       if (!readFileSync(desktopExecutable).equals(desktopBytes)) {
         throw new Error("CLI installation changed the desktop executable");
@@ -303,10 +299,10 @@ function hardenPackagedResources(
     }
     mkdirSync(noticesDirectory, { recursive: true });
     const noticeSources = [
-      [path.resolve(__dirname, "..", "LICENSE"), "LOCI_LICENSE"],
-      [path.resolve(__dirname, "..", "NOTICE"), "LOCI_NOTICE"],
-      [path.resolve(__dirname, "..", "THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
-      [path.resolve(__dirname, "..", "scripts", "upstream_licences", "flatbuffers-25.12.19", "LICENSE"), "FLATBUFFERS_25.12.19_LICENSE"],
+      [path.resolve(configDirectory, "..", "LICENSE"), "LOCI_LICENSE"],
+      [path.resolve(configDirectory, "..", "NOTICE"), "LOCI_NOTICE"],
+      [path.resolve(configDirectory, "..", "THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
+      [path.resolve(configDirectory, "..", "scripts", "upstream_licences", "flatbuffers-25.12.19", "LICENSE"), "FLATBUFFERS_25.12.19_LICENSE"],
       [path.join(buildPath, "LICENSE"), "ELECTRON_LICENSE"],
       [path.join(buildPath, "LICENSES.chromium.html"), "LICENSES.chromium.html"],
     ] as const;
@@ -316,9 +312,8 @@ function hardenPackagedResources(
       }
       copyFileSync(source, path.join(noticesDirectory, filename));
     }
-    callback(null);
   } catch (error) {
-    callback(error instanceof Error ? error : new Error(String(error)));
+    throw error instanceof Error ? error : new Error(String(error));
   }
 }
 
@@ -336,7 +331,7 @@ const config: ForgeConfig = {
     executableName: "Loci",
     // The current audited artwork has a macOS ICNS only. The unsigned Windows
     // qualification package uses Electron's default icon until an ICO is added.
-    icon: packagingPlatform === "win32" ? undefined : path.resolve(__dirname, "assets", "Loci"),
+    icon: packagingPlatform === "win32" ? undefined : path.resolve(configDirectory, "assets", "Loci"),
     name: productName,
     osxSign: macSignMode === "adhoc-local" ? localAdHocSign : undefined,
     extraResource: [packagedEngineResource],

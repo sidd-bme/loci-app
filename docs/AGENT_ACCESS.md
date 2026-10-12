@@ -80,7 +80,7 @@ The original policy schema is `loci.agent-policy/v1` and has these exact fields:
   "model_packages": [],
   "runtimes": [
     {
-      "engine": "0.1.0",
+      "engine": "0.2.0",
       "numpy": "exact-version",
       "scipy": "exact-version",
       "scikit_image": "exact-version",

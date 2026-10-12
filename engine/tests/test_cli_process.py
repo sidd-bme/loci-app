@@ -11,6 +11,8 @@ import numpy as np
 import pytest
 import tifffile
 
+from loci_engine.models import ENGINE_VERSION
+
 
 def invoke(*args, frozen=False, legacy=False, check=True):
     module = (
@@ -254,7 +256,7 @@ assert not any(name in sys.modules for name in ('numpy', 'scipy', 'tifffile', 'c
         == receipt("guide", "recipe")["request_schema"]
     )
     assert receipt("discover", "not-a-matching-operation")["operations"] == {}
-    assert receipt("--version")["version"] == "0.1.0"
+    assert receipt("--version")["version"] == ENGINE_VERSION
     assert len(receipt("examples")["examples"]) == 2
     doctor = receipt("doctor")
     assert "model" in doctor["scope"] and "not-found" not in {
@@ -443,7 +445,7 @@ def test_real_pty_startup_stays_open_animates_and_executes_commands():
         [], session_script=[(b"loci> ", 1.2, b"--version\r"), (b"Exit 0", 0.3, b"\x04")]
     )
     assert status == 0 and text.endswith("\x1b[0m\x1b[?25h")
-    assert "Local image research" in text and "Loci 0.1.0" in text
+    assert "Local image research" in text and f"Loci {ENGINE_VERSION}" in text
     assert text.count("\x1b[") > 40  # Updated frames continue after the old bounded reveal.
 
 

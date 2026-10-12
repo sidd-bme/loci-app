@@ -68,7 +68,7 @@ const workerPath = packaged
   : path.join(projectRoot, "engine", ".venv", "bin", "python");
 const mainArtifact = packaged
   ? path.join(packagedApp, "Contents", "Resources", "app.asar")
-  : path.join(desktopRoot, ".vite", "build", "main.js");
+  : path.join(desktopRoot, ".vite", "build", "main.cjs");
 const workerClientSource = path.join(desktopRoot, "src", "main", "worker-client.ts");
 const workerModuleSource = path.join(projectRoot, "engine", "src", "loci_engine", "worker.py");
 const independentPython = path.join(projectRoot, "engine", ".venv", "bin", "python");

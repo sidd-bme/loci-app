@@ -45,7 +45,7 @@ const workerPath = packaged
   : path.join(projectRoot, "engine", ".venv", "bin", "python");
 const mainArtifact = packaged
   ? path.join(packagedApp, "Contents", "Resources", "app.asar")
-  : path.join(desktopRoot, ".vite", "build", "main.js");
+  : path.join(desktopRoot, ".vite", "build", "main.cjs");
 const independentPython = path.join(projectRoot, "engine", ".venv", "bin", "python");
 
 const startedAt = new Date().toISOString();

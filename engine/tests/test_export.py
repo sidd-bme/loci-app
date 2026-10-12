@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw
 
 import loci_engine.export as export_module
 from loci_engine.export import export_analysis, sanitize_basename
-from loci_engine.models import SegmentationSettings, SourceMetadata
+from loci_engine.models import ENGINE_VERSION, SegmentationSettings, SourceMetadata
 from loci_engine.results import RESULT_CACHE, ResultCache
 from loci_engine.segment import segment_image
 from loci_engine.worker import handle_request
@@ -160,11 +160,11 @@ def test_exports_complete_traceable_bundle_without_touching_source(tmp_path: Pat
     assert str(source_path.resolve()) not in analysis_text
     assert analysis["source"]["name"] == source_path.name
     assert analysis["source"]["sha256"] == source_hash
-    assert analysis["engine"] == {"id": "loci-classical", "version": "0.1.0"}
+    assert analysis["engine"] == {"id": "loci-classical", "version": ENGINE_VERSION}
     assert analysis["profile"] == {
         "id": "loci-classical",
         "name": "Loci Adaptive Watershed",
-        "version": "0.1.0",
+        "version": ENGINE_VERSION,
         "backend_kind": "classical",
         "model": {
             "format": "builtin-algorithm",

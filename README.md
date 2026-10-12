@@ -36,11 +36,11 @@ Open microscopy images, whole-slide scans and 3D volumes. Navigate channels, dep
 
 Linked orthogonal views keep a point in context across the volume. Inspect the planes alongside a 3D view and move between them as you explore.
 
-![Linked axial, coronal and sagittal MRI template views beside a shaded 3D volume](docs/media/linked-mri-current.png)
+![Linked MRI slices and a rotating 3D template volume in Loci](docs/media/medical-volume.gif)
 
 ## From objects to answers
 
-Segment with classical methods or a configured Cellpose model. Inspect individual objects, filter their measurements, correct labels, and compare distributions in the statistics workspace. Save a study when you pause and return with the images, settings and results together.
+Bring your own model and keep the rest of your workflow in one place. Use a [compatible local model](docs/MODEL_PACKAGE_FORMAT.md), a configured Cellpose profile, or import labels from another segmentation tool. Inspect individual objects, filter their measurements, refine labels, and compare distributions in the statistics workspace. Save a study when you pause and return with the images, settings and results together.
 
 <!-- Current-build analysis screenshots are inserted after packaged verification. -->
 
@@ -48,6 +48,20 @@ Segment with classical methods or a configured Cellpose model. Inspect individua
 - **Review and refine.** Edit labels, compare correction effects, and choose the results you want to export.
 - **Build a repeatable workflow.** Save recipes, run batches, and use the command line or local MCP connection for supported automation.
 - **Share the result.** Export tables, rendered figures and portable studies.
+
+## Work your way
+
+Use the desktop for exploration and the command line for repeatable work. Discover commands, inspect a study and run supported operations from a local terminal.
+
+![Loci command-line workflow, replayed from recorded terminal output](docs/media/cli-workflow.gif)
+
+### Connect your agent
+
+Give a local agent access to the images and operations you choose. Through MCP, it can inspect sources, prepare and run approved recipes, follow jobs, and read results. You stay in charge of access and review.
+
+![MCP capabilities: source inspection, recipe preparation, execution, results and reviewed export](docs/media/mcp-overview.svg)
+
+[Set up agent access](docs/AGENT_ACCESS.md) · [Explore the CLI](docs/CLI.md)
 
 ## Start a study
 
@@ -61,6 +75,15 @@ This beta is unnotarized, so macOS requires an explicit first-launch approval. M
 | [Formats and capabilities](docs/CAPABILITY_MATRIX.md) | [Local agent and MCP access](docs/AGENT_ACCESS.md) |
 | [Analysis workflows](docs/WORKFLOWS.md) | [Build from source](docs/BUILDING.md) |
 | [What's new](CHANGELOG.md) | [Contribute](CONTRIBUTING.md) |
+
+## Looking ahead
+
+- More ways to bring your own segmentation models.
+- Broader 3D segmentation capabilities.
+- Local model training and comparison.
+- Windows support and easier installation.
+
+These are directions for future work.
 
 ## Made for everyday research
 

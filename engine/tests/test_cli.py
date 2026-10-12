@@ -1,6 +1,7 @@
 import io
 import json
 import sys
+import threading
 
 import pytest
 
@@ -10,6 +11,29 @@ from loci_engine import cli
 class Tty(io.StringIO):
     def isatty(self):
         return True
+
+
+def observe_indicator(monkeypatch, stream):
+    """Synchronize with the real indicator instead of a 50 ms scheduling margin."""
+    rendered = threading.Event()
+    original_write = stream.write
+    original_indicator = cli.WorkIndicator
+    indicators = []
+
+    def write(text):
+        count = original_write(text)
+        if "\x1b" in text:
+            rendered.set()
+        return count
+
+    def indicator(*args, **kwargs):
+        instance = original_indicator(*args, **kwargs, delay=0)
+        indicators.append(instance)
+        return instance
+
+    monkeypatch.setattr(stream, "write", write)
+    monkeypatch.setattr(cli, "WorkIndicator", indicator)
+    return indicators, rendered
 
 
 @pytest.mark.parametrize(
@@ -24,15 +48,22 @@ class Tty(io.StringIO):
     ],
 )
 def test_terminal_mode_and_motion_policy(monkeypatch, flags, environment, has_motion):
-    import time
-
     stdout, stderr = Tty(), Tty()
     monkeypatch.setattr(sys, "stdout", stdout)
     monkeypatch.setattr(sys, "stderr", stderr)
     monkeypatch.delenv("NO_COLOR", raising=False)
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
-    monkeypatch.setattr(cli, "_friendly_execute", lambda _args: time.sleep(0.85) or {"valid": True})
+    indicators, rendered = observe_indicator(monkeypatch, stderr)
+
+    def execute(_args):
+        assert len(indicators) == 1
+        assert indicators[0].enabled is has_motion
+        if has_motion:
+            assert rendered.wait(2), "The enabled indicator did not render"
+        return {"valid": True}
+
+    monkeypatch.setattr(cli, "_friendly_execute", execute)
     assert (
         cli.main([*flags, "execute", "--project", "study", "validate_recipe", "--request", "{}"])
         == 0
@@ -46,16 +77,17 @@ def test_terminal_mode_and_motion_policy(monkeypatch, flags, environment, has_mo
 
 
 def test_interrupted_execution_clears_indicator_and_reports_inspect_jobs(monkeypatch):
-    import time
-
     stdout, stderr = Tty(), Tty()
     monkeypatch.setattr(sys, "stdout", stdout)
     monkeypatch.setattr(sys, "stderr", stderr)
     monkeypatch.setenv("TERM", "xterm")
     monkeypatch.delenv("NO_COLOR", raising=False)
 
+    indicators, rendered = observe_indicator(monkeypatch, stderr)
+
     def interrupted(_args):
-        time.sleep(0.85)
+        assert len(indicators) == 1 and indicators[0].enabled
+        assert rendered.wait(2), "The enabled indicator did not render"
         raise KeyboardInterrupt
 
     monkeypatch.setattr(cli, "_friendly_execute", interrupted)

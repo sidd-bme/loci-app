@@ -10,6 +10,9 @@ views with arranged analysis graphics and recorded command-line output.
 - `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
 - `linked-mri-current.png`: native linked views of the MNI ICBM152 nonlinear asymmetric 2009b template; full notice in the film credits.
 - `launch-poster.png`: title card from the finished film.
+- `cli-workflow.gif`: genuine PTY output replay from the film, resized to 1200 pixels wide at 12 fps; waiting and typing cadence are editorially conformed.
+- `medical-volume.gif`: native MNI template volume captures, resized to 1200 pixels wide at 12 fps; full source notice is in the film credits.
+- `mcp-overview.svg`: capability overview drawn from the agent-access guide; an explanatory diagram, not an application screenshot.
 
 These three views were captured during development for the film. Current-build
 analysis captures will be identified separately. File hashes are recorded in the

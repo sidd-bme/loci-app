@@ -33,6 +33,29 @@
       "capture": "film title card",
       "release_specific": false,
       "credits": "launch-credits.md"
+    },
+    {
+      "file": "cli-workflow.gif",
+      "sha256": "a3e9a57db0d5a869f8c3a06813e566e67d9d13f1443c059da44c60cb8d79db70",
+      "subject": "Loci command-line session",
+      "capture": "Excerpt of genuine PTY output replay from the finished film; pacing conformed",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "medical-volume.gif",
+      "sha256": "e46bde8b166d7a4f26a16a37b7e59798c88c9fa92357c41f609c8e361658cc0e",
+      "subject": "MNI ICBM152 template",
+      "capture": "Resized sequence of native development-app volume captures",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "mcp-overview.svg",
+      "sha256": "6262bc3289e7a1e46284b7d6e3403f89003c4dc181ab67d5460a72f1e8f2f0df",
+      "subject": "MCP capability overview",
+      "capture": "Editable explanatory SVG based on docs/AGENT_ACCESS.md",
+      "release_specific": false
     }
   ],
   "film": {

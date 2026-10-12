@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
@@ -459,16 +459,56 @@ describe("RawVolumeViewport lifecycle", () => {
     expect((screen.getByLabelText("C1 low") as HTMLInputElement).value).toBe("12");
     expect((screen.getByLabelText("C1 gamma") as HTMLInputElement).value).toBe("1.7");
 
-    vtk.canvas!.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    fireEvent(vtk.canvas!, new Event("webglcontextlost", { cancelable: true }));
     expect(await screen.findByText(/Graphics context lost/)).toBeTruthy();
     const lostCanvas = vtk.canvas;
     const priorAddVolumeCalls = vtk.addVolume.mock.calls.length;
     const priorSetPositionCalls = vtk.setPosition.mock.calls.length;
-    vtk.canvas!.dispatchEvent(new Event("webglcontextrestored"));
+    fireEvent(vtk.canvas!, new Event("webglcontextrestored"));
+    await waitFor(() => {
+      expect(vtk.canvas).not.toBe(lostCanvas);
+      expect(vtk.addVolume.mock.calls.length).toBeGreaterThan(priorAddVolumeCalls);
+      expect(vtk.setPosition.mock.calls.length).toBeGreaterThan(priorSetPositionCalls);
+    });
     expect(await screen.findByText(/source voxels/)).toBeTruthy();
-    expect(vtk.canvas).not.toBe(lostCanvas);
-    expect(vtk.addVolume.mock.calls.length).toBeGreaterThan(priorAddVolumeCalls);
-    expect(vtk.setPosition.mock.calls.length).toBeGreaterThan(priorSetPositionCalls);
+  });
+
+  it("blocks a deferred verified payload and display updates after context loss until a fresh renderer binds", async () => {
+    const initial: RawVolumeResponse = { schema_version: 1, context: context(), focus: null };
+    const verifiedDigest = await crypto.subtle.digest("SHA-256", new Uint8Array([0, 1, 2, 3]));
+    let finishDigest!: (value: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(() =>
+      new Promise<ArrayBuffer>((resolve) => { finishDigest = resolve; }));
+    const exportFigure = vi.fn().mockResolvedValue(null);
+    render(<RawVolumeViewport volume={initial} onExportFigure={exportFigure} />);
+    expect(digest).toHaveBeenCalledOnce();
+    const lostCanvas = vtk.canvas!;
+    fireEvent(lostCanvas, new Event("webglcontextlost", { cancelable: true }));
+    expect(screen.getByText(/Graphics context lost/)).toBeTruthy();
+    const rendersAtLoss = vtk.render.mock.calls.length;
+    fireEvent.change(screen.getByRole("slider", { name: "C1 opacity" }), { target: { value: "0.25" } });
+    fireEvent.keyDown(screen.getByLabelText("Interactive three-dimensional volume"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset camera" }));
+    await act(async () => { finishDigest(verifiedDigest); });
+    expect(vtk.addVolume).not.toHaveBeenCalled();
+    expect(vtk.render).toHaveBeenCalledTimes(rendersAtLoss);
+    expect(screen.getByText(/Graphics context lost/)).toBeTruthy();
+    const exportButton = screen.getByRole("button", { name: "Export PNG…" });
+    expect(exportButton.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(exportButton);
+    expect(vtk.captureNextImage).not.toHaveBeenCalled();
+    expect(exportFigure).not.toHaveBeenCalled();
+
+    fireEvent(lostCanvas, new Event("webglcontextrestored"));
+    await waitFor(() => {
+      expect(vtk.canvas).not.toBe(lostCanvas);
+      expect(vtk.addVolume).toHaveBeenCalledOnce();
+      expect(vtk.render.mock.calls.length).toBeGreaterThan(rendersAtLoss);
+      expect(exportButton.hasAttribute("disabled")).toBe(false);
+    });
+    expect(digest).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement).value).toBe("0.25");
+    expect(screen.queryByText(/Graphics context lost/)).toBeNull();
   });
 
   it("shows focus separately and applies one context-world clipping plane to both payloads", async () => {

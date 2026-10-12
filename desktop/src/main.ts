@@ -4326,7 +4326,7 @@ function createImageWindow(): { window: BrowserWindow; load: () => Promise<void>
   const window = new BrowserWindow({
     width: 1080, height: 780, minWidth: 720, minHeight: 480, show: false,
     title: "Loci · Image", backgroundColor: "#111614",
-    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
+    webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true,
       nodeIntegration: false, sandbox: true, webSecurity: true },
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -4348,7 +4348,7 @@ async function createWindow(): Promise<void> {
     title: "Loci",
     backgroundColor: "#111614",
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

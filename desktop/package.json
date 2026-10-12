@@ -4,11 +4,11 @@
   "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "Local biological image viewing, segmentation, and counting for research labs",
-  "main": ".vite/build/main.js",
+  "main": ".vite/build/main.cjs",
   "private": true,
   "packageManager": "npm@11.12.1",
   "overrides": {
-    "@electron/packager": "18.4.4",
+    "@electron/packager": "20.3.0",
     "@electron/rebuild": "4.2.0",
     "extract-zip": "npm:@electron-internal/extract-zip@1.0.5",
     "tmp": "0.2.7"
@@ -42,13 +42,13 @@
   },
   "devDependencies": {
     "@cyclonedx/cyclonedx-npm": "6.0.1",
-    "@electron-forge/cli": "^7.11.2",
-    "@electron-forge/maker-squirrel": "^7.11.2",
-    "@electron-forge/maker-zip": "^7.11.2",
-    "@electron-forge/plugin-auto-unpack-natives": "^7.11.2",
-    "@electron-forge/plugin-vite": "^7.11.2",
-    "@electron-forge/shared-types": "^7.11.2",
-    "@electron/packager": "18.4.4",
+    "@electron-forge/cli": "8.0.1",
+    "@electron-forge/maker-squirrel": "8.0.1",
+    "@electron-forge/maker-zip": "8.0.1",
+    "@electron-forge/plugin-auto-unpack-natives": "8.0.1",
+    "@electron-forge/plugin-vite": "8.0.1",
+    "@electron-forge/shared-types": "8.0.1",
+    "@electron/packager": "20.3.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
@@ -64,5 +64,6 @@
     "vite": "^8.2.2",
     "vitest": "^4.1.11"
   },
-  "author": "Loci contributors"
+  "author": "Loci contributors",
+  "type": "module"
 }

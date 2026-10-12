@@ -683,7 +683,7 @@ export function RawVolumeViewport({
   const syncContainer = useCallback((node: HTMLDivElement | null) => {
     containerRef.current = node;
     const scene = sceneRef.current;
-    if (node && scene?.generic) {
+    if (node && scene?.generic && !scene.contextLost) {
       if (scene.generic.getContainer() !== node) {
         scene.generic.setContainer(node);
         if (scene.resize) {
@@ -813,7 +813,13 @@ export function RawVolumeViewport({
     const onLost = (event: Event) => {
       event.preventDefault();
       const scene = sceneRef.current;
-      if (scene) scene.stateEpoch += 1;
+      if (scene) {
+        // React state updates are asynchronous. Invalidate this scene immediately
+        // so pending verification and display effects cannot revive its GPU state.
+        scene.contextLost = true;
+        scene.renderStateSignature = null;
+        scene.stateEpoch += 1;
+      }
       const camera = scene?.renderer.getActiveCamera?.();
       if (camera && scene.binding) {
         lostCameraRef.current = {
@@ -866,7 +872,7 @@ export function RawVolumeViewport({
         resizeScheduled = true;
         window.requestAnimationFrame(() => {
           resizeScheduled = false;
-          if (sceneRef.current?.generic !== generic) return;
+          if (sceneRef.current?.generic !== generic || sceneRef.current.contextLost) return;
           try {
             generic.resize();
             sceneRef.current?.renderWindow?.render();
@@ -893,7 +899,7 @@ export function RawVolumeViewport({
       orientationWidget.updateViewport();
       sceneRef.current = { generic, renderer, renderWindow, apiWindow, canvas, imageRecords: [], sliceRecords: [],
         transferObjects: [], clippingPlanes: [], binding: null, initialCamera: null,
-        contextHistogram: null, stateEpoch: 0, renderStateSignature: null,
+        contextHistogram: null, stateEpoch: 0, renderStateSignature: null, contextLost: false,
         axesActor, orientationWidget, interactorStyle, mouseManipulators, resize };
     } catch (caught) {
       setRenderError(caught instanceof Error ? caught.message : "Could not initialize the volume renderer.");
@@ -927,7 +933,7 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene || !volume) return;
+    if (!scene || scene.contextLost || !volume) return;
     let cancelled = false;
     setRenderError(null);
     void (async () => {
@@ -939,7 +945,7 @@ export function RawVolumeViewport({
         if (digests.some((digest, index) => digest !== payloads[index].data_sha256)) {
           throw new Error("Raw-volume bytes failed their SHA-256 integrity check.");
         }
-        if (cancelled || sceneRef.current !== scene) return;
+        if (cancelled || sceneRef.current !== scene || scene.contextLost) return;
         setVerifiedPlanes({ volume, values: decoded.map((item) => item.values) });
         const contextHistogramKey = histogramBinding(volume.context);
         const contextHistogram = scene.contextHistogram?.binding === contextHistogramKey
@@ -1057,7 +1063,7 @@ export function RawVolumeViewport({
     if (volume) return;
     setTransfers([]); setDetailView("context"); setVerifiedPlanes(null);
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     scene.imageRecords.forEach((record: any) => record.actor.setVisibility(false));
     scene.sliceRecords.forEach((record: any) => record.actor.setVisibility(false));
     try { scene.renderWindow.render(); }
@@ -1066,7 +1072,9 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene || !volume || transfers.length === 0) return;
+    if (!scene || scene.contextLost || !volume || transfers.length === 0 ||
+        scene.imageRecords[0]?.payload !== volume.context ||
+        (volume.focus && scene.imageRecords[1]?.payload !== volume.focus)) return;
     const activePayloadIndex = detailView === "focus" && volume.focus ? 1 : 0;
     const sourceCrosshair = slices.map((index, axis) =>
       volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
@@ -1164,7 +1172,7 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     if (containerRef.current && scene.generic && scene.generic.getContainer() !== containerRef.current) {
       scene.generic.setContainer(containerRef.current);
       if (scene.resize) {
@@ -1173,6 +1181,7 @@ export function RawVolumeViewport({
       }
     }
     const frame = window.requestAnimationFrame(() => {
+      if (sceneRef.current !== scene || scene.contextLost) return;
       try {
         scene.generic.resize();
         scene.renderWindow.render();
@@ -1220,7 +1229,7 @@ export function RawVolumeViewport({
 
   const resetCamera = () => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     try {
       const camera = scene.renderer.getActiveCamera();
       const initial = scene.initialCamera;
@@ -1258,7 +1267,7 @@ export function RawVolumeViewport({
     }
     const scene = sceneRef.current;
     const camera = scene?.renderer.getActiveCamera?.();
-    if (!camera) return;
+    if (!camera || scene.contextLost) return;
     try {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight")
         camera.azimuth(event.key === "ArrowLeft" ? -5 : 5);
@@ -1304,7 +1313,7 @@ export function RawVolumeViewport({
         volume, mode, detailView, transfers, clipEnabled, clipAxis, clipPosition, slices,
         activeModeDetails.shade, renderMode, quality,
       );
-      if (contextState !== "ready" || scene.binding !== expectedBinding ||
+      if (scene.contextLost || contextState !== "ready" || scene.binding !== expectedBinding ||
           scene.renderStateSignature !== expectedRenderState ||
           scene.imageRecords[0]?.payload !== volume.context ||
           (volume.focus && scene.imageRecords[1]?.payload !== volume.focus))
@@ -1351,7 +1360,7 @@ export function RawVolumeViewport({
         cameraBefore.clippingRange, cameraBefore.viewAngle, cameraBefore.parallel, cameraBefore.parallelScale,
       ]) || canvas.width !== width || canvas.height !== height || scene.binding !== expectedBinding ||
           scene.stateEpoch !== stateEpoch || scene.renderStateSignature !== expectedRenderState ||
-          sceneRef.current !== scene || scene.imageRecords[0]?.payload !== volume.context ||
+          sceneRef.current !== scene || scene.contextLost || scene.imageRecords[0]?.payload !== volume.context ||
           (volume.focus && scene.imageRecords[1]?.payload !== volume.focus))
         throw new Error("The volume view changed during figure capture; try again.");
       const clipping = clipEnabled ? contextClippingPlane(volume.context, clipAxis, clipPosition) : null;

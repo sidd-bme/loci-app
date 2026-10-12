@@ -76,7 +76,7 @@ const workerPath = packagedApp
   : path.join(projectRoot, "engine", ".venv", "bin", "python");
 const mainArtifact = packagedApp
   ? path.join(packagedApp, "Contents", "Resources", "app.asar")
-  : path.join(desktopRoot, ".vite", "build", "main.js");
+  : path.join(desktopRoot, ".vite", "build", "main.cjs");
 const independentPython = process.env.LOCI_QA_REFERENCE_PYTHON ??
   path.join(projectRoot, "engine", ".venv", "bin", "python");
 if (!path.isAbsolute(independentPython))

@@ -36,7 +36,7 @@ const worker = packagedApp
   : path.join(projectRoot, "engine", ".venv", "bin", "python");
 const mainArtifact = packagedApp
   ? path.join(packagedApp, "Contents", "Resources", "app.asar")
-  : path.join(desktopRoot, ".vite", "build", "main.js");
+  : path.join(desktopRoot, ".vite", "build", "main.cjs");
 const python = path.join(projectRoot, "engine", ".venv", "bin", "python");
 const startedAt = new Date().toISOString();
 const runRoot = path.join(outputRoot, `field-assay-${startedAt.replaceAll(/[:.]/g, "-")}`);

@@ -327,13 +327,26 @@ describe("DetachedControlPanel", () => {
 
     const controls = await screen.findByRole("region", { name: "Controls for View 1" });
     const windowInput = await within(controls).findByLabelText("View 1 channel 1 window");
+    const levelInput = within(controls).getByLabelText("View 1 channel 1 level");
+    // Wait for the source-bound initial presentation and input effects before
+    // exercising a user edit; mounting the label alone is not hydration.
+    await waitFor(() => {
+      expect(windowInput).toHaveValue("400");
+      expect(levelInput).toHaveValue("200");
+      expect(vi.mocked(api.publish).mock.calls.some(([target, presentation]) =>
+        target.viewId === "view-a" && target.sourceId === medicalSource.id &&
+        presentation.channels[0].low === 0 && presentation.channels[0].high === 400)).toBe(true);
+    });
+    fireEvent.focus(windowInput);
     fireEvent.change(windowInput, { target: { value: "200" } });
+    expect(windowInput).toHaveValue("200");
     fireEvent.blur(windowInput);
     await waitFor(() => expect(vi.mocked(api.publish).mock.calls.some(([, presentation]) =>
       presentation.channels[0].low === 100 && presentation.channels[0].high === 300)).toBe(true));
 
-    const levelInput = within(controls).getByLabelText("View 1 channel 1 level");
+    fireEvent.focus(levelInput);
     fireEvent.change(levelInput, { target: { value: "50" } });
+    expect(levelInput).toHaveValue("50");
     fireEvent.blur(levelInput);
     await waitFor(() => expect(vi.mocked(api.publish).mock.calls.some(([, presentation]) =>
       presentation.channels[0].low === -50 && presentation.channels[0].high === 150)).toBe(true));

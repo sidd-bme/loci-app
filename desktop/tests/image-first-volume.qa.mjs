@@ -27,7 +27,7 @@ const workerPath = development
   : path.join(appBundle, "Contents", "Resources", "loci-engine", "loci-engine");
 const volumeSourcePath = path.join(projectRoot, "engine", "src", "loci_engine", "viewer_volume.py");
 const applicationArtifact = development
-  ? path.join(desktopRoot, ".vite", "build", "main.js")
+  ? path.join(desktopRoot, ".vite", "build", "main.cjs")
   : path.join(appBundle, "Contents", "Resources", "app.asar");
 const runName = new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
 const runRoot = path.resolve(process.env.LOCI_QA_OUTPUT_ROOT ?? path.join(

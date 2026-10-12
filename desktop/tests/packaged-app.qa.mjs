@@ -34,7 +34,7 @@ const baselineExport = path.join(output, "baseline-export"), correctedExport = p
 const batchExport = path.join(output, "batch-export"), summaryExport = path.join(output, "summary-export");
 const executablePath = development ? path.join(root, "desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron") : path.join(appBundle, "Contents/MacOS/Loci");
 const workerPath = development ? path.join(root, "engine/.venv/bin/python") : path.join(appBundle, "Contents/Resources/loci-engine/loci-engine");
-const asar = development ? path.join(root, "desktop/.vite/build/main.js") : path.join(appBundle, "Contents/Resources/app.asar");
+const asar = development ? path.join(root, "desktop/.vite/build/main.cjs") : path.join(appBundle, "Contents/Resources/app.asar");
 const python = process.env.LOCI_QA_REFERENCE_PYTHON ?? path.join(root, "engine/.venv/bin/python");
 await fs.mkdir(output, { recursive: true });
 await Promise.all([fs.mkdir(userData), fs.mkdir(screenshots), fs.mkdir(formulaFolder),

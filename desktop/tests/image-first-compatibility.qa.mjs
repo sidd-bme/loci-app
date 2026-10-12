@@ -42,8 +42,8 @@ const workerExecutable = development
 const workerArguments = development ? ["-m", "loci_engine.worker"] : [];
 const workerCwd = development ? engineRoot : runRoot;
 const archiveArtifact = path.join(appBundle, "Contents", "Resources", "app.asar");
-const mainArtifact = path.join(desktopRoot, ".vite", "build", "main.js");
-const preloadArtifact = path.join(desktopRoot, ".vite", "build", "preload.js");
+const mainArtifact = path.join(desktopRoot, ".vite", "build", "main.cjs");
+const preloadArtifact = path.join(desktopRoot, ".vite", "build", "preload.cjs");
 const rendererSource = path.join(
   desktopRoot,
   "src",
