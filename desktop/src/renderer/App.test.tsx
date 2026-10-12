@@ -1906,7 +1906,7 @@ describe("Loci renderer", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from Loci" }));
 
     await waitFor(() => expect(window.loci.removeSource).toHaveBeenCalledWith("source-2"));
-    expect(screen.queryByText("plate-b.tif")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("plate-b.tif")).not.toBeInTheDocument());
     expect(await screen.findByText(/source file was not deleted/i)).toBeVisible();
   });
 
