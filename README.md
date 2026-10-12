@@ -42,7 +42,9 @@ Linked orthogonal views keep a point in context across the volume. Inspect the p
 
 Bring your own model and keep the rest of your workflow in one place. Use a [compatible local model](docs/MODEL_PACKAGE_FORMAT.md), a configured Cellpose profile, or import labels from another segmentation tool. Inspect individual objects, filter their measurements, refine labels, and compare distributions in the statistics workspace. Save a study when you pause and return with the images, settings and results together.
 
-<!-- Current-build analysis screenshots are inserted after packaged verification. -->
+![Cellpose segmentation labels overlaid on a complex image, alongside full-population statistics](docs/media/cellpose-population-current.png)
+
+*4,837 imported Cellpose objects, with measurements and distributions linked to the source image.*
 
 - **Measure in context.** Draw regions and annotations, inspect object measurements, and keep calibration and units alongside the results.
 - **Review and refine.** Edit labels, compare correction effects, and choose the results you want to export.

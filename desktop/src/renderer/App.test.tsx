@@ -2345,7 +2345,9 @@ describe("Loci renderer", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit boundary vertices" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Edit boundary vertices" }));
-    fireEvent.pointerDown(viewport!, { button: 0, pointerId: 22, clientX: 300, clientY: 230 });
+    await act(async () => {
+      fireEvent.pointerDown(viewport!, { button: 0, pointerId: 22, clientX: 300, clientY: 230 });
+    });
     await waitFor(() => expect(api.getInstanceBoundary).toHaveBeenCalledWith(
       "source-1",
       "result-1",
@@ -2359,7 +2361,9 @@ describe("Loci renderer", () => {
     expect(api.moveBoundaryVertex).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument();
 
-    fireEvent.pointerDown(viewport!, { button: 0, pointerId: 23, clientX: 300, clientY: 230 });
+    await act(async () => {
+      fireEvent.pointerDown(viewport!, { button: 0, pointerId: 23, clientX: 300, clientY: 230 });
+    });
     const commitAfterCancel = await screen.findByRole("button", { name: "Commit" });
     expect(api.getInstanceBoundary).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(window, { key: "ArrowRight" });

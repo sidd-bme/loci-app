@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
 import type { ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
@@ -218,9 +218,11 @@ it("keeps B visible when deletion of A resolves after navigation", async () => {
   await waitFor(() => expect(state.execute).toHaveBeenCalledWith("large_result_delete", expect.anything()));
   await sourceButton("Source B");
   const snapshotsBeforeCompletion = state.getSnapshot.mock.calls.length;
-  state.completeDelete();
+  // Settle the deliberately deferred deletion and its snapshot adoption before
+  // checking the displayed source; observing the API call alone is insufficient.
+  await act(async () => { state.completeDelete(); });
   await waitFor(() => expect(state.getSnapshot.mock.calls.length).toBeGreaterThan(snapshotsBeforeCompletion));
-  expect(screen.getByLabelText("Active image")).toHaveTextContent("Source B");
+  await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent("Source B"));
   expect(screen.queryByRole("region", { name: "Large quantitative result" })).not.toBeInTheDocument();
   expect(state.execute).not.toHaveBeenCalledWith("select_result", expect.anything());
   expect(state.current().results).toHaveLength(2);

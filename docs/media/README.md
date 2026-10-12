@@ -10,12 +10,14 @@ views with arranged analysis graphics and recorded command-line output.
 - `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
 - `linked-mri-current.png`: native linked views of the MNI ICBM152 nonlinear asymmetric 2009b template; full notice in the film credits.
 - `launch-poster.png`: title card from the finished film.
+- `cellpose-population-current.png`: native 0.2.0 candidate showing the maintainer-authorized image and retained Cellpose labels, with the full 4,837-object population. The screenshot uses encoded RGB components and uncalibrated pixel units; no new model run.
 - `cli-workflow.gif`: genuine PTY output replay from the film, resized to 1200 pixels wide at 12 fps; waiting and typing cadence are editorially conformed.
 - `medical-volume.gif`: native MNI template volume captures, resized to 1200 pixels wide at 12 fps; full source notice is in the film credits.
 - `mcp-overview.svg`: capability overview drawn from the agent-access guide; an explanatory diagram, not an application screenshot.
 
-These three views were captured during development for the film. Current-build
-analysis captures will be identified separately. File hashes are recorded in the
+The histology, fluorescence and MRI views were captured during development for the film.
+The Cellpose population view was captured from public candidate `c041ff2`. File hashes and
+its exact application identity are recorded in the
 [showcase manifest](showcase.json).
 
 ## Earlier media collections

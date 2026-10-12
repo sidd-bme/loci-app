@@ -56,6 +56,17 @@
       "subject": "MCP capability overview",
       "capture": "Editable explanatory SVG based on docs/AGENT_ACCESS.md",
       "release_specific": false
+    },
+    {
+      "file": "cellpose-population-current.png",
+      "sha256": "acd4ded9a5b82961363685b34fbd5dc7cd89073d17546c77d8ed3b573522f20e",
+      "subject": "Maintainer-authorized image with 4,837 imported Cellpose label IDs",
+      "capture": "Native packaged application, full population statistics and label overlay",
+      "release_specific": true,
+      "source_commit": "c041ff2c0c12176d492d46fc7c4c3e338e160861",
+      "application_sha256": "056f65701b9a83594419cd58da8b92c398c06bb88d3faf8b4fc90b13f4e971c5",
+      "worker_sha256": "4d85857bf74c18cc1f8f8e237054fe70049769d9a80dbc49e8355b311fb4273d",
+      "credits": "launch-credits.md"
     }
   ],
   "film": {
