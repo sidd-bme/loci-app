@@ -1,12 +1,41 @@
-# Loci beta release status
+# Loci development beta
 
-The published download is **v0.1.0-beta.1** for **macOS Apple Silicon**. Its
-internal application version is `0.1.0`. Source and screenshots can include
-later development work; they do not establish qualification of a new package.
-See the [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.1.0-beta.1)
-for downloads and the evidence shipped with that beta.
+The 0.2 development candidate is being prepared for **macOS Apple Silicon**.
+The release tag is `v0.2.0-beta.1`; the internal desktop and engine version is `0.2.0`.
+Its [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)
+will contain the application archive, checksums, software inventories and dependency licences.
 
-## Published artifacts
+## What's new
+
+This version adds independent image windows, object populations and statistics,
+external labels, correction effects, visual workflows and a persistent terminal
+interface. It also improves plane navigation, recipe resource controls and local
+agent setup. See the [changelog](../CHANGELOG.md) and [user guide](USING_LOCI.md).
+
+## Build and checks
+
+Candidate source and package checks are in progress. The final release record
+will identify the exact source, application and worker, with results from the
+packaged journeys. A source test result does not qualify an application binary.
+
+## Platform and model notes
+
+- This is an explicitly published **development beta**, with an ad-hoc integrity
+  signature. It is **unnotarized**; Developer ID trust and independent clean-Mac
+  verification remain unavailable. The trusted-release `public_ready` gate is
+  not claimed. Follow the [installation guide](INSTALLATION.md) for first launch.
+- Cellpose checkpoints are supplied by users. They are never bundled or downloaded
+  automatically. See [Cellpose compatibility](CELLPOSE_COMPATIBILITY.md) for setup
+  and model-specific terms.
+- No Windows, Linux or Intel Mac installer is included. See [building Loci](BUILDING.md)
+  for source and platform requirements.
+
+The [capability matrix](CAPABILITY_MATRIX.md) describes supported formats and
+operations. Software checks use defined fixtures; they do not establish
+biological accuracy or clinical suitability. Loci is research software and is
+not intended for diagnosis or patient management.
+
+## Previous release: v0.1.0-beta.1
 
 | Archive | SHA-256 |
 | --- | --- |
@@ -20,37 +49,3 @@ metadata. The release also provides `macos-release-evidence-repack1.json`,
 identities refer to the published beta; documentation cleanup does not rebuild
 or requalify it. [Release evidence](RELEASE_EVIDENCE.md) describes verification
 of the exact app and its dependency inventory.
-
-## Scope and limitations
-
-The beta provides image viewing, bounded native source routes, local classical
-analysis and explicitly provisioned model routes. The [capability matrix](CAPABILITY_MATRIX.md)
-defines supported subsets and refusals. Source tests and packaged fixture journeys
-verify software behavior only for their tested source and artifact identities;
-they do not establish biological accuracy, clinical suitability or qualification
-of every supported source variant.
-
-- The macOS beta uses an ad-hoc integrity signature and is **unnotarized**. Apple
-  Developer ID trust and independent clean-Mac attestation remain unresolved.
-  Follow the [installation guide](INSTALLATION.md) for Gatekeeper approval.
-- First-launch delays of approximately **75–85 seconds** were observed on an
-  Apple Silicon M1 with 8 GB RAM. This is an observation on that host, not a
-  startup-time guarantee. Cold Cellpose performance also remains an open gate.
-- Cellpose checkpoints are supplied explicitly by users and are never bundled
-  or downloaded automatically. Technical compatibility does not establish
-  biomedical validation or commercial rights to model weights; see
-  [Cellpose compatibility](CELLPOSE_COMPATIBILITY.md).
-- No Windows, Linux or Intel Mac installer is offered in this beta. Maintained
-  build scripts and hosted workflow configuration do not qualify a distributable
-  package. Windows signing, clean-host installer/app journeys and applicable
-  dependency-source obligations remain release gates; see [building Loci](BUILDING.md).
-- Very large images and volumes have finite decoding and rendering limits.
-  Inspect source calibration, axes, analysis scope and review state before using
-  measurements. Counts of tiles, planes or objects are not independent specimen
-  or patient counts.
-
-Loci is research software, not a medical device. It is not FDA/CE cleared and is
-not intended for diagnosis, patient management or clinical decision-making.
-Source images remain immutable; derived work belongs in project, study or export
-artifacts. [Release requirements](RELEASE_CONTRACT.md) remain applicable to future
-packages.
