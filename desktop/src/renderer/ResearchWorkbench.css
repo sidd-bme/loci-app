@@ -925,9 +925,9 @@
 .image-first-workbench { position: relative; grid-template-columns: var(--research-sources-width, 192px) minmax(0, 1fr) 304px; grid-template-rows: auto minmax(0, 1fr) 30px; }
 .image-first-workbench > header { gap: 12px; min-height: 48px; padding-block: 8px; }
 .image-first-workbench > .research-alert {
-  /* Anchor to the canvas track, including resized panels and wrapped headers. */
-  grid-column: 2;
-  grid-row: 2;
+  /* Absolute children need explicit end lines to stay inside the canvas track. */
+  grid-column: 2 / 3;
+  grid-row: 2 / 3;
   top: 8px;
   left: 8px;
   right: 8px;
