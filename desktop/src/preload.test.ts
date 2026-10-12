@@ -39,6 +39,36 @@ describe("preload Cellpose bridge", () => {
     expect(electronMocks.exposeInMainWorld).toHaveBeenCalledWith("loci", expect.any(Object));
   });
 
+  it.each([
+    ["onGuideRequested", "loci:guide-requested"],
+    ["onWorkspaceRequested", "loci:workspace-requested"],
+  ] as const)("subscribes %s to its bounded native event without forwarding payloads", (method, channel) => {
+    const callback = vi.fn();
+    const stop = api[method]!(callback);
+    const listener = electronMocks.on.mock.calls.filter(([name]) => name === channel).at(-1)?.[1];
+    listener({}, { arbitrary: "not renderer data" });
+    expect(callback).toHaveBeenCalledExactlyOnceWith();
+    stop();
+    expect(electronMocks.removeListener).toHaveBeenCalledWith(channel, listener);
+  });
+
+  it("requests recipe hardware guidance through the isolated bridge", async () => {
+    await researchApi.recipeResources?.();
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:recipe-resources");
+  });
+
+  it("forwards only a correction-effect receipt hash to the native export picker", async () => {
+    await researchApi.exportCorrectionEffect?.("a".repeat(64));
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:export-correction-effect", "a".repeat(64));
+  });
+
+  it("forwards statistics identity/options through the isolated bridge", async () => {
+    const request = { schema_version: "loci.statistics-figure-request/v1" } as Parameters<NonNullable<ResearchDesktopApi["exportStatisticsFigure"]>>[0];
+    electronMocks.invoke.mockResolvedValueOnce(null);
+    await researchApi.exportStatisticsFigure?.(request);
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:export-statistics-figure", request);
+  });
+
   it("forwards a volume figure through the isolated research bridge", async () => {
     const request = { schema_version: "loci.volume-figure-request/v1" } as Parameters<
       NonNullable<ResearchDesktopApi["exportVolumeFigure"]>
@@ -317,6 +347,13 @@ describe("preload Cellpose bridge", () => {
 describe("preload research batch bridge", () => {
   beforeEach(() => {
     electronMocks.invoke.mockReset();
+  });
+
+  it("forwards optional workflow run binding without changing ordinary export calls", async () => {
+    await researchApi.exportResult("result", "revision");
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith("loci-research:export", "result", "revision");
+    await researchApi.exportResult("result", "revision", "run");
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith("loci-research:export", "result", "revision", "run");
   });
 
   it("forwards durable submit, run, resume, and retry requests without paths", async () => {

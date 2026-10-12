@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
 from mcp.client.session import ClientSession
@@ -12,6 +13,242 @@ from test_agent_policy import make_study, specification
 
 from loci_engine.agent_policy import load_policy, write_policy
 from loci_engine.research_mcp import JobSupervisor, PolicyAgent
+
+
+def stdio_parameters(path):
+    executable = os.environ.get("LOCI_TEST_ENGINE_EXECUTABLE")
+    return StdioServerParameters(
+        command=executable or sys.executable,
+        args=(["--cli"] if executable else ["-m", "loci_engine.research_cli"])
+        + ["mcp", "--policy", str(path)],
+        env=None
+        if executable
+        else {"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+    )
+
+
+def make_context_agent(tmp_path, *, disclosures=None, multiple=False):
+    import shutil
+
+    workbench, source, request = make_study(tmp_path)
+    root = tmp_path / "exports"
+    root.mkdir()
+    spec = specification(
+        workbench,
+        source,
+        request,
+        root,
+        disclosures=["agent_metadata"] if disclosures is None else disclosures,
+    )
+    spec["operations"].append("analysis_context")
+    if multiple:
+        second_path = tmp_path / "second-synthetic.tif"
+        shutil.copyfile(tmp_path / "synthetic.tif", second_path)
+        second = workbench.import_native(str(second_path), name="second granted name")
+        spec["sources"].append(
+            {**spec["sources"][0], "id": second["id"], "sha256": second["sha256"]}
+        )
+        proposed = {
+            **request,
+            "recipe": {
+                **request["recipe"],
+                "segmentation": {"method": "components", "threshold": 75},
+            },
+        }
+        spec["recipes"].append(
+            {
+                "sha256": workbench.validate_recipe(proposed)["recipe_sha256"],
+                "preview": False,
+                "run": True,
+            }
+        )
+        hidden_path = tmp_path / "ungranted-synthetic.tif"
+        shutil.copyfile(tmp_path / "synthetic.tif", hidden_path)
+        workbench.import_native(str(hidden_path), name="ungranted secret name")
+    path = tmp_path / "context-policy.json"
+    write_policy(path, workbench.project, spec)
+    return PolicyAgent(load_policy(path)), workbench, path
+
+
+def test_context_requires_both_new_operation_and_metadata_disclosure(tmp_path):
+    old, _, _, _, _, _ = make_agent(tmp_path, disclosures=["agent_metadata"])
+    with pytest.raises(PermissionError, match="operation"):
+        old.analysis_context()
+    other = tmp_path / "other"
+    other.mkdir()
+    no_metadata, _, _ = make_context_agent(other, disclosures=["geometry", "source_names"])
+    with pytest.raises(PermissionError, match="agent_metadata"):
+        no_metadata.analysis_context()
+
+
+@pytest.mark.parametrize(
+    "disclosures",
+    [
+        ["agent_metadata"],
+        ["agent_metadata", "geometry"],
+        ["agent_metadata", "source_names"],
+        ["agent_metadata", "geometry", "source_names"],
+    ],
+)
+def test_context_pages_only_pinned_grants_and_filters_independent_disclosures(
+    tmp_path, disclosures, monkeypatch
+):
+    from loci_engine.research_project import ResearchProject
+    from loci_engine.workbench import Workbench
+
+    agent, _, _ = make_context_agent(tmp_path, disclosures=disclosures, multiple=True)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Context must not enumerate study content")
+
+    monkeypatch.setattr(ResearchProject, "list_sources", forbidden)
+    monkeypatch.setattr(ResearchProject, "list_jobs", forbidden)
+    monkeypatch.setattr(Workbench, "snapshot", forbidden)
+    first = agent.analysis_context(limit=1)
+    second = agent.analysis_context(offset=first["pagination"]["next_offset"], limit=1)
+    assert first["pagination"]["source_grants_count"] == 2
+    assert first["pagination"]["recipe_grants_count"] == 2
+    assert second["pagination"]["next_offset"] is None
+    assert len(first["source_grants"]) == len(first["recipe_grants"]) == 1
+    assert len(second["source_grants"]) == len(second["recipe_grants"]) == 1
+    assert {item["source_id"] for item in first["source_grants"] + second["source_grants"]} == set(
+        agent.policy.sources
+    )
+    for item in first["source_grants"] + second["source_grants"]:
+        assert ("name" in item) == ("source_names" in disclosures)
+        assert ("permitted_scope" in item) == ("geometry" in disclosures)
+    assert first["policy"]["limits"]["concurrency"] == 1
+    encoded = json.dumps([first, second])
+    assert "ungranted secret name" not in encoded
+    assert str(tmp_path) not in encoded
+    assert agent.analysis_context(offset=100)["source_grants"] == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"offset": True},
+        {"offset": -1},
+        {"offset": "0"},
+        {"offset": 0.5},
+        {"limit": False},
+        {"limit": 0},
+        {"limit": 51},
+        {"limit": 1.5},
+    ],
+)
+def test_context_rejects_invalid_pagination(tmp_path, arguments):
+    agent, _, _ = make_context_agent(tmp_path)
+    with pytest.raises(ValueError):
+        agent.analysis_context(**arguments)
+
+
+def test_context_source_mutation_and_mid_read_revocation_prevent_response(tmp_path, monkeypatch):
+    from loci_engine.agent_policy import AgentPolicy
+
+    agent, _, path = make_context_agent(tmp_path)
+    original = AgentPolicy.source_grant
+
+    def revoke_after_source(*args):
+        grant = original(*args)
+        path.unlink()
+        return grant
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AgentPolicy, "source_grant", revoke_after_source)
+        with pytest.raises((PermissionError, ValueError)):
+            agent.analysis_context()
+    other = tmp_path / "mutated"
+    other.mkdir()
+    mutated, _, _ = make_context_agent(other)
+    with (other / "synthetic.tif").open("ab") as stream:
+        stream.write(b"changed")
+    with pytest.raises(ValueError, match="changed"):
+        mutated.analysis_context()
+
+
+def test_context_and_guide_resources_use_same_permissions_and_sanitized_errors(
+    tmp_path, monkeypatch
+):
+    from mcp.server.mcpserver.exceptions import ResourceError
+
+    from loci_engine.research_mcp import build_server
+    from loci_engine.research_project import ResearchProject
+
+    agent, _, path = make_context_agent(tmp_path)
+    server = build_server(path)
+
+    async def exercise():
+        resources = await server.list_resources()
+        assert {str(item.uri) for item in resources} == {"loci://context", "loci://guides/recipes"}
+        resource = list(await server.read_resource("loci://context"))[0]
+        assert json.loads(resource.content) == agent.analysis_context()
+        tools = {item.name: item for item in await server.list_tools()}
+        assert all(item.description and item.annotations is not None for item in tools.values())
+        for name in ("analysis_context", "recipe_guide"):
+            assert tools[name].annotations.read_only_hint is True
+            assert tools[name].annotations.open_world_hint is False
+        assert tools["preview_recipe"].annotations.read_only_hint is False
+        assert tools["preview_recipe"].annotations.idempotent_hint is False
+        assert tools["job_status"].annotations.read_only_hint is False
+        assert tools["submit_recipe"].annotations.idempotent_hint is True
+        assert tools["cancel_job"].annotations.destructive_hint is True
+        assert tools["export_result"].annotations.read_only_hint is False
+        assert tools["export_result"].annotations.destructive_hint is False
+
+        def private_failure(*args, **kwargs):
+            raise ValueError(str(tmp_path / "private-source-name"))
+
+        monkeypatch.setattr(ResearchProject, "source", private_failure)
+        with pytest.raises(ResourceError) as error:
+            await server.read_resource("loci://context")
+        assert str(tmp_path) not in str(error.value)
+        assert "failed validation" in str(error.value)
+
+    asyncio.run(exercise())
+
+
+def test_actual_stdio_sdk_context_pagination_resources_and_revocation(tmp_path):
+    from mcp.shared.exceptions import MCPError
+
+    agent, _, path = make_context_agent(tmp_path, multiple=True)
+
+    async def exercise(errlog):
+        async with (
+            stdio_client(stdio_parameters(path), errlog=errlog) as streams,
+            ClientSession(*streams) as session,
+        ):
+            await session.initialize()
+            first = await session.call_tool("analysis_context", {"limit": 1})
+            assert not first.is_error
+            assert first.structured_content == agent.analysis_context(limit=1)
+            second = await session.call_tool("analysis_context", {"offset": 1, "limit": 1})
+            assert not second.is_error
+            assert second.structured_content["pagination"]["next_offset"] is None
+            resource = await session.read_resource("loci://context")
+            assert json.loads(resource.contents[0].text) == agent.analysis_context()
+            for arguments in ({"limit": True}, {"offset": "0"}, {"unexpected": 0}):
+                invalid = await session.call_tool("analysis_context", arguments)
+                assert invalid.is_error
+            invalid_guide = await session.call_tool("recipe_guide", {"project": str(tmp_path)})
+            assert invalid_guide.is_error
+            path.unlink()
+            denied = await session.call_tool("analysis_context")
+            assert denied.is_error
+            with pytest.raises(MCPError) as error:
+                await session.read_resource("loci://context")
+            assert str(tmp_path) not in str(error.value)
+            assert str(error.value) == (
+                "The research operation failed validation or execution. "
+                "Inspect the source and settings in Loci."
+            )
+            denied_guide = await session.call_tool("recipe_guide")
+            assert denied_guide.is_error
+
+    with tempfile.TemporaryFile(mode="w+") as errlog:
+        asyncio.run(exercise(errlog))
+        errlog.seek(0)
+        assert str(tmp_path) not in errlog.read()
 
 
 def make_agent(tmp_path, *, disclosures=None):
@@ -278,16 +515,7 @@ def test_actual_python_sdk_client_uses_stdio_and_sees_only_static_catalog(tmp_pa
     outside["selection"]["t"] = 1
 
     async def exercise(errlog):
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=[
-                "-m",
-                "loci_engine.research_cli",
-                "mcp",
-                "--policy",
-                str(path),
-            ],
-        )
+        parameters = stdio_parameters(path)
         async with (
             stdio_client(parameters, errlog=errlog) as streams,
             ClientSession(*streams) as session,
@@ -297,6 +525,8 @@ def test_actual_python_sdk_client_uses_stdio_and_sees_only_static_catalog(tmp_pa
             names = {tool.name for tool in listed.tools}
             assert names == {
                 "catalog",
+                "recipe_guide",
+                "analysis_context",
                 "inspect_source",
                 "validate_recipe",
                 "preview_recipe",
@@ -311,6 +541,23 @@ def test_actual_python_sdk_client_uses_stdio_and_sees_only_static_catalog(tmp_pa
             assert catalog.is_error is not True
             encoded = json.dumps(catalog.model_dump(by_alias=True))
             assert "untrusted source name" not in encoded
+            guide = await session.call_tool("recipe_guide")
+            assert guide.is_error is not True
+            assert guide.structured_content["schema"] == "loci.recipe-guide/v1"
+            resources = await session.list_resources()
+            assert {str(item.uri) for item in resources.resources} == {
+                "loci://guides/recipes",
+                "loci://context",
+            }
+            guide_resource = await session.read_resource("loci://guides/recipes")
+            assert json.loads(guide_resource.contents[0].text) == guide.structured_content
+            denied_context = await session.call_tool("analysis_context")
+            assert denied_context.is_error is True
+            assert request["source_id"] not in json.dumps(denied_context.model_dump(by_alias=True))
+            from mcp.shared.exceptions import MCPError
+
+            with pytest.raises(MCPError, match="not authorized"):
+                await session.read_resource("loci://context")
             validation = await session.call_tool("validate_recipe", {"request": request})
             assert validation.is_error is not True
             assert validation.structured_content["valid"] is True

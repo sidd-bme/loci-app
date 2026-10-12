@@ -515,3 +515,31 @@ def test_model_dtos_never_expose_managed_paths_or_source_names(tmp_path):
     assert "untrusted nucleus prompt" not in encoded
     assert "private_path" not in encoded
     assert os.fspath(workbench.project.root / "models") not in encoded
+
+
+def test_model_honors_higher_working_bytes_without_hidden_lower_cap(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    workbench = _workbench(tmp_path)
+    _, source = _source(workbench, tmp_path)
+    package, _ = _native_package(tmp_path / "package")
+    model = import_model(workbench, package, working_bytes=256 * 1024**2)
+
+    captured_working_bytes: list[int | None] = []
+    original_load = workbench.load_scalar
+
+    def spy_load(*args, **kwargs):
+        captured_working_bytes.append(kwargs.get("working_bytes"))
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(workbench, "load_scalar", spy_load)
+
+    # 2 GiB budget must be passed directly to load_scalar without capping
+    # at DEFAULT_WORKING_BYTES (512 MiB)
+    req = _request(model["model_id"], source["id"])
+    req["working_bytes"] = 2 * 1024**3
+
+    preview = execute_model(workbench, "model_preview", req)
+    assert len(captured_working_bytes) >= 1
+    assert all(bytes_val == 2 * 1024**3 for bytes_val in captured_working_bytes)
+    assert preview["preview"]["working_bytes"] == 2 * 1024**3

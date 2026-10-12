@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDesktopApi,
@@ -56,11 +56,11 @@ const snapshot: ResearchSnapshot = {
 const channelMetadata = {
   source_id: sourceId,
   source_sha256: sourceSha,
-  original_names: ["Channel 1 (DAPI)", "Channel 2 (IL4R)"],
+  original_names: ["Channel 1 (DAPI)", "Channel 2 (Signal)"],
   revision: 1,
   channels: [
     { index: 0, name: "DAPI", marker: "nuclei", fluorophore: "DAPI", declaration: "metadata" },
-    { index: 1, name: "IL4R", marker: "receptor", fluorophore: "TRITC", declaration: "metadata" },
+    { index: 1, name: "Signal", marker: "receptor", fluorophore: "TRITC", declaration: "metadata" },
   ],
   basis: "explicit declarations",
 };
@@ -94,15 +94,88 @@ function createApi(executeMock: ResearchDesktopApi["execute"]): ResearchDesktopA
 function renderFieldAssayPanel(executeMock: ResearchDesktopApi["execute"]) {
   const onPublished = vi.fn().mockResolvedValue(undefined);
   const onPreview = vi.fn();
-  const utils = render(<ResearchQuantificationPanel
-    api={createApi(executeMock)} snapshot={snapshot} source={snapshot.sources[0]} selection={selection}
-    recipe={recipe} setRecipe={vi.fn()} report={async (work) => work()} busy={false}
-    onBusyChange={vi.fn()} onPreview={onPreview} onPublished={onPublished}
-  />);
-  return { ...utils, onPublished, onPreview };
+  const props = {
+    api: createApi(executeMock), snapshot, source: snapshot.sources[0], selection,
+    recipe, setRecipe: vi.fn(), report: async <T,>(work: () => Promise<T>) => work(), busy: false,
+    onBusyChange: vi.fn(), onPreview, onPublished,
+  };
+  const utils = render(<ResearchQuantificationPanel {...props} />);
+  return { ...utils, onPublished, onPreview, props };
 }
 
 describe("ResearchQuantificationPanel - Field Assay Tab", () => {
+  it.each(["configuration", "plane", "source", "unmount"])(
+    "does not publish a deferred preview after a %s change",
+    async (change) => {
+      let resolvePreview!: (value: Record<string, unknown>) => void;
+      const pending = new Promise<Record<string, unknown>>((resolve) => { resolvePreview = resolve; });
+      const execute = vi.fn(async (op: string, request: Record<string, unknown>) => {
+        if (op === "channel_metadata") return { ...channelMetadata, source_id: request.source_id,
+          source_sha256: request.source_id === sourceId ? sourceSha : "d".repeat(64) };
+        if (op === "source_annotations") return { ...sourceAnnotations, source_id: request.source_id,
+          source_sha256: request.source_id === sourceId ? sourceSha : "d".repeat(64) };
+        if (op === "field_assay_preview") return pending;
+        return {};
+      });
+      const view = renderFieldAssayPanel(execute);
+      await screen.findByText(/original: Channel 1/);
+      fireEvent.click(screen.getByText("Field assay"));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Preview field assay" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+      await waitFor(() => expect(execute).toHaveBeenCalledWith("field_assay_preview", expect.anything()));
+      if (change === "configuration")
+        fireEvent.change(screen.getByLabelText("Manual threshold"), { target: { value: "120" } });
+      else if (change === "plane")
+        view.rerender(<ResearchQuantificationPanel {...view.props} selection={{ ...selection, z: 1 }} />);
+      else if (change === "source")
+        view.rerender(<ResearchQuantificationPanel {...view.props} source={{ ...snapshot.sources[0],
+          id: "c".repeat(32), sha256: "d".repeat(64) }} />);
+      else view.unmount();
+      await act(async () => { resolvePreview({ preview: true, qc_overlay: "old-qc", overlay: "old-image", measurements: [{ area: 12 }] }); });
+      expect(view.onPreview).not.toHaveBeenCalled();
+      expect(view.onPublished).not.toHaveBeenCalled();
+      expect(screen.queryByText("Assay quantification preview")).not.toBeInTheDocument();
+    },
+  );
+
+  it("requires a fresh preview after saving changed channel identity declarations", async () => {
+    const preview = { preview: true, qc_overlay: "current-qc", overlay: "current-image", measurements: [{ area: 12 }] };
+    const execute = vi.fn(async (op: string, request: Record<string, unknown>) => {
+      if (op === "channel_metadata") return channelMetadata;
+      if (op === "source_annotations") return sourceAnnotations;
+      if (op === "field_assay_preview") return preview;
+      if (op === "channels") return { ...channelMetadata, revision: 2, channels: request.channels };
+      if (op === "field_assay_run") return { adopted: true, result: dummyResult };
+      return {};
+    });
+    const view = renderFieldAssayPanel(execute);
+    await screen.findByText(/original: Channel 1/);
+    fireEvent.click(screen.getByText("Field assay"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview field assay" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    await screen.findByText("Assay quantification preview");
+    expect(view.onPreview).toHaveBeenCalledExactlyOnceWith(preview.overlay, preview.measurements);
+    fireEvent.change(screen.getByLabelText("Reviewer name"), { target: { value: "Dr Reviewer" } });
+    expect(screen.getByRole("button", { name: "Approve & save" })).toBeEnabled();
+    fireEvent.click(screen.getByText("Channels", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Channel 2 marker"), { target: { value: "corrected receptor identity" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save declarations at revision 1" }));
+    await screen.findByRole("button", { name: "Save declarations at revision 2" });
+    fireEvent.click(screen.getByText("Field assay"));
+    expect(screen.getByText("Settings changed. Preview again before saving.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Approve & save" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save exploratory" })).toBeDisabled();
+    expect(execute.mock.calls.filter(([op]) => op === "field_assay_run")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve & save" })).toBeEnabled());
+    expect(view.onPreview).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "Approve & save" }));
+    await waitFor(() => expect(view.onPublished).toHaveBeenCalledWith(dummyResult));
+    expect(execute).toHaveBeenLastCalledWith("field_assay_run", expect.objectContaining({
+      endpoint_status: "reviewed", reviewer: "Dr Reviewer", channel_identity_confirmed: true,
+    }));
+  });
+
   it("discards stale annotation responses when the exact source changes", async () => {
     const secondSource = {
       ...snapshot.sources[0],
@@ -288,17 +361,12 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
       previewResponse.qc_overlay,
     );
 
-    // Check all review confirmations
-    fireEvent.click(screen.getByLabelText("Confirm channel identity"));
-    fireEvent.click(screen.getByLabelText("Confirm acquisition comparable"));
-    fireEvent.click(screen.getByLabelText("Confirm focus reviewed"));
-    fireEvent.click(screen.getByLabelText("Confirm nuclei reviewed"));
-    fireEvent.click(screen.getByLabelText("Confirm background reviewed"));
-
-    // Adopt button should be disabled because reviewer name is missing!
-    expect(screen.getByText("Reviewer name is required for reviewed adoption.")).toBeVisible();
-    const adoptButton = screen.getByText("Adopt reviewed field assay");
+    // Approval is a deliberate action, with no persistent acknowledgement state.
+    expect(screen.queryByLabelText("Confirm channel identity")).not.toBeInTheDocument();
+    expect(screen.getByText("Enter a reviewer name to approve.")).toBeVisible();
+    const adoptButton = screen.getByRole("button", { name: "Approve & save" });
     expect(adoptButton).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save exploratory" })).toBeEnabled();
 
     // Enter reviewer name
     fireEvent.change(screen.getByLabelText("Reviewer name"), { target: { value: "Dr. Yingrou Tan" } });
@@ -309,7 +377,7 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     fireEvent.change(screen.getByLabelText("Manual threshold"), { target: { value: "120" } });
 
     expect(
-      await screen.findByText(/Configuration changed since preview. Please click "Preview field assay" to update/),
+      await screen.findByText(/Settings changed. Preview again before saving./),
     ).toBeVisible();
     expect(adoptButton).toBeDisabled();
 
@@ -342,5 +410,16 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
       );
       expect(onPublished).toHaveBeenCalledWith(dummyResult);
     });
+
+    // Saving a later exploratory result cannot reuse a previous approval.
+    fireEvent.click(screen.getByRole("button", { name: "Save exploratory" }));
+    await waitFor(() => expect(execute).toHaveBeenLastCalledWith(
+      "field_assay_run", expect.objectContaining({
+        endpoint_status: "exploratory", channel_identity_confirmed: false,
+        acquisition_comparable: false, focus_reviewed: false,
+        nuclei_reviewed: false, background_reviewed: false, saturation_reviewed: false,
+        config: expect.objectContaining({ endpoint_status: "exploratory", focus_reviewed: false }),
+      }),
+    ));
   });
 });

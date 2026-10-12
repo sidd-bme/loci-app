@@ -85,6 +85,8 @@ function successfulResponse(request: Record<string, unknown>) {
     image: "data:image/png;base64,overview#viewer-400x300",
     source_sha256: source.sha256,
     source_extent: [400, 300],
+    selection: { t: Number(request.t ?? 0), z: Number(request.z ?? 0), c: Number(request.c ?? 0), level: 0, x: 0, y: 0, width: 400, height: 300 },
+    projection: (request.projection as "plane" | "max" | "mean") ?? null,
   };
   const tile = request.selection as ResearchSelection;
   return {

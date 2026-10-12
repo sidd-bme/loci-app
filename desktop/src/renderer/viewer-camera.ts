@@ -78,10 +78,20 @@ export function zoomCamera(camera: Camera, extent: ImageExtent, size: ViewportSi
     y: anchor.y - (y - size.height / 2) / (next.scale * extent.aspectY) }, extent, size, insets);
 }
 
-export function sourceLevels(source: ResearchSource) {
+export function sourceLevels(source: ResearchSource, options?: { projection?: "plane" | "max" | "mean" }) {
   const extent = imageExtent(source);
-  const levels = source.metadata.levels ?? [{ index: 0,
+  let levels = source.metadata.levels ?? [{ index: 0,
     dimensions: { x: extent.width, y: extent.height, z: 1, t: 1, c: 1 } }];
+  const d = source.metadata.dimensions;
+  if (d && options?.projection === "plane") {
+    levels = levels.filter((level) =>
+      (d.z === undefined || level.dimensions.z === d.z) &&
+      (d.t === undefined || level.dimensions.t === d.t)
+    );
+    if (!levels.length || !levels.some((l) => l.index === 0)) {
+      levels = [{ index: 0, dimensions: { x: extent.width, y: extent.height, z: d.z ?? 1, t: d.t ?? 1, c: d.c ?? 1 } }];
+    }
+  }
   const slide = (source.metadata as Record<string, unknown>).whole_slide as
     { levels?: Array<{ index: number; downsample: number }> } | undefined;
   return levels.map((level) => {
@@ -92,9 +102,9 @@ export function sourceLevels(source: ResearchSource) {
 }
 
 export function visibleTiles(source: ResearchSource, camera: Camera, size: ViewportSize,
-  dpr: number): { tiles: Tile[]; level: number; undersampled: boolean } {
+  dpr: number, options?: { projection?: "plane" | "max" | "mean" }): { tiles: Tile[]; level: number; undersampled: boolean } {
   const extent = imageExtent(source);
-  const levels = sourceLevels(source);
+  const levels = sourceLevels(source, options ?? { projection: "plane" });
   const density = camera.scale * Math.max(1, dpr);
   // Coarsest level still at least as sharp as one decoded pixel per device pixel.
   let chosen = levels[0];

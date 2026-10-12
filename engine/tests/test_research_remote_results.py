@@ -58,6 +58,7 @@ def _publication(
     tasks: int = 1,
     cellpose: bool = False,
     cellpose_working_bytes: int = 8 * 1024 * 1024,
+    empty_watershed: bool = False,
 ) -> tuple[bytes, Path, VerifiedOutputManifest, Path]:
     staging = tmp_path / "remote" / ".loci-runs" / KEY
     output = tmp_path / "published" / ".loci-runs" / KEY
@@ -67,7 +68,13 @@ def _publication(
     image = np.zeros((16, 16), dtype=np.uint16)
     image[2:5, 2:5] = 100
     image[10:13, 10:13] = 200
-    tifffile.imwrite(source, image, ome=True, metadata={"axes": "YX"})
+    metadata = {"axes": "YX"}
+    if empty_watershed:
+        image.fill(0)
+        metadata.update(
+            PhysicalSizeX=0.5, PhysicalSizeY=2.0, PhysicalSizeXUnit="µm", PhysicalSizeYUnit="µm"
+        )
+    tifffile.imwrite(source, image, ome=True, metadata=metadata)
     staged = staging / "inputs" / source.name
     staged.write_bytes(source.read_bytes())
     digest = hashlib.sha256(staged.read_bytes()).hexdigest()
@@ -87,7 +94,9 @@ def _publication(
         },
         "recipe": {
             "steps": [],
-            "segmentation": {"method": "components", "threshold": 50},
+            "segmentation": {"method": "watershed", "threshold": 50, "split_height": 1.5}
+            if empty_watershed
+            else {"method": "components", "threshold": 50},
             "measurement_channels": [0],
             "gates": [],
             "working_bytes": 8 * 1024 * 1024,
@@ -337,6 +346,26 @@ def test_attach_rebases_ids_preserves_remote_provenance_and_deduplicates(tmp_pat
         == receipt
     )
     assert project.summary()["counts"]["results"] == 1
+
+
+def test_attach_empty_watershed_preserves_exact_physical_split_height(tmp_path: Path) -> None:
+    request, archive, manifest, source = _publication(tmp_path, empty_watershed=True)
+    project, local_source_id = _local_project(tmp_path, source)
+    receipt = attach_remote_results(
+        project,
+        request,
+        archive,
+        expected_archive_sha256=manifest.entries[0].sha256,
+        outer_manifest=manifest,
+        local_source_mapping={REMOTE_SOURCE: local_source_id},
+    )
+    result = project.result(receipt["task_results"][0]["local_result_id"])
+    assert result["provenance"]["segmentation"]["count"] == 0
+    assert result["provenance"]["measurements"] == []
+    assert not project.load_array(result["arrays"]["labels"]).any()
+    assert result["provenance"]["segmentation"]["split_height"] == 1.5
+    assert result["provenance"]["segmentation"]["distance_unit"] == "um"
+    assert result["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
 def test_attach_cellpose_preserves_runtime_rights_and_remeasures_locally(

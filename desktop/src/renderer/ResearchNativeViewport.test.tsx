@@ -296,4 +296,13 @@ describe("ResearchNativeViewport", () => {
     await act(async () => { reject(new Error("Late source decode error")); });
     expect(onError).not.toHaveBeenCalled();
   });
+
+  it("redacts native decode paths while preserving actionable error context", async () => {
+    const api = bridge(vi.fn().mockRejectedValue(new Error("Cannot decode /Volumes/private lab/image.tif: corrupt tile")));
+    const onError = vi.fn();
+    render(<ResearchNativeViewport api={api} source={source} levels={levels}
+      selection={selection} channels={channels} projection="plane" imageScale="fit"
+      onSelection={vi.fn()} onError={onError} />);
+    await waitFor(() => expect(onError).toHaveBeenCalledWith("Cannot decode [local path redacted]: corrupt tile"));
+  });
 });

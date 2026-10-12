@@ -10,7 +10,7 @@ import numpy as np
 
 from .models import CellposeSettings
 from .profiles import resolve_profile
-from .quantitative import DEFAULT_WORKING_BYTES, integer, measure_objects
+from .quantitative import MAX_WORKING_BYTES, integer, measure_objects
 from .workbench import result_summary, runtime_record
 
 if TYPE_CHECKING:
@@ -92,7 +92,7 @@ def execute_cellpose(
     if not isinstance(selection_value, dict) or set(selection_value) != _SELECTION_KEYS:
         raise ValueError("Cellpose requires one fully resolved 2D source selection")
     working_bytes = integer(
-        request["working_bytes"], "working_bytes", 1024**2, DEFAULT_WORKING_BYTES
+        request["working_bytes"], "working_bytes", 1024**2, MAX_WORKING_BYTES
     )
     settings = _settings(request["settings"])
     profile = resolve_profile(request["profile_id"], require_ready=True)
@@ -128,13 +128,15 @@ def execute_cellpose(
     )
     if aggregate_required_bytes > working_bytes:
         raise ValueError(
-            "Cellpose source and raw measurement channels exceed the aggregate "
-            "working-memory budget; choose a smaller crop or fewer channels"
+            "Cellpose source and raw measurement channels require "
+            f"{aggregate_required_bytes} bytes, exceeding the aggregate "
+            f"working-memory budget of {working_bytes} bytes; "
+            "choose a smaller crop, fewer channels, or select a larger allowance"
         )
 
     from .cellpose_backend import segment_cellpose
 
-    inference = segment_cellpose(image, settings, profile.id)
+    inference = segment_cellpose(image, settings, profile.id, working_bytes=working_bytes)
     inference_runtime = inference.runtime
     expected_model = profile.model.to_dict()
     if (

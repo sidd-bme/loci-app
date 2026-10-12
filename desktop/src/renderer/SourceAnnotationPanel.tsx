@@ -2,6 +2,7 @@ import { MousePointer2, Pentagon, Redo2, Ruler, BetweenHorizontalStart, Lasso, S
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import type { AnnotationTool, EpidermalTransectMetadata, ImageAnnotation, ImagePoint } from "./ImageViewport";
+import { DEFAULT_ANNOTATION_DRAFT_FIELDS, type AnnotationDraftControl, type AnnotationDraftFields } from "./annotation-draft";
 import "./SourceAnnotationPanel.css";
 
 export type { AnnotationTool } from "./ImageViewport";
@@ -69,35 +70,44 @@ export function serializeTransectsCsv(
 }
 
 export function SourceAnnotationPanel({ api, source, selection, tool, onTool, points, onPoints,
-  onAnnotations, onError, measurementMode = "general",
+  onAnnotations, onError, measurementMode = "general", draftControl,
 }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection;
   tool: AnnotationTool; onTool: (tool: AnnotationTool) => void;
   points: ImagePoint[]; onPoints: (points: ImagePoint[]) => void;
   onAnnotations: (annotations: ImageAnnotation[]) => void; onError: (message: string) => void;
   measurementMode?: "general" | "epidermis";
+  draftControl?: AnnotationDraftControl;
 }) {
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [busy, setBusy] = useState(false);
-  const [label, setLabel] = useState("");
+  const [localFields, setLocalFields] = useState(DEFAULT_ANNOTATION_DRAFT_FIELDS);
+  const fields = draftControl?.fields ?? localFields;
+  const { label, transectClass, upperBoundary, lowerBoundary, orientationRule, exclusions, transectReviewer } = fields;
+  const updateFields = (change: Partial<AnnotationDraftFields>) => {
+    if (draftControl) draftControl.updateFields(change);
+    else setLocalFields((previous) => ({ ...previous, ...change }));
+  };
+  const setLabel = (label: string) => updateFields({ label });
+  const setTransectClass = (transectClass: AnnotationDraftFields["transectClass"]) => updateFields({ transectClass });
+  const setUpperBoundary = (upperBoundary: string) => updateFields({ upperBoundary });
+  const setLowerBoundary = (lowerBoundary: string) => updateFields({ lowerBoundary });
+  const setOrientationRule = (orientationRule: string) => updateFields({ orientationRule });
+  const setExclusions = (exclusions: string) => updateFields({ exclusions });
+  const setTransectReviewer = (transectReviewer: string) => updateFields({ transectReviewer });
   const [interchangeStatus, setInterchangeStatus] = useState("");
-  const [transectClass, setTransectClass] = useState<"suprapapillary" | "ridge-base" | "custom">("suprapapillary");
-  const [upperBoundary, setUpperBoundary] = useState("Stratum granulosum (viable epidermis)");
-  const [lowerBoundary, setLowerBoundary] = useState("Dermal-epidermal junction");
-  const [orientationRule, setOrientationRule] = useState("Perpendicular to local basement membrane");
-  const [exclusions, setExclusions] = useState("Tears, folds, appendages excluded");
-  const [transectReviewer, setTransectReviewer] = useState("");
-  const [transectReviewed, setTransectReviewed] = useState(false);
+  const draftsManaged = Boolean(draftControl);
+  const onPointsRef = useRef(onPoints);
+  onPointsRef.current = onPoints;
+  const activeScope = JSON.stringify([source.id, source.sha256, selection.z, selection.t, tool]);
+  const liveDraft = useRef({ scope: activeScope, points });
+  liveDraft.current = { scope: activeScope, points };
   const draftPlane = useRef({ z: selection.z, t: selection.t });
-  useEffect(() => {
-    setTransectReviewed(false);
-  }, [source.id, source.sha256, selection.z, selection.t, points,
-    transectClass, upperBoundary, lowerBoundary, orientationRule, exclusions]);
   useEffect(() => {
     const previous = draftPlane.current;
     draftPlane.current = { z: selection.z, t: selection.t };
-    if (previous.z !== selection.z || previous.t !== selection.t) onPoints([]);
-  }, [selection.z, selection.t, onPoints]);
+    if (!draftsManaged && (previous.z !== selection.z || previous.t !== selection.t)) onPointsRef.current([]);
+  }, [selection.z, selection.t, draftsManaged]);
   const generation = useRef(0);
   const adopt = useCallback((value: Receipt) => {
     if (value.source_id !== source.id || value.source_sha256 !== source.sha256) throw new Error("Annotation source identity changed.");
@@ -105,18 +115,23 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
   }, [source.id, source.sha256, onAnnotations]);
   useEffect(() => {
     const token = ++generation.current;
-    setReceipt(null); onPoints([]); setBusy(false); setInterchangeStatus("");
+    setReceipt(null); if (!draftsManaged) onPointsRef.current([]); setBusy(false); setInterchangeStatus("");
     void api.execute("source_annotations", { source_id: source.id }).then((value) => {
       if (generation.current === token) adopt(value as Receipt);
     }).catch((error) => { if (generation.current === token) onError(error.message); });
     return () => { generation.current++; };
-  }, [api, source.id, source.sha256, adopt, onError, onPoints]);
-  const change = async (action: string, annotationId?: string) => {
+  }, [api, source.id, source.sha256, adopt, onError, draftsManaged]);
+  const change = async (action: string, annotationId?: string, reviewed = false) => {
     if (!receipt || busy) return;
     const token = generation.current;
+    const finishSubmittedDraft = action === "add" ? draftControl?.captureCommit() : undefined;
+    const submittedScope = activeScope;
+    const submittedPoints = points;
     const required = { point: 1, line: 2, rectangle: 2, polygon: 3, freehand: 3,
       transect: 2, navigate: Infinity }[tool];
     if (action === "add" && points.length < required) return;
+    if (reviewed && (tool !== "transect" || points.length !== 2 || !transectReviewer.trim()
+      || ![upperBoundary, lowerBoundary, orientationRule, exclusions].every((value) => value.trim()))) return;
     const polygon = action === "add" && tool === "rectangle" ? [points[0], { x: points[1].x, y: points[0].y },
       points[1], { x: points[0].x, y: points[1].y }] : points;
     setBusy(true);
@@ -134,7 +149,7 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
       lower_boundary: lowerBoundary.trim(),
       orientation_rule: orientationRule.trim(),
       exclusions: exclusions.trim(),
-      review: transectReviewed
+      review: reviewed
         ? { status: "approved" as const, reviewer: transectReviewer.trim() }
         : { status: "unverified" as const, reviewer: null },
     } : null;
@@ -146,9 +161,14 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
           label: annotationLabel, color: annotationColor, z: selection.z, t: selection.t,
           ...(transect ? { transect } : {}) } } : {}),
       }) as Receipt;
+      if (result.source_id !== source.id || result.source_sha256 !== source.sha256) throw new Error("Annotation source identity changed.");
+      if (action === "add") finishSubmittedDraft?.();
       if (generation.current === token) {
-        adopt(result); onPoints([]);
-        if (action === "add") setTransectReviewed(false);
+        adopt(result);
+        const draftUnchanged = liveDraft.current.scope === submittedScope && liveDraft.current.points === submittedPoints;
+        if (action === "add" && draftUnchanged) {
+          if (!draftsManaged) onPointsRef.current([]);
+        }
       }
     } catch (error) { if (generation.current === token) onError(error instanceof Error ? error.message : "Could not save the annotation."); }
     finally { if (generation.current === token) setBusy(false); }
@@ -161,7 +181,7 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
       const binding = { source_id: source.id, source_sha256: source.sha256, expected_revision: receipt.revision };
       if (action === "import") {
         const result = await api.importSourceAnnotations?.(binding);
-        if (result && generation.current === token) { adopt(result as Receipt); onPoints([]); setInterchangeStatus("Annotations imported. Undo is available."); }
+        if (result && generation.current === token) { adopt(result as Receipt); setInterchangeStatus("Annotations imported. Undo is available."); }
       } else {
         const result = await api.exportSourceAnnotations?.(binding);
         if (result && generation.current === token) setInterchangeStatus(`Exported ${result.annotation_count} annotations to ${result.basename}.`);
@@ -173,7 +193,6 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
     (tool === "polygon" || tool === "freehand") && points.length >= 3;
   const transectProtocolComplete = tool !== "transect" || [upperBoundary, lowerBoundary,
     orientationRule, exclusions].every((value) => value.trim().length > 0);
-  const transectReviewComplete = tool !== "transect" || !transectReviewed || transectReviewer.trim().length > 0;
   return <div className="research-panel source-annotations">
     <h2>{measurementMode === "epidermis" ? "Epidermal thickness" : "Annotate"}</h2>
     {measurementMode === "epidermis" && <p className="annotation-workflow-intro">Define the boundaries, draw across the epidermis, then review and save each transect. Rete ridges and spaces between them remain separate measurement classes.</p>}
@@ -185,9 +204,11 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
         ["freehand", "Freehand region", Lasso],
       ] as const).filter(([value]) => measurementMode !== "epidermis" || value === "navigate" || value === "transect").map(([value, title, Icon]) => <button key={value} title={title} aria-label={title}
         aria-pressed={tool === value} className={tool === value ? "active" : ""}
-        onClick={() => { onTool(value); onPoints([]); }}><Icon />{measurementMode === "epidermis" ? (value === "navigate" ? "Navigate" : "Draw transect") : null}</button>)}
+        disabled={busy} onClick={() => { onTool(value); if (!draftsManaged) onPoints([]); }}><Icon />{measurementMode === "epidermis" ? (value === "navigate" ? "Navigate" : "Draw transect") : null}</button>)}
     </div>
     {tool !== "navigate" && <>
+      {draftsManaged && points.length > 0 && <p className="annotation-draft-binding">Unfinished draft · Z {selection.z + 1} · T {selection.t + 1}</p>}
+      {draftControl?.notice && <p role="alert">{draftControl.notice}</p>}
       {tool === "transect" ? (
         <div className="transect-form">
           <h3>Measurement protocol</h3>
@@ -204,8 +225,7 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
           <label>Orientation rule<input aria-label="Orientation rule" maxLength={240} value={orientationRule} onChange={(e) => setOrientationRule(e.target.value)} /></label>
           <label>Exclusion criteria<input aria-label="Exclusion criteria" maxLength={240} value={exclusions} onChange={(e) => setExclusions(e.target.value)} /></label>
           <label>Reviewer name<input aria-label="Transect reviewer" maxLength={120} value={transectReviewer} onChange={(e) => setTransectReviewer(e.target.value)} placeholder="Required for reviewed measurement" /></label>
-          <label className="research-check"><input type="checkbox" aria-label="Confirm transect review" disabled={points.length !== 2} checked={transectReviewed} onChange={(e) => setTransectReviewed(e.target.checked)} /> This transect's boundaries & orientation confirmed</label>
-          {transectReviewed && !transectReviewComplete && <p role="alert">Enter the reviewer name before saving an approved transect.</p>}
+          <p className="annotation-instruction">Review the two boundaries and orientation before saving reviewed.</p>
         </div>
       ) : (
         <p className="annotation-instruction">{tool === "polygon" ? "Click around the region. Click the first point, double-click, or press Enter to close it, then save." :
@@ -215,14 +235,16 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
       )}
       <label>Label <input aria-label="Annotation label" maxLength={120} value={label} onChange={(event) => setLabel(event.target.value)} placeholder="Optional" /></label>
       <div className="research-actions">
-        <button disabled={!enough || !transectProtocolComplete || !transectReviewComplete || busy || !receipt} onClick={() => void change("add")}>Save annotation</button>
+        <button disabled={!enough || !transectProtocolComplete || busy || !receipt} onClick={() => void change("add")}>{tool === "transect" ? "Save transect" : "Save annotation"}</button>
+        {tool === "transect" && <button disabled={!enough || !transectProtocolComplete || !transectReviewer.trim() || busy || !receipt}
+          onClick={() => void change("add", undefined, true)}>Save reviewed transect</button>}
         <button disabled={!points.length || busy} onClick={() => onPoints([])}>Clear draft</button>
       </div>
     </>}
     <div className="research-actions">
       <button title="Undo annotation change" aria-label="Undo annotation" disabled={!receipt?.can_undo || busy} onClick={() => void change("undo")}><Undo2 /></button>
       <button title="Redo annotation change" aria-label="Redo annotation" disabled={!receipt?.can_redo || busy} onClick={() => void change("redo")}><Redo2 /></button>
-      <span>{receipt?.annotations.length ?? 0} saved</span>
+      <span>{receipt ? `${receipt.annotations.length} saved` : "Loading annotations…"}</span>
     </div>
     <ol className="annotation-list">
       {receipt?.annotations.map((item) => <li key={item.id}>

@@ -64,6 +64,30 @@ function panel(
 }
 
 describe("SourceExportPanel", () => {
+  it("keeps invalid DPI drafts out of export and restores the last valid entry with Escape", async () => {
+    const exportSourceView = vi.fn().mockResolvedValue(null);
+    render(panel(bridge(exportSourceView)));
+    fireEvent.click(screen.getByText("Export rendered image"));
+    const input = screen.getByLabelText("Rendered export DPI");
+    const button = screen.getByRole("button", { name: "Export PNG…" });
+    fireEvent.change(input, { target: { value: "450" } });
+    for (const draft of ["", "72.5", "NaN", "1201"]) {
+      fireEvent.change(input, { target: { value: draft } });
+      expect(input).toHaveValue(draft);
+      expect(input).toHaveAttribute("aria-invalid", "true");
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+    expect(exportSourceView).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("450");
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(exportSourceView).toHaveBeenCalledWith(expect.objectContaining({
+      view: expect.objectContaining({ figure: expect.objectContaining({ dpi: 450 }) }),
+    })));
+  });
+
   it("describes a rendered PNG exactly, binds the display request, and treats cancellation as no export", async () => {
     const exportSourceView = vi.fn().mockResolvedValue(null);
     const onError = vi.fn();
@@ -71,7 +95,7 @@ describe("SourceExportPanel", () => {
     fireEvent.click(screen.getByText("Export rendered image"));
 
     expect(screen.getByText(
-      "Display RGB with the current channel settings and embedded rendering provenance. No annotations or original-value measurements.",
+      "8-bit display RGB with rendering provenance. Uses display settings; excludes raw values and annotations.",
     )).toBeVisible();
     const button = screen.getByRole("button", { name: "Export PNG…" });
     fireEvent.click(button);
@@ -121,7 +145,7 @@ describe("SourceExportPanel", () => {
     });
 
     expect(screen.getByLabelText("Rendered export extent")).toHaveValue("whole");
-    expect(screen.getByText(/16-bit display RGB from the selected source plane/)).toBeVisible();
+    expect(screen.getByText(/16-bit display RGB with rendering provenance/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Export TIFF16…" }));
 
     await waitFor(() => expect(exportSourceView).toHaveBeenCalledWith({
@@ -228,7 +252,8 @@ describe("SourceExportPanel", () => {
     />);
     fireEvent.click(screen.getByText("Export rendered image"));
 
-    expect(screen.getByLabelText("Rendered export DPI")).toHaveValue(600);
+    expect(screen.getByLabelText("Rendered export DPI")).toHaveValue("600");
+    expect(screen.queryByText(/Scale bar unavailable/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Include calibrated scale bar"));
     fireEvent.click(screen.getByLabelText("Include channel legend"));
     fireEvent.change(screen.getByLabelText("Channel 2 legend label"), {
@@ -350,9 +375,20 @@ describe("SourceExportPanel", () => {
     render(panel(bridge(vi.fn())));
     fireEvent.click(screen.getByText("Export rendered image"));
     expect(screen.getByLabelText("Include calibrated scale bar")).toBeDisabled();
-    expect(screen.getByText(/Pixel-only, unknown, and RGBA geometry/)).toBeVisible();
+    expect(screen.getByText("Scale bar unavailable: no supported physical calibration.")).toBeVisible();
     fireEvent.change(screen.getByLabelText("Rendered export DPI"), { target: { value: "1201" } });
     expect(screen.getByRole("button", { name: "Export PNG…" })).toBeDisabled();
+  });
+
+  it("explains why RGBA sources cannot include a scale bar even with calibration", () => {
+    const rgba = { ...sources[0], metadata: { ...sources[0].metadata,
+      sample_semantics: "RGBA", physical_calibration: { unit: "µm", spacing: [0.5, 0.5] } } };
+    render(panel(bridge(vi.fn()), rgba));
+    fireEvent.click(screen.getByText("Export rendered image"));
+    expect(screen.getByLabelText("Include calibrated scale bar")).toBeDisabled();
+    expect(screen.getByLabelText("Include calibrated scale bar")).toHaveAccessibleDescription(
+      "Scale bar unavailable for RGBA sources.",
+    );
   });
 
   it("uses a changed preference only as the initializer for a new panel", () => {
@@ -365,6 +401,6 @@ describe("SourceExportPanel", () => {
     view.rerender(<SourceExportPanel api={api} source={sources[0]} selection={selection}
       channels={channels} projection="max" onError={vi.fn()} defaultDpi={600} />);
 
-    expect(screen.getByLabelText("Rendered export DPI")).toHaveValue(500);
+    expect(screen.getByLabelText("Rendered export DPI")).toHaveValue("500");
   });
 });

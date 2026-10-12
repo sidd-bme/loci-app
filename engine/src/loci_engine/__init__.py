@@ -13,11 +13,16 @@ if TYPE_CHECKING:
     from .segment import SegmentationOutput
 
 
-def segment_image(image: np.ndarray, settings: SegmentationSettings) -> SegmentationOutput:
+def segment_image(
+    image: np.ndarray,
+    settings: SegmentationSettings,
+    *,
+    working_bytes: int | None = None,
+) -> SegmentationOutput:
     """Load the numerical backend only when an image analysis is requested."""
     from .segment import segment_image as execute_segment
 
-    return execute_segment(image, settings)
+    return execute_segment(image, settings, working_bytes=working_bytes)
 
 
 __all__ = [

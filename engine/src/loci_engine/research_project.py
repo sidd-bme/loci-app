@@ -28,6 +28,7 @@ from .models import ENGINE_VERSION
 from .working_result import _sha256_file_stable
 
 SCHEMA = 1
+SUPPORTED_SCHEMAS = {1, 2}
 MAX_JSON_BYTES = 16 * 1024 * 1024
 MAX_ARTIFACT_BYTES = 512 * 1024 * 1024
 ARRAY_VERIFY_CHUNK_BYTES = 4 * 1024 * 1024
@@ -96,7 +97,7 @@ class ResearchProject:
         self._check_layout()
         with self.connection() as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version != SCHEMA:
+            if version not in SUPPORTED_SCHEMAS:
                 raise ValueError(
                     "Unsupported study schema; use its matching Loci version or a backup"
                 )
@@ -105,15 +106,20 @@ class ResearchProject:
                 raise ValueError("Study project identity is missing")
             self.meta = parse_json(meta[0])
             checked_id(self.meta["project_id"])
-            if self.meta.get("schema") != "loci.study/v1":
+            if self.meta.get("schema") != f"loci.study/v{version}":
                 raise ValueError("Study project schema identity is invalid")
+            self.schema_version = version
 
     @classmethod
-    def create(cls, directory: str | Path, title: str) -> ResearchProject:
+    def create(
+        cls, directory: str | Path, title: str, *, schema_version: int = SCHEMA
+    ) -> ResearchProject:
         requested = Path(directory).expanduser()
         if not requested.is_absolute():
             raise ValueError("Study destination must be absolute")
         checked_text(title, "Study title")
+        if type(schema_version) is not int or schema_version not in SUPPORTED_SCHEMAS:
+            raise ValueError("Unsupported study schema version")
         parent = requested.parent.resolve(strict=True)
         destination = parent / requested.name
         if destination.exists() or destination.is_symlink():
@@ -124,8 +130,8 @@ class ResearchProject:
         try:
             (staging / "artifacts").mkdir(mode=0o700)
             with closing(sqlite3.connect(staging / "study.sqlite3")) as connection, connection:
-                connection.executescript("""
-                    PRAGMA user_version=1;
+                connection.executescript(f"""
+                    PRAGMA user_version={schema_version};
                     CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                     CREATE TABLE sources(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                     CREATE TABLE documents(
@@ -138,7 +144,7 @@ class ResearchProject:
                 """)
                 now = timestamp()
                 meta = {
-                    "schema": "loci.study/v1",
+                    "schema": f"loci.study/v{schema_version}",
                     "project_id": uuid.uuid4().hex,
                     "title": title,
                     "created_at": now,
@@ -197,6 +203,17 @@ class ResearchProject:
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA synchronous=FULL")
+            if hasattr(self, "schema_version"):
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                meta = connection.execute(
+                    "SELECT value FROM metadata WHERE key='project'"
+                ).fetchone()
+                if (
+                    version != self.schema_version
+                    or meta is None
+                    or parse_json(meta[0]).get("schema") != f"loci.study/v{version}"
+                ):
+                    raise ValueError("Study schema changed after opening")
             yield connection
             self._check_layout()
             connection.commit()
@@ -386,7 +403,10 @@ class ResearchProject:
             )
         return self.public_source(record)
 
-    def source(self, source_id: str, *, verify: bool = False) -> dict[str, Any]:
+    def source(
+        self, source_id: str, *, verify: bool = False,
+        check: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT record FROM sources WHERE id=?", (checked_id(source_id),)
@@ -418,7 +438,7 @@ class ResearchProject:
                 actual, size = receipt.content_manifest_sha256, receipt.source_size_bytes
             else:
                 actual, size = _sha256_file_stable(
-                    Path(record["private_path"]), reject_symlink=True
+                    Path(record["private_path"]), reject_symlink=True, check=check
                 )
             if actual != record["sha256"] or size != record["size_bytes"]:
                 raise ValueError(
@@ -483,6 +503,7 @@ class ResearchProject:
         record: dict[str, Any],
         *,
         expected_revision: int,
+        publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if kind not in {
             "sample",
@@ -497,6 +518,12 @@ class ResearchProject:
             "model_preview",
             "comparison",
             "workspace",
+            "large_exchange_grant",
+            "large_export_grant",
+            "labels_import_grant",
+            "workflow",
+            "workflow_run",
+            "workflow_export",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
@@ -521,10 +548,14 @@ class ResearchProject:
                 "updated_at": timestamp(),
                 "data": record,
             }
+            if publication_guard is not None:
+                publication_guard()
             connection.execute(
                 "INSERT OR REPLACE INTO documents VALUES(?,?,?,?)",
                 (kind, document_id, revision + 1, canonical_json(envelope)),
             )
+            if publication_guard is not None:
+                publication_guard()
         return envelope
 
     def documents(self, kind: str) -> list[dict[str, Any]]:
@@ -552,7 +583,7 @@ class ResearchProject:
         )
         if used + array.nbytes + 4096 > self.meta["disk_budget_bytes"]:
             raise ValueError("Study artifact budget reached; export/archive a completed study")
-        descriptor, temporary = tempfile.mkstemp(prefix=".array-", dir=self.arrays)
+        descriptor, temporary = tempfile.mkstemp(prefix=".array-", dir=self.root)
         temporary_path = Path(temporary)
         try:
             with os.fdopen(descriptor, "wb") as stream:
@@ -751,7 +782,216 @@ class ResearchProject:
             )
         return record
 
-    def result(self, result_id: str) -> dict[str, Any]:
+    def save_tiled_result(
+        self,
+        *,
+        source_id: str,
+        kind: str,
+        arrays: dict[str, dict[str, Any]],
+        provenance: dict[str, Any],
+        object_table: dict[str, Any],
+        label_sha256: str,
+        parent_id: str | None = None,
+        job_id: str | None = None,
+        result_id: str | None = None,
+        created_at: str | None = None,
+        publication_guard: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically publish a fully verified v2 result after artifact staging."""
+        if self.schema_version != 2:
+            raise ValueError("Tiled results require a new v2 study")
+        from .research_tiled_store import (
+            iter_object_rows,
+            iter_tiles,
+            label_value_hash,
+            validate_grid,
+            validate_object_table,
+        )
+
+        checked_text(kind, "Result kind", 64)
+        if (
+            not isinstance(arrays, dict)
+            or set(arrays) != {"image", "labels"}
+            or not isinstance(provenance, dict)
+            or any(
+                not isinstance(provenance.get(key), dict) or not provenance[key]
+                for key in ("geometry", "selection", "runtime")
+            )
+            or provenance.get("measurement_basis") != "raw-selected-channel-values-on-result-grid"
+            or not any(
+                isinstance(provenance.get(key), dict) and bool(provenance[key])
+                for key in ("recipe", "processing", "segmentation")
+            )
+            or "measurements" in provenance
+        ):
+            raise ValueError("Tiled result requires image/labels and complete bounded provenance")
+        canonical_json(provenance)
+        source = self.source(source_id, verify=True, check=publication_guard)
+        if source.get("derivation") is not None:
+            from .research_vendor import validate_derivation
+
+            derivation = validate_derivation(source["derivation"], source["sha256"])
+            if "source_derivation" in provenance and provenance["source_derivation"] != derivation:
+                raise ValueError("Result origin differs from its immutable derived source")
+            provenance = {**provenance, "source_derivation": derivation}
+        elif "source_derivation" in provenance:
+            raise ValueError("Result claims a derivation absent from its registered source")
+        if parent_id is not None:
+            parent = self.result(parent_id)
+            if parent["source_id"] != source_id or parent["schema"] != "loci.research-result/v2":
+                raise ValueError("Correction parent is not a matching tiled result")
+        for descriptor in arrays.values():
+            validate_grid(self, descriptor, verify=True, check=publication_guard)
+        image, labels = arrays["image"], arrays["labels"]
+        if (
+            image["dtype"] not in {"uint8", "uint16"}
+            or labels["dtype"] != "uint32"
+            or image["shape"] != labels["shape"]
+        ):
+            raise ValueError("Tiled result image and uint32 labels must share a YX grid")
+        if not isinstance(label_sha256, str) or not SHA_PATTERN.fullmatch(label_sha256):
+            raise ValueError("Invalid canonical label value hash")
+        if label_value_hash(self, labels, check=publication_guard) != label_sha256:
+            raise ValueError("Canonical label values disagree with result receipt")
+        validate_object_table(self, object_table, check=publication_guard)
+        table_labels = {
+            row["label"]
+            for row in iter_object_rows(self, object_table, check=publication_guard)
+        }
+        if len(table_labels) != object_table["count"]:
+            raise ValueError("Object table has duplicate labels")
+        grid_labels: set[int] = set()
+        for _, _, tile in iter_tiles(self, labels, check=publication_guard):
+            grid_labels.update(int(value) for value in np.unique(tile) if value != 0)
+            if len(grid_labels) > 100_000:
+                raise ValueError("Tiled result exceeds 100000 objects")
+        if grid_labels != table_labels:
+            raise ValueError("Object table labels disagree with the effective label grid")
+        verified_source = self.source(source_id, verify=True, check=publication_guard)
+        if verified_source["sha256"] != source["sha256"]:
+            raise ValueError("Source identity changed during result staging")
+        references = provenance.get("references", {})
+        if not isinstance(references, dict) or len(references) > 16:
+            raise ValueError("Result reference bindings are invalid")
+        for reference in references.values():
+            if (
+                not isinstance(reference, dict)
+                or self.source(reference["source_id"], verify=True)["sha256"]
+                != reference["source_sha256"]
+            ):
+                raise ValueError("A bound reference changed during result staging")
+        record = {
+            "id": checked_id(result_id) if result_id is not None else uuid.uuid4().hex,
+            "schema": "loci.research-result/v2",
+            "source_id": source_id,
+            "source_sha256": source["sha256"],
+            "kind": kind,
+            "parent_id": parent_id,
+            "created_at": (
+                checked_text(created_at, "Created timestamp", 64)
+                if created_at is not None
+                else timestamp()
+            ),
+            "engine_version": ENGINE_VERSION,
+            "arrays": arrays,
+            "provenance": provenance,
+            "object_table": object_table,
+            "object_count": object_table["count"],
+            "label_sha256": label_sha256,
+        }
+        record["revision_hash"] = hashlib.sha256(canonical_json(record).encode()).hexdigest()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if publication_guard is not None:
+                publication_guard()
+            existing_row = connection.execute(
+                "SELECT record FROM results WHERE id=?", (record["id"],)
+            ).fetchone()
+            if existing_row is not None:
+                existing = parse_json(existing_row[0])
+                existing_canonical = {
+                    k: v for k, v in existing.items() if k not in ("created_at", "revision_hash")
+                }
+                record_canonical = {
+                    k: v for k, v in record.items() if k not in ("created_at", "revision_hash")
+                }
+                if (
+                    "provenance" in existing_canonical
+                    and isinstance(existing_canonical["provenance"], dict)
+                    and "remote_exchange" in existing_canonical["provenance"]
+                ):
+                    ex_remote = dict(existing_canonical["provenance"]["remote_exchange"])
+                    ex_remote.pop("verified_at", None)
+                    existing_canonical["provenance"] = {
+                        **existing_canonical["provenance"],
+                        "remote_exchange": ex_remote,
+                    }
+                if (
+                    "provenance" in record_canonical
+                    and isinstance(record_canonical["provenance"], dict)
+                    and "remote_exchange" in record_canonical["provenance"]
+                ):
+                    rec_remote = dict(record_canonical["provenance"]["remote_exchange"])
+                    rec_remote.pop("verified_at", None)
+                    record_canonical["provenance"] = {
+                        **record_canonical["provenance"],
+                        "remote_exchange": rec_remote,
+                    }
+                if (
+                    existing["revision_hash"] == record["revision_hash"]
+                    or canonical_json(existing_canonical) == canonical_json(record_canonical)
+                ):
+                    if job_id is not None:
+                        job_row = connection.execute(
+                            "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)
+                        ).fetchone()
+                        if job_row is not None:
+                            job = parse_json(job_row[0])
+                            job.update(
+                                state="succeeded",
+                                progress=1.0,
+                                result_ids=[existing["id"]],
+                                finished_at=timestamp(),
+                                updated_at=timestamp(),
+                            )
+                            connection.execute(
+                                "UPDATE jobs SET record=? WHERE id=?", (canonical_json(job), job_id)
+                            )
+                    return existing
+                raise ValueError(
+                    "A result with this identity was already published with different content"
+                )
+            if job_id is not None:
+                job_row = connection.execute(
+                    "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)
+                ).fetchone()
+                if job_row is None:
+                    raise ValueError("Publication job is not part of this study")
+                job = parse_json(job_row[0])
+                if job["state"] != "running" or job["cancel_requested"]:
+                    raise ValueError("Job was cancelled or stopped before publication")
+                if job["request"].get("source_id") != source_id:
+                    raise ValueError("Publication job belongs to a different source")
+                job.update(
+                    state="succeeded",
+                    progress=1.0,
+                    result_ids=[record["id"]],
+                    finished_at=timestamp(),
+                    updated_at=timestamp(),
+                )
+                connection.execute(
+                    "UPDATE jobs SET record=? WHERE id=?", (canonical_json(job), job_id)
+                )
+            connection.execute(
+                "INSERT INTO results VALUES(?,?)", (record["id"], canonical_json(record))
+            )
+        return record
+
+    def result(
+        self, result_id: str, *, check: Callable[[], None] | None = None
+    ) -> dict[str, Any]:
+        if check is not None:
+            check()
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT record FROM results WHERE id=?", (checked_id(result_id),)
@@ -764,6 +1004,34 @@ class ResearchProject:
             "revision_hash"
         ):
             raise ValueError("Result revision record failed integrity verification")
+        schema = record.get("schema")
+        if schema == "loci.research-result/v1":
+            pass
+        elif schema == "loci.research-result/v2" and self.schema_version == 2:
+            from .research_tiled_store import validate_grid, validate_object_table
+
+            if (
+                not isinstance(record.get("arrays"), dict)
+                or set(record["arrays"]) != {"image", "labels"}
+                or not isinstance(record.get("object_table"), dict)
+                or type(record.get("object_count")) is not int
+                or record["object_count"] != record["object_table"].get("count")
+                or not isinstance(record.get("label_sha256"), str)
+                or not SHA_PATTERN.fullmatch(record["label_sha256"])
+            ):
+                raise ValueError("Invalid tiled result record")
+            for descriptor in record["arrays"].values():
+                validate_grid(self, descriptor)
+            image, labels = record["arrays"]["image"], record["arrays"]["labels"]
+            if (
+                image["dtype"] not in {"uint8", "uint16"}
+                or labels["dtype"] != "uint32"
+                or image["shape"] != labels["shape"]
+            ):
+                raise ValueError("Invalid tiled result image/label geometry")
+            validate_object_table(self, record["object_table"], check=check)
+        else:
+            raise ValueError("Unsupported research result schema")
         return record
 
     def list_results(self, source_id: str | None = None) -> list[dict[str, Any]]:
@@ -794,8 +1062,10 @@ class ResearchProject:
             )
         return receipt
 
-    def review_state(self, result_id: str) -> dict[str, Any] | None:
-        result = self.result(result_id)
+    def review_state(
+        self, result_id: str, *, check: Callable[[], None] | None = None
+    ) -> dict[str, Any] | None:
+        result = self.result(result_id, check=check)
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT value FROM metadata WHERE key=?", ("review:" + result_id,)

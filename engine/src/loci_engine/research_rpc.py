@@ -34,6 +34,18 @@ def _open(path: str) -> Workbench:
 
 
 def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "research_statistics_figure_export":
+        from .research_statistics_figure import export_statistics_figure
+
+        exact_keys(params, {"project", "request", "destination", "application_version"}, method)
+        if set(params) != {"project", "request", "destination", "application_version"}:
+            raise ValueError("Statistics figure export parameters are incomplete")
+        return export_statistics_figure(
+            _open(params["project"]).project,
+            params["request"],
+            params["destination"],
+            params["application_version"],
+        )
     if method == "research_workspace_visibility":
         from .research_workspace_records import update_visibility
 
@@ -48,6 +60,39 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         workbench = _open(params["project"])
         reorder_sources(workbench.project, params["request"])
         return workbench.snapshot()
+    if method == "research_labels_import_grant":
+        from .research_labels_import import create_import_grant
+
+        exact_keys(
+            params,
+            {"project", "path", "source_id", "source_sha256", "selection", "working_bytes"},
+            method,
+        )
+        return create_import_grant(
+            _open(params["project"]),
+            params["path"],
+            params["source_id"],
+            params["source_sha256"],
+            params["selection"],
+            params.get("working_bytes", 512 * 1024**2),
+        )
+    if method == "research_large_exchange_grant":
+        from .research_large_exchange import create_exchange_grant
+
+        exact_keys(params, {"project", "source_id", "directory"}, method)
+        return create_exchange_grant(
+            _open(params["project"]).project, params["source_id"], params["directory"]
+        )
+    if method == "research_large_export_grant":
+        from .research_large_export import create_export_grant
+
+        exact_keys(params, {"project", "result_id", "revision_hash", "destination"}, method)
+        return create_export_grant(
+            _open(params["project"]).project,
+            params["result_id"],
+            params["revision_hash"],
+            params["destination"],
+        )
     if method == "research_source_rendered_export":
         from .source_rendered_export import export_rendered_source
 
@@ -153,6 +198,15 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             expected_revision=params.get("expected_revision", 0),
             require_exact_sources=params.get("require_exact_sources", False),
         )
+    if method == "research_vision_handoff":
+        from .vision_handoff import create_vision_handoff
+
+        exact_keys(params, {"project", "request", "destination", "source_sha256"}, method)
+        workbench = _open(params["project"])
+        source = workbench.project.source(params["request"]["source_id"], verify=True)
+        if source["sha256"] != params["source_sha256"]:
+            raise ValueError("Vision handoff source identity changed")
+        return create_vision_handoff(workbench, params["request"], params["destination"])
     if method == "research_agent_access":
         from .research_agent_setup import create_agent_access
 
@@ -173,9 +227,15 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             params["working_bytes"],
             params.get("recovery_model_id"),
         )
+    if method == "research_create_example":
+        exact_keys(params, {"path"}, method)
+        from .research_example import create_example_study
+
+        project = create_example_study(params["path"])
+        return _open(str(project.root)).snapshot()
     if method == "research_create":
         exact_keys(params, {"path", "title"}, method)
-        project = ResearchProject.create(params["path"], params["title"])
+        project = ResearchProject.create(params["path"], params["title"], schema_version=2)
         return _open(str(project.root)).snapshot()
     if method == "research_snapshot":
         exact_keys(params, {"project"}, method)
@@ -303,6 +363,14 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         "research_cancel": {"project", "job_id"},
         "research_review": {"project", "result_id", "revision_hash", "disposition"},
         "research_export": {"project", "result_id", "revision_hash", "destination"},
+        "research_export_correction_effect": {"project", "receipt_sha256", "destination"},
+        "research_workflow_export": {
+            "project",
+            "run_id",
+            "result_id",
+            "revision_hash",
+            "destination",
+        },
         "research_relink": {"project", "source_id", "candidate"},
     }
     if method not in fields:
@@ -328,6 +396,16 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         return workbench.project.review(
             params["result_id"], params["revision_hash"], params["disposition"]
         )
+    if method == "research_workflow_export":
+        from .research_workflow import export_run
+
+        return export_run(
+            workbench, {key: value for key, value in params.items() if key != "project"}
+        )
+    if method == "research_export_correction_effect":
+        from .research_correction_effect import export_effect
+
+        return export_effect(workbench.project, params["receipt_sha256"], params["destination"])
     if method == "research_relink":
         if workbench.project.source(params["source_id"]).get("locator_state") == "relink-required":
             from .research_interchange import relink_interchanged_source

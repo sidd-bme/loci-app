@@ -43,6 +43,7 @@ describe("source view persistence", () => {
     const execute = vi.fn().mockResolvedValue({ source_id: "a", source_sha256: "hash", revision: 5 });
     const store = new SourceViewStore({ execute } as unknown as ResearchDesktopApi, "a", "hash", 2, vi.fn());
     store.adoptRevision(4);
+    expect(() => store.adoptRevision(3)).toThrow("invalid");
     store.save(state(3));
     await store.flush();
     expect(execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({ expected_revision: 4 }));

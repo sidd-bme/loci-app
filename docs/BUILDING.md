@@ -50,13 +50,22 @@ npm start
 These minimal development profiles can remove other optional extras from a shared
 virtual environment. For the full worker build profile, consistently use
 `uv sync --frozen --extra dev --extra bundle --extra cellpose --extra onnx` and
-retain the same extras on subsequent `uv run` commands. On memory-constrained hosts, use `npx vitest run --maxWorkers=1`
-for desktop tests and keep heavy suites and packaged QA sequential.
+retain the same extras on subsequent `uv run` commands. On memory-constrained
+hosts, use `npx vitest run --maxWorkers=1` for desktop tests and keep heavy suites
+and packaged QA sequential.
 
 Node 24 and Python 3.11-3.13 are supported development baselines. The checked-in
 `engine/.python-version` pins reproducible engine and bundle work to Python 3.12. Source
 images are opened through the native picker and are never copied into the
 repository.
+
+## Human CLI and policy-bound MCP
+
+The frozen worker includes the human `--cli` command surface and the separate
+policy-bound MCP stdio server. See the [CLI guide](CLI.md) for source and packaged
+invocation, terminal launchers and machine output, and [agent access](AGENT_ACCESS.md)
+for explicit grants and revocation. A CLI smoke check does not qualify MCP client
+interoperability; retain separate protocol and packaged-worker evidence.
 
 ## Local macOS package
 

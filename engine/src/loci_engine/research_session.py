@@ -169,8 +169,15 @@ def clone_study(project: ResearchProject, destination: str | Path) -> ResearchPr
                         raise ValueError("Saved model package identity changed")
             clone = ResearchProject(staging)
             for result in clone.list_results():
-                for artifact in result["arrays"].values():
-                    clone.verify_array(artifact)
+                if result.get("schema") == "loci.research-result/v2":
+                    from .research_tiled_store import validate_grid
+
+                    clone.result(result["id"])
+                    for grid in result["arrays"].values():
+                        validate_grid(clone, grid, verify=True)
+                else:
+                    for artifact in result["arrays"].values():
+                        clone.verify_array(artifact)
             project._check_layout()
             os.chmod(clone.database, 0o600)
             # Windows rejects fsync on a read-only CRT descriptor.

@@ -45,13 +45,41 @@ merely to obtain a passing run. Existing retained workflows include:
 | Import and navigation | File/folder/series/store/drop cancellation and ambiguous imports preserve the session. Verify axes, geometry, native edges, cursor zoom, DPI-correct 1:1, pyramid transitions, world/source round trips and declared ROI independently of the camera. Reject stale responses; bound tiles, bricks and caches. |
 | Display and figures | Numerical fixtures cover IMS acquisition mappings, scalar/RGB/RGBA/ICC display, stable Auto/Reset and histograms bound to source/hash/T/Z. Pan/zoom must not alter histogram sampling. Figures retain exact display, sampling, software, DPI, scale bars, legends and volume camera/MPR state; changed bindings fail closed. |
 | Persistence and recovery | Autosave/restart, Save as, discard recovery, legacy project/study import, relinking, interrupted jobs and export/reopen preserve exact sources, masks, annotations, corrections, revisions, models and locators without copying originals. Regress non-finite restores and missing/moved sources with redacted recovery details. |
-| Cells and fluorescence | Recipe preview, calibrated object/ROI measurements, nucleus/cell association, correction undo/redo, review, batch and reopen retain raw source hashes. Preserve background/flat-field/filter assumptions, thresholds, controls, formulas, channel metadata and resolved settings. Separate object rows from biological replicate summaries. |
+| Cells and fluorescence | Homogeneous metric kinds and units are required for pooled summaries; missing/non-finite values remain missing and exclusions are counted. Recipe preview, calibrated object/ROI measurements, nucleus/cell association, correction undo/redo, review, batch and reopen retain raw source hashes. Preserve background/flat-field/filter assumptions, thresholds, controls, formulas, channel metadata and resolved settings. Separate object rows from biological replicate summaries. |
 | Slides and histology | Tiled native SVS/NDPI navigation, physical annotations, tissue/region masks, declared stain separation, region/object metrics and inspectable rule classification need coordinate parity, ICC references, annotation/mask/table round trips and memory/cancellation checks. |
 | Volumes and medical sources | Anisotropic/oblique/permuted axes, LPS/RAS/left-right orientation, rescale and physical measurement fixtures cover native C/Z/T, linked MPR, raw volume rendering, crop/resample/filter, 3D labels and reopenable exports. Label resampling uses nearest-neighbour semantics. One-Z sources remain 2D; unsupported DICOM variants fail explicitly. No unvalidated de-identification claim. |
 | Model packages | Retain tensor/normalization/tile/halo/runtime/rights contracts, exact artifact identities, reference and seam tests, managed ONNX and provisioned Cellpose checks, and unseen-package adapter tests. Never substitute identity models for real-artifact qualification. Portable reviewed annotations retain tested GeoJSON/ImageJ ROI round trips. |
 | GUI, CLI and MCP | Discovery, inspect, recipe preview/validation, submit, job/result inspection, cancellation and export retain numerical and record parity, idempotent submissions, scoped authority, isolation, injection, retry and recovery checks. Record actual compatible client testing and unavailable-client gaps. |
 | Time and remote compute | Registration/tracking fixtures cover known transforms, missing frames, splits/merges and uncertain/corrected associations through export/reopen. Remote SSH/scheduler tests retain runtime/device/resource identities, approved staging, durable job identity, manifest checks, progress/cancel/reconnect/retrieve and owned cleanup; do not run heavy work on login nodes. |
 | Interface and onboarding | Inspect actual packaged empty, populated, loading, error, disabled, recovery, focus/keyboard, long-label, laptop/high-DPI, theme/text-size and reduced-motion states. Menus dismiss correctly, prerequisites remain visible, preferences persist and the searchable offline manual works. Test source switching while loading, cancellation, sustained navigation and undo/redo. |
+
+Changes to the current source workflows also require these checks:
+
+- External labels retain original sparse IDs, the declared native grid and exact
+  dtype conversion. Regress calibration/axis mismatch, input mutation, cancellation,
+  atomic adoption, raw-channel measurement and correction/export round trips.
+- Correction effects pair only identical revisions or direct corrected children
+  with the same scope, geometry, units and method. Verify signed arithmetic,
+  symmetric omissions and equal image-within-replicate/replicate-within-condition
+  weighting. Object/image counts cannot become biological n. Bind report export
+  to exact reviews and sample metadata; reject stale and forged receipts.
+- Object queries retain exact population membership, missing-value accounting,
+  sparse labels, paging and owned-pixel location. Chart view and display sampling
+  cannot change counts or membership. Figure exports preserve canonical bins,
+  sampling, units, physical/raster size, fonts and hashes without overwriting.
+- Visual workflows retain typed connections, exact saved definitions, preview/run
+  invalidation, batch preflight and durable recovery. Export the full segmentation
+  and exact selected population; plot sampling cannot limit measurement exports.
+- Recipe resource controls retain explicit saved allowances and estimates while
+  keeping decoder, array, model-runtime, GPU and artifact limits separate. Larger
+  allowances cannot silently alter analysis scope, resolution or method settings.
+- Annotation drafts and detached views remain source/plane/tool bound. Verify
+  stale-plane drawing rejection, bounded draft retention, stop/retry, close/reopen
+  and recovery. Inspect all supported themes and text sizes in the packaged app.
+- Policy-bound agents retain independent grants/disclosures, guide/context
+  boundaries, revocation and exact-revision review. Interactive display/image and
+  remote-continuation grants cannot imply shell, provisioning, arbitrary egress,
+  remote cleanup or human-review authority. Test the exact packaged worker/client.
 
 Format additions require a verified maintained reader or an explicitly labelled
 conversion route with fixtures and rights evidence. An extension or installed

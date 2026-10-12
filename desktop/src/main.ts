@@ -10,6 +10,8 @@ import started from "electron-squirrel-startup";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { ImageWindowLayoutStore } from "./main/image-window-layout";
+import { ImageWindowCoordinator } from "./main/image-window-coordinator";
 import { ResearchBridge } from "./main/research-bridge";
 import { correctionOperationIds } from "./main/correction-provenance";
 
@@ -188,6 +190,8 @@ if (!ownsSingleInstanceLock) app.quit();
 
 const engine = new EngineWorkerClient();
 const researchBridge = new ResearchBridge();
+const imageWindows = new ImageWindowCoordinator(researchBridge, createImageWindow,
+  new ImageWindowLayoutStore(path.join(app.getPath("userData"), "image-window-layouts")));
 const engineResultResidency = new EngineResultResidencyCoordinator();
 let mainWindow: BrowserWindow | null = null;
 const MAX_DISCOVERED_SOURCES = MAX_PROJECT_SOURCES;
@@ -3517,6 +3521,7 @@ async function finalizeOpenBatchesForShutdown(): Promise<void> {
 
 function registerIpc(): void {
   researchBridge.register(assertTrustedSender);
+  imageWindows.registerIpc();
   ipcMain.handle("loci:create-project", (event, manifest: unknown) => {
     assertTrustedSender(event);
     return rendererSafeProjectOperation(
@@ -4071,6 +4076,18 @@ function registerIpc(): void {
 }
 
 function installMenu(): void {
+  const focusControlPanel = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  };
+  const requestInControlPanel = (channel: "loci:settings-requested" | "loci:guide-requested" |
+    "loci:workspace-requested" | "loci:open-project-requested" | "loci:save-project-requested" |
+    "loci:import-requested" | "loci:folder-import-requested") => {
+    focusControlPanel();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel);
+  };
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(process.platform === "darwin"
       ? [
@@ -4082,7 +4099,7 @@ function installMenu(): void {
               {
                 label: "Settings…",
                 accelerator: "CmdOrCtrl+,",
-                click: () => mainWindow?.webContents.send("loci:settings-requested"),
+                click: () => requestInControlPanel("loci:settings-requested"),
               },
               { type: "separator" as const },
               { role: "hide" as const },
@@ -4105,25 +4122,25 @@ function installMenu(): void {
       label: "File",
       submenu: [
         {
-          label: "Open Project…",
+          label: "Open study…",
           accelerator: "CmdOrCtrl+Shift+P",
-          click: () => mainWindow?.webContents.send("loci:open-project-requested"),
+          click: () => requestInControlPanel("loci:open-project-requested"),
         },
         {
-          label: "Save Project",
+          label: "Save study…",
           accelerator: "CmdOrCtrl+S",
-          click: () => mainWindow?.webContents.send("loci:save-project-requested"),
+          click: () => requestInControlPanel("loci:save-project-requested"),
         },
         { type: "separator" },
         {
-          label: "Import Images…",
+          label: "Open images…",
           accelerator: "CmdOrCtrl+O",
-          click: () => mainWindow?.webContents.send("loci:import-requested"),
+          click: () => requestInControlPanel("loci:import-requested"),
         },
         {
-          label: "Import Folder…",
+          label: "Open folder…",
           accelerator: "CmdOrCtrl+Shift+O",
-          click: () => mainWindow?.webContents.send("loci:folder-import-requested"),
+          click: () => requestInControlPanel("loci:folder-import-requested"),
         },
         ...(process.platform === "darwin"
           ? []
@@ -4132,7 +4149,7 @@ function installMenu(): void {
               {
                 label: "Settings…",
                 accelerator: "CmdOrCtrl+,",
-                click: () => mainWindow?.webContents.send("loci:settings-requested"),
+                click: () => requestInControlPanel("loci:settings-requested"),
               },
             ]),
         { type: "separator" },
@@ -4162,7 +4179,16 @@ function installMenu(): void {
         { role: "togglefullscreen" },
       ],
     },
-    { label: "Window", submenu: [{ role: "minimize" }, { role: "zoom" }, ...(process.platform === "darwin" ? [{ type: "separator" as const }, { role: "front" as const }] : [])] },
+    { label: "Window", submenu: [
+      { label: "Focus control panel", click: focusControlPanel },
+      { label: "Return to workspace", click: () => requestInControlPanel("loci:workspace-requested") },
+      { type: "separator" },
+      { role: "minimize" }, { role: "zoom" },
+      ...(process.platform === "darwin" ? [{ type: "separator" as const }, { role: "front" as const }] : []),
+    ] },
+    { label: "Help", submenu: [
+      { label: "User guide", accelerator: "F1", click: () => requestInControlPanel("loci:guide-requested") },
+    ] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -4296,6 +4322,21 @@ async function promptForStalledShutdown(): Promise<"keep-waiting" | "force-quit"
   return result.response === 1 ? "force-quit" : "keep-waiting";
 }
 
+function createImageWindow(): { window: BrowserWindow; load: () => Promise<void> } {
+  const window = new BrowserWindow({
+    width: 1080, height: 780, minWidth: 720, minHeight: 480, show: false,
+    title: "Loci · Image", backgroundColor: "#111614",
+    webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+  return { window, load };
+}
+
 async function createWindow(): Promise<void> {
   const state = await readWindowState();
   const { fullscreen, maximized, ...bounds } = state;
@@ -4315,6 +4356,7 @@ async function createWindow(): Promise<void> {
     },
   });
   mainWindow = window;
+  imageWindows.registerControl(window);
   trackWindowState(window);
   const notifyPresentation = () => {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
@@ -4413,6 +4455,7 @@ let engineDrainStarted = false;
 
 async function finishApplicationQuit(): Promise<void> {
   const cleanShutdown = (async () => {
+    await imageWindows.flushLayout();
     await researchBridge.dispose();
     await finalizeOpenBatchesForShutdown();
     for (const record of [...activeBatchRuns.values()]) {

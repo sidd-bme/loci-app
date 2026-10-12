@@ -318,7 +318,7 @@ async function selectTool(page, group, value) {
 async function selectAdvancedTool(page, query, label) {
   await page.getByRole("button", { name: "Search all tools" }).click();
   await page.getByLabel("Search all tools").fill(query);
-  await page.getByRole("list", { name: "All tools" }).getByRole("button", { name: label, exact: true }).click();
+  await page.getByRole("listbox", { name: "All tools" }).getByRole("option", { name: label, exact: true }).click();
 }
 
 async function setSelection(page, sourceName, expected) {
@@ -327,8 +327,12 @@ async function setSelection(page, sourceName, expected) {
   if (!await details.evaluate((element) => element.open))
     await details.getByText("Analysis region", { exact: true }).click();
   const cameraBefore = (await viewerState(page, sourceName)).camera;
-  for (const [label, key] of [["X", "x"], ["Y", "y"], ["Width", "width"], ["Height", "height"]])
-    await page.getByLabel(label, { exact: true }).fill(String(expected[key]));
+  // Keep every committed intermediate rectangle within the source bounds.
+  for (const [label, value] of [["X", 0], ["Y", 0], ["Width", expected.width], ["Height", expected.height], ["X", expected.x], ["Y", expected.y]]) {
+    const input = page.getByLabel(label, { exact: true });
+    await input.fill(String(value));
+    await input.press("Enter");
+  }
   for (const [label, key] of [["X", "x"], ["Y", "y"], ["Width", "width"], ["Height", "height"]])
     assert.equal(await page.getByLabel(label, { exact: true }).inputValue(), String(expected[key]));
   const state = await waitViewport(page, sourceName, "retaining the full-source viewer after setting analysis scope");

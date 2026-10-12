@@ -1,7 +1,7 @@
 {
   "name": "loci-desktop",
   "productName": "Loci",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "description": "Local biological image viewing, segmentation, and counting for research labs",
   "main": ".vite/build/main.js",

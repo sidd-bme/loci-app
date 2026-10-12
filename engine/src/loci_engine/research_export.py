@@ -65,6 +65,7 @@ def methods_text(result: dict[str, Any]) -> str:
         canonical_json(
             {
                 "processing": provenance.get("processing", []),
+                "execution_policy": provenance.get("execution_policy"),
                 "segmentation": provenance.get("segmentation"),
                 "correction": provenance.get("correction"),
                 "recipe": provenance.get("recipe"),
@@ -78,6 +79,7 @@ def methods_text(result: dict[str, Any]) -> str:
                 "channel_mapping": provenance.get("channel_mapping"),
                 "channel_metadata": provenance.get("channel_metadata"),
                 "source_derivation": provenance.get("source_derivation"),
+                "external_labels": provenance.get("external_labels"),
                 "puncta": provenance.get("puncta"),
                 "puncta_peak_status": provenance.get("puncta_peak_status"),
                 "association": provenance.get("association"),
@@ -254,6 +256,10 @@ def export_research_result(
     result = project.result(result_id)
     if result["revision_hash"] != revision_hash:
         raise ValueError("Export revision is stale; review the selected result again")
+    if result.get("schema") == "loci.research-result/v2":
+        from .research_large_export import export_large_result
+
+        return export_large_result(project, result_id, revision_hash, destination)
     review = project.review_state(result_id)
     if review is None or review["disposition"] != "reviewed":
         raise ValueError("Review this exact result revision before exporting it")
@@ -336,6 +342,16 @@ def export_research_result(
         (stage / "objects.csv").write_text(
             measurements_csv(flat_measurements(rows)), encoding="utf-8"
         )
+        if "workflow" in result["provenance"]:
+            from .research_workflow import workflow_export_data
+
+            workflow_receipt, selected_rows = workflow_export_data(result)
+            (stage / "workflow.json").write_text(
+                canonical_json(workflow_receipt) + "\n", encoding="utf-8"
+            )
+            (stage / "selected_measurements.csv").write_text(
+                measurements_csv(flat_measurements(selected_rows)), encoding="utf-8"
+            )
         (stage / "methods.md").write_text(methods_text(result), encoding="utf-8")
         receipt = {
             "schema": "loci.research-export/v1",

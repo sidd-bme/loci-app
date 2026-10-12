@@ -79,5 +79,30 @@ describe("image camera independent of analysis scope", () => {
     const boundedCenter = sourceToScreen(bounded, viewportSize, extent, extent.width / 2, extent.height / 2);
     expect(boundedCenter.x).toBeCloseTo((1200 - 320) / 2, 4);
   });
+
+  it("excludes pyramid levels with reduced Z from plane detail tile planning", () => {
+    const multiZSource: ResearchSource = {
+      id: "multi-z",
+      name: "3D Stack",
+      sha256: "hash",
+      metadata: {
+        dimensions: { x: 2048, y: 2048, z: 10, t: 1, c: 1 },
+        levels: [
+          { index: 0, dimensions: { x: 2048, y: 2048, z: 10, t: 1, c: 1 } },
+          { index: 1, dimensions: { x: 1024, y: 1024, z: 2, t: 1, c: 1 } }, // reduced Z: 2 != 10
+          { index: 2, dimensions: { x: 512, y: 512, z: 10, t: 1, c: 1 } },   // full Z preserved
+        ],
+      },
+    };
+    const extent = imageExtent(multiZSource);
+    const camera = fitCamera(extent, size);
+    // For single-plane, level 1 must be excluded because it downsamples Z
+    const planePlan = visibleTiles(multiZSource, camera, size, 1, { projection: "plane" });
+    expect(planePlan.level).not.toBe(1);
+
+    // For max projection, level 1 is allowed
+    const maxPlan = visibleTiles(multiZSource, camera, size, 1, { projection: "max" });
+    expect(maxPlan.level).toBe(1);
+  });
 });
 

@@ -12,9 +12,8 @@ const capabilities = [
 ] as const;
 
 export default function CapabilityOverview(): React.JSX.Element {
-  return <div><div className="capability-list">{capabilities.map((capability) =>
+  return <div className="capability-list">{capabilities.map((capability) =>
     <div className="capability-row" key={capability.name}><div><strong>{capability.name}</strong>
       <small>{capability.note}</small></div>
-      <span className={`capability-status is-${capability.tone}`}>{capability.status}</span></div>)}</div>
-    <p className="capability-footnote">Opening a source never downloads a model, runtime, or decoder. These are implemented engineering routes, not universal reader coverage, biological validation, clinical validation, or release clearance.</p></div>;
+      <span className={`capability-status is-${capability.tone}`}>{capability.status}</span></div>)}</div>;
 }

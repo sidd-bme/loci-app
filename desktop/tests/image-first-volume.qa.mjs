@@ -250,10 +250,19 @@ async function inspectFigureBundle(destination, expected) {
   const [imageBytes, manifestBytes] = await Promise.all([fs.readFile(imagePath), fs.readFile(manifestPath)]);
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
   const hashes = { "image.png": hashBytes(imageBytes), "manifest.json": hashBytes(manifestBytes) };
-  assert.equal(manifest.schema_version, "loci.volume-figure/v1");
+  assert.equal(manifest.schema_version, "loci.volume-figure/v2");
   assert.deepEqual(manifest.source, { source_id: expected.sourceId, source_sha256: fixtureSha256, t: 0 });
   assert.deepEqual(manifest.representation, {
-    mode: expected.mode, extent: expected.extent, interpolation: "linear", shading: false, lighting: null, orientation_axes: true,
+    mode: expected.mode,
+    extent: expected.extent,
+    interpolation: "linear",
+    channel_compositing: expected.mode === "volume" ? "opacity-weighted-channels/v1" : null,
+    projection_reducer: null,
+    shading: false,
+    blend_mode: expected.mode === "volume" ? "blend" : null,
+    quality: expected.mode === "volume" ? 50 : null,
+    lighting: null,
+    orientation_axes: true,
   });
   assertPayloadGrid(manifest.payloads.context, {
     role: "whole-volume-context", dimensions: expected.contextDimensions,

@@ -22,6 +22,7 @@ from .remote_compute import (
     RemoteCellposeTask,
     RemoteCleanupReceipt,
     RemoteComputeClient,
+    RemoteComputeError,
     RemoteJobIdentity,
     RemoteJobStatus,
     RemoteRecipeTask,
@@ -175,9 +176,35 @@ def _load_run(project: ResearchProject, request_key: str) -> dict[str, Any]:
 
 
 def _put(
-    project: ResearchProject, envelope: dict[str, Any], data: dict[str, Any]
+    project: ResearchProject,
+    envelope: dict[str, Any],
+    data: dict[str, Any],
+    *,
+    publication_guard: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     try:
+        if publication_guard is not None:
+            with project.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    "SELECT revision FROM documents WHERE kind=? AND id=?",
+                    (DOCUMENT_KIND, envelope["id"]),
+                ).fetchone()
+                if row is None or row[0] != envelope["revision"]:
+                    raise ResearchRemoteError("Remote workflow changed during guarded publication")
+                publication_guard()
+                updated = {
+                    **envelope,
+                    "revision": envelope["revision"] + 1,
+                    "updated_at": timestamp(),
+                    "data": data,
+                }
+                connection.execute(
+                    "UPDATE documents SET revision=?,record=? WHERE kind=? AND id=?",
+                    (updated["revision"], canonical_json(updated), DOCUMENT_KIND, envelope["id"]),
+                )
+                publication_guard()
+            return updated
         return project.put_document(
             DOCUMENT_KIND,
             envelope["id"],
@@ -954,7 +981,15 @@ def _output_dto(manifest: VerifiedOutputManifest) -> list[dict[str, Any]]:
     return [asdict(entry) for entry in manifest.entries]
 
 
-def _retrieve(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
+def _retrieve(
+    workbench: Workbench,
+    request: dict[str, Any],
+    *,
+    publication_guard: Callable[[], None] | None = None,
+    max_output_bytes: int | None = None,
+) -> dict[str, Any]:
+    guard = publication_guard or (lambda: None)
+    guard()
     values = _exact(
         request, {"alias", "request_key", "transfer_authorized"}, "Remote retrieval request"
     )
@@ -979,16 +1014,49 @@ def _retrieve(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         or manifest.request_sha256 != data["request_sha256"]
     ):
         raise ResearchRemoteError("Remote output manifest identity is mismatched")
+    if (
+        max_output_bytes is not None
+        and sum(item.size_bytes for item in manifest.entries) > max_output_bytes
+    ):
+        raise ResearchRemoteError("Remote output exceeds the agent transfer budget")
+    if publication_guard is not None and (
+        len(manifest.entries) != 1 or manifest.entries[0].relative_path != "results.zip"
+    ):
+        raise ResearchRemoteError("Agent retrieval permits only the fixed results.zip publication")
+    guard()
     root = workbench.project.root / ".remote-results"
     root.mkdir(mode=0o700, exist_ok=True)
     if root.is_symlink() or not root.is_dir():
         raise ResearchRemoteError("Local remote-result cache is unsafe")
     destination = root / request_key
+    # A policy-bound transfer uses private staging. Only the guarded durable
+    # receipt declares publication; a stale staging directory is never adopted.
+    if publication_guard is not None and data["state"] != "retrieved":
+        destination = root / (".agent-stage-" + request_key)
+        if destination.exists() or destination.is_symlink():
+            raise ResearchRemoteError(
+                "Interrupted agent transfer needs explicit human reconciliation"
+            )
+    elif data["state"] == "retrieved":
+        destination = Path(data["private_retrieval_directory"])
     retrieved = _verified_existing_retrieval(destination, manifest)
     if retrieved is None:
         if destination.exists() or destination.is_symlink():
             raise ResearchRemoteError("Existing local retrieval disagrees with remote manifest")
-        retrieved = client.retrieve_outputs(identity, destination)
+        if publication_guard is not None:
+            try:
+                retrieved = client.retrieve_outputs(
+                    identity,
+                    destination,
+                    expected_manifest=manifest,
+                    max_output_bytes=max_output_bytes,
+                )
+            except RemoteComputeError as exc:
+                raise ResearchRemoteError(
+                    "Retrieved remote outputs failed bounded manifest verification"
+                ) from exc
+        else:
+            retrieved = client.retrieve_outputs(identity, destination)
     expected_paths = tuple(
         destination.joinpath(*Path(entry.relative_path).parts) for entry in manifest.entries
     )
@@ -997,6 +1065,7 @@ def _retrieve(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         or _verified_existing_retrieval(destination, manifest) is None
     ):
         raise ResearchRemoteError("Retrieved remote outputs failed local manifest verification")
+    guard()
     updated = _put(
         workbench.project,
         envelope,
@@ -1008,6 +1077,7 @@ def _retrieve(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
             "retrieval_authorized_at": timestamp(),
             "updated_at": timestamp(),
         },
+        publication_guard=publication_guard,
     )
     return {"run": _public_run(updated)}
 
@@ -1025,7 +1095,16 @@ def _manifest_from_run(data: dict[str, Any]) -> VerifiedOutputManifest:
     return VerifiedOutputManifest(data["request_key"], data["request_sha256"], entries)
 
 
-def _attach(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
+def _attach(
+    workbench: Workbench,
+    request: dict[str, Any],
+    *,
+    publication_guard: Callable[[], None] | None = None,
+    max_output_bytes: int | None = None,
+    max_decoded_bytes: int | None = None,
+) -> dict[str, Any]:
+    guard = publication_guard or (lambda: None)
+    guard()
     values = _only(request, {"alias", "request_key", "local_job_id"}, "Remote attach request")
     if set(values) not in ({"alias", "request_key"}, {"alias", "request_key", "local_job_id"}):
         raise ResearchRemoteError("Remote attach request is missing its run identity")
@@ -1042,6 +1121,11 @@ def _attach(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     manifest = _manifest_from_run(data)
     if len(manifest.entries) != 1 or manifest.entries[0].relative_path != "results.zip":
         raise ResearchRemoteError("Retrieved publication does not contain exactly results.zip")
+    if (
+        max_output_bytes is not None
+        and sum(item.size_bytes for item in manifest.entries) > max_output_bytes
+    ):
+        raise ResearchRemoteError("Remote archive exceeds the agent output cap")
     directory = Path(data["private_retrieval_directory"])
     archive = directory / "results.zip"
     source_mapping = {source_id: source_id for source_id in data["source_ids"]}
@@ -1053,7 +1137,10 @@ def _attach(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         outer_manifest=manifest,
         local_source_mapping=source_mapping,
         local_job_id=values.get("local_job_id"),
+        publication_guard=publication_guard,
+        max_decoded_bytes=max_decoded_bytes,
     )
+    guard()
     if data["state"] in {"attached", "cleaned"}:
         if receipt != data["attachment"]:
             raise ResearchRemoteError("Stored workflow attachment receipt is mismatched")
@@ -1067,6 +1154,7 @@ def _attach(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
             "attachment": receipt,
             "updated_at": timestamp(),
         },
+        publication_guard=publication_guard,
     )
     return {"run": _public_run(updated), "attachment": receipt}
 

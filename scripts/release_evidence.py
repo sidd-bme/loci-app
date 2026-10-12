@@ -163,6 +163,27 @@ def _parser() -> argparse.ArgumentParser:
             "live artifacts to establish readiness."
         ),
     )
+
+    verify_assets = subparsers.add_parser(
+        "verify-assets",
+        help="Verify release assets in a directory against expected SHA-256 digests or an evidence report.",
+    )
+    verify_assets.add_argument(
+        "--directory",
+        required=True,
+        metavar="ABSOLUTE_DIRECTORY",
+        help="Directory containing release asset files to verify.",
+    )
+    verify_assets.add_argument(
+        "--checksums",
+        metavar="ABSOLUTE_JSON",
+        help="JSON file mapping asset filenames to expected lowercase SHA-256 hex strings.",
+    )
+    verify_assets.add_argument(
+        "--report",
+        metavar="ABSOLUTE_JSON",
+        help="Evidence report JSON from which expected asset checksums are derived.",
+    )
     return parser
 
 
@@ -1485,6 +1506,128 @@ def read_report(path: Path) -> Mapping[str, object]:
     return validate_report_structure(raw)
 
 
+def extract_expected_checksums_from_report(
+    report: Mapping[str, object],
+) -> dict[str, str]:
+    """Extract expected asset checksums from a structured release evidence report."""
+    expected: dict[str, str] = {}
+    sboms = report.get("sboms")
+    if isinstance(sboms, Mapping):
+        for label, sbom in sboms.items():
+            if (
+                isinstance(sbom, Mapping)
+                and "sha256" in sbom
+                and isinstance(sbom["sha256"], str)
+            ):
+                expected[f"{label}.cdx.json"] = sbom["sha256"]
+    license_archive = report.get("license_archive")
+    if (
+        isinstance(license_archive, Mapping)
+        and "sha256" in license_archive
+        and isinstance(license_archive["sha256"], str)
+    ):
+        expected["dependency-licences.zip"] = license_archive["sha256"]
+    return expected
+
+
+def verify_release_assets(
+    assets_directory: Path,
+    expected_checksums: Mapping[str, str],
+) -> dict[str, object]:
+    """Verify that release assets in a directory match their expected SHA-256 digests."""
+    if not assets_directory.is_dir():
+        raise EvidenceError(
+            f"Assets directory does not exist or is not a directory: {assets_directory}"
+        )
+    if not expected_checksums:
+        raise EvidenceError("No expected asset checksums provided for verification.")
+
+    verified: list[dict[str, object]] = []
+    failures: list[str] = []
+
+    for name, expected_sha256 in sorted(expected_checksums.items()):
+        if (
+            not name
+            or Path(name).name != name
+            or ".." in Path(name).parts
+            or Path(name).is_absolute()
+        ):
+            failures.append(
+                f"Release asset name '{name}' must be a simple filename without path traversal"
+            )
+            continue
+
+        raw_path = assets_directory / name
+        if raw_path.is_symlink():
+            failures.append(
+                f"Release asset '{name}' must be a regular file, not a symlink or directory: "
+                f"{raw_path}"
+            )
+            continue
+
+        try:
+            asset_path = raw_path.resolve()
+            asset_path.relative_to(assets_directory.resolve())
+        except (ValueError, RuntimeError):
+            failures.append(
+                f"Release asset name '{name}' escapes assets directory: {assets_directory}"
+            )
+            continue
+
+        if not _is_sha256(expected_sha256):
+            failures.append(f"Invalid expected SHA-256 for '{name}': {expected_sha256}")
+            continue
+
+        if not raw_path.exists():
+            failures.append(
+                f"Missing required release asset: '{name}' in {assets_directory}"
+            )
+            continue
+
+        if not raw_path.is_file() or not asset_path.is_file():
+            failures.append(
+                f"Release asset '{name}' must be a regular file, not a symlink or directory: "
+                f"{raw_path}"
+            )
+            continue
+
+        try:
+            fp = fingerprint_file(asset_path, label=f"Release asset '{name}'")
+            observed_sha256 = fp["sha256"]
+            size_bytes = fp["size_bytes"]
+            if observed_sha256 != expected_sha256.lower():
+                failures.append(
+                    f"Checksum mismatch for '{name}': expected {expected_sha256.lower()}, "
+                    f"observed {observed_sha256}"
+                )
+                verified.append(
+                    {
+                        "name": name,
+                        "expected_sha256": expected_sha256.lower(),
+                        "observed_sha256": observed_sha256,
+                        "size_bytes": size_bytes,
+                        "status": "mismatch",
+                    }
+                )
+            else:
+                verified.append(
+                    {
+                        "name": name,
+                        "sha256": observed_sha256,
+                        "size_bytes": size_bytes,
+                        "status": "matched",
+                    }
+                )
+        except EvidenceError as exc:
+            failures.append(f"Asset '{name}' error: {exc}")
+
+    return {
+        "valid": len(failures) == 0,
+        "verified": verified,
+        "failures": failures,
+    }
+
+
 def _print_readiness(
     report: Mapping[str, object], *, public_ready: bool, stored_report: bool = False
 ) -> int:
@@ -1523,12 +1666,69 @@ def main(argv: Sequence[str] | None = None) -> int:
             atomic_write_json(output, report, overwrite=arguments.overwrite)
             print(f"Wrote release evidence: {output}")
             return _print_readiness(report, public_ready=arguments.public_ready)
-        report_path = _absolute_path(arguments.report, label="Evidence report")
-        report = read_report(report_path)
-        print(f"Evidence report is structurally valid: {report_path}")
-        return _print_readiness(
-            report, public_ready=arguments.public_ready, stored_report=True
-        )
+        if arguments.command == "check":
+            report_path = _absolute_path(arguments.report, label="Evidence report")
+            report = read_report(report_path)
+            print(f"Evidence report is structurally valid: {report_path}")
+            return _print_readiness(
+                report, public_ready=arguments.public_ready, stored_report=True
+            )
+        if arguments.command == "verify-assets":
+            directory = _absolute_path(arguments.directory, label="Assets directory")
+            if not arguments.checksums and not arguments.report:
+                raise EvidenceError(
+                    "Specify either --checksums or --report to verify release assets."
+                )
+            expected: dict[str, str] = {}
+            if arguments.report:
+                report_path = _absolute_path(arguments.report, label="Evidence report")
+                report = read_report(report_path)
+                expected.update(extract_expected_checksums_from_report(report))
+            if arguments.checksums:
+                checksums_path = _absolute_path(
+                    arguments.checksums, label="Checksums JSON"
+                )
+                _lstat_regular(checksums_path, label="Checksums JSON")
+                try:
+                    loaded = json.loads(checksums_path.read_text(encoding="utf-8"))
+                    if not isinstance(loaded, Mapping):
+                        raise EvidenceError(
+                            "Checksums file must contain a JSON object mapping filename to SHA-256."
+                        )
+                    for k, v in loaded.items():
+                        str_k, str_v = str(k), str(v).lower()
+                        if str_k in expected and expected[str_k].lower() != str_v:
+                            raise EvidenceError(
+                                f"Conflicting expected SHA-256 for '{str_k}': report specifies "
+                                f"{expected[str_k]}, checksums file specifies {str_v}"
+                            )
+                        expected[str_k] = str_v
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise EvidenceError(
+                        f"Checksums file is not valid UTF-8 JSON: {checksums_path}"
+                    ) from exc
+
+            result = verify_release_assets(directory, expected)
+            for item in result["verified"]:
+                status = item["status"]
+                name = item["name"]
+                if status == "matched":
+                    print(f"  [OK] {name}: {item['sha256']}")
+                else:
+                    print(
+                        f"  [MISMATCH] {name}: expected {item.get('expected_sha256')}, "
+                        f"got {item.get('observed_sha256')}",
+                        file=sys.stderr,
+                    )
+            if not result["valid"]:
+                for failure in result["failures"]:
+                    print(f"Action needed: {failure}", file=sys.stderr)
+                return 2
+            print(
+                f"All {len(result['verified'])} release assets verified successfully."
+            )
+            return 0
+        raise EvidenceError(f"Unknown command: {arguments.command}")
     except EvidenceError as exc:
         print(f"Action needed: {exc}", file=sys.stderr)
         return 2

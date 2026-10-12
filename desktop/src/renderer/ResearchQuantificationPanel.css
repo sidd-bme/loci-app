@@ -27,9 +27,17 @@
 .research-gate {
   margin-top: 8px;
   padding: 8px;
-  border-left: 3px solid var(--line-strong);
+  border-top: 1px solid var(--line-strong);
 }
 
 .research-quantification .research-kv {
   margin-top: 10px;
 }
+
+.field-assay-adoption p {
+  font-size: var(--type-sm);
+  margin: 8px 0;
+}
+.field-assay-review-reason { color: var(--ink-muted); }
+.research-quantification .research-callout[role="alert"] { color: var(--warning); }
+.research-quantification .research-mode-tabs button { text-transform: none; }

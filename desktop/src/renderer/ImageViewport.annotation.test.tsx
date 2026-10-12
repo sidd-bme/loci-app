@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
-import { ImageViewport, type AnnotationTool, type ImagePoint } from "./ImageViewport";
+import { annotationDisplayLabel, ImageViewport, type AnnotationTool, type ImageAnnotation, type ImagePoint } from "./ImageViewport";
 
 let context: Record<string, unknown> & { closePath: ReturnType<typeof vi.fn> };
 
@@ -14,7 +14,7 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   context = Object.fromEntries([
     "setTransform", "fillRect", "drawImage", "beginPath", "moveTo", "lineTo",
-    "closePath", "arc", "stroke", "fillText", "setLineDash", "save", "restore", "ellipse", "fill",
+    "closePath", "arc", "stroke", "strokeText", "fillText", "setLineDash", "save", "restore", "ellipse", "fill",
   ].map((name) => [name, vi.fn()])) as typeof context;
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
     context as unknown as CanvasRenderingContext2D,
@@ -81,6 +81,8 @@ function api(activeSource = source): ResearchDesktopApi {
         image: "data:image/png;base64,overview#viewer-400x150",
         source_sha256: activeSource.sha256,
         source_extent: [400, 150],
+        selection: { t: Number(request.t ?? 0), z: Number(request.z ?? 0), c: Number(request.c ?? 0), level: 0, x: 0, y: 0, width: 400, height: 150 },
+        projection: (request.projection as "plane" | "max" | "mean") ?? null,
       };
       const tile = request.selection as ResearchSelection;
       return {
@@ -124,6 +126,54 @@ function click(canvas: HTMLElement, pointerId: number, clientX: number, clientY:
   fireEvent.pointerDown(canvas, { pointerId, button: 0, clientX, clientY });
   fireEvent.pointerUp(canvas, { pointerId, button: 0, clientX, clientY });
 }
+
+describe("ImageViewport annotation labels", () => {
+  const transect: NonNullable<ImageAnnotation["transect"]> = {
+    schema: "loci.epidermal-transect/v1", class: "suprapapillary",
+    upper_boundary: "upper", lower_boundary: "lower", orientation_rule: "manual", exclusions: "none",
+    review: { status: "unverified", reviewer: null },
+  };
+
+  it.each(["suprapapillary", "ridge-base", "custom"])("hides the saved %s prefix for structured and legacy transects", (kind) => {
+    const label = `[transect:${kind}] Sample A · rev: Alice [reviewed]`;
+    expect(annotationDisplayLabel({ label })).toEqual({ label: "Sample A · rev: Alice [reviewed]", isTransect: true });
+    expect(annotationDisplayLabel({ label, transect })).toEqual({ label: "Sample A · rev: Alice [reviewed]", isTransect: true });
+  });
+
+  it("uses a readable class fallback for an empty transect name and respects structured class", () => {
+    expect(annotationDisplayLabel({ label: "[transect:ridge-base] " })).toEqual({ label: "Ridge-base transect", isTransect: true });
+    expect(annotationDisplayLabel({ label: "[transect:custom]", transect })).toEqual({ label: "Suprapapillary transect", isTransect: true });
+    expect(annotationDisplayLabel({ label: "Manual A", transect })).toEqual({ label: "Manual A", isTransect: true });
+  });
+
+  it.each(["Distance A", "", "[transect:unknown] A", "Note [transect:custom] A"])("preserves an ordinary label verbatim: %s", (label) => {
+    expect(annotationDisplayLabel({ label })).toEqual({ label, isTransect: false });
+  });
+
+  it("paints a friendly transect label with a neutral halo without changing saved geometry or metadata", async () => {
+    const annotation: ImageAnnotation = {
+      id: "manual-a", kind: "line", points: [{ x: 40, y: 30 }, { x: 140, y: 90 }],
+      label: "[transect:suprapapillary] Sample A", color: "#84cf91", z: 0, t: 0, transect,
+    };
+    const saved = structuredClone(annotation);
+    const fills: Array<{ label: string; color: unknown }> = [];
+    const halos: Array<{ label: string; color: unknown; width: unknown }> = [];
+    context.fillText = vi.fn((label: string) => fills.push({ label, color: context.fillStyle }));
+    context.strokeText = vi.fn((label: string) => halos.push({ label, color: context.strokeStyle, width: context.lineWidth }));
+    render(<ImageViewport api={api()} source={source} selection={selection} channels={channels}
+      initialCamera={{ x: 200, y: 75, scale: 1 }} annotations={[annotation]} onError={vi.fn()} />);
+    await preparedCanvas();
+
+    expect(context.moveTo).toHaveBeenCalledWith(40, 60);
+    expect(context.lineTo).toHaveBeenCalledWith(140, 180);
+    expect(context.strokeText).toHaveBeenCalledWith("Sample A", 47, 53);
+    expect(context.fillText).toHaveBeenCalledWith("Sample A", 47, 53);
+    expect(halos).toContainEqual({ label: "Sample A", color: "#151515", width: 3 });
+    expect(fills).toContainEqual({ label: "Sample A", color: "#ffffff" });
+    expect(fills.some(({ label }) => label.includes("[transect:"))).toBe(false);
+    expect(annotation).toEqual(saved);
+  });
+});
 
 describe("ImageViewport annotation drawing", () => {
   it("draws a dragged rectangle as a closed live shape in level-zero anisotropic coordinates", async () => {

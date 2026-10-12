@@ -58,7 +58,7 @@ data=np.zeros((1,2,2,8,8),dtype=np.uint16)
 data[:,0,:,:,:]=200
 data[:,1,:,:,:]=1
 data[0,1,0,0:2,0:2]=np.array([[10,20],[5,15]],dtype=np.uint16)
-tifffile.imwrite(out,data,ome=True,metadata={'axes':'TCZYX','Channel':{'Name':['DAPI','IL4R-associated Alexa Fluor 555']}})
+tifffile.imwrite(out,data,ome=True,metadata={'axes':'TCZYX','Channel':{'Name':['DAPI','Signal channel']}})
 `, fixture]);
 
 async function sha256(file) {
@@ -191,22 +191,18 @@ try {
   const afterPreview = await page.evaluate(() => window.lociResearch.getSnapshot());
   assert.equal(afterPreview.results.length, 0, "Display-only preview unexpectedly adopted a result.");
 
-  for (const label of [
-    "Confirm channel identity",
-    "Confirm acquisition comparable",
-    "Confirm focus reviewed",
-    "Confirm nuclei reviewed",
-    "Confirm background reviewed",
-  ]) await page.getByLabel(label, { exact: true }).check();
+  assert.equal(await page.getByLabel("Confirm channel identity", { exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Approve & save", exact: true }).isDisabled(), true,
+    "Reviewed adoption requires a named reviewer.");
   const reviewer = "Synthetic QA Reviewer";
   const assayNotes = "Synthetic known-sum reviewed adoption QA";
   await page.getByLabel("Reviewer name", { exact: true }).fill(reviewer);
   await page.getByLabel("Assay notes", { exact: true }).fill(assayNotes);
-  const adopt = page.getByRole("button", { name: "Adopt reviewed field assay", exact: true });
+  const adopt = page.getByRole("button", { name: "Approve & save", exact: true });
   assert.equal(await adopt.isEnabled(), true, "Complete synthetic review did not enable adoption.");
 
   await page.getByLabel("Manual threshold", { exact: true }).fill("101");
-  await page.getByText(/Configuration changed since preview/).waitFor();
+  await page.getByText(/Settings changed. Preview again before saving./).waitFor();
   assert.equal(await adopt.isDisabled(), true,
     "Changing a quantitative setting did not invalidate reviewed adoption.");
   const afterStaleChange = await page.evaluate(() => window.lociResearch.getSnapshot());
@@ -217,10 +213,10 @@ try {
   await page.waitForFunction(
     () => {
       const button = [...document.querySelectorAll("button")].find(
-        (item) => item.textContent?.trim() === "Adopt reviewed field assay",
+        (item) => item.textContent?.trim() === "Approve & save",
       );
       return button instanceof HTMLButtonElement && !button.disabled &&
-        !document.body.textContent?.includes("Configuration changed since preview");
+        !document.body.textContent?.includes("Settings changed. Preview again before saving.");
     },
     undefined,
     { timeout: 60_000 },

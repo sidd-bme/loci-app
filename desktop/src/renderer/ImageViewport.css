@@ -1,14 +1,14 @@
 .image-viewport { position: relative; min-width: 0; min-height: 0; width: 100%; height: 100%; overflow: hidden; background: #151515; touch-action: none; outline-offset: -3px; }
 .image-viewport > canvas { display: block; width: 100%; height: 100%; }
 .image-view-tools { position: absolute; left: 50%; top: 12px; transform: translateX(-50%); display: flex; align-items: center; gap: 2px; border: 1px solid #555; border-radius: 9px; padding: 4px; background: #252525f2; color: #f3f3f3; }
-.image-view-tools button { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 4px 7px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: 12px; }
+.image-view-tools button { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 4px 7px; border: 0; border-radius: 5px; background: transparent; color: inherit; font-size: var(--type-md); }
 .image-view-tools button:hover, .image-view-tools button:focus-visible { background: #454545; }
 .image-view-tools svg { width: 16px; height: 16px; }
-.image-view-tools output { min-width: 44px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
-.image-view-loading { position: absolute; top: 14px; left: 14px; padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: 12px; }
+.image-view-tools output { min-width: 44px; text-align: center; font-size: var(--type-md); font-variant-numeric: tabular-nums; }
+.image-view-loading { position: absolute; top: 14px; left: 14px; padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: var(--type-md); }
 .image-view-loading button { margin-left: 8px; border: 0; background: transparent; color: #b9e6de; }
-.image-drawing-status { position: absolute; top: 58px; left: 14px; max-width: min(360px, calc(100% - 28px)); padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: 12px; line-height: 1.45; pointer-events: none; }
-.image-view-readout { position: absolute; bottom: 12px; left: 14px; display: flex; align-items: end; gap: 16px; color: #f4f4f4; font-size: 11px; text-shadow: 0 1px 2px #000; pointer-events: none; }
+.image-drawing-status { position: absolute; top: 58px; left: 14px; max-width: min(360px, calc(100% - 28px)); padding: 7px 10px; border-radius: 6px; background: #252525ee; color: #ededed; font-size: var(--type-md); line-height: 1.45; pointer-events: none; }
+.image-view-readout { position: absolute; bottom: 12px; left: 14px; display: flex; align-items: end; gap: 8px 14px; flex-wrap: wrap; max-width: calc(100% - 28px); padding: 5px 7px; border: 1px solid #ffffff26; border-radius: 5px; background: #1a1a1ae6; color: #f4f4f4; font-size: var(--type-sm); text-shadow: 0 1px 2px #000; pointer-events: none; }
 .image-scale-bar { display: grid; text-align: center; gap: 4px; }
 .image-scale-bar i { display: block; border: solid #f4f4f4; border-width: 0 1px 2px; height: 5px; }
 .image-navigator-panel {
@@ -36,7 +36,7 @@
   touch-action: none;
   background: color-mix(in srgb, var(--graphite-850, #222) 60%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--line, #444) 60%, transparent);
-  font-size: 10px;
+  font-size: var(--type-xs);
   font-weight: 600;
   color: var(--ink-secondary, #ccc);
   letter-spacing: 0.02em;
@@ -46,7 +46,7 @@
 }
 .image-navigator-handle {
   opacity: 0.6;
-  font-size: 11px;
+  font-size: var(--type-sm);
 }
 .image-navigator-title {
   flex: 1;
@@ -57,7 +57,7 @@
   color: var(--ink-muted, #888);
   cursor: pointer;
   padding: 2px 4px;
-  font-size: 11px;
+  font-size: var(--type-sm);
   line-height: 1;
   border-radius: 3px;
 }
@@ -104,5 +104,5 @@
   border-bottom: 1.5px solid rgba(255, 255, 255, 0.4);
 }
 .image-viewport.is-fullscreen { width: 100vw; height: 100vh; }
-.image-view-unavailable { position: absolute; left: 20%; right: 20%; top: 45%; color: #ededed; text-align: center; font-size: 13px; line-height: 1.6; }
+.image-view-unavailable { position: absolute; left: 20%; right: 20%; top: 45%; color: var(--ink); background: var(--graphite-850); padding: 12px; border-radius: 6px; text-align: center; font-size: var(--type-md); line-height: 1.6; }
 @media (max-width: 800px) { .image-view-tools { top: 8px; } .image-view-loading { top: 52px; } }

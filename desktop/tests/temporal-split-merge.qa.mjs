@@ -376,16 +376,15 @@ try {
       "OME cadence must prefill actual elapsed seconds",
     );
   }
-  assert.equal(await page.getByLabel("Confirm actual elapsed seconds").isChecked(), false);
+  assert.equal(await page.getByLabel("Confirm actual elapsed seconds").count(), 0);
   await page.getByLabel("Tracking maximum physical distance").fill("10");
   await page.getByLabel("Tracking maximum gap frames").fill("0");
   await page.getByLabel("Tracking ambiguity distance").fill("0.01");
-  await page.getByLabel("Confirm actual elapsed seconds").check();
   await screenshot(page, "02-exact-tracking-input-preview");
 
   const tracked = await newResult(
     page,
-    () => page.getByRole("button", { name: "Create temporal graph", exact: true }).click(),
+    () => page.getByRole("button", { name: "Track using elapsed seconds", exact: true }).click(),
     "temporal-tracking",
   );
   const graph = await trackingResult(page, tracked);

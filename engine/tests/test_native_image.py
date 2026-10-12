@@ -915,10 +915,10 @@ def test_session_hashes_once_and_reuses_inspection_for_repeated_planes(
     real_sha256 = native_module._sha256
     calls = 0
 
-    def counted_sha256(source: Path) -> str:
+    def counted_sha256(source: Path, check=None) -> str:
         nonlocal calls
         calls += 1
-        return real_sha256(source)
+        return real_sha256(source, check=check)
 
     monkeypatch.setattr(native_module, "_sha256", counted_sha256)
     with NativeImageSession(path) as session:

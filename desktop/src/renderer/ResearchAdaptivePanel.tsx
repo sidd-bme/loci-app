@@ -1,28 +1,46 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { SegmentationProfile, SegmentationSettings } from "../shared/contracts";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { Setting } from "./ResearchCellposePanel";
+import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
 
 export interface ResearchAdaptiveBatchConfiguration {
   configuredSourceId: string; profileId: "loci-classical"; settings: SegmentationSettings;
   measurementChannels: number[]; workingBytes: number;
 }
-export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, onError, onResult, onBatchConfiguration }: {
+export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; busy: boolean;
   onBusy: (message: string | null) => void; onError: (message: string) => void;
   onResult: (result: ResearchResult) => Promise<void>;
   onBatchConfiguration?: (configuration: ResearchAdaptiveBatchConfiguration | null) => void;
+  workingBytes?: number;
+  onWorkingBytesChange?: (bytes: number) => void;
 }) {
   const [profile, setProfile] = useState<SegmentationProfile | null>(null);
   const [settings, setSettings] = useState<SegmentationSettings | null>(null);
   const [invalid, setInvalid] = useState<Record<string, boolean>>({});
   const [epoch, setEpoch] = useState(0);
+  const [internalWorkingBytes, setInternalWorkingBytes] = useState(512 * 1024 ** 2);
+  const currentWorkingBytes = workingBytes ?? internalWorkingBytes;
+  const handleWorkingBytesChange = (bytes: number) => {
+    setInternalWorkingBytes(bytes);
+    onWorkingBytesChange?.(bytes);
+  };
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const bad = Object.values(invalid).some(Boolean);
-  const configuration = settings && !bad && selection.z_stop === undefined ? {
-    configuredSourceId: source.id, profileId: "loci-classical" as const, settings,
-    measurementChannels: rgb ? [] : [selection.c], workingBytes: 512 * 1024 ** 2,
-  } : null;
+  const configuration = useMemo(
+    () =>
+      settings && !bad && selection.z_stop === undefined
+        ? {
+            configuredSourceId: source.id,
+            profileId: "loci-classical" as const,
+            settings,
+            measurementChannels: rgb ? [] : [selection.c],
+            workingBytes: currentWorkingBytes,
+          }
+        : null,
+    [bad, currentWorkingBytes, rgb, selection.c, selection.z_stop, settings, source.id],
+  );
   useEffect(() => {
     let active = true;
     void window.loci?.listProfiles().then((profiles) => {
@@ -35,7 +53,7 @@ export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, on
   }, [onError]);
   useEffect(() => {
     onBatchConfiguration?.(configuration);
-  }, [settings, bad, source.id, rgb, selection.c, selection.z_stop, onBatchConfiguration]);
+  }, [configuration, onBatchConfiguration]);
   const run = async () => {
     if (!configuration || busy) return;
     onBusy("Adaptive segmentation");
@@ -58,6 +76,13 @@ export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, on
         onValidity={(valid) => setInvalid((old) => old[definition.key] === !valid ? old : { ...old, [definition.key]: !valid })}
         onChange={(value) => setSettings((old) => old ? { ...old, [definition.key]: value } : old)} />)}</div>
       <button disabled={busy} onClick={() => { setSettings(profile.recommendedSettings as SegmentationSettings); setInvalid({}); setEpoch((value) => value + 1); }}>Reset settings</button>
+      <SegmentationAllowanceControl
+        api={api}
+        workingBytes={currentWorkingBytes}
+        onWorkingBytesChange={handleWorkingBytesChange}
+        busy={busy}
+        accessibleName="Adaptive memory allowance"
+      />
       <details><summary>Method & validation</summary><p>{profile.validation.summary}</p><p>Normalizes the selected input plane at the 1st and 99th percentiles. Measurements use original scalar intensities; the display settings do not alter the method.</p></details>
       {bad && <p role="status">Correct the highlighted settings before running.</p>}
       <button className="research-primary" disabled={busy || !configuration} onClick={() => void run()}>{busy ? "Running…" : "Segment image"}</button>

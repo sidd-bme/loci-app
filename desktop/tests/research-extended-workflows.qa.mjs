@@ -62,6 +62,7 @@ export async function qualifyExtendedWorkflows({
   };
   const paths = {
     access: path.join(runRoot, "bounded-agent-access"),
+    contextAccess: path.join(runRoot, "context-agent-access"),
     archive: path.join(runRoot, "portable-study.zip"),
     imported: path.join(runRoot, "imported-study.loci-study"),
     template: path.join(runRoot, "reusable-recipe.json"),
@@ -168,8 +169,7 @@ export async function qualifyExtendedWorkflows({
   }
   for (let index = 0; index < frames.length; index++)
     assert.equal(await page.getByLabel(`Frame ${index + 1} elapsed seconds`).inputValue(), String(index * 5));
-  await page.getByLabel("Confirm actual elapsed seconds").check();
-  const tracked = await newResult(() => tab("Create temporal graph"), "temporal-tracking");
+  const tracked = await newResult(() => tab("Track using elapsed seconds"), "temporal-tracking");
   const graph = await page.evaluate((result) => window.lociResearch.execute("tracking_result", {
     result_id: result.id, revision_hash: result.revision_hash,
   }), tracked);
@@ -187,9 +187,9 @@ export async function qualifyExtendedWorkflows({
   await page.getByLabel("Registration fixed result").selectOption(frames[0].id);
   await page.getByLabel("Registration moving result").selectOption(frames[1].id);
   await page.getByLabel("Include moving labels").check();
-  await tab("Preview exact registration");
+  await tab("Preview registration");
   await page.getByLabel("Exact registration preview").waitFor({ state: "visible" });
-  const registered = await newResult(() => tab("Adopt this exact receipt"), "registered-derived");
+  const registered = await newResult(() => tab("Apply registration"), "registered-derived");
   const registration = await inspect(registered.id);
   assert.equal(registration.provenance.derived_measurement_arrays[0], "image");
   await screenshot(page, "extended-registration");
@@ -198,7 +198,7 @@ export async function qualifyExtendedWorkflows({
   await page.getByLabel("Grid output shape").fill("24, 32");
   await page.getByLabel("Grid physical spacing").fill("2, 1");
   await page.getByLabel("Include parent labels").check();
-  const resampled = await newResult(() => tab("Publish declared output grid"), "resampled-derived");
+  const resampled = await newResult(() => tab("Create resampled result"), "resampled-derived");
   assert.deepEqual(resampled.arrays.labels.shape, [24, 32]);
 
   await openResult(frames[0]);
@@ -208,7 +208,7 @@ export async function qualifyExtendedWorkflows({
   await page.getByLabel("T", { exact: true }).fill("0");
   await page.getByLabel("Z", { exact: true }).fill("2");
   await tab("Quantify");
-  await tab("colocalisation");
+  await tab("Colocalisation");
   await page.getByLabel("First colocalisation channel").selectOption("0");
   await page.getByLabel("Second colocalisation channel").selectOption("1");
   await page.getByLabel("First colocalisation threshold").fill("50");
@@ -217,7 +217,7 @@ export async function qualifyExtendedWorkflows({
   const coloc = await newResult(() => tab("Run and adopt colocalisation"), "colocalisation");
   const colocRecord = await inspect(coloc.id);
   assert.ok(JSON.stringify(colocRecord.provenance).includes("Exact proportional synthetic channels"));
-  await tab("puncta");
+  await tab("Puncta");
   await page.getByLabel("Physical LoG sigma").fill("2");
   await page.getByLabel("LoG response threshold").fill("1");
   await page.getByLabel("Raw intensity threshold").fill("50");
@@ -229,7 +229,7 @@ export async function qualifyExtendedWorkflows({
   assert.ok(puncta.object_count > 0);
   await screenshot(page, "extended-puncta");
 
-  await tab("association");
+  await tab("Association");
   await page.getByLabel("Nuclei result").selectOption(puncta.id);
   await page.getByLabel("Cells result").selectOption(frames[0].id);
   await page.getByLabel("Association controls and assumptions").fill(
@@ -323,13 +323,28 @@ export async function qualifyExtendedWorkflows({
     Boolean, "exact agent recipe validation", 30_000);
   for (const input of await page.locator('input[aria-label^="Disclose "]').all())
     assert.equal(await input.isChecked(), false);
-  await page.getByLabel("Confirm exact agent policy").check();
-  await tab("Create bounded agent access");
+  await page.getByRole("button", { name: /^Grant selected access to / }).click();
   await wait(() => page.getByLabel("Created agent access receipt").isVisible(),
     Boolean, "bounded agent access receipt", 30_000);
   const accessFiles = await fs.readdir(paths.access);
   assert.ok(accessFiles.includes("mcp-config.json"));
+  const deniedPolicy = JSON.parse(await fs.readFile(path.join(paths.access, "agent-policy.json"), "utf8"));
+  assert.ok(!deniedPolicy.operations.includes("analysis_context"));
   await screenshot(page, "extended-agent-policy");
+  // Opt in through the visible control, keeping names and geometry denied.
+  await page.getByLabel("Disclose agent_metadata").check();
+  await app.evaluate(({ dialog }, destination) => {
+    const previous = dialog.showSaveDialog;
+    dialog.showSaveDialog = async (...args) => args.at(-1)?.title === "Create private MCP access bundle"
+      ? { canceled: false, filePath: destination } : previous(...args);
+  }, paths.contextAccess);
+  await page.getByRole("button", { name: /^Grant selected access to / }).click();
+  await wait(() => fs.readFile(path.join(paths.contextAccess, "agent-policy.json"), "utf8").catch(() => null),
+    Boolean, "explicit context policy", 30_000);
+  const contextPolicy = JSON.parse(await fs.readFile(path.join(paths.contextAccess, "agent-policy.json"), "utf8"));
+  assert.ok(contextPolicy.operations.includes("analysis_context"));
+  assert.deepEqual(contextPolicy.disclosures, ["agent_metadata"]);
+  await screenshot(page, "extended-agent-context-policy");
 
   await tab("Portability");
   await tab("Export template");
@@ -351,7 +366,7 @@ export async function qualifyExtendedWorkflows({
   const missing = page.locator(".research-portability-list li").filter({
     hasText: "multiplex_translating_objects.ome.tiff",
   });
-  await missing.getByRole("button", { name: "Relink exact source" }).click();
+  await missing.getByRole("button", { name: "Relink source", exact: true }).click();
   await wait(snapshot, (state) => state.sources.some((item) =>
     item.name === "multiplex_translating_objects.ome.tiff" && item.locator_state !== "relink-required"), "exact source relink");
   await screenshot(page, "extended-imported-study-relink");
@@ -370,6 +385,6 @@ export async function qualifyExtendedWorkflows({
     roi: roi.id, importedGeojson: importedGeojson.id, importedImagej: importedImagej.id,
     frameResults: frames.map((item) => item.id),
     portableRevisionHashesPreserved: true, exactRelink: true,
-    agentAccessFiles: accessFiles,
+    agentAccessFiles: accessFiles, explicitContextGrant: true, defaultContextDenied: true,
   };
 }

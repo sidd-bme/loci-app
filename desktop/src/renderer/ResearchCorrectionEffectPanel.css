@@ -1,0 +1,28 @@
+.correction-effect-panel { min-width: 0; }
+.correction-effect-panel h2 { margin-bottom: 8px; }
+.correction-effect-panel p { overflow-wrap: anywhere; }
+.correction-effect-panel label { display: grid; gap: 4px; margin-block: 12px; }
+.correction-effect-panel select { width: 100%; min-width: 0; max-width: 100%; }
+.correction-effect-panel details { margin-block: 12px; }
+.correction-effect-panel summary { cursor: pointer; min-height: 28px; padding-block: 4px; }
+.correction-effect-panel summary:focus-visible,
+.correction-effect-table:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.correction-effect-pair { font-size: 12px; font-variant-numeric: tabular-nums; }
+.correction-effect-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
+.correction-effect-actions button { white-space: normal; }
+.correction-effect-table { width: 100%; min-width: 0; margin-block: 8px; }
+.correction-effect-table table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.correction-effect-table th, .correction-effect-table td { padding: 6px 4px; text-align: right; overflow-wrap: anywhere; }
+.correction-effect-table th { font-weight: 600; }
+.correction-effect-table tbody tr:last-child td { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.correction-effect-table .correction-effect-row-label { text-align: left; padding: 12px 0 6px; }
+.correction-effect-row-label > span { display: block; overflow-wrap: anywhere; }
+.correction-effect-counts { font-weight: 400; color: var(--ink-secondary); margin-top: 4px; line-height: 1.5; }
+.correction-effect-panel .correction-effect-revision-detail { display: grid; gap: 3px; margin-block: 4px 12px; font-size: 12px; }
+.correction-effect-revision-detail > span { overflow-wrap: anywhere; }
+.correction-effect-precision { margin-block: 12px; }
+.correction-effect-precision dt { font-weight: 600; margin-top: 8px; }
+.correction-effect-precision dd { margin: 2px 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.correction-effect-image { padding-block: 8px; border-bottom: 1px solid var(--line); }
+.correction-effect-image h3 { margin-block: 8px; }
+.correction-effect-panel pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }

@@ -609,6 +609,8 @@ export interface LociDesktopApi {
   onSaveProjectRequested: (callback: () => void) => () => void;
   onJobsChanged: (callback: (jobs: JobSummary[]) => void) => () => void;
   onSettingsRequested: (callback: () => void) => () => void;
+  onGuideRequested?: (callback: () => void) => () => void;
+  onWorkspaceRequested?: (callback: () => void) => () => void;
   onEngineInvalidated: (
     callback: (event: { generation: number; message: string }) => void,
   ) => () => void;

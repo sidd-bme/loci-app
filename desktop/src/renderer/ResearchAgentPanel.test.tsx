@@ -85,7 +85,31 @@ describe("ResearchAgentPanel", () => {
       expect(screen.getByLabelText(`Disclose ${disclosure}`)).not.toBeChecked();
     expect(screen.getByLabelText("Allow display-only recipe previews")).not.toBeChecked();
     expect(screen.getByLabelText("Allow durable recipe runs and result reads")).not.toBeChecked();
-    expect(screen.getByText("Create bounded agent access")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+  });
+
+  it("shows context access only with the explicit metadata disclosure", async () => {
+    const execute = vi.fn().mockResolvedValue(validation);
+    const contextReceipt = {
+      ...receipt, disclosures: ["agent_metadata"],
+      operations: ["analysis_context", "inspect_source", "validate_recipe"],
+    };
+    const createAgentAccess = vi.fn().mockResolvedValue(contextReceipt);
+    renderPanel(bridge(execute, createAgentAccess));
+    expect(screen.queryByText(/static\).*analysis_context/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Disclose agent_metadata"));
+    expect(screen.getByText(/static\).*analysis_context/)).toBeVisible();
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    expect(await screen.findByLabelText("Created agent access receipt"))
+      .toHaveTextContent("analysis_context");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      disclosures: ["agent_metadata"], allow_preview: false, allow_run: false,
+    }));
+    fireEvent.click(screen.getByLabelText("Disclose agent_metadata"));
+    expect(screen.queryByText(/static\).*analysis_context/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
   });
 
   it("creates access from the unchanged validated scope with exact grants and limits", async () => {
@@ -101,8 +125,7 @@ describe("ResearchAgentPanel", () => {
     fireEvent.change(screen.getByLabelText("Agent CPU seconds"), { target: { value: "60" } });
     fireEvent.change(screen.getByLabelText("Agent memory MiB"), { target: { value: "512" } });
     fireEvent.change(screen.getByLabelText("Agent concurrency"), { target: { value: "2" } });
-    fireEvent.click(screen.getByLabelText("Confirm exact agent policy"));
-    fireEvent.click(screen.getByText("Create bounded agent access"));
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
     await waitFor(() => expect(createAgentAccess).toHaveBeenCalledWith({
       source_id: source.id,
       selection,
@@ -124,8 +147,7 @@ describe("ResearchAgentPanel", () => {
     fireEvent.click(screen.getByText("Validate exact scope and recipe"));
     await screen.findByLabelText("Exact recipe validation");
     fireEvent.change(screen.getByLabelText("Agent memory MiB"), { target: { value: "63" } });
-    fireEvent.click(screen.getByLabelText("Confirm exact agent policy"));
-    expect(screen.getByText("Create bounded agent access")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
     expect(screen.getByText(/Use integer limits/)).toBeVisible();
 
     const referenceRecipe: ResearchRecipe = {
@@ -156,12 +178,11 @@ describe("ResearchAgentPanel", () => {
     fireEvent.change(screen.getByLabelText("Exact export names"), {
       target: { value: "experiment-01-reviewed" },
     });
-    fireEvent.click(screen.getByLabelText("Confirm exact agent policy"));
-    expect(screen.getByText("Create bounded agent access")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
     for (const category of ["geometry", "source_names", "previews", "measurements", "provenance"])
       fireEvent.click(screen.getByLabelText(`Disclose ${category}`));
-    expect(screen.getByText("Create bounded agent access")).toBeEnabled();
-    fireEvent.click(screen.getByText("Create bounded agent access"));
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
     await waitFor(() => expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
       allow_run: true,
       allow_export: true,
@@ -177,13 +198,90 @@ describe("ResearchAgentPanel", () => {
     await screen.findByLabelText("Exact recipe validation");
     fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
     fireEvent.click(screen.getByLabelText("Disclose provenance"));
-    fireEvent.click(screen.getByLabelText("Confirm exact agent policy"));
 
     const nextSource = { ...source, id: "f".repeat(32), sha256: "1".repeat(64), name: "Other source" };
     rerender(<ResearchAgentPanel {...props} source={nextSource} />);
     await waitFor(() => expect(screen.queryByLabelText("Exact recipe validation")).not.toBeInTheDocument());
     expect(screen.getByLabelText("Allow durable recipe runs and result reads")).not.toBeChecked();
     expect(screen.getByLabelText("Disclose provenance")).not.toBeChecked();
-    expect(screen.getByLabelText("Confirm exact agent policy")).not.toBeChecked();
+    expect(screen.queryByLabelText("Confirm exact agent policy")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
   });
+
+  it("requires validation and a new grant click after the displayed crop changes", async () => {
+    const execute = vi.fn().mockResolvedValue(validation);
+    const createAgentAccess = vi.fn().mockResolvedValue(null);
+    const { rerender, props } = renderPanel(bridge(execute, createAgentAccess));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(createAgentAccess).toHaveBeenCalledTimes(1));
+
+    const nextSelection = { ...selection, x: 4 };
+    execute.mockResolvedValue({ ...validation, selection: nextSelection });
+    rerender(<ResearchAgentPanel {...props} selection={nextSelection} />);
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    expect(createAgentAccess).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    expect(createAgentAccess).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(createAgentAccess).toHaveBeenCalledTimes(2));
+    expect(createAgentAccess).toHaveBeenLastCalledWith(expect.objectContaining({ selection: nextSelection }));
+  });
+
+  it("does not present an earlier access receipt as the changed policy", async () => {
+    let finishGrant!: (value: ResearchAgentAccessReceipt) => void;
+    const createAgentAccess = vi.fn(() => new Promise<ResearchAgentAccessReceipt>((resolve) => { finishGrant = resolve; }));
+    renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow display-only recipe previews"));
+    fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
+    fireEvent.click(screen.getByLabelText("Disclose previews"));
+    fireEvent.click(screen.getByLabelText("Disclose measurements"));
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    fireEvent.click(screen.getByLabelText("Disclose geometry"));
+    finishGrant(receipt);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+    expect(createAgentAccess).toHaveBeenCalledTimes(1);
+  });
+  it("requires explicit image channels, disclosures and numeric experiment bounds before a v3 grant", async () => {
+    const v3Receipt = { ...receipt, schema: "loci.agent-policy/v3" as const, plugin_filename: "plugin/plugin.json",
+      disclosures: ["geometry", "provenance", "agent_metadata", "previews"],
+      operations: ["inspect_source", "validate_recipe", "analysis_context", "preview_recipe",
+        "source_image", "source_display", "set_source_display", "export_vision_handoff"] };
+    const createAgentAccess = vi.fn().mockResolvedValue(v3Receipt);
+    renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow source images for vision analysis"));
+    fireEvent.click(screen.getByLabelText("Allow reversible channel display changes"));
+    fireEvent.click(screen.getByLabelText("Allow bounded recipe exploration"));
+    fireEvent.click(screen.getByLabelText("Allow display-only recipe previews"));
+    const grant = screen.getByRole("button", { name: /Grant selected access/ });
+    expect(grant).toBeDisabled();
+    for (const name of v3Receipt.disclosures) fireEvent.click(screen.getByLabelText(`Disclose ${name}`));
+    fireEvent.click(screen.getByLabelText("Grant display channel 1"));
+    fireEvent.change(screen.getByLabelText("Minimum size lower bound"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Minimum size upper bound"), { target: { value: "3" } });
+    expect(grant).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Minimum size upper bound"), { target: { value: "8" } });
+    expect(grant).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("Allow local vision handoff export"));
+    expect(grant).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Exact vision handoff names"), { target: { value: "candidate.loci-vision" } });
+    expect(grant).toBeEnabled();
+    fireEvent.click(grant);
+    await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      allow_run: false, allow_export: false, interactive: { allow_image: true, allow_display: true,
+        allow_handoff: true, channels: [0], handoff_names: ["candidate.loci-vision"],
+        parameters: { min_size: { min: 0, max: 8 } } },
+    }));
+    fireEvent.click(screen.getByLabelText("Grant display channel 2"));
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+
 });

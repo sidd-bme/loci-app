@@ -3,6 +3,9 @@ import type { IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { totalmem } from "node:os";
+import { checkedVisionRequest, checkedVisionReceipt } from "../shared/vision-handoff";
+import { recipeResources } from "../shared/recipe-resources";
 import {
   ManagedResearchSessionStore,
   type ManagedSessionState,
@@ -27,11 +30,18 @@ import {
   researchJobsForBatch,
   validateResearchBatchTasks,
 } from "./research-batch";
+import { exportStatisticsFigureBundle } from "./statistics-figure-export";
 import { publishVolumeFigureBundle, checkedVolumeFigureRequest } from "./volume-figure-export";
-import { VIEW_OPERATIONS, ViewerRequestQueue } from "./viewer-request-queue";
+import { QUEUED_VIEW_OPERATIONS, ViewerRequestQueue } from "./viewer-request-queue";
+import {
+  ResearchViewAccess,
+  type ImageViewAccess,
+} from "./research-view-access";
+import type { ImageViewTargetSnapshot } from "../shared/image-view-contracts";
 import type {
   ResearchBatchReceipt,
   ResearchJob,
+  ResearchResult,
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
@@ -193,9 +203,24 @@ export class ResearchBridge {
   private sessionId: string | null = null;
   private running: { id: string; project: string } | null = null;
   private switching = false;
+  private viewDocumentEpoch = 0;
+  private readonly viewDocumentListeners = new Set<() => void>();
   private vendorGrants = new Map<string, {
     project: string; source: string; jar: string; java: string; sourceSha256: string;
   }>();
+  private readonly viewAccess = new ResearchViewAccess({
+    documentState: () => ({
+      project: this.project,
+      epoch: this.viewDocumentEpoch,
+      switching: this.switching,
+    }),
+    snapshot: (project) => this.engineSnapshot(project),
+    executeControl: (project, operation, request) =>
+      this.control.request("research_execute", { project, operation, request }),
+    executeViewer: (project, operation, request, lane, scope) =>
+      this.viewerQueue.request(operation, { project, operation, request }, lane, scope),
+    cancelViewerScope: (scope, error) => this.viewerQueue.cancelScope(scope, error),
+  });
 
   private requireProject(): string {
     if (!this.project) throw new Error("Create or open a study first.");
@@ -207,14 +232,20 @@ export class ResearchBridge {
       this.viewer.request("research_execute", params as Record<string, unknown>, 0));
   }
 
+  private replaceViewDocument(project: string | null, sessionId: string | null): void {
+    this.project = project;
+    this.sessionId = sessionId;
+    this.vendorGrants.clear();
+    this.viewDocumentEpoch += 1;
+    for (const listener of [...this.viewDocumentListeners]) listener();
+  }
+
   private async remember(project: string): Promise<void> {
     const state = await this.sessions.rememberOpened(
       project,
       path.basename(project, ".loci-study"),
     );
-    this.project = project;
-    this.sessionId = state.sessionId;
-    this.vendorGrants.clear();
+    this.replaceViewDocument(project, state.sessionId);
   }
 
   private async snapshot(): Promise<unknown> {
@@ -230,13 +261,50 @@ export class ResearchBridge {
       if (!hasQueuedJobs) {
         return null;
       }
-      this.project = resolved.projectPath;
-      this.sessionId = resolved.state.sessionId;
+      this.replaceViewDocument(resolved.projectPath, resolved.state.sessionId);
       return candidate;
     }
     return this.control.request("research_snapshot", {
       project: this.requireProject(),
     });
+  }
+
+  /** Private main-process identity for layout scoping; never expose it to a renderer. */
+  getViewDocumentIdentity(): string | null {
+    return this.project;
+  }
+
+  /** Subscribe the main coordinator to synchronous study replacement invalidation. */
+  onViewDocumentChanged(listener: () => void): () => void {
+    if (typeof listener !== "function") throw new Error("Document listener must be a function.");
+    this.viewDocumentListeners.add(listener);
+    return () => this.viewDocumentListeners.delete(listener);
+  }
+
+  getViewSnapshot(): Promise<ResearchSnapshot> {
+    return this.viewAccess.getSnapshot();
+  }
+
+  executeImageView(
+    target: ImageViewTargetSnapshot,
+    operation: unknown,
+    request: unknown,
+    options?: unknown,
+    access: ImageViewAccess = "read",
+    assertTargetCurrent?: () => void,
+  ): Promise<unknown> {
+    return this.viewAccess.execute(
+      target,
+      operation,
+      request,
+      options,
+      access,
+      assertTargetCurrent,
+    );
+  }
+
+  cancelImageView(viewId: string): void {
+    this.viewAccess.cancel(viewId);
   }
 
   private async sessionState(): Promise<ManagedSessionState> {
@@ -374,9 +442,7 @@ export class ResearchBridge {
       }
       const state = await this.sessions.adopt(reservation);
       project = reservation.projectPath;
-      this.project = project;
-      this.sessionId = state.sessionId;
-      this.vendorGrants.clear();
+      this.replaceViewDocument(project, state.sessionId);
     }
     return await this.control.request(
       "research_import",
@@ -461,9 +527,7 @@ export class ResearchBridge {
       }
       const state = await this.sessions.adopt(reservation);
       project = reservation.projectPath;
-      this.project = project;
-      this.sessionId = state.sessionId;
-      this.vendorGrants.clear();
+      this.replaceViewDocument(project, state.sessionId);
     }
     return this.control.request("research_import_legacy_project", {
       project,
@@ -489,7 +553,7 @@ export class ResearchBridge {
     }
     let viewerLane = "default";
     if (options !== undefined) {
-      if (!VIEW_OPERATIONS.has(operation) || !options || typeof options !== "object" ||
+      if (!QUEUED_VIEW_OPERATIONS.has(operation) || !options || typeof options !== "object" ||
           Array.isArray(options) || Object.keys(options).join(",") !== "viewer_lane")
         throw new Error("Invalid viewer scheduling options.");
       const lane = (options as Record<string, unknown>).viewer_lane;
@@ -501,11 +565,17 @@ export class ResearchBridge {
     if (operation === "viewer_defaults") {
       return this.control.request("research_execute", { project, operation, request });
     }
-    if (VIEW_OPERATIONS.has(operation)) {
+    if (QUEUED_VIEW_OPERATIONS.has(operation)) {
       return this.viewerQueue.request(operation, { project, operation, request }, viewerLane);
     }
     const taskOperations = new Set([
+      "workflow_run",
+      "workflow_preview",
       "run_recipe",
+      "large_components_run",
+      "large_result_delete",
+      "large_result_adopt",
+      "large_result_export",
       "preview_recipe",
       "histology_run",
       "histology_preview",
@@ -516,6 +586,7 @@ export class ResearchBridge {
       "classical_run",
       "cellpose_run",
       "correct_result",
+      "labels_import",
       "roi_add",
       "roi_import",
       "track_results",
@@ -576,6 +647,16 @@ export class ResearchBridge {
       const tasks = validateResearchBatchTasks(value, snapshot.sources);
       for (const task of tasks) assertResearchRequestBound(task.operation, task.request);
 
+      // Validate every workflow target before publishing any queued job. A
+      // later incompatible image must not leave a partially submitted batch.
+      for (const task of tasks) {
+        if (task.operation === "workflow_run") {
+          await this.control.request("research_execute", {
+            project, operation: "workflow_preflight", request: task.request,
+          });
+        }
+      }
+
       const batchId = createResearchBatchId();
       const jobs: ResearchJob[] = [];
       // Every exact task is durably submitted before the renderer may start
@@ -611,9 +692,16 @@ export class ResearchBridge {
       const existing = researchJobsForBatch(snapshot.jobs, batchId);
       if (!existing.length) throw new Error("The durable batch is not part of this study.");
       const candidates = researchBatchRetryCandidates(snapshot.jobs, batchId, phase);
-      for (const candidate of candidates) {
-        const task = originalResearchBatchTask(candidate, snapshot.sources);
+      const tasks = candidates.map((candidate) => originalResearchBatchTask(candidate, snapshot.sources));
+      for (const task of tasks) {
         assertResearchRequestBound(task.operation, task.request);
+        if (task.operation === "workflow_run") {
+          await this.control.request("research_execute", {
+            project, operation: "workflow_preflight", request: task.request,
+          });
+        }
+      }
+      for (const task of tasks) {
         await this.control.request<ResearchJob>("research_submit", {
           project,
           request: task.request,
@@ -794,6 +882,81 @@ export class ResearchBridge {
     return result;
   }
 
+  /** Identity/options only: canonical measurements and artwork stay in the worker. */
+  async exportStatisticsFigure(value: unknown): Promise<unknown> {
+    const project = this.requireProject();
+    if (this.running || this.switching) throw new Error("Wait for the active study operation to finish.");
+    this.switching = true;
+    try {
+      return await exportStatisticsFigureBundle({
+        request: value,
+        applicationVersion: app.getVersion(),
+        verifyPopulation: (request) => this.control.request("research_execute", {
+          project, operation: "population_query",
+          request: { ...request.query, result_id: request.result_id, revision_hash: request.revision_hash },
+        }, 0),
+        pickDestination: async () => {
+          const picked = await dialog.showSaveDialog({
+            title: "Export statistics figure", defaultPath: "Statistics figure.loci-figure",
+            filters: [{ name: "Loci figure bundle", extensions: ["loci-figure"] }],
+          });
+          return picked.canceled || !picked.filePath ? null : picked.filePath;
+        },
+        publish: (request, destination, application_version) => this.control.request(
+          "research_statistics_figure_export", { project, request, destination, application_version }, 0,
+        ),
+      });
+    } finally { this.switching = false; }
+  }
+
+  /** Main-only figure publication; detached callers add their captured-view guard. */
+  async exportVolumeFigure(value: unknown, assertTargetCurrent?: () => void): Promise<unknown> {
+      assertTargetCurrent?.();
+      const project = this.requireProject();
+      if (this.running || this.switching) throw new Error("Wait for the active study operation to finish.");
+      const record = value as { source_id?: unknown; source_sha256?: unknown } | null;
+      if (!record || typeof record.source_id !== "string" || !/^[a-f0-9]{32}$/.test(record.source_id) ||
+          typeof record.source_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.source_sha256))
+        throw new Error("Volume figure export needs an exact source binding.");
+      const expected = { source_id: record.source_id, source_sha256: record.source_sha256 };
+      this.switching = true;
+      try {
+        const registeredSource = await this.control.request("research_execute", {
+          project, operation: "source_view", request: { source_id: expected.source_id },
+        }, 0) as typeof expected;
+        assertTargetCurrent?.();
+        const request = checkedVolumeFigureRequest(value, registeredSource);
+        const picked = await dialog.showSaveDialog({
+          title: "Export volume figure",
+          defaultPath: "Volume figure.loci-figure",
+          filters: [{ name: "Loci figure bundle", extensions: ["loci-figure"] }],
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        assertTargetCurrent?.();
+        // Verify the original bytes after the picker before publishing the
+        // captured display and manifest. Saved preferences are not a source check.
+        const verifiedSource = await this.control.request("research_execute", {
+          project, operation: "verify_source", request: { source_id: expected.source_id },
+        }, 0) as typeof expected;
+        assertTargetCurrent?.();
+        return await publishVolumeFigureBundle({
+          destination: picked.filePath,
+          request,
+          verifiedSource,
+          applicationVersion: app.getVersion(),
+          publishStagedBundle: async (publication) => {
+            assertTargetCurrent?.();
+            const result = await this.control.request(
+              "publish_volume_figure", { ...publication }, 0,
+            );
+            if (!result || typeof result !== "object" ||
+                (result as Record<string, unknown>).published !== true)
+              throw new Error("The engine did not confirm volume figure publication.");
+          },
+        });
+      } finally { this.switching = false; }
+  }
+
   register(trusted: (event: IpcMainInvokeEvent) => void): void {
     const handle = (
       name: string,
@@ -815,6 +978,7 @@ export class ResearchBridge {
         },
       );
     };
+    handle("recipe-resources", async () => recipeResources(totalmem()));
     handle("create", () => this.choose(true));
     handle("open", () => this.choose(false));
     handle("snapshot", () => this.snapshot());
@@ -846,13 +1010,30 @@ export class ResearchBridge {
       this.switching = true;
       try {
         await this.sessions.leaveActive();
-        this.project = null;
-        this.sessionId = null;
-        this.vendorGrants.clear();
+        this.replaceViewDocument(null, null);
         return { status: "empty" };
       } finally {
         this.switching = false;
       }
+    });
+    handle("try-example", async (...args) => {
+      if (args.length) throw new Error("The offline example does not accept source paths or settings.");
+      if (this.running || this.switching)
+        throw new Error("Finish or cancel the active study operation first.");
+      this.switching = true;
+      const reservation = await this.sessions.reserve("Synthetic shapes practice").catch((error) => {
+        this.switching = false;
+        throw error;
+      });
+      try {
+        const snapshot = await this.control.request("research_create_example", { path: reservation.projectPath }, 0);
+        const state = await this.sessions.adopt(reservation);
+        this.replaceViewDocument(reservation.projectPath, state.sessionId);
+        return snapshot;
+      } catch (error) {
+        this.sessions.release(reservation);
+        throw error;
+      } finally { this.switching = false; }
     });
     handle("open-images", (kind) => this.openImages(kind));
     handle("open-dropped", async (paths, legacyKind = "files") => {
@@ -896,9 +1077,7 @@ export class ResearchBridge {
           destination: candidate,
         }, 0);
         const remembered = await this.sessions.rememberSaved(this.sessionId, candidate);
-        this.project = candidate;
-        this.sessionId = remembered.sessionId;
-        this.vendorGrants.clear();
+        this.replaceViewDocument(candidate, remembered.sessionId);
         return result;
       } finally {
         this.switching = false;
@@ -933,9 +1112,7 @@ export class ResearchBridge {
         const result = await this.control.request("research_snapshot", {
           project: kept.projectPath,
         });
-        this.project = kept.projectPath;
-        this.sessionId = sessionId;
-        this.vendorGrants.clear();
+        this.replaceViewDocument(kept.projectPath, sessionId);
         return result;
       } finally {
         this.switching = false;
@@ -947,18 +1124,14 @@ export class ResearchBridge {
       if (typeof sessionId !== "string") throw new Error("Select a valid recovery session.");
       const receipt = await this.sessions.discard(sessionId);
       if (this.sessionId === sessionId) {
-        this.project = null;
-        this.sessionId = null;
-        this.vendorGrants.clear();
+        this.replaceViewDocument(null, null);
       }
       return { discarded: true, undoToken: receipt.undoToken };
     });
     handle("recovery-undo", async (token) => {
       const state = await this.sessions.undoDiscard(token);
       const resolved = await this.sessions.resolveActive();
-      this.project = resolved.projectPath;
-      this.sessionId = state.sessionId;
-      this.vendorGrants.clear();
+      this.replaceViewDocument(resolved.projectPath, state.sessionId);
       return state;
     });
     handle("cancel-view", async () => {
@@ -1074,16 +1247,19 @@ export class ResearchBridge {
       if (typeof source_id !== "string" || !/^[a-f0-9]{32}$/.test(source_id) ||
           (kind !== "file" && kind !== "dicom" && kind !== "ome_zarr"))
         throw new Error("Choose a supported source to relink.");
-      const picked = await dialog.showOpenDialog({
-        title: "Relink an exact local copy of the source",
-        properties: kind === "ome_zarr" ? ["openDirectory"] :
-          kind === "dicom" ? ["openFile", "multiSelections"] : ["openFile"],
-      });
-      if (picked.canceled || !picked.filePaths[0]) return null;
-      await this.control.request("research_relink", {
-        project, source_id, candidate: kind === "dicom" ? picked.filePaths : picked.filePaths[0],
-      }, 0);
-      return this.control.request("research_snapshot", { project });
+      this.switching = true;
+      try {
+        const picked = await dialog.showOpenDialog({
+          title: "Relink an exact local copy of the source",
+          properties: kind === "ome_zarr" ? ["openDirectory"] :
+            kind === "dicom" ? ["openFile", "multiSelections"] : ["openFile"],
+        });
+        if (picked.canceled || !picked.filePaths[0]) return null;
+        await this.control.request("research_relink", {
+          project, source_id, candidate: kind === "dicom" ? picked.filePaths : picked.filePaths[0],
+        }, 0);
+        return this.control.request("research_snapshot", { project });
+      } finally { this.switching = false; }
     });
     handle("export-recipe", async (recipe_id, source_id) => {
       const project = this.requireProject();
@@ -1136,47 +1312,31 @@ export class ResearchBridge {
         return await this.control.request("research_source_rendered_export", { project, request, destination: picked.filePath }, 0);
       } finally { this.switching = false; }
     });
-    handle("export-volume-figure", async (value) => {
+    handle("export-statistics-figure", (value) => this.exportStatisticsFigure(value));
+    handle("export-correction-effect", async (receipt_sha256) => {
       const project = this.requireProject();
-      if (this.running || this.switching) throw new Error("Wait for the active study operation to finish.");
-      const record = value as { source_id?: unknown; source_sha256?: unknown } | null;
-      if (!record || typeof record.source_id !== "string" || !/^[a-f0-9]{32}$/.test(record.source_id) ||
-          typeof record.source_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(record.source_sha256))
-        throw new Error("Volume figure export needs an exact source binding.");
-      const expected = { source_id: record.source_id, source_sha256: record.source_sha256 };
+      if (typeof receipt_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(receipt_sha256))
+        throw new Error("Choose an exact saved correction-effect receipt.");
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
       this.switching = true;
       try {
-        const registeredSource = await this.control.request("research_execute", {
-          project, operation: "source_view", request: { source_id: expected.source_id },
-        }, 0) as typeof expected;
-        const request = checkedVolumeFigureRequest(value, registeredSource);
         const picked = await dialog.showSaveDialog({
-          title: "Export volume figure",
-          defaultPath: "Volume figure.loci-figure",
-          filters: [{ name: "Loci figure bundle", extensions: ["loci-figure"] }],
+          title: "Export reviewed experiment effect report",
+          defaultPath: "Experiment effect", buttonLabel: "Export report",
         });
         if (picked.canceled || !picked.filePath) return null;
-        // Verify the original bytes after the picker before publishing the
-        // captured display and manifest. Saved preferences are not a source check.
-        const verifiedSource = await this.control.request("research_execute", {
-          project, operation: "verify_source", request: { source_id: expected.source_id },
-        }, 0) as typeof expected;
-        return await publishVolumeFigureBundle({
-          destination: picked.filePath,
-          request,
-          verifiedSource,
-          applicationVersion: app.getVersion(),
-          publishStagedBundle: async (publication) => {
-            const result = await this.control.request(
-              "publish_volume_figure", { ...publication }, 0,
-            );
-            if (!result || typeof result !== "object" ||
-                (result as Record<string, unknown>).published !== true)
-              throw new Error("The engine did not confirm volume figure publication.");
-          },
-        });
+        if (this.requireProject() !== project) throw new Error("The active study changed.");
+        const receipt = await this.control.request<{
+          receipt_sha256: string; files: string[]; manifest_sha256: string;
+        }>("research_export_correction_effect", { project, receipt_sha256, destination: picked.filePath }, 0);
+        if (receipt.receipt_sha256 !== receipt_sha256 || !/^[a-f0-9]{64}$/u.test(receipt.manifest_sha256) ||
+            !Array.isArray(receipt.files) || !receipt.files.length || receipt.files.length > 32 ||
+            !receipt.files.every(file => typeof file === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(file)))
+          throw new Error("The engine returned an invalid experiment-effect export receipt.");
+        return { receipt_sha256: receipt.receipt_sha256, files: receipt.files, manifest_sha256: receipt.manifest_sha256 };
       } finally { this.switching = false; }
     });
+    handle("export-volume-figure", (value) => this.exportVolumeFigure(value));
     handle("export-source-annotations", async (value) => {
       const project = this.requireProject();
       const binding = requireSourceAnnotationBinding(value);
@@ -1207,32 +1367,57 @@ export class ResearchBridge {
         path: picked.filePaths[0],
       }, 0);
     });
-    handle("agent-access", async (request) => {
+    handle("vision-handoff", async (value, sourceSha256) => {
       const project = this.requireProject();
-      if (!request || typeof request !== "object" || Array.isArray(request) ||
-          JSON.stringify(request).length > 1024 * 1024)
+      const request = checkedVisionRequest(value);
+      if (typeof sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(sourceSha256))
+        throw new Error("Choose the exact source for this vision handoff.");
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+      this.switching = true;
+      try {
+        const picked = await dialog.showSaveDialog({
+          title: "Export image for a vision assistant",
+          defaultPath: "Loci image.loci-vision",
+          buttonLabel: "Export image and context",
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        if (this.requireProject() !== project) throw new Error("The active study changed.");
+        const result = await this.control.request("research_vision_handoff", {
+          project, request, source_sha256: sourceSha256, destination: picked.filePath,
+        }, 0);
+        return checkedVisionReceipt(result, request.source_id, sourceSha256);
+      } finally { this.switching = false; }
+    });
+    handle("agent-access", async (value) => {
+      const project = this.requireProject();
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          JSON.stringify(value).length > 1024 * 1024)
         throw new Error("Invalid agent access request.");
       if (this.running || this.switching)
         throw new Error("Finish or cancel the active study operation first.");
-      const scope = request as Record<string, unknown>;
-      let exportRoot: string | null = null;
-      if (scope.allow_export === true) {
-        const folder = await dialog.showOpenDialog({
-          title: "Choose the permitted agent export folder",
-          properties: ["openDirectory"],
+      const request = structuredClone(value) as Record<string, unknown>;
+      this.switching = true;
+      try {
+        let exportRoot: string | null = null;
+        if (request.allow_export === true || (request.interactive as Record<string, unknown> | undefined)?.allow_handoff === true) {
+          const folder = await dialog.showOpenDialog({
+            title: "Choose the permitted agent export folder",
+            properties: ["openDirectory"],
+          });
+          if (folder.canceled || !folder.filePaths[0]) return null;
+          exportRoot = folder.filePaths[0];
+        }
+        const picked = await dialog.showSaveDialog({
+          title: "Create private MCP access bundle",
+          defaultPath: "Loci agent access",
+          buttonLabel: "Create access bundle",
         });
-        if (folder.canceled || !folder.filePaths[0]) return null;
-        exportRoot = folder.filePaths[0];
-      }
-      const picked = await dialog.showSaveDialog({
-        title: "Create private MCP access bundle",
-        defaultPath: "Loci agent access",
-        buttonLabel: "Create access bundle",
-      });
-      if (picked.canceled || !picked.filePath) return null;
-      return this.control.request("research_agent_access", {
-        project, request, destination: picked.filePath, export_root: exportRoot,
-      }, 0);
+        if (picked.canceled || !picked.filePath) return null;
+        if (this.requireProject() !== project) throw new Error("The active study changed.");
+        return await this.control.request("research_agent_access", {
+          project, request, destination: picked.filePath, export_root: exportRoot,
+        }, 0);
+      } finally { this.switching = false; }
     });
     handle("import", (kind) => this.addSources(kind));
     handle("import-model", async (working_bytes, recovery_model_id) => {
@@ -1262,6 +1447,49 @@ export class ResearchBridge {
       );
     });
     handle("execute", (operation, request, options) => this.execute(operation, request, options));
+    handle("labels-import-preview", async (binding) => {
+      const project = this.requireProject();
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+      if (!binding || typeof binding !== "object" || Array.isArray(binding))
+        throw new Error("Select a valid native source plane.");
+      const input = binding as Record<string, unknown>;
+      if (Object.keys(input).sort().join(",") !== "selection,source_id,source_sha256,working_bytes" ||
+          typeof input.source_id !== "string" || !/^[a-f0-9]{32}$/u.test(input.source_id) ||
+          typeof input.source_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(input.source_sha256) ||
+          !Number.isSafeInteger(input.working_bytes) || Number(input.working_bytes) < 1024 * 1024 ||
+          Number(input.working_bytes) > 8 * 1024 ** 3)
+        throw new Error("Invalid label-import binding or memory budget.");
+      const plane = input.selection;
+      if (!plane || typeof plane !== "object" || Array.isArray(plane) ||
+          Object.keys(plane).sort().join(",") !== "c,height,level,t,width,x,y,z")
+        throw new Error("Label import requires an explicit native YX plane.");
+      const selection = plane as Record<string, unknown>;
+      if (Object.values(selection).some((value) => !Number.isSafeInteger(value) || Number(value) < 0) ||
+          selection.level !== 0 || selection.x !== 0 || selection.y !== 0 ||
+          Number(selection.width) < 1 || Number(selection.height) < 1)
+        throw new Error("Label import requires a full level-0 native YX grid.");
+      // Reserve the captured document before awaiting the native picker or engine.
+      this.switching = true;
+      const epoch = this.viewDocumentEpoch;
+      try {
+        const picked = await dialog.showOpenDialog({
+          title: "Import labels on this plane",
+          properties: ["openFile"],
+          filters: [{ name: "Integer label TIFF", extensions: ["tif", "tiff"] }],
+        });
+        if (picked.canceled || !picked.filePaths[0]) return null;
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The label-import study changed while choosing the file.");
+        const output = await this.control.request("research_labels_import_grant", {
+          project, path: picked.filePaths[0], ...input,
+        }, 0);
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The label-import study changed while checking the file.");
+        return output;
+      } finally {
+        this.switching = false;
+      }
+    });
     handle("batch-submit", (tasks) => this.submitBatch(tasks));
     handle("batch-run", (batchId, jobId) => this.runBatchJob(batchId, jobId));
     handle("batch-resume", (batchId) => this.prepareExistingBatch(batchId, "resume"));
@@ -1276,31 +1504,170 @@ export class ResearchBridge {
         disposition,
       }),
     );
-    handle("export", async (result_id, revision_hash) => {
+    handle("import-large-result", async (source_id) => {
       const project = this.requireProject();
-      const picked = await dialog.showSaveDialog({
-        title: "Export reviewed result bundle",
-        defaultPath: "Loci result",
-        buttonLabel: "Export bundle",
-      });
-      if (picked.canceled || !picked.filePath) return null;
-      const receipt = await this.control.request<Record<string, unknown>>(
-        "research_export",
-        {
-          project,
-          result_id,
-          revision_hash,
-          destination: picked.filePath,
-        },
-        0,
-      );
-      // Full output locators stay in main; the renderer receives a basename receipt.
-      return {
-        ...receipt,
-        destination: undefined,
-        output_directory: undefined,
-        name: path.basename(picked.filePath),
-      };
+      if (this.running || this.switching) {
+        throw new Error("Finish the active study operation first.");
+      }
+      this.switching = true;
+      try {
+        const picked = await dialog.showOpenDialog({
+          title: "Choose exported large result bundle directory",
+          properties: ["openDirectory"],
+        });
+        if (picked.canceled || !picked.filePaths || picked.filePaths.length === 0) {
+          return null;
+        }
+        const grant = await this.control.request<{
+          grant_id: string;
+          source_id: string;
+          source_sha256: string;
+          manifest_sha256: string;
+          bundle_name: string;
+        }>(
+          "research_large_exchange_grant",
+          {
+            project,
+            source_id,
+            directory: picked.filePaths[0],
+          },
+          0,
+        );
+        this.running = { id: "submitting", project };
+        this.switching = false;
+        try {
+          const job = await this.control.request<{ id: string }>(
+            "research_submit",
+            {
+              project,
+              request: {
+                source_id,
+                grant_id: grant.grant_id,
+                manifest_sha256: grant.manifest_sha256,
+              },
+              request_key: randomUUID(),
+              operation: "large_result_adopt",
+            },
+          );
+          this.running.id = job.id;
+          const outcome = await this.worker.request<{
+            result: ResearchResult;
+            measurements: Array<Record<string, unknown>>;
+          }>(
+            "research_run",
+            { project, job_id: job.id },
+            0,
+          );
+          const snapshot = await this.engineSnapshot(project);
+          return {
+            snapshot,
+            result: outcome.result,
+            measurements: outcome.measurements,
+          };
+        } finally {
+          this.running = null;
+        }
+      } finally {
+        this.switching = false;
+      }
+    });
+    handle("export", async (result_id, revision_hash, workflow_run_id) => {
+      const project = this.requireProject();
+      if (workflow_run_id !== undefined &&
+          (typeof workflow_run_id !== "string" || !/^[a-f0-9]{32}$/u.test(workflow_run_id))) {
+        throw new Error("Choose an exact saved workflow run to export.");
+      }
+      if (this.running || this.switching) {
+        throw new Error("Finish the active study operation first.");
+      }
+      this.switching = true;
+      try {
+        const snapshot = await this.engineSnapshot(project);
+        const res = snapshot.results?.find((r) => r.id === result_id);
+        if (workflow_run_id !== undefined && res?.schema === "loci.research-result/v2") {
+          throw new Error("This workflow version exports ordinary quantitative results only.");
+        }
+        if (res?.schema === "loci.research-result/v2") {
+          const picked = await dialog.showSaveDialog({
+            title: "Export reviewed result bundle",
+            defaultPath: "Loci result",
+            buttonLabel: "Export bundle",
+          });
+          if (picked.canceled || !picked.filePath) return null;
+          const grant = await this.control.request<{
+            grant_id: string;
+            result_id: string;
+            revision_hash: string;
+            export_name: string;
+          }>(
+            "research_large_export_grant",
+            {
+              project,
+              result_id,
+              revision_hash,
+              destination: picked.filePath,
+            },
+            0,
+          );
+          this.running = { id: "submitting", project };
+          this.switching = false;
+          try {
+            const job = await this.control.request<{ id: string }>(
+              "research_submit",
+              {
+                project,
+                request: {
+                  result_id,
+                  revision_hash,
+                  grant_id: grant.grant_id,
+                },
+                request_key: randomUUID(),
+                operation: "large_result_export",
+              },
+            );
+            this.running.id = job.id;
+            const receipt = await this.worker.request<Record<string, unknown>>(
+              "research_run",
+              { project, job_id: job.id },
+              0,
+            );
+            return {
+              ...receipt,
+              destination: undefined,
+              output_directory: undefined,
+              name: grant.export_name,
+            };
+          } finally {
+            this.running = null;
+          }
+        }
+        const picked = await dialog.showSaveDialog({
+          title: "Export reviewed result bundle",
+          defaultPath: "Loci result",
+          buttonLabel: "Export bundle",
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        const receipt = await this.control.request<Record<string, unknown>>(
+          workflow_run_id === undefined ? "research_export" : "research_workflow_export",
+          {
+            project,
+            result_id,
+            revision_hash,
+            destination: picked.filePath,
+            ...(workflow_run_id === undefined ? {} : { run_id: workflow_run_id }),
+          },
+          0,
+        );
+        // Full output locators stay in main; the renderer receives a basename receipt.
+        return {
+          ...receipt,
+          destination: undefined,
+          output_directory: undefined,
+          name: path.basename(picked.filePath),
+        };
+      } finally {
+        this.switching = false;
+      }
     });
   }
 

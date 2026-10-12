@@ -157,7 +157,7 @@ describe("ResearchRegistrationPanel", () => {
         }),
     );
     renderPanel(execute);
-    fireEvent.click(screen.getByText("Preview exact registration"));
+    fireEvent.click(screen.getByText("Preview registration"));
     fireEvent.change(screen.getByLabelText("Registration upsample factor"), {
       target: { value: "40" },
     });
@@ -165,7 +165,7 @@ describe("ResearchRegistrationPanel", () => {
       resolvePreview({ preview: receipt, preview_json: JSON.stringify(receipt), preview_sha256: "f".repeat(64), adopted: false });
       await Promise.resolve();
     });
-    expect(screen.getByText("Adopt this exact receipt")).toBeDisabled();
+    expect(screen.getByText("Apply registration")).toBeDisabled();
     expect(screen.queryByLabelText("Exact registration preview")).not.toBeInTheDocument();
   });
 
@@ -183,7 +183,7 @@ describe("ResearchRegistrationPanel", () => {
         : Promise.resolve({ result: derived, adopted: true }),
     );
     const onPublished = renderPanel(execute);
-    fireEvent.click(screen.getByText("Preview exact registration"));
+    fireEvent.click(screen.getByText("Preview registration"));
     expect(await screen.findByLabelText("Exact registration preview")).toBeVisible();
     expect(execute).toHaveBeenCalledWith("registration_preview", {
       fixed: {
@@ -204,16 +204,16 @@ describe("ResearchRegistrationPanel", () => {
     fireEvent.change(screen.getByLabelText("Registration upsample factor"), {
       target: { value: "40" },
     });
-    await waitFor(() => expect(screen.getByText("Adopt this exact receipt")).toBeDisabled());
+    await waitFor(() => expect(screen.getByText("Apply registration")).toBeDisabled());
     expect(screen.queryByLabelText("Exact registration preview")).not.toBeInTheDocument();
     expect(execute).not.toHaveBeenCalledWith("registration_run", expect.anything());
 
     fireEvent.change(screen.getByLabelText("Registration upsample factor"), {
       target: { value: "20" },
     });
-    fireEvent.click(screen.getByText("Preview exact registration"));
+    fireEvent.click(screen.getByText("Preview registration"));
     await screen.findByLabelText("Exact registration preview");
-    fireEvent.click(screen.getByText("Adopt this exact receipt"));
+    fireEvent.click(screen.getByText("Apply registration"));
     await waitFor(() =>
       expect(execute).toHaveBeenCalledWith("registration_run", {
         preview_json: JSON.stringify(receipt),
@@ -247,9 +247,9 @@ describe("ResearchRegistrationPanel", () => {
       adopted: false,
     });
     renderPanel(execute);
-    fireEvent.click(screen.getByText("Preview exact registration"));
+    fireEvent.click(screen.getByText("Preview registration"));
     expect(await screen.findByLabelText("Exact registration preview")).toBeVisible();
-    expect(screen.getByText("Adopt this exact receipt")).toBeEnabled();
+    expect(screen.getByText("Apply registration")).toBeEnabled();
   });
 
   it("echoes engine receipt bytes without changing integral floating-point spellings", async () => {
@@ -263,9 +263,9 @@ describe("ResearchRegistrationPanel", () => {
       ? { preview: JSON.parse(encoded), preview_json: encoded, preview_sha256: "f".repeat(64), adopted: false }
       : { result: derived, adopted: true }));
     renderPanel(execute);
-    fireEvent.click(screen.getByText("Preview exact registration"));
+    fireEvent.click(screen.getByText("Preview registration"));
     await screen.findByLabelText("Exact registration preview");
-    fireEvent.click(screen.getByText("Adopt this exact receipt"));
+    fireEvent.click(screen.getByText("Apply registration"));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("registration_run", {
       preview_json: encoded, preview_sha256: "f".repeat(64),
     }));
@@ -323,7 +323,7 @@ describe("ResearchRegistrationPanel", () => {
       target: { value: "4, 5" },
     });
     fireEvent.click(screen.getByLabelText("Include parent labels"));
-    fireEvent.click(screen.getByText("Publish declared output grid"));
+    fireEvent.click(screen.getByText("Create resampled result"));
     await waitFor(() =>
       expect(execute).toHaveBeenCalledWith("resample_grid", {
         parent: {

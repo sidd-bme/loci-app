@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { CellposeProfileId, CellposeSettings, CellposeStatus, SegmentationProfile, SegmentationSettingDefinition } from "../shared/contracts";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
+import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
 
 export interface ResearchCellposeBatchConfiguration {
   configuredSourceId: string;
@@ -36,11 +37,13 @@ export function Setting({ definition, value, onChange, onValidity, disabled }: {
     onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>;
 }
 
-export function ResearchCellposePanel({ api, source, selection, profileId, busy, onBusy, onError, onResult, onBatchConfiguration }: {
+export function ResearchCellposePanel({ api, source, selection, profileId, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; profileId: CellposeProfileId;
   busy: boolean; onBusy: (value: string | null) => void; onError: (value: string) => void;
   onResult: (result: ResearchResult) => Promise<void>;
   onBatchConfiguration?: (configuration: ResearchCellposeBatchConfiguration | null) => void;
+  workingBytes?: number;
+  onWorkingBytesChange?: (bytes: number) => void;
 }) {
   const [profile, setProfile] = useState<SegmentationProfile | null>(null);
   const [status, setStatus] = useState<CellposeStatus | null>(null);
@@ -49,6 +52,12 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   const [importing, setImporting] = useState(false);
   const [invalidSettings, setInvalidSettings] = useState<Record<string, boolean>>({});
   const [settingsEpoch, setSettingsEpoch] = useState(0);
+  const [internalWorkingBytes, setInternalWorkingBytes] = useState(512 * 1024 ** 2);
+  const currentWorkingBytes = workingBytes ?? internalWorkingBytes;
+  const handleWorkingBytesChange = (bytes: number) => {
+    setInternalWorkingBytes(bytes);
+    onWorkingBytesChange?.(bytes);
+  };
   const validity = (key: string, valid: boolean) => setInvalidSettings((old) => old[key] === !valid ? old : { ...old, [key]: !valid });
   const hasInvalidSettings = Object.values(invalidSettings).some(Boolean);
   const native = window.loci;
@@ -76,16 +85,16 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
       profileId,
       settings: structuredClone(settings),
       measurementChannels: rgb ? [] : [measurement],
-      workingBytes: 512 * 1024 ** 2,
+      workingBytes: currentWorkingBytes,
     });
-  }, [hasInvalidSettings, measurement, onBatchConfiguration, profileId, rgb, selection.z_stop, settings, source.id, status?.ready]);
+  }, [currentWorkingBytes, hasInvalidSettings, measurement, onBatchConfiguration, profileId, rgb, selection.z_stop, settings, source.id, status?.ready]);
   const run = async () => {
     if (!settings || !status?.ready || busy || hasInvalidSettings || selection.z_stop !== undefined) return;
     onBusy("Cellpose segmentation");
     try {
       const { z_stop: _depth, ...plane } = selection;
       const output = await api.execute("cellpose_run", { source_id: source.id, selection: plane,
-        profile_id: profileId, settings, measurement_channels: rgb ? [] : [measurement], working_bytes: 512 * 1024 ** 2,
+        profile_id: profileId, settings, measurement_channels: rgb ? [] : [measurement], working_bytes: currentWorkingBytes,
       }) as { result: ResearchResult };
       if (output.result?.source_id !== source.id) throw new Error("The Cellpose result does not match its source.");
       await onResult(output.result);
@@ -99,17 +108,23 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
         void native.importCellposeModel(profileId).then((next) => { if (next) setStatus(next); })
           .catch((error) => onError(error.message)).finally(() => setImporting(false));
       }}>{importing ? "Verifying model…" : "Import checkpoint…"}</button>
-      <small>A local checkpoint is verified against this profile. Opening an image never downloads a model.</small>
     </div> : <p className="model-ready">Ready locally</p>}
     {profile && settings && <>
       <p>{rgb ? "Input: interleaved source RGB" : `Input: ${source.metadata.channel_names?.[selection.c] || `Channel ${selection.c + 1}`}`} · Z {selection.z + 1}, T {selection.t + 1}</p>
-      {selection.z_stop !== undefined && <p className="research-derived-notice">Cellpose runs on the selected 2D plane. Choose a single plane to run; volumetric classical segmentation is available separately.</p>}
+      {selection.z_stop !== undefined && <p className="research-derived-notice">Choose a single Z plane to run Cellpose.</p>}
       <div className="research-grid">{profile.settingsContract.filter((item) => ["diameter_px", "flow_threshold", "cellprob_threshold", "min_size_px"].includes(item.key)).map((definition) =>
         <Setting key={`${settingsEpoch}:${definition.key}`} definition={definition} onValidity={(valid) => validity(definition.key, valid)} value={settings[definition.key as keyof CellposeSettings]} disabled={busy}
           onChange={(value) => setSettings((old) => old ? { ...old, [definition.key]: value } : old)} />)}</div>
       {!rgb && <label>Measure raw channel<select aria-label="Cellpose measurement channel" value={measurement} onChange={(event) => setMeasurement(Number(event.target.value))}>
         {Array.from({ length: channels }, (_, index) => <option key={index} value={index}>{source.metadata.channel_names?.[index] || `Channel ${index + 1}`}</option>)}
       </select></label>}
+      <SegmentationAllowanceControl
+        api={api}
+        workingBytes={currentWorkingBytes}
+        onWorkingBytesChange={handleWorkingBytesChange}
+        busy={busy}
+        accessibleName="Cellpose memory allowance"
+      />
       <details className="cellpose-advanced"><summary>Advanced settings</summary><div className="research-grid">{profile.settingsContract.filter((item) => !["diameter_px", "flow_threshold", "cellprob_threshold", "min_size_px"].includes(item.key)).map((definition) =>
         <Setting key={`${settingsEpoch}:${definition.key}`} definition={definition} onValidity={(valid) => validity(definition.key, valid)} value={settings[definition.key as keyof CellposeSettings]} disabled={busy}
           onChange={(value) => setSettings((old) => old ? { ...old, [definition.key]: value } : old)} />)}</div>
@@ -118,8 +133,8 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
         <dl className="research-kv"><dt>Model</dt><dd>{profile.name} · {profile.version}</dd><dt>Checkpoint SHA-256</dt><dd>{profile.model.sha256}</dd>
           <dt>Code / model licence</dt><dd>{profile.rights.codeLicense} / {profile.rights.modelLicense}</dd>
           <dt>Commercial use</dt><dd>{profile.rights.commercialUse}</dd></dl>
-        <p>{profile.validation.summary}</p></details>
-      <p className="research-derived-notice">Research segmentation. Review and correct labels before using counts or measurements.</p>
+        <p>{profile.validation.summary}</p>
+        <p>Import a local checkpoint for this profile. Model and runtime memory are additional to the working allowance; GPU batch size affects accelerator memory.</p></details>
       <p role="status" hidden={!hasInvalidSettings}>Correct the highlighted settings before running.</p>
       <button className="research-primary" disabled={busy || hasInvalidSettings || !status?.ready || selection.z_stop !== undefined} onClick={() => void run()}>{busy ? "Running…" : "Segment image"}</button>
     </>}

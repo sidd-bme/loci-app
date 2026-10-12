@@ -15,7 +15,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: var(--type-sm);
 }
 
 .research-agent-disclosure {
@@ -30,8 +30,7 @@
   gap: 5px;
 }
 
-.research-agent-disclosure input,
-.research-agent-confirm input {
+.research-agent-disclosure input {
   width: auto;
 }
 
@@ -40,16 +39,9 @@
   line-height: 1.35;
 }
 
-.research-agent-confirm {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 7px !important;
-  padding: 9px;
-  border: 1px solid var(--line-strong);
-  text-transform: none !important;
-}
-
 .research-agent-ready {
   border-color: var(--mineral);
   background: var(--mineral-wash);
 }
+
+.research-agent-channels { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 4px 12px; max-height: 200px; overflow: auto; }

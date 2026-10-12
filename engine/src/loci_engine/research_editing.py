@@ -255,9 +255,14 @@ def execute_edit(
         raise ValueError(
             "Correct the underlying frame labels or the temporal associations explicitly"
         )
-    working_bytes = integer(
-        request.get("working_bytes", 512 * 1024**2), "working-memory budget", 1024**2, 8 * 1024**3
-    )
+    if "working_bytes" in request:
+        working_bytes = integer(
+            request["working_bytes"], "working-memory budget", 1024**2, 8 * 1024**3
+        )
+    else:
+        from .workbench import result_working_bytes
+
+        working_bytes = result_working_bytes(parent)
     if sum(item["bytes"] for item in parent["arrays"].values()) > working_bytes // 2:
         raise ValueError("Result arrays exceed the bounded editing working-memory budget")
     arrays = {key: workbench.project.load_array(value) for key, value in parent["arrays"].items()}
@@ -297,6 +302,7 @@ def execute_edit(
         provenance["correction"] = {
             "parent_id": parent["id"],
             "parent_revision_hash": parent["revision_hash"],
+            "working_memory_limit_bytes": working_bytes,
             **audit,
         }
         if "puncta" in provenance:

@@ -1,3 +1,4 @@
+import type { ImageWindowApi } from "./shared/image-window-api";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type { LociDesktopApi } from "./shared/contracts";
@@ -171,6 +172,16 @@ const api: LociDesktopApi = {
     return () =>
       ipcRenderer.removeListener("loci:settings-requested", listener);
   },
+  onGuideRequested: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("loci:guide-requested", listener);
+    return () => ipcRenderer.removeListener("loci:guide-requested", listener);
+  },
+  onWorkspaceRequested: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("loci:workspace-requested", listener);
+    return () => ipcRenderer.removeListener("loci:workspace-requested", listener);
+  },
   onEngineInvalidated: (callback) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
@@ -255,7 +266,10 @@ const api: LociDesktopApi = {
 contextBridge.exposeInMainWorld("loci", api);
 
 const researchApi: ResearchDesktopApi = {
+  labelsImportPreview: (binding) => ipcRenderer.invoke("loci-research:labels-import-preview", binding),
+  recipeResources: () => ipcRenderer.invoke("loci-research:recipe-resources"),
   exportSourceView: (request) => ipcRenderer.invoke("loci-research:export-source-view", request),
+  exportStatisticsFigure: (request) => ipcRenderer.invoke("loci-research:export-statistics-figure", request),
   exportVolumeFigure: (request) => ipcRenderer.invoke("loci-research:export-volume-figure", request),
   exportSourceAnnotations: (binding) => ipcRenderer.invoke("loci-research:export-source-annotations", binding),
   importSourceAnnotations: (binding) => ipcRenderer.invoke("loci-research:import-source-annotations", binding),
@@ -265,6 +279,7 @@ const researchApi: ResearchDesktopApi = {
     files.map((file) => webUtils.getPathForFile(file)), "files"),
   sessionState: () => ipcRenderer.invoke("loci-research:session-state"),
   newSession: () => ipcRenderer.invoke("loci-research:new-session"),
+  tryExample: () => ipcRenderer.invoke("loci-research:try-example"),
   saveAs: () => ipcRenderer.invoke("loci-research:save-as"),
   recoveryList: () => ipcRenderer.invoke("loci-research:recovery-list"),
   recoveryKeep: (sessionId) => ipcRenderer.invoke("loci-research:recovery-keep", sessionId),
@@ -274,10 +289,14 @@ const researchApi: ResearchDesktopApi = {
   inspectVendor: () => ipcRenderer.invoke("loci-research:vendor-inspect"),
   convertVendor: (request) => ipcRenderer.invoke("loci-research:vendor-convert", request),
   exportStudy: () => ipcRenderer.invoke("loci-research:export-study"),
+  exportCorrectionEffect: (receiptSha256) => ipcRenderer.invoke("loci-research:export-correction-effect", receiptSha256),
   importStudy: () => ipcRenderer.invoke("loci-research:import-study"),
+  importLargeResult: (sourceId) => ipcRenderer.invoke("loci-research:import-large-result", sourceId),
   relinkSource: (sourceId, kind) => ipcRenderer.invoke("loci-research:relink-source", sourceId, kind),
   exportRecipe: (recipeId, sourceId) => ipcRenderer.invoke("loci-research:export-recipe", recipeId, sourceId),
   importRecipe: (bindings) => ipcRenderer.invoke("loci-research:import-recipe", bindings),
+  exportVisionHandoff: (request, sourceSha256) =>
+    ipcRenderer.invoke("loci-research:vision-handoff", request, sourceSha256),
   createAgentAccess: (request) =>
     ipcRenderer.invoke("loci-research:agent-access", request),
   importModel: (workingBytes, recoveryModelId) =>
@@ -302,8 +321,44 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:batch-export", bindings, options),
   reviewResult: (id, revision, disposition) =>
     ipcRenderer.invoke("loci-research:review", id, revision, disposition),
-  exportResult: (id, revision) =>
-    ipcRenderer.invoke("loci-research:export", id, revision),
+  exportResult: (id, revision, workflowRunId) =>
+    workflowRunId === undefined
+      ? ipcRenderer.invoke("loci-research:export", id, revision)
+      : ipcRenderer.invoke("loci-research:export", id, revision, workflowRunId),
   cancelJob: (id) => ipcRenderer.invoke("loci-research:cancel", id),
 };
 contextBridge.exposeInMainWorld("lociResearch", researchApi);
+
+const imageWindows: ImageWindowApi = {
+  state: () => ipcRenderer.invoke("loci-image:state"),
+  open: (sourceId, seed) => ipcRenderer.invoke("loci-image:open", sourceId, seed),
+  restore: () => ipcRenderer.invoke("loci-image:restore"),
+  close: (target) => ipcRenderer.invoke("loci-image:close", target),
+  closeAll: () => ipcRenderer.invoke("loci-image:close-all"),
+  reopen: (target) => ipcRenderer.invoke("loci-image:reopen", target),
+  pin: (target) => ipcRenderer.invoke("loci-image:pin", target),
+  focus: (target) => ipcRenderer.invoke("loci-image:focus", target),
+  fullscreen: (target, value) => ipcRenderer.invoke("loci-image:fullscreen", target, value),
+  publish: (target, presentation) => ipcRenderer.invoke("loci-image:publish", target, presentation),
+  presentation: () => ipcRenderer.invoke("loci-image:presentation"),
+  interact: (target, interaction) => ipcRenderer.invoke("loci-image:interact", target, interaction),
+  execute: (target, operation, request, options) => ipcRenderer.invoke("loci-image:execute", target, operation, request, options),
+  cancel: (target) => ipcRenderer.invoke("loci-image:cancel", target),
+  exportFigure: (target, request) => ipcRenderer.invoke("loci-image:export-figure", target, request),
+  onState: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on("loci-image:state-changed", handler);
+    return () => ipcRenderer.removeListener("loci-image:state-changed", handler);
+  },
+  onPresentation: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on("loci-image:presentation-changed", handler);
+    return () => ipcRenderer.removeListener("loci-image:presentation-changed", handler);
+  },
+  onInteraction: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) => listener(state);
+    ipcRenderer.on("loci-image:interaction", handler);
+    return () => ipcRenderer.removeListener("loci-image:interaction", handler);
+  },
+};
+contextBridge.exposeInMainWorld("lociImageWindows", imageWindows);

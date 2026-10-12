@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { _electron as electron } from "playwright";
+import { captureFolderImportFailure, closeWithConfirmedQuit, waitForRenderedSources } from "./public-hardening-qa-helpers.mjs";
 
 const desktopRoot = path.resolve(import.meta.dirname, "..");
 const projectRoot = path.resolve(desktopRoot, "..");
@@ -62,10 +63,11 @@ async function countSupportedImages(directory) {
 
 const expectedCount = await countSupportedImages(sourceFolder);
 assert.ok(expectedCount > 0, "The authorized folder contains no supported images.");
+const outputRoot = process.env.LOCI_QA_OUTPUT_ROOT
+  ? path.resolve(process.env.LOCI_QA_OUTPUT_ROOT)
+  : path.join(projectRoot, ".loci", "qa");
 const runRoot = path.join(
-  projectRoot,
-  ".loci",
-  "qa",
+  outputRoot,
   `folder-import-${new Date().toISOString().replaceAll(/[:.]/g, "-")}`,
 );
 await fs.mkdir(runRoot, { recursive: true });
@@ -78,15 +80,7 @@ const electronApp = await electron.launch({
   timeout: 60_000,
 });
 
-async function closeWithConfirmedQuit() {
-  await electronApp.evaluate(({ dialog }) => {
-    dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  });
-  const closed = electronApp.waitForEvent("close", { timeout: 30_000 });
-  await electronApp.evaluate(({ app }) => app.quit());
-  await closed;
-}
-
+let primaryFailure = null;
 try {
   const page = await electronApp.firstWindow();
   const errors = [];
@@ -96,7 +90,8 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
   }, sourceFolder);
   await page.getByRole("button", { name: "Open folder", exact: true }).click();
-  const snapshotDeadline = performance.now() + 120_000;
+  const snapshotTimeoutMs = Number(process.env.LOCI_QA_TIMEOUT_MS ?? "120000");
+  const snapshotDeadline = performance.now() + snapshotTimeoutMs;
   let observedSourceCount = null;
   while (performance.now() < snapshotDeadline) {
     observedSourceCount = await page.evaluate(async () =>
@@ -105,13 +100,8 @@ try {
     await page.waitForTimeout(100);
   }
   assert.equal(observedSourceCount, expectedCount,
-    "The folder snapshot did not reach the authorized supported-image count within 120 seconds.");
-  await page.waitForFunction(
-    (count) => document.querySelectorAll(".research-sources > button > .research-source-name").length === count,
-    expectedCount,
-    { timeout: 120_000 },
-  );
-  const renderedSourceCount = await page.locator(".research-sources > button > .research-source-name").count();
+    `The folder snapshot did not reach the authorized supported-image count within ${snapshotTimeoutMs / 1000} seconds.`);
+  const renderedSourceCount = await waitForRenderedSources(page, expectedCount, snapshotTimeoutMs);
   assert.equal(renderedSourceCount, expectedCount);
   const snapshot = await page.evaluate(() => window.lociResearch.getSnapshot());
   assert.equal(new Set(snapshot.sources.map((source) => source.id)).size, expectedCount);
@@ -128,6 +118,19 @@ try {
     sourceFolder,
     status: "passed",
   }, null, 2)}\n`);
+} catch (err) {
+  primaryFailure = err;
+  try {
+    await captureFolderImportFailure(electronApp, runRoot);
+  } catch (diagErr) {
+    console.error("Warning: failed to capture failure diagnostics:", diagErr.message);
+  }
+  throw err;
 } finally {
-  await closeWithConfirmedQuit();
+  try {
+    await closeWithConfirmedQuit(electronApp);
+  } catch (quitErr) {
+    if (!primaryFailure) throw quitErr;
+    console.error("Warning: clean application shutdown failed:", quitErr.message);
+  }
 }

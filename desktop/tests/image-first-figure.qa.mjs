@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { researchSourceButtonSelector } from "./public-hardening-qa-helpers.mjs";
 import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 // Synthetic source data and independent pixel checks; no performance claim.
@@ -95,7 +96,7 @@ async function idle() {
     !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
 }
 async function choose(file) {
-  await page.locator('.research-sources > button').filter({ hasText: path.basename(file) }).click();
+  await page.locator(researchSourceButtonSelector).filter({ hasText: path.basename(file) }).click();
   await idle();
   await selectWorkbenchTool(page, "Display");
 }

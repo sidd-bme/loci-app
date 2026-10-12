@@ -54,6 +54,8 @@ REQUIRED_NATIVE_COMPONENTS = {
 
 EXPECTED_MCP_TOOLS = {
     "catalog",
+    "recipe_guide",
+    "analysis_context",
     "inspect_source",
     "validate_recipe",
     "preview_recipe",
@@ -256,6 +258,18 @@ def _validate_mcp_exchange(
     return {"protocol": protocol, "tool_count": len(names), "catalog": "passed"}
 
 
+def _validate_context_denial_diagnostics(stderr: str) -> None:
+    # This exchange deliberately invokes one forbidden tool. The locked SDK logs
+    # its sanitized ToolError; no other diagnostic content is permitted.
+    expected = (
+        "Tool 'analysis_context' failed: 'Error executing tool analysis_context: "
+        "The operation, source scope, disclosure or resource limit "
+        "is not authorized by the active policy.'"
+    )
+    if stderr.strip() not in {"", expected}:
+        raise BundleVerificationError("Frozen MCP wrote unexpected diagnostics")
+
+
 async def _exercise_frozen_mcp(
     executable: Path, policy_path: Path
 ) -> dict[str, object]:
@@ -274,13 +288,40 @@ async def _exercise_frozen_mcp(
             initialized = await asyncio.wait_for(session.initialize(), timeout=120)
             listed = await asyncio.wait_for(session.list_tools(), timeout=60)
             catalog = await asyncio.wait_for(session.call_tool("catalog"), timeout=60)
+            guide = await asyncio.wait_for(
+                session.call_tool("recipe_guide"), timeout=60
+            )
+            resources = await asyncio.wait_for(session.list_resources(), timeout=60)
+            guide_resource = await asyncio.wait_for(
+                session.read_resource("loci://guides/recipes"), timeout=60
+            )
+            denied_context = await asyncio.wait_for(
+                session.call_tool("analysis_context"), timeout=60
+            )
         diagnostics.seek(0)
         stderr = diagnostics.read()
-    if stderr:
-        raise BundleVerificationError(
-            "Frozen MCP wrote diagnostics during a valid exchange"
-        )
-    return _validate_mcp_exchange(initialized, listed, catalog)
+    _validate_context_denial_diagnostics(stderr)
+    result = _validate_mcp_exchange(initialized, listed, catalog)
+    guidance = getattr(guide, "structured_content", None)
+    if (
+        getattr(guide, "is_error", None) is True
+        or not isinstance(guidance, dict)
+        or guidance.get("schema") != "loci.recipe-guide/v1"
+        or not isinstance(guidance.get("request_schema"), dict)
+        or not guidance.get("examples")
+    ):
+        raise BundleVerificationError("Frozen MCP recipe guide is missing or invalid")
+    if {str(item.uri) for item in resources.resources} != {
+        "loci://guides/recipes",
+        "loci://context",
+    }:
+        raise BundleVerificationError("Frozen MCP returned unexpected resource handles")
+    contents = guide_resource.contents
+    if len(contents) != 1 or json.loads(contents[0].text) != guidance:
+        raise BundleVerificationError("Frozen MCP guide tool and resource disagree")
+    if getattr(denied_context, "is_error", None) is not True:
+        raise BundleVerificationError("Frozen MCP exposed context without its grant")
+    return {**result, "recipe_guide_resource": "passed", "ungranted_context": "denied"}
 
 
 def _remove_owned_mcp_fixture(root: Path, *, attempts: int, delay: float) -> None:
@@ -394,12 +435,28 @@ def verify_bundle(
         raise BundleVerificationError(
             "Frozen CLI discover returned an invalid operation catalog"
         )
+    friendly = subprocess.run(
+        [str(executable), "--loci", "--json", "discover"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if (
+        friendly.returncode
+        or friendly.stderr
+        or json.loads(friendly.stdout) != response
+    ):
+        raise BundleVerificationError(
+            "Frozen loci CLI differs from the research operation catalog"
+        )
     mcp = _verify_frozen_mcp(executable)
     return {
         "status": "passed",
         "platform": platform_name,
         "arch": arch,
         "cli": "discover",
+        "loci_cli": "passed",
         "operation_count": len(operations),
         "mcp": mcp,
         "distributions": verified_versions,

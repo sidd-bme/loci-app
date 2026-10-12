@@ -164,8 +164,15 @@ class LocalTransport:
         path = Path(self.profile.output_root(identity.request_key)) / "output-manifest.json"
         return verify_output_manifest(path.read_text(), identity)
 
-    def retrieve_outputs(self, identity, destination: Path) -> tuple[Path, ...]:
+    def retrieve_outputs(
+        self, identity, destination: Path, *, expected_manifest=None, max_output_bytes=None
+    ) -> tuple[Path, ...]:
         manifest = self.fetch_output_manifest(identity)
+        if expected_manifest is not None and (
+            manifest != expected_manifest
+            or sum(entry.size_bytes for entry in manifest.entries) > max_output_bytes
+        ):
+            raise RuntimeError("Fixture manifest differs from bounded transfer")
         destination.mkdir(mode=0o700)
         outputs = []
         for entry in manifest.entries:

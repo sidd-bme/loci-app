@@ -670,6 +670,8 @@ def segment_cellpose(
     image: np.ndarray,
     settings: CellposeSettings,
     model: object = CELLPOSE_PROFILE_ID,
+    *,
+    working_bytes: int | None = None,
 ) -> CellposeInference:
     import numpy as np
 
@@ -685,6 +687,7 @@ def segment_cellpose(
         image,
         "cellpose",
         cellpose_max_edge_px=settings.max_edge_px,
+        working_bytes=working_bytes,
     )
     spec = resolve_cellpose_model_spec(model)
     status = get_cellpose_status(spec)

@@ -24,6 +24,38 @@ The operation catalog is available as `REMOTE_OPERATION_CATALOG`:
 | `attach` | Alias/key; optional `local_job_id` | `{run, attachment}` |
 | `remove_owned` | Alias/key/hash plus `"cleanup_authorized": true` | Cleanup receipt and `{run}` |
 
+## Set up remote compute and choose resources
+
+Open **Remote compute** and save a pinned SSH profile for an approved compute
+host. A working SSH connection alone does not install Loci's worker or configure
+its runtime, roots or scheduler. Obtain the scheduler type, allowed queue/account,
+resource rules and trusted host-key fingerprint from the site administrator.
+Keep private keys outside the app and never disable host-key verification.
+
+Choose the approved runtime containing a compatible Loci worker. A learned-model
+run also requires its exact separately provisioned package/checkpoint. Set existing
+owned project/output roots and explicitly approved read-only input roots. Choose
+**Save cluster profile**, **Test pinned connection**, then **Check worker readiness**.
+Readiness may create Loci-owned namespaces under those approved roots.
+
+Before **Stage & transfer**, check the displayed image count, destination, source
+scope, settings and rights declaration. Submission, retrieval and cleanup refer
+to that exact run; editing settings does not approve a new request. Keep CPU
+fallback disabled when the protocol requires a GPU run.
+
+Application working allowance, scheduler host RAM and accelerator VRAM are
+separate limits. A 64 GiB host reservation does not supply 64 GiB VRAM, and two
+GPUs do not automatically combine their VRAM for one inference. GPU batch size
+is a separate explicit setting; preserve changes in provenance.
+
+The remote Cellpose task currently allows at most 2 GiB working allowance;
+some source reads remain capped at 512 MiB and attached output arrays at 512 MiB
+each. The local numerical pipeline permits an explicit allowance up to 8 GiB.
+A larger scheduler reservation does not bypass these decoder, computation or
+attachment bounds. A successful remote calculation must still produce locally
+reviewable, source-bound results. Site readiness and scheduler qualification
+need checks against the exact deployed worker, not an older runtime receipt.
+
 ## Save and test a fixed profile
 
 `profile_save` accepts exactly these fields. Nullable fields must be present with
@@ -32,8 +64,8 @@ revision when replacing it.
 
 ```json
 {
-  "alias": "vanda",
-  "known_host": "vanda.example.org",
+  "alias": "compute-cluster",
+  "known_host": "compute.example.org",
   "known_hosts_file": "/absolute/private/known_hosts",
   "host_key_sha256": "SHA256:...",
   "runtime_python": "/approved/loci/runtime/bin/python",
@@ -91,7 +123,7 @@ runs.
 
 ```json
 {
-  "alias": "vanda",
+  "alias": "compute-cluster",
   "request_key": "0123456789abcdef0123456789abcdef",
   "sources": [{"source_id": "local-source-id-hex32"}],
   "tasks": [{
@@ -112,7 +144,7 @@ runs.
   "transfer_authority": {
     "approved": true,
     "scope": "remote-run-recipe",
-    "destination_alias": "vanda",
+    "destination_alias": "compute-cluster",
     "source_ids": ["local-source-id-hex32"]
   }
 }
@@ -289,3 +321,29 @@ remain intact.
   require an operator to restore connectivity before retry.
 - Retrieval and structural/measurement verification do not establish biological
   validity, clinical performance, or independence of tiles, planes, or patches.
+
+## Experimental policy-bound agent continuation
+
+The opt-in v2 agent policy can continue exactly one **human-prestaged classical**
+run through opaque-grant submit/status/cancel/retrieve/attach tools. The human
+retains profile setup, staging/source-transfer approval, exact recipe/runtime
+selection and local review. PBS/PBS Pro/Slurm and zero GPUs are required; Cellpose,
+M6, direct compute, logs, cleanup, provisioning and arbitrary paths remain outside
+this bridge. A separate explicit retrieval grant authorizes output transfer.
+
+Use the read-only human `remote-grant` CLI helper and the existing policy writer
+as described in [AGENT_ACCESS.md](AGENT_ACCESS.md#experimental-v2-one-human-prestaged-classical-remote-run).
+Scheduler resources and original request/profile/source/task identities are
+pinned in that grant and independently rechecked on every operation. Retrieval
+and strict attachment run in bounded supervised children, with private staging
+and transaction publication guards. Refetched manifests must exactly match the
+admitted aggregate output budget; a fixed POSIX helper caps each incoming
+artifact write at its admitted size, including a file growing during transfer.
+This is an artifact byte limit, not a limit on SSH protocol/network overhead;
+unsupported hosts refuse bounded transfer. Pending local children reserve
+capacity immediately, and a requested scheduler cancellation retains its
+reservation until status confirms a terminal state. Poll `remote_status` for child completion;
+only an actual separate human review enables exact revision export. Revocation
+requests cancellation only for an exact service-owned job using its original
+profile snapshot; failure remains unconfirmed, and no remote cleanup is implied.
+Existing human remote callers and v1 agent policies retain their behavior.

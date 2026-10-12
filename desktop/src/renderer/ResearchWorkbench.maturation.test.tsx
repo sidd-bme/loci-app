@@ -244,15 +244,16 @@ describe("ResearchWorkbench maturation workflows", () => {
             image: "data:image/png;base64,viewertile#viewer-512x512",
             source_sha256: source.sha256,
             source_extent: [512, 512],
+            selection: args.selection ?? { t: args.t ?? 0, z: args.z ?? 0, c: args.c ?? 0, z_stop: args.z_stop ?? null },
+            projection: args.projection ?? null,
             width: 512,
             height: 512,
           };
         }
         if (op === "result") {
-          return {
-            id: req.result_id,
-            measurements: sampleMeasurements,
-          };
+          const result = snapshot.results.find((item) => item.id === req.result_id);
+          if (!result) throw new Error("Result page mock requires an exact fixture identity");
+          return { result, measurements: sampleMeasurements };
         }
         if (op === "result_view") {
           return {
@@ -307,7 +308,7 @@ describe("ResearchWorkbench maturation workflows", () => {
     });
 
     // Verify statistical summary card
-    const objectsLabel = screen.getByText("Objects");
+    const objectsLabel = screen.getByText("Rows");
     expect(objectsLabel).toBeInTheDocument();
     expect(within(objectsLabel.closest(".research-stat-item")!).getByText("2")).toBeInTheDocument(); // count
     expect(screen.getByText("Mean measure")).toBeInTheDocument();
@@ -315,7 +316,7 @@ describe("ResearchWorkbench maturation workflows", () => {
     expect(screen.getByText(/124\.57 – 248\.91/)).toBeInTheDocument(); // range
 
     // Verify ResultTable accessibility
-    const tableRegion = screen.getByRole("region", { name: "Object measurements" });
+    const tableRegion = screen.getByRole("region", { name: "Result measurements" });
     expect(tableRegion).toBeInTheDocument();
 
     const tableRows = screen.getAllByRole("row");

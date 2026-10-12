@@ -154,6 +154,37 @@ function renderPanel(execute: ResearchDesktopApi["execute"], custom = snapshot) 
 }
 
 describe("ResearchTemporalPanel", () => {
+  it("runs only when clicked with the current elapsed seconds and keeps invalid edits blocked", async () => {
+    const temporal: ResearchResult = { ...results[0], id: ids[2], revision_hash: "6".repeat(64), kind: "temporal-tracking", parent_id: results[0].id };
+    const execute = vi.fn().mockResolvedValue({ result: temporal, tracking: graph });
+    const onPublished = renderPanel(execute);
+    screen.getAllByText("Add frame").forEach((button) => fireEvent.click(button));
+    const action = screen.getByRole("button", { name: "Track using elapsed seconds" });
+    expect(execute).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Frame 2 elapsed seconds"), { target: { value: "11" } });
+    expect(execute).not.toHaveBeenCalled();
+    fireEvent.click(action);
+    await waitFor(() => expect(onPublished).toHaveBeenCalledTimes(1));
+    expect(execute).toHaveBeenLastCalledWith("track_results", expect.objectContaining({
+      frames: [
+        { result_id: results[0].id, revision_hash: results[0].revision_hash, time_s: 0 },
+        { result_id: results[1].id, revision_hash: results[1].revision_hash, time_s: 11 },
+      ],
+    }));
+    fireEvent.change(screen.getByLabelText("Frame 2 elapsed seconds"), { target: { value: "" } });
+    expect(action).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Frame 2 elapsed seconds"), { target: { value: "19" } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    fireEvent.click(action);
+    await waitFor(() => expect(onPublished).toHaveBeenCalledTimes(2));
+    expect(execute).toHaveBeenLastCalledWith("track_results", expect.objectContaining({
+      frames: [
+        { result_id: results[0].id, revision_hash: results[0].revision_hash, time_s: 0 },
+        { result_id: results[1].id, revision_hash: results[1].revision_hash, time_s: 19 },
+      ],
+    }));
+  });
+
   it("prefills actual seconds from an explicitly declared uniform OME cadence", () => {
     renderPanel(vi.fn(), {
       ...snapshot,
@@ -164,7 +195,7 @@ describe("ResearchTemporalPanel", () => {
     screen.getAllByText("Add frame").forEach((button) => fireEvent.click(button));
     expect(screen.getByLabelText("Frame 1 elapsed seconds")).toHaveValue(0);
     expect(screen.getByLabelText("Frame 2 elapsed seconds")).toHaveValue(5);
-    expect(screen.getByLabelText("Confirm actual elapsed seconds")).not.toBeChecked();
+    expect(screen.queryByLabelText("Confirm actual elapsed seconds")).not.toBeInTheDocument();
   });
 
   it.each([
@@ -180,7 +211,7 @@ describe("ResearchTemporalPanel", () => {
     screen.getAllByText("Add frame").forEach((button) => fireEvent.click(button));
     expect(screen.getByLabelText("Frame 1 elapsed seconds")).toHaveValue(null);
     expect(screen.getByLabelText("Frame 2 elapsed seconds")).toHaveValue(null);
-    expect(screen.getByText("Create temporal graph")).toBeDisabled();
+    expect(screen.getByText("Track using elapsed seconds")).toBeDisabled();
   });
 
   it("submits exact ordered frames with verified elapsed seconds and physical tracking settings", async () => {
@@ -200,11 +231,10 @@ describe("ResearchTemporalPanel", () => {
     screen.getAllByText("Add frame").forEach((button) => fireEvent.click(button));
     expect(screen.getByLabelText("Frame 1 elapsed seconds")).toHaveValue(0);
     expect(screen.getByLabelText("Frame 2 elapsed seconds")).toHaveValue(7);
-    fireEvent.click(screen.getByLabelText("Confirm actual elapsed seconds"));
     fireEvent.change(screen.getByLabelText("Tracking drift adjustment"), {
       target: { value: "translation" },
     });
-    fireEvent.click(screen.getByText("Create temporal graph"));
+    fireEvent.click(screen.getByText("Track using elapsed seconds"));
     await waitFor(() =>
       expect(execute).toHaveBeenCalledWith("track_results", {
         frames: [
@@ -243,7 +273,7 @@ describe("ResearchTemporalPanel", () => {
     fireEvent.click(screen.getByText("Add missing observation"));
     expect(screen.getByText(/Every frame needs a finite time/)).toBeVisible();
     expect(screen.getByText(/needs a unique ID and explicit reason/)).toBeVisible();
-    expect(screen.getByText("Create temporal graph")).toBeDisabled();
+    expect(screen.getByText("Track using elapsed seconds")).toBeDisabled();
   });
 
   it("replaces an acquisition with its chosen correction revision instead of duplicating a frame", async () => {
@@ -269,8 +299,7 @@ describe("ResearchTemporalPanel", () => {
     fireEvent.click(add[1]);
     fireEvent.click(add[2]);
     expect(screen.getAllByLabelText(/Frame \d elapsed seconds/)).toHaveLength(2);
-    fireEvent.click(screen.getByLabelText("Confirm actual elapsed seconds"));
-    fireEvent.click(screen.getByText("Create temporal graph"));
+    fireEvent.click(screen.getByText("Track using elapsed seconds"));
     await waitFor(() =>
       expect(execute).toHaveBeenCalledWith(
         "track_results",

@@ -53,6 +53,15 @@ def parser() -> argparse.ArgumentParser:
     import_model.add_argument("--project", required=True)
     import_model.add_argument("--path", required=True)
     import_model.add_argument("--working-bytes", type=int, default=512 * 1024**2)
+    labels = sub.add_parser(
+        "import-labels", help="Preview an explicit external scalar TIFF label plane"
+    )
+    labels.add_argument("--project", required=True)
+    labels.add_argument("--path", required=True)
+    labels.add_argument("--source", required=True)
+    labels.add_argument("--source-sha256", required=True)
+    labels.add_argument("--selection", required=True, help="Explicit native T/C/Z/level JSON")
+    labels.add_argument("--working-bytes", type=int, default=512 * 1024**2)
     for name in ("snapshot", "jobs"):
         command = sub.add_parser(name)
         command.add_argument("--project", required=True)
@@ -93,28 +102,134 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--result", required=True)
     export.add_argument("--revision", required=True)
     export.add_argument("--destination", required=True)
+    effect_export = sub.add_parser(
+        "export-correction-effect",
+        help="Atomically export an exact reviewed correction-effect receipt",
+    )
+    effect_export.add_argument("--project", required=True)
+    effect_export.add_argument("--receipt-sha256", required=True)
+    effect_export.add_argument("--destination", required=True)
     relink = sub.add_parser("relink", help="Verify and replace a missing source locator")
     relink.add_argument("--project", required=True)
     relink.add_argument("--source", required=True)
     relink.add_argument("--candidate", required=True)
+    transfer = sub.add_parser("bounded-transfer", help="Fixed internal file-size-limited SCP child")
+    transfer.add_argument("--file-size-limit", type=int, required=True)
+    transfer.add_argument("transfer_arguments", nargs=argparse.REMAINDER)
     remote = sub.add_parser("remote-worker", help="Run a fixed, staged worker manifest")
     remote.add_argument("--request", required=True)
+    grant = sub.add_parser(
+        "remote-grant", help="Read exact identities for a human-staged classical run"
+    )
+    grant.add_argument("--project", required=True)
+    grant.add_argument("--request-key", required=True)
+    grant.add_argument("--key", required=True)
+    grant.add_argument(
+        "--operations",
+        nargs="+",
+        choices=["submit", "status", "cancel", "retrieve", "attach"],
+        required=True,
+    )
+    grant.add_argument("--max-output-bytes", type=int, required=True)
+    grant.add_argument("--cancel-on-revocation", action="store_true")
+    agent_remote = sub.add_parser(
+        "agent-remote", help="Fixed policy-pinned transfer/adoption child"
+    )
+    for name in ("project", "job", "grant-key", "policy", "policy-sha256"):
+        agent_remote.add_argument("--" + name, required=True)
+    agent_remote.add_argument("--operation", required=True, choices=["retrieve", "attach"])
+    for name in ("policy-file-identity", "project-directory-identity", "export-directory-identity"):
+        agent_remote.add_argument("--" + name, required=True)
+    vision = sub.add_parser("vision-render", help=argparse.SUPPRESS)
+    for name in (
+        "project",
+        "policy",
+        "policy-sha256",
+        "request",
+        "policy-file-identity",
+        "project-directory-identity",
+        "export-directory-identity",
+    ):
+        vision.add_argument("--" + name, required=True)
+    vision.add_argument(
+        "--operation", choices=["source_image", "export_vision_handoff"], required=True
+    )
+    vision.add_argument("--cpu-seconds", type=int, required=True)
+    vision.add_argument("--memory-bytes", type=int, required=True)
     mcp = sub.add_parser("mcp", help="Serve policy-scoped task tools over local stdio")
     mcp.add_argument("--policy", required=True)
     policy = sub.add_parser("policy", help="Write an explicit local-human agent access policy")
     policy.add_argument("--project", required=True)
     policy.add_argument("--destination", required=True)
     policy.add_argument("--specification", required=True, help="Explicit JSON grants or @file")
+    # Internal children are launchable by their fixed command but absent from human discovery.
+    sub._choices_actions = [
+        action for action in sub._choices_actions if action.dest != "vision-render"
+    ]
+    sub.metavar = "{" + ",".join(name for name in sub.choices if name != "vision-render") + "}"
     return root
 
 
 def execute(args: argparse.Namespace) -> dict[str, Any]:
-    if args.command in {"run", "bounded-preview"}:
+    if args.command == "bounded-transfer":
+        from .agent_remote_transfer import exec_bounded_scp
+
+        exec_bounded_scp(args.file_size_limit, args.transfer_arguments)
+        raise RuntimeError("Bounded SCP did not replace its disposable process")
+    if args.command in {"run", "bounded-preview", "vision-render"}:
         from .resource_limits import apply_process_limits
 
         cpu = getattr(args, "cpu_seconds", None)
         memory = getattr(args, "memory_bytes", None)
         apply_process_limits(cpu, memory)
+    if args.command == "vision-render":
+        from .agent_policy import load_policy
+        from .research_mcp import PolicyAgent
+
+        policy = load_policy(args.policy)
+
+        def identity(value):
+            return "none" if value is None else ":".join(map(str, value))
+
+        if (
+            policy.content_sha256 != args.policy_sha256
+            or policy.project_path != Path(args.project)
+            or args.policy_file_identity != identity(policy.file_identity)
+            or args.project_directory_identity != identity(policy.project_directory_identity)
+            or args.export_directory_identity != identity(policy.export_root_identity)
+            or args.cpu_seconds != policy.cpu_seconds
+            or args.memory_bytes != policy.memory_bytes
+        ):
+            raise PermissionError("Vision child policy or resource identity changed")
+        if args.operation == "export_vision_handoff":
+            for category in ("previews", "geometry", "provenance", "agent_metadata"):
+                policy.require_disclosure(category)
+        agent = PolicyAgent(policy)
+        workbench = agent._workbench(args.operation)
+        try:
+            return agent._vision_frame(
+                workbench, _request(args.request), supervised=False, operation=args.operation
+            )
+        finally:
+            workbench.close()
+    if args.command == "agent-remote":
+        from .agent_policy import load_policy
+        from .agent_remote import execute_child
+
+        policy = load_policy(args.policy)
+        if policy.content_sha256 != args.policy_sha256 or policy.project_path != Path(args.project):
+            raise PermissionError("Agent child policy identity changed")
+
+        def identity(value):
+            return "none" if value is None else ":".join(map(str, value))
+
+        if (
+            args.policy_file_identity != identity(policy.file_identity)
+            or args.project_directory_identity != identity(policy.project_directory_identity)
+            or args.export_directory_identity != identity(policy.export_root_identity)
+        ):
+            raise PermissionError("Agent child filesystem identities changed")
+        return execute_child(policy, args.grant_key, args.operation, args.job)
     if args.command == "discover":
         return {"schema": "loci.operations/v1", "operations": OPERATION_CATALOG}
     if args.command == "remote-worker":
@@ -128,6 +243,17 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "create":
         return Workbench(ResearchProject.create(args.project, args.title)).snapshot()
     project = ResearchProject(args.project)
+    if args.command == "remote-grant":
+        from .agent_remote import human_remote_grant
+
+        return human_remote_grant(
+            project,
+            args.request_key,
+            args.key,
+            args.operations,
+            args.max_output_bytes,
+            args.cancel_on_revocation,
+        )
     if args.command == "policy":
         from .agent_policy import write_policy
 
@@ -148,6 +274,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     "paths": [str(Path(p).absolute()) for p in args.paths],
                     "kind": args.kind,
                 },
+            )
+        if args.command == "import-labels":
+            from .research_labels_import import create_import_grant
+
+            return create_import_grant(
+                workbench, str(Path(args.path).absolute()), args.source, args.source_sha256,
+                _request(args.selection), args.working_bytes,
             )
         if args.command == "snapshot":
             reconcile_jobs(project)
@@ -206,6 +339,10 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             return project.review(args.result, args.revision, args.disposition)
         if args.command == "relink":
             return project.relink(args.source, args.candidate)
+        if args.command == "export-correction-effect":
+            from .research_correction_effect import export_effect
+
+            return export_effect(project, args.receipt_sha256, args.destination)
         if args.command == "export":
             from .research_export import export_research_result
 
@@ -248,6 +385,23 @@ def main(argv: list[str] | None = None) -> int:
             print(canonical_json(output))
         return 0
     except (ValueError, TypeError, OSError, KeyError, RuntimeError) as exc:
+        if args.command in {"agent-remote", "vision-render"}:
+            print(
+                json.dumps(
+                    {
+                        "error": {
+                            "type": "AgentVisionError"
+                            if args.command == "vision-render"
+                            else "AgentRemoteError",
+                            "message": "Bounded vision work failed."
+                            if args.command == "vision-render"
+                            else "Bounded remote work failed.",
+                        }
+                    }
+                ),
+                file=sys.stderr,
+            )
+            return 1
         # The stderr message is an explicit local diagnostic. stdout is always
         # machine-readable, and no traceback or image content is emitted.
         print(

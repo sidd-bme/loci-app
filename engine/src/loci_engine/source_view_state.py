@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from .quantitative import exact_keys, finite_number, integer
@@ -127,7 +128,11 @@ def validate_view_data(data: dict[str, Any], source: dict[str, Any]) -> None:
 
 
 def execute_view_state(
-    workbench: Workbench, operation: str, request: dict[str, Any]
+    workbench: Workbench,
+    operation: str,
+    request: dict[str, Any],
+    *,
+    publication_guard: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     exact_keys(
         request,
@@ -158,7 +163,11 @@ def execute_view_state(
         }
         validate_view_data(data, source)
         document = workbench.project.put_document(
-            "display", source_id, data, expected_revision=revision
+            "display",
+            source_id,
+            data,
+            expected_revision=revision,
+            publication_guard=publication_guard,
         )
     data = document["data"] if document else None
     # Older display documents remain available as provenance; the new schema

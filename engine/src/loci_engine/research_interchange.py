@@ -61,6 +61,9 @@ _RECORD_KINDS = frozenset(
         "model_preview",
         "comparison",
         "workspace",
+        "workflow",
+        "workflow_run",
+        "workflow_export",
     }
 )
 _MEMBER_PATTERN = re.compile(
@@ -517,6 +520,10 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
         source = _path_redacted_source(source)
         records[f"sources/{source['id']}.json"] = canonical_json(source).encode()
     for envelope in snapshot["documents"]:
+        if envelope["kind"] in (
+            "large_exchange_grant", "large_export_grant", "labels_import_grant"
+        ):
+            continue
         if envelope["kind"] == "workspace":
             from .research_workspace_records import validate_visibility
 
@@ -562,6 +569,11 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
     for source in snapshot["sources"]:
         if source.get("locator_state") != "relink-required":
             project.source(source["id"], verify=True)
+    if any(result.get("schema") == "loci.research-result/v2" for result in snapshot["results"]):
+        raise ValueError(
+            "Large results use Save study as and reviewed result export; "
+            "portable study ZIP interchange is not yet supported"
+        )
     records = _archive_records(project, snapshot)
     artifacts: dict[str, Path] = {}
     for result in snapshot["results"]:
@@ -984,6 +996,18 @@ def _validate_comparison_document(
     from .study_analysis import compare_runs, summarize_measurements, validate_sample_metadata
 
     data = document["data"]
+    if isinstance(data, dict) and isinstance(data.get("receipt"), dict) and (
+        data["receipt"].get("schema") == "loci.study-correction-effect/v1"
+    ):
+        # Complete arithmetic and audit validation occurs after archive arrays
+        # have been extracted and hash/header checked; do not trust this branch
+        # merely because it has a digest. Existing run receipts retain v1 rules.
+        from .research_correction_effect import validate_request
+
+        if set(data) != {"request", "receipt"}:
+            raise ValueError("Correction-effect comparison document fields are invalid")
+        validate_request(data["request"])
+        return
     if set(data) != {"request", "receipt"}:
         raise ValueError("Study comparison document fields are invalid")
     request = data["request"]
@@ -1233,7 +1257,7 @@ def import_project(
             project_meta = manifest["project"]
             if (
                 not isinstance(project_meta, dict)
-                or project_meta.get("schema") != "loci.study/v1"
+                or project_meta.get("schema") not in {"loci.study/v1", "loci.study/v2"}
                 or not isinstance(project_meta.get("project_id"), str)
             ):
                 raise ValueError("Study project metadata is invalid")
@@ -1336,6 +1360,10 @@ def import_project(
                 if document["kind"] == "workspace" and document["id"] != project_meta["project_id"]:
                     raise ValueError("Workspace visibility belongs to a different study")
                 _validate_document_crossrefs(document, source_by_id, result_by_id)
+                if document["kind"] in {"workflow", "workflow_run", "workflow_export"}:
+                    from .research_workflow import validate_workflow_document
+
+                    validate_workflow_document(document, source_by_id, result_by_id, documents)
             if set(artifact_members) != set(referenced_artifacts):
                 raise ValueError("Study artifact members do not exactly match result records")
             result_ids = set(result_by_id)
@@ -1363,7 +1391,10 @@ def import_project(
                 ):
                     raise ValueError("Interchanged review is stale or invalid")
                 review_by_result[review["result_id"]] = review
-            project = ResearchProject.create(stage, project_meta["title"])
+            project = ResearchProject.create(
+                stage, project_meta["title"],
+                schema_version=2 if project_meta["schema"] == "loci.study/v2" else 1,
+            )
             for digest, (info, member) in artifact_members.items():
                 output = project.arrays / (digest + ".npy")
                 hasher = hashlib.sha256()
@@ -1381,6 +1412,14 @@ def import_project(
                     raise ValueError("Study artifact failed its manifest hash")
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
+            from .research_correction_effect import validate_document as validate_effect_document
+
+            for document in documents:
+                if document["kind"] == "comparison" and (
+                    document["data"].get("receipt", {}).get("schema")
+                    == "loci.study-correction-effect/v1"
+                ):
+                    validate_effect_document(document, result_by_id, project.load_array)
             with project.connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 for table in ("sources", "documents", "results", "jobs", "metadata"):

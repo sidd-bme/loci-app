@@ -1,0 +1,5 @@
+#!/bin/sh
+# The CLI shares the app's exact signed analysis runtime and never starts Electron.
+set -eu
+loci_resources=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$loci_resources/loci-engine/loci-engine" --loci "$@"

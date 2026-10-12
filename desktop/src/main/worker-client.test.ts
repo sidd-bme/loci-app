@@ -229,7 +229,7 @@ describe("EngineWorkerClient", () => {
     await client.dispose();
   });
 
-  it.each(["publish_working_result", "restore_working_result", "research_project_clone"])(
+  it.each(["publish_working_result", "restore_working_result", "research_project_clone", "research_workflow_export"])(
     "treats %s as durable result-state publication",
     async (method) => {
       vi.useFakeTimers();
@@ -246,9 +246,9 @@ describe("EngineWorkerClient", () => {
     },
   );
 
-  it("waits for an in-flight export before disposing its worker", async () => {
+  it.each(["export", "research_workflow_export"])("waits for an in-flight %s before disposing its worker", async (method) => {
     const client = new EngineWorkerClient();
-    const exporting = client.request<{ bundleName: string }>("export", {});
+    const exporting = client.request<{ bundleName: string }>(method, {}, 0);
     const child = spawnedChildren[0];
     let disposed = false;
 
@@ -311,10 +311,10 @@ describe("EngineWorkerClient", () => {
     expect(child.killed).toBe(true);
   });
 
-  it("does not let a later request timeout kill an active export", async () => {
+  it.each(["export", "research_workflow_export"])("does not let a later request timeout kill an active %s", async (method) => {
     vi.useFakeTimers();
     const client = new EngineWorkerClient();
-    const exporting = client.request<{ bundleName: string }>("export", {});
+    const exporting = client.request<{ bundleName: string }>(method, {}, 0);
     const laterInspection = client.request("inspect", {}, 50);
     const inspectionRejection = expect(laterInspection).rejects.toThrow(
       "inspect operation timed out",

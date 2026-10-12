@@ -3,6 +3,7 @@ import {
   accessSync,
   cpSync,
   copyFileSync,
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -287,6 +288,19 @@ function hardenPackagedResources(
         ? path.join(buildPath, `${productName}.app`, "Contents", "Resources")
         : path.join(buildPath, "resources");
     const noticesDirectory = path.join(resourcesDirectory, "notices");
+    if (platform === "darwin" || platform === "mas") {
+      // macOS volumes commonly fold case: MacOS/loci would replace MacOS/Loci.
+      const desktopExecutable = path.join(resourcesDirectory, "..", "MacOS", productName);
+      const desktopBytes = readFileSync(desktopExecutable);
+      const cliDirectory = path.join(resourcesDirectory, "bin");
+      mkdirSync(cliDirectory, { recursive: true });
+      const cliLauncher = path.join(cliDirectory, "loci");
+      copyFileSync(path.resolve(__dirname, "assets", "loci-cli"), cliLauncher);
+      chmodSync(cliLauncher, 0o755);
+      if (!readFileSync(desktopExecutable).equals(desktopBytes)) {
+        throw new Error("CLI installation changed the desktop executable");
+      }
+    }
     mkdirSync(noticesDirectory, { recursive: true });
     const noticeSources = [
       [path.resolve(__dirname, "..", "LICENSE"), "LOCI_LICENSE"],

@@ -26,6 +26,8 @@ import { buildRawVolumeHistograms, type RawVolumeHistogramRecord } from "./raw-v
 import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, SlidersHorizontal } from "lucide-react";
 import { MprSlicePane } from "./MprSlicePane";
 import { mprPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { configureVolumeChannelColorMix, VOLUME_AVERAGE_PROJECTION_ALGORITHM, VOLUME_CHANNEL_COMPOSITING_ALGORITHM } from "./volume-channel-mix";
+import { applyVolumeDisplayChannels, volumeDisplayChannels, type VolumeDisplayControls } from "./raw-volume-display";
 import "./RawVolumeViewport.css";
 
 export type RawVolumeScalarType =
@@ -108,6 +110,8 @@ type CameraSnapshot = {
 };
 
 type Props = {
+  externalDisplay?: VolumeDisplayControls;
+  onDisplayChange?: (display: VolumeDisplayControls) => void;
   volume: RawVolumeResponse | null;
   loading?: boolean;
   error?: string | null;
@@ -665,6 +669,8 @@ function TransferNumber({ label, value, minimum, maximum, onCommit }: {
 }
 
 export function RawVolumeViewport({
+  externalDisplay,
+  onDisplayChange,
   volume,
   loading = false,
   error = null,
@@ -768,6 +774,19 @@ export function RawVolumeViewport({
     previousContextRef.current = volume.context;
   }, [volume]);
 
+  // Detached controls use the same native scalar transfers as this viewport.
+  // Standalone workbench volumes retain their existing independent settings.
+  const externalDisplayKey = JSON.stringify(externalDisplay ?? null);
+  useEffect(() => {
+    if (!externalDisplay || !volume) return;
+    try {
+      if (sceneRef.current) sceneRef.current.stateEpoch += 1;
+      setTransfers(applyVolumeDisplayChannels(volume.context.components, externalDisplay.channels));
+      setRenderMode(externalDisplay.renderMode);
+      setQuality(externalDisplay.quality);
+    } catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Invalid volume display settings."); }
+  }, [externalDisplayKey, volume]);
+
   useEffect(() => {
     if (!volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
     // Do not replace the coarse context until its verified bytes have been
@@ -825,12 +844,12 @@ export function RawVolumeViewport({
       interactor.setDesiredUpdateRate(45);
       const interactorStyle = vtkInteractorStyleManipulator.newInstance();
       const mouseManipulators = [
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1 }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 3 }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1, shift: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ dragEnabled: false, scrollEnabled: true }),
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 2 }),
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, alt: true }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 2, useFocalPointAsCenterOfRotation: true }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, alt: true, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2, shift: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 1, control: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 3, control: true }),
@@ -951,6 +970,7 @@ export function RawVolumeViewport({
           actor.getProperty().setIndependentComponents(true);
           actor.getProperty().setInterpolationTypeToLinear();
           actor.getProperty().setShade(false);
+          configureVolumeChannelColorMix(mapper, actor.getProperty());
           return { payload, image, mapper, actor };
         });
         const nextSliceRecords = nextImageRecords.flatMap((imageRecord, payloadIndex) =>
@@ -1080,6 +1100,7 @@ export function RawVolumeViewport({
         property.setSpecular(0.25);
         property.setSpecularPower(20.0);
       }
+      configureVolumeChannelColorMix(record.mapper, property);
       transfers.forEach((component, index) => {
         // Composite volume color carries channel identity. Scalar intensity is
         // encoded by opacity, with optional explicitly recorded Phong lighting.
@@ -1346,7 +1367,7 @@ export function RawVolumeViewport({
         height_px: height,
         png_base64: dataUrl.slice("data:image/png;base64,".length),
         manifest: {
-          schema_version: "loci.volume-figure/v1",
+          schema_version: "loci.volume-figure/v2",
           figure: {
             kind: "screen-resolution-rendered-figure",
             format: "png",
@@ -1368,6 +1389,8 @@ export function RawVolumeViewport({
             mode,
             extent: detailView,
             interpolation: "linear",
+            channel_compositing: mode === "volume" ? VOLUME_CHANNEL_COMPOSITING_ALGORITHM : null,
+            projection_reducer: mode === "volume" && renderMode === "average" ? VOLUME_AVERAGE_PROJECTION_ALGORITHM : null,
             shading: mode === "volume" && activeModeDetails.shade,
             blend_mode: mode === "volume" ? renderMode : null,
             quality: mode === "volume" ? quality : null,
@@ -1449,7 +1472,13 @@ export function RawVolumeViewport({
 
   const updateTransfer = (channelIndex: number, change: (value: TransferState) => TransferState) => {
     invalidateFigureCapture();
-    setTransfers((current) => current.map((value) => value.channel_index === channelIndex ? change(value) : value));
+    if (!onDisplayChange) {
+      setTransfers((current) => current.map((value) => value.channel_index === channelIndex ? change(value) : value));
+      return;
+    }
+    const next = transfers.map((value) => value.channel_index === channelIndex ? change(value) : value);
+    setTransfers(next);
+    onDisplayChange?.({ channels: volumeDisplayChannels(next), renderMode, quality });
   };
 
   const focusUsesNativeSteps = volume?.focus ? volume.focus.sampling.level_zero_indices_xyz.every((indices) =>
@@ -1563,7 +1592,9 @@ export function RawVolumeViewport({
                 value={renderMode}
                 onChange={(event) => {
                   invalidateFigureCapture();
-                  setRenderMode(event.target.value as VolumeRenderMode);
+                  const next = event.target.value as VolumeRenderMode;
+                  setRenderMode(next);
+                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode: next, quality });
                 }}
               >
                 {Object.entries(RENDER_MODE_DETAILS).map(([key, details]) => (
@@ -1584,7 +1615,9 @@ export function RawVolumeViewport({
                 value={quality}
                 onChange={(event) => {
                   invalidateFigureCapture();
-                  setQuality(Number(event.target.value));
+                  const next = Number(event.target.value);
+                  setQuality(next);
+                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode, quality: next });
                 }}
               />
               <span className="raw-volume-quality-val">{quality}%</span>
@@ -1745,7 +1778,7 @@ export function RawVolumeViewport({
               onCommit={(high) => { if (high <= component.window.low) return false; updateTransfer(component.channel_index, (value) => ({ ...value, window: { ...value.window, high } })); return true; }} /></label>
             <label>Gamma<TransferNumber label={`${component.name} gamma`} value={component.window.gamma} minimum={0.1} maximum={10}
               onCommit={(gamma) => { updateTransfer(component.channel_index, (value) => ({ ...value, window: { ...value.window, gamma } })); return true; }} /></label>
-            <label className="raw-volume-opacity">Opacity<input aria-label={`${component.name} opacity`} type="range" min={0} max={1} step={0.01} value={component.opacity}
+            <label className="raw-volume-opacity">Opacity <output aria-label={`${component.name} opacity value`}>{component.opacity}</output><input aria-label={`${component.name} opacity`} type="range" min={0} max={1} step={0.01} value={component.opacity}
               onChange={(event) => updateTransfer(component.channel_index, (value) => ({ ...value, opacity: Number(event.target.value) }))} /></label>
             <button type="button" disabled={!defaults} onClick={() => defaults && updateTransfer(component.channel_index, () => ({ ...defaults }))}>Reset channel</button>
             {histogram ? <div className="raw-volume-histogram">

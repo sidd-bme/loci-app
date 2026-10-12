@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -123,8 +124,8 @@ def _metadata(*, shape: tuple[int, int, int] = (1200, 900, 3), pyramid: bool = T
     base = NativeDimensions(2, channels, 4, y, x)
     levels = [NativeLevel(0, base, PhysicalCalibration("ZYX", (2.0, 0.5, 0.25), "um"))]
     if pyramid:
-        reduced = NativeDimensions(2, channels, 2, y // 3, x // 3)
-        levels.append(NativeLevel(1, reduced, PhysicalCalibration("ZYX", (4.0, 1.5, 0.75), "um")))
+        reduced = NativeDimensions(2, channels, 4, y // 3, x // 3)
+        levels.append(NativeLevel(1, reduced, PhysicalCalibration("ZYX", (2.0, 1.5, 0.75), "um")))
     displays = tuple(
         NativeChannelDisplay(
             channel=channel,
@@ -427,7 +428,70 @@ def test_native_pyramid_overview_covers_full_extent_without_level_zero_read() ->
     assert result["source_extent"] == [1200, 900]
     assert (result["width"], result["height"]) == (400, 300)
     assert len(session.reads) == 3
-    assert all(read.level == 1 and read.x == 0 and read.y == 0 for read in session.reads)
+    assert all(
+        read.level == 1 and read.x == 0 and read.y == 0 and read.z == 3 for read in session.reads
+    )
+
+
+@pytest.mark.parametrize(("level_t", "level_z"), [(2, 2), (1, 4)])
+def test_reduced_z_pyramid_overview_falls_back_to_exact_native_z_plane(level_t, level_z) -> None:
+    """Acceptance check 4: A pyramid with downsampled Z must NOT be used for single-plane
+    display. It must fall back to sampling level zero at the exact requested Z plane.
+    """
+    base = NativeDimensions(2, 1, 4, 900, 1200)
+    reduced = NativeDimensions(level_t, 1, level_z, 300, 400)
+    levels = (
+        NativeLevel(0, base, PhysicalCalibration("ZYX", (1.0, 1.0, 1.0), "um")),
+        NativeLevel(1, reduced, PhysicalCalibration("ZYX", (2.0, 3.0, 3.0), "um")),
+    )
+    meta = replace(_metadata(shape=(1200, 900, 1), pyramid=False), levels=levels, dimensions=base)
+
+    class _DeliberateZSession(_FakeSession):
+        def read_region(self, selection: NativeSelection) -> NativeRegion:
+            self.reads.append(selection)
+            if selection.level == 1:
+                pixels = np.full((selection.height, selection.width), 99, dtype=np.uint8)
+            else:
+                pixels = np.full(
+                    (selection.height, selection.width),
+                    selection.t * 40 + selection.z * 50 + 10,
+                    dtype=np.uint8,
+                )
+            pixels.flags.writeable = False
+            return NativeRegion(
+                pixels=pixels,
+                axes="YX",
+                selection=selection,
+                sha256=self.metadata.sha256,
+                format="fake",
+                native_dtype="uint8",
+                read_mode="fake",
+                estimated_peak_bytes=pixels.nbytes,
+                integrity_mode="stat-verified-session",
+            )
+
+    session = _DeliberateZSession(meta)
+    result = viewer_tile(
+        session,
+        {
+            "source_id": "source-1",
+            "overview": True,
+            "t": 1,
+            "z": 2,
+            "c": 0,
+            "channels": _channels(1),
+            "max_edge": 512,
+        },
+    )
+
+    assert result["preparation"] == "derived-cache"
+    assert result["selection"] == {"t": 1, "z": 2, "c": 0, "z_stop": None}
+    assert len(session.reads) > 0
+    assert all(read.level == 0 and read.z == 2 and read.t == 1 for read in session.reads)
+    header, b64 = result["image"].split(",", 1)
+    img_array = np.array(Image.open(io.BytesIO(base64.b64decode(b64))))
+    assert img_array[0, 0, 0] == 150
+    assert img_array[0, 0, 0] != 99
 
 
 def test_no_pyramid_overview_uses_bounded_tiles_and_project_cache(tmp_path) -> None:

@@ -502,8 +502,12 @@ try {
   await page.getByText("1 / 2 endpoints placed.", { exact: false }).waitFor();
   const secondPointGeometry = await clickSourcePoint(opened.viewer, { x: 40, y: 70 });
   await page.getByText("2 / 2 endpoints placed.", { exact: false }).waitFor();
-  await page.getByLabel("Confirm transect review", { exact: true }).check();
-  await page.getByRole("button", { name: "Save annotation", exact: true }).click();
+  assert.equal(await page.getByLabel("Confirm transect review", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await page.getByRole("button", { name: "Annotate", exact: true }).click();
+  await page.getByText("2 / 2 endpoints placed.", { exact: false }).waitFor();
+  assert.equal(await page.getByLabel("Transect reviewer", { exact: true }).inputValue(), savedProtocol.reviewer);
+  await page.getByRole("button", { name: "Save reviewed transect", exact: true }).click();
   await page.getByText("1 saved", { exact: true }).waitFor({ timeout: 120_000 });
   const savedReceipt = await waitForAnnotationCount(opened.source.id, 1);
   const savedAnnotation = savedReceipt.annotations[0];

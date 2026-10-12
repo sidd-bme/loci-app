@@ -96,6 +96,29 @@ def test_watershed_true_3d_touching_blobs_and_small_seed_fallback():
     assert labels.dtype == np.uint32
 
 
+@pytest.mark.parametrize("shape", [(3, 4), (2, 3, 4)])
+@pytest.mark.parametrize("height", [-1, 0, float("nan"), float("inf"), True])
+def test_empty_watershed_rejects_invalid_split_height_independent_of_foreground(shape, height):
+    with pytest.raises(ValueError, match="split_height"):
+        segment_scalar(
+            np.zeros(shape, np.uint16),
+            Geometry.diagonal((1.0,) * len(shape)),
+            {"method": "watershed", "threshold": 50, "split_height": height},
+        )
+
+
+def test_empty_watershed_records_the_resolved_physical_split_height():
+    labels, record = segment_scalar(
+        np.zeros((3, 4), np.uint16),
+        Geometry.diagonal((2.0, 3.0), "um"),
+        {"method": "watershed", "threshold": 50, "split_height": 1.5},
+    )
+    assert not labels.any()
+    assert record["count"] == 0
+    assert record["split_height"] == 1.5
+    assert record["distance_unit"] == "um"
+
+
 def test_full_crop_watershed_has_symmetric_exterior_background():
     labels, record = segment_scalar(
         np.ones((5, 5)),
