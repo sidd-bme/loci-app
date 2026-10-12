@@ -305,8 +305,10 @@ def test_real_pty_open_objects_locate_and_command_history(measured_study):
             (b"loci> ", 0.1, ("open " + shlex.quote(str(project.root)) + "\r").encode()),
             (b"exact revision pinned", 0.1, b"objects --area 4:16 --spacing 10:30 --limit 3\r"),
             (b"Showing 3 objects", 0.1, b"locate 102\r"),
-            (b"Y=11, X=21", 0.1, b"\x1bOA\r"),
-            (b"Y=11, X=21", 0.1, b"\x04"),
+            # Clear old output before recalling the command. A curses redraw of
+            # the first locate result is not acknowledgement of the second run.
+            (b"Y=11, X=21", 0.1, b"\x0c\x1bOA\r"),
+            ((b"Running locate 102", b"Exit 0"), 0.1, b"\x04"),
         ],
     )
     assert status == 0

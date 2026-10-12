@@ -307,6 +307,28 @@ printf '%s\\n' "${COMPREPLY[@]}"
     assert process.returncode == 0 and process.stdout == "large_result_export\n"
 
 
+def _pty_action_marker_seen(captured, offset, marker):
+    """Require fresh, ordered acknowledgements for a scripted terminal action."""
+    markers = (marker,) if isinstance(marker, bytes) else marker
+    for part in markers:
+        position = captured.find(part, offset)
+        if position < 0:
+            return False
+        offset = position + len(part)
+    return True
+
+
+def test_pty_action_markers_reject_a_previous_command_completion():
+    marker = (b"Running locate 102", b"Exit 0")
+    previous = b"Exit 0\nY=11, X=21\n"
+    running = previous + b"Running locate 102\nY=11, X=21\n"
+    assert not _pty_action_marker_seen(running, len(previous), marker)
+    completed = running + b"Exit 0\n"
+    assert _pty_action_marker_seen(completed, len(previous), marker)
+    assert not _pty_action_marker_seen(completed, len(completed), marker)
+    assert _pty_action_marker_seen(completed, len(previous), b"Y=11, X=21")
+
+
 def pty_cli(
     arguments,
     *,
@@ -363,7 +385,9 @@ def pty_cli(
                 break
             if action:
                 marker, delay, keys = action
-                if action_ready_at is None and marker in captured[action_offset:]:
+                if action_ready_at is None and _pty_action_marker_seen(
+                    captured, action_offset, marker
+                ):
                     action_ready_at = time.monotonic() + delay
                 if action_ready_at is not None and time.monotonic() >= action_ready_at:
                     os.write(master, keys)
