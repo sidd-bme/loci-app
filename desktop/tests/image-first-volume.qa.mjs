@@ -465,14 +465,27 @@ try {
   const secondVisible = page.getByLabel("Channel 2 visible", { exact: true });
   await secondVisible.waitFor({ state: "visible" });
   if (!await secondVisible.isChecked()) await secondVisible.check();
-  // The reversible channel choice is autosaved after a 400 ms debounce.  Let
-  // that exact source-view revision commit before starting the independent
-  // viewer worker request, as a human naturally does while scanning the image.
-  await page.waitForTimeout(1_000);
   const snapshotBefore = await page.evaluate(() => window.lociResearch.getSnapshot());
   const sourceRecord = snapshotBefore.sources.find((item) => item.name === "synthetic-asymmetric-czyx.ome.tiff");
   assert.ok(sourceRecord, "Imported synthetic source is absent from the managed study.");
   assert.equal(sourceRecord.sha256, fixtureSha256, "Managed source binding does not match the fixture bytes.");
+  // Source-plane and volume controls share explicit display settings. Wait for
+  // the exact visible-channel choice to be saved, then compare those settings
+  // with the applied volume windows rather than its separate engine defaults.
+  const sourceDisplayBeforeVolume = await waitFor(async () => {
+    const value = await page.evaluate((sourceId) => window.lociResearch.execute("source_view", {
+      source_id: sourceId,
+    }), sourceRecord.id);
+    assert.equal(value.source_id, sourceRecord.id);
+    assert.equal(value.source_sha256, fixtureSha256);
+    const visible = value.state?.channels?.filter((channel) => channel.visible);
+    return visible?.length === 2 && visible.some((channel) => channel.channel === 1) ? value : null;
+  }, "the source-bound saved two-channel display");
+  const sharedChannels = sourceDisplayBeforeVolume.state.channels.filter((channel) => channel.visible);
+  assert.deepEqual(sharedChannels.map((channel) => channel.channel), [0, 1]);
+  assert.ok(sharedChannels.every((channel) => Number.isFinite(channel.low) &&
+    Number.isFinite(channel.high) && channel.low < channel.high), "Saved display windows must be finite native ranges.");
+  const sharedTransferRanges = sharedChannels.map((channel) => `${channel.low}:${channel.high}`).join(",");
 
   const volumeStart = performance.now();
   const volumeButton = page.getByRole("button", { name: "3D volume", exact: true });
@@ -491,7 +504,8 @@ try {
   assert.equal(coarse.sourceSha256, fixtureSha256);
   assert.equal(coarse.contextByteLength, 128 * 96 * 48 * 2 * 2);
   assert.match(coarse.transferRangeBasis, /bounded-context-histogram-p1-p99-2048bins/);
-  assert.doesNotMatch(coarse.transferRanges, /0:65535/);
+  assert.equal(coarse.transferRanges, sharedTransferRanges,
+    "Entering volume view changed the saved source-display windows.");
   build.executing_worker = await executingWorker();
   captures.coarse = await canvasCapture("01-coarse-volume");
   captures.volumeActivated = await screenshot("01b-volume-activated-no-tooltip");
@@ -502,6 +516,29 @@ try {
   }, "automatic full-resolution refinement");
   marks.automatic_refinement_ms = performance.now() - volumeStart;
   assert.equal(refined.contextByteLength, 256 * 192 * 96 * 2 * 2);
+  assert.equal(refined.transferRanges, sharedTransferRanges,
+    "Automatic refinement changed the shared display windows.");
+  // Inspect the actual packaged engine's default payload after first-view
+  // timing is complete. Robust defaults remain distinct from shared user state.
+  const volumeDefaults = await page.evaluate(async (sourceId) => {
+    const { context } = await window.lociResearch.execute("viewer_volume", {
+      source_id: sourceId, t: 0, channel_indices: [0, 1], target_long_axis: 128,
+    });
+    return { source_id: context.source_id, source_sha256: context.source_sha256,
+      dimensions_xyz: context.dimensions_xyz, byte_length: context.byte_length,
+      components: context.components.map((component) => ({ channel_index: component.channel_index,
+        window: component.window, provenance: component.provenance })) };
+  }, sourceRecord.id);
+  assert.equal(volumeDefaults.source_id, sourceRecord.id);
+  assert.equal(volumeDefaults.source_sha256, fixtureSha256);
+  assert.deepEqual(volumeDefaults.dimensions_xyz, [128, 96, 48]);
+  assert.equal(volumeDefaults.byte_length, coarse.contextByteLength);
+  assert.deepEqual(volumeDefaults.components.map((component) => component.channel_index), [0, 1]);
+  assert.ok(volumeDefaults.components.every((component) =>
+    component.provenance.range === "bounded-context-histogram-p1-p99-2048bins" &&
+    Number.isFinite(component.window.low) && Number.isFinite(component.window.high) &&
+    component.window.low < component.window.high && component.window.high < 65535),
+  "The engine's bounded default windows must remain robust native ranges.");
   captures.refined = await canvasCapture("02-refined-volume");
   const refinedPixels = captures.refined.pixel_stats;
   assert.ok(refinedPixels.bright_pixels > 500, "The refined volume canvas does not contain substantive bright structure.");
@@ -598,11 +635,35 @@ try {
   assert.notEqual(captures.zoom.sha256, captures.pan.sha256, "Zoom did not change the rendered view.");
 
   const ringVisible = page.getByLabel("synthetic-ring visible", { exact: true });
-  await ringVisible.uncheck();
-  await page.waitForTimeout(120);
+  assert.equal(await ringVisible.isChecked(), true);
+  // This action removes its own checkbox as the visible-only payload is rebuilt.
+  // Click once, then verify the resulting payload rather than polling a removed input.
+  await ringVisible.click();
+  await waitFor(async () => {
+    const value = await viewportState();
+    return value.contextDimensions === "256x192x96" &&
+      value.contextByteLength === 256 * 192 * 96 * 2 && value.status.includes("display") ? value : null;
+  }, "the refined single-channel volume");
   captures.singleChannel = await canvasCapture("08-single-channel");
   assert.notEqual(captures.singleChannel.sha256, captures.zoom.sha256, "Channel visibility did not change the rendered view.");
-  await ringVisible.check();
+  // Hidden channels leave the visible-only volume payload, so restore this
+  // exact source channel through the source display controls before returning.
+  assert.equal(sourceRecord.metadata.channel_names[1], "synthetic-ring");
+  await page.getByRole("button", { name: "2D image", exact: true }).click();
+  const sourceRingVisible = page.getByLabel("Channel 2 visible", { exact: true });
+  await sourceRingVisible.waitFor({ state: "visible" });
+  assert.equal(await sourceRingVisible.isChecked(), false,
+    "Hiding the ring volume component did not update its shared source channel.");
+  await sourceRingVisible.check();
+  await page.getByRole("button", { name: "3D volume", exact: true }).click();
+  await waitFor(async () => {
+    const value = await viewportState();
+    return value.contextDimensions === "256x192x96" && value.status.includes("display") ? value : null;
+  }, "the restored full-resolution two-channel volume");
+  await page.getByRole("button", { name: "3D view", exact: true }).click();
+  await ringVisible.waitFor({ state: "visible" });
+  assert.equal(await ringVisible.isChecked(), true);
+  assert.equal(await page.getByLabel("synthetic-core visible", { exact: true }).isChecked(), true);
   await page.locator("details.raw-volume-channel").filter({ hasText: "synthetic-ring" }).locator("summary").click();
   await page.getByLabel("synthetic-ring opacity", { exact: true }).fill("0.25");
   await page.waitForTimeout(120);
@@ -925,6 +986,13 @@ try {
         native_source_steps: focused.focusNativeSteps === "true",
       },
       budget: { platform: "Apple M1 / 8 GB", p95_ms: 50, p99_ms: 100 },
+    },
+    display_range_contract: {
+      saved_source_display_revision: sourceDisplayBeforeVolume.revision,
+      shared_channels: sharedChannels,
+      coarse_applied_ranges: coarse.transferRanges,
+      refined_applied_ranges: refined.transferRanges,
+      bounded_engine_defaults: volumeDefaults,
     },
     renderer_resources: {
       ...rendererResources,
