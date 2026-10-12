@@ -237,4 +237,98 @@ describe("ResearchAdaptivePanel", () => {
     expect(onResult).not.toHaveBeenCalled();
     expect(onBusy).toHaveBeenLastCalledWith(null);
   });
+
+  it("allows selecting 2 GiB memory allowance and includes it in batch configuration and execution", async () => {
+    installNative();
+    const execute = vi.fn().mockResolvedValue({ result });
+    const onBatchConfiguration = vi.fn();
+    renderPanel({ api: researchApi(execute), onBatchConfiguration });
+
+    expect(await screen.findByRole("button", { name: "Segment image" })).toBeEnabled();
+    const select = screen.getByLabelText("Adaptive memory allowance");
+    expect(select).toHaveValue(String(512 * 1024 ** 2));
+
+    fireEvent.change(select, { target: { value: String(2 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(2 * 1024 ** 3));
+
+    await waitFor(() =>
+      expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          workingBytes: 2 * 1024 ** 3,
+        }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
+    await waitFor(() =>
+      expect(execute).toHaveBeenCalledWith(
+        "classical_run",
+        expect.objectContaining({
+          working_bytes: 2 * 1024 ** 3,
+        }),
+      ),
+    );
+  });
+
+  it("allows selecting 4 GiB or 8 GiB allowance even when 2 GiB is recommended", async () => {
+    installNative();
+    const api = researchApi();
+    api.recipeResources = vi.fn().mockResolvedValue({
+      total_memory_bytes: 16 * 1024 ** 3,
+      recommended_working_bytes: 2 * 1024 ** 3,
+      limits: { min_bytes: 512 * 1024 ** 2, max_bytes: 8 * 1024 ** 3 },
+    });
+    const onBatchConfiguration = vi.fn();
+    renderPanel({ api, onBatchConfiguration });
+
+    expect(await screen.findByText(/16 GiB installed · 2 GiB recommended/i)).toBeVisible();
+    const select = screen.getByLabelText("Adaptive memory allowance");
+
+    // Select 4 GiB
+    fireEvent.change(select, { target: { value: String(4 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(4 * 1024 ** 3));
+    expect(await screen.findByText(/Above the 2 GiB recommendation/i)).toBeVisible();
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 4 * 1024 ** 3,
+      }),
+    );
+
+    // Select 8 GiB
+    fireEvent.change(select, { target: { value: String(8 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(8 * 1024 ** 3));
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 8 * 1024 ** 3,
+      }),
+    );
+
+    // Click "Use recommended"
+    const useRecommendedButton = screen.getByRole("button", { name: "Use recommended" });
+    fireEvent.click(useRecommendedButton);
+    expect(select).toHaveValue(String(2 * 1024 ** 3));
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 2 * 1024 ** 3,
+      }),
+    );
+  });
+
+  it("disables memory allowance control when busy", async () => {
+    installNative();
+    render(
+      <ResearchAdaptivePanel
+        api={researchApi()}
+        source={source}
+        selection={selection}
+        busy={true}
+        onBusy={vi.fn()}
+        onError={vi.fn()}
+        onResult={vi.fn()}
+      />,
+    );
+
+    const select = await screen.findByLabelText("Adaptive memory allowance");
+    expect(select).toBeDisabled();
+  });
 });

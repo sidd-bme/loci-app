@@ -35,12 +35,6 @@
   color: var(--ink-muted);
 }
 
-.research-portability-note {
-  border-left: 2px solid var(--line-strong);
-  padding-left: 8px;
-  font-size: 11px;
-}
-
 .research-portability-status {
   position: sticky;
   bottom: 0;

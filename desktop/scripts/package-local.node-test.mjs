@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readFile, readlink, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   acquirePackageLock,
@@ -52,7 +54,8 @@ test("passes the canonical arm64 request and ad-hoc signing mode to Forge", asyn
   const { root, paths } = await fixture(t);
   const env = {};
   let request;
-  await packageLocalMac({
+  const forgeResult = [{ platform: "darwin", arch: "arm64", packagedPath: path.join(paths.staging, "Loci-darwin-arm64") }];
+  const result = await packageLocalMac({
     repositoryRoot: root,
     env,
     platform: "darwin",
@@ -60,8 +63,10 @@ test("passes the canonical arm64 request and ad-hoc signing mode to Forge", asyn
       request = value;
       assert.equal(env.LOCI_MAC_SIGN_MODE, "adhoc-local");
       await mkdir(value.outDir, { recursive: true });
+      return forgeResult;
     },
   });
+  assert.equal(result.result, forgeResult);
   assert.deepEqual(request, {
     dir: path.join(root, "desktop"),
     platform: "darwin",
@@ -69,6 +74,150 @@ test("passes the canonical arm64 request and ad-hoc signing mode to Forge", asyn
     outDir: paths.staging,
   });
   assert.equal(env.LOCI_MAC_SIGN_MODE, undefined);
+});
+
+const runNode = promisify(execFile);
+const forgeConfigUrl = new URL("../forge.config.ts", import.meta.url).href;
+
+async function inspectForgeConfig(code, signMode = "adhoc-local", extraEnv = {}) {
+  return runNode(process.execPath, ["--input-type=module", "--eval", code], {
+    cwd: path.resolve(import.meta.dirname, ".."),
+    env: { ...process.env, LOCI_MAC_SIGN_MODE: signMode, LOCI_WINDOWS_PACKAGE_MODE: "", npm_lifecycle_event: "test:packaging", ...extraEnv },
+  });
+}
+
+test("loads the ESM Forge config with fail-closed ad-hoc signing options", async () => {
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    const sign = config.packagerConfig.osxSign;
+    assert.equal(sign.identity, '-');
+    assert.equal(sign.continueOnError, false);
+    assert.equal(sign.strictVerify, true);
+    assert.equal(sign.preAutoEntitlements, false);
+    const worker = sign.optionsForFile('/Loci.app/Contents/Resources/loci-engine/loci-engine');
+    const desktop = sign.optionsForFile('/Loci.app/Contents/MacOS/Loci');
+    assert.match(worker.entitlements, /assets[/\\\\]entitlements[/\\\\]empty\\.plist$/);
+    assert.match(desktop.entitlements, /assets[/\\\\]entitlements[/\\\\]jit\\.plist$/);
+    assert.equal(worker.hardenedRuntime, false);
+    assert.equal(worker.timestamp, 'none');
+    const {api} = await import('@electron-forge/core');
+    assert.equal(typeof api.package, 'function');
+    console.log('ESM config and packaging API verified');
+  `);
+  assert.match(stdout, /ESM config and packaging API verified/);
+});
+
+test("the Packager 20 resource hook rejects a missing worker through its object contract", async (t) => {
+  const { root } = await fixture(t);
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    const hook = config.packagerConfig.afterCopyExtraResources[0];
+    assert.throws(() => hook({ buildPath: ${JSON.stringify(root)}, electronVersion: '44.0.0', platform: 'darwin', arch: 'arm64' }),
+      /bundled Loci engine is missing/);
+    console.log('Missing worker rejected');
+  `);
+  assert.match(stdout, /Missing worker rejected/);
+});
+
+test("ESM config still rejects unsupported signing modes and unsigned macOS resources", async () => {
+  await assert.rejects(inspectForgeConfig(`await import(${JSON.stringify(forgeConfigUrl)});`, "unsupported"),
+    /Unsupported LOCI_MAC_SIGN_MODE/);
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    assert.throws(() => config.packagerConfig.afterCopyExtraResources[0]({ buildPath: '.', electronVersion: '44.0.0', platform: 'darwin', arch: 'arm64' }),
+      /Unsigned macOS packages are disabled/);
+    console.log('Unsigned resources rejected');
+  `, "");
+  assert.match(stdout, /Unsigned resources rejected/);
+});
+
+test("owns the canonical worker copy and preserves relative links and source bytes", async (t) => {
+  const { root } = await fixture(t);
+  const source = path.join(root, "worker-input");
+  const resources = path.join(root, "package", "Loci.app", "Contents", "Resources");
+  await mkdir(path.join(source, "_internal", "lib"), { recursive: true });
+  await mkdir(resources, { recursive: true });
+  await writeFile(path.join(source, "loci-engine"), "worker fixture");
+  await chmod(path.join(source, "loci-engine"), 0o755);
+  const sourceLibrary = path.join(source, "_internal", "lib", "data.dylib");
+  await writeFile(sourceLibrary, "library fixture");
+  await symlink("lib/data.dylib", path.join(source, "_internal", "alias.dylib"));
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    process.argv.push('package');
+    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    assert.deepEqual(config.packagerConfig.extraResource, []);
+    await config.packagerConfig.beforeCopyExtraResources[0]({ buildPath: ${JSON.stringify(path.join(root, "package"))}, platform: 'darwin', arch: 'arm64', electronVersion: '44.0.0' });
+    console.log('Worker copied by owned hook');
+  `, "adhoc-local", { LOCI_ENGINE_RESOURCE: source });
+  assert.match(stdout, /Worker copied by owned hook/);
+  const copied = path.join(resources, "loci-engine");
+  assert.equal(await readlink(path.join(copied, "_internal", "alias.dylib")), "lib/data.dylib");
+  assert.equal(await readFile(path.join(copied, "_internal", "alias.dylib"), "utf8"), "library fixture");
+  await writeFile(path.join(copied, "_internal", "lib", "data.dylib"), "independent copied bytes");
+  assert.equal(await readFile(sourceLibrary, "utf8"), "library fixture");
+  assert.equal(await readFile(path.join(source, "loci-engine"), "utf8"), "worker fixture");
+  assert.equal(await readlink(path.join(source, "_internal", "alias.dylib")), "lib/data.dylib");
+});
+
+test("rejects absolute, escaping, dangling and cyclic source links before creating a destination", async (t) => {
+  const { root } = await fixture(t);
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    const {copyEngineResource} = await import(${JSON.stringify(forgeConfigUrl)});
+    const root = ${JSON.stringify(root)};
+    fs.writeFileSync(path.join(root, 'outside'), 'external fixture');
+    for (const fault of ['absolute', 'escape', 'dangling', 'cycle', 'directory-cycle']) {
+      const source = path.join(root, fault), destination = path.join(root, fault + '-copy');
+      fs.mkdirSync(source);
+      if (fault === 'cycle') {
+        fs.symlinkSync('b', path.join(source, 'a')); fs.symlinkSync('a', path.join(source, 'b'));
+      } else if (fault === 'directory-cycle') {
+        fs.mkdirSync(path.join(source, 'a')); fs.mkdirSync(path.join(source, 'b'));
+        fs.symlinkSync('../b', path.join(source, 'a', 'other'));
+        fs.symlinkSync('../a', path.join(source, 'b', 'other'));
+      } else fs.symlinkSync(fault === 'absolute' ? path.join(root, 'outside') : fault === 'escape' ? '../outside' : 'missing', path.join(source, 'link'));
+      assert.throws(() => copyEngineResource(source, destination), /relative|escapes|dangling|cyclic/);
+      assert.equal(fs.existsSync(destination), false);
+    }
+    const sourceLink = path.join(root, 'source-link');
+    fs.symlinkSync('dangling', sourceLink);
+    assert.throws(() => copyEngineResource(sourceLink, path.join(root, 'source-link-copy')), /plain directory/);
+    console.log('Unsafe source links rejected');
+  `);
+  assert.match(stdout, /Unsafe source links rejected/);
+});
+
+test("refuses occupied and symlinked copy destinations without changing existing data", async (t) => {
+  const { root } = await fixture(t);
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    const {copyEngineResource, default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    const root = ${JSON.stringify(root)}, source = path.join(root, 'source');
+    fs.mkdirSync(source); fs.writeFileSync(path.join(source, 'data'), 'source fixture');
+    const existing = path.join(root, 'existing'), file = path.join(root, 'file'), link = path.join(root, 'link');
+    fs.mkdirSync(existing); fs.writeFileSync(path.join(existing, 'sentinel'), 'retained');
+    fs.writeFileSync(file, 'retained'); fs.symlinkSync('missing', link);
+    for (const destination of [existing, file, link]) assert.throws(() => copyEngineResource(source, destination), /EEXIST/);
+    assert.equal(fs.readFileSync(path.join(existing, 'sentinel'), 'utf8'), 'retained');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'retained'); assert.equal(fs.readlinkSync(link), 'missing');
+    const parent = path.join(root, 'parent-link'); fs.symlinkSync(existing, parent);
+    assert.throws(() => copyEngineResource(source, path.join(parent, 'copy')), /parent must be a plain directory/);
+    assert.deepEqual(fs.readdirSync(existing), ['sentinel']);
+    const build = path.join(root, 'build'); fs.mkdirSync(path.join(build, 'Loci.app', 'Contents'), {recursive: true});
+    fs.symlinkSync(existing, path.join(build, 'Loci.app', 'Contents', 'Resources'));
+    assert.throws(() => config.packagerConfig.beforeCopyExtraResources[0]({ buildPath: build, platform: 'darwin', arch: 'arm64', electronVersion: '44.0.0' }), /destination escapes/);
+    assert.deepEqual(fs.readdirSync(existing), ['sentinel']);
+    console.log('Unsafe copy destinations rejected');
+  `);
+  assert.match(stdout, /Unsafe copy destinations rejected/);
 });
 
 test("retains failed staging and logs while releasing its own lock", async (t) => {

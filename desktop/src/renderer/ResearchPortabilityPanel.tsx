@@ -6,6 +6,7 @@ import type {
   ResearchSource,
 } from "../shared/research-contracts";
 import { ResearchInterchangePanel } from "./ResearchInterchangePanel";
+import { sourceRelinkKind } from "../shared/source-relink";
 import "./ResearchPortabilityPanel.css";
 
 type Report = <T>(
@@ -30,16 +31,6 @@ function recipeDocument(value: unknown): RecipeDocument | null {
   return item && typeof item.id === "string"
     ? (item as unknown as RecipeDocument)
     : null;
-}
-
-function sourcePicker(source: ResearchSource): "file" | "dicom" | "ome_zarr" {
-  if (source.source_kind === "ome_zarr") return "ome_zarr";
-  if (
-    source.source_kind === "medical" &&
-    source.relink_hint?.selection_kind === "series"
-  )
-    return "dicom";
-  return "file";
 }
 
 function shortHash(value: unknown): string | null {
@@ -130,7 +121,7 @@ export function ResearchPortabilityPanel({
   const relink = async (source: ResearchSource) => {
     if (!api.relinkSource) return;
     const next = await run(
-      () => api.relinkSource!(source.id, sourcePicker(source)),
+      () => api.relinkSource!(source.id, sourceRelinkKind(source)),
       "The selected source did not match the archived fingerprint and size.",
     );
     if (next) {
@@ -213,11 +204,7 @@ export function ResearchPortabilityPanel({
             () => api.createStudy(), "Could not create a new study.",
           ).then((next) => { if (next) onSnapshot(next); })}>Create study</button>
         </div>
-        <p>
-          Export derived records and artifacts with source fingerprints. Raw
-          images, source locations, model packages, credentials, and active
-          processes are excluded.
-        </p>
+        <p>Share results and settings. Original images stay separate.</p>
         <button disabled={locked || !api.exportStudy} onClick={() => void exportStudy()}>
           Export portable study
         </button>
@@ -230,13 +217,12 @@ export function ResearchPortabilityPanel({
         >
           Import portable study
         </button>
+        <details><summary>Archive contents</summary><p>Includes derived records, artifacts and source fingerprints.
+          Raw images, source locations, model packages, credentials and active processes are excluded.</p></details>
         {missing.length > 0 && (
           <>
             <h3>Relink imported sources</h3>
-            <p>
-              Pixel access stays locked until each local selection matches the
-              archived SHA-256 fingerprint and byte size.
-            </p>
+            <p>Choose the original local images to restore access.</p>
             <ul className="research-portability-list">
               {missing.map((source) => (
                 <li key={source.id}>
@@ -251,7 +237,7 @@ export function ResearchPortabilityPanel({
                     </small>
                   </span>
                   <button disabled={locked} onClick={() => void relink(source)}>
-                    Relink exact {sourcePicker(source) === "dicom" ? "series" : "source"}
+                    Relink {sourceRelinkKind(source) === "dicom" ? "series" : "source"}
                   </button>
                 </li>
               ))}
@@ -262,10 +248,6 @@ export function ResearchPortabilityPanel({
 
       <section className="research-panel">
         <h2>Recipe templates</h2>
-        <p>
-          Templates carry processing settings and logical source roles without
-          file locations. Import revalidates every mapped source and setting.
-        </p>
         {recipes.length ? (
           <ul className="research-portability-list">
             {recipes.map((recipe) => (
@@ -293,10 +275,9 @@ export function ResearchPortabilityPanel({
         >
           Choose template and import
         </button>
-        <p className="research-portability-note">
-          Map every role declared by the chosen template exactly once. Leave
-          unused reference roles unselected.
-        </p>
+        <details><summary>Template source mapping</summary><p>Templates save processing settings and source roles.
+          Map each declared role once; leave unused references unselected.
+          Import checks the selected sources and settings.</p></details>
       </section>
 
       <ResearchInterchangePanel

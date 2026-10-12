@@ -6,7 +6,9 @@
  *   - Source mode (--mode=source): Desktop TypeScript typecheck, packaging tests, Vitest suite,
  *     Python engine Ruff lint, and Pytest suite.
  *   - Packaged mode (--mode=packaged): Packaged UI journeys 1 (research-workbench),
- *     2 (workbench-refresh), and 3 (field-assay-workflow) on a specified macOS .app candidate,
+ *     2 (workbench-refresh), 3 (field-assay-workflow), 4 (external-label-adoption),
+ *     and 5 (correction-effect)
+ *     on a specified macOS .app candidate,
  *     verifying build identities, invocation timestamps, and generated QA receipts.
  *
  * Enforces:
@@ -46,6 +48,14 @@ export const CONTRACT_MAPPINGS = {
   "journey-3-field-assay": {
     obligations: ["J1", "J2", "I8"],
     description: "Packaged Journey 3: Fluorescence field assay, background subtraction, signed integrals, review gates, immutable provenance",
+  },
+  "journey-4-external-labels": {
+    obligations: ["J1", "J2", "J4", "J7", "J10"],
+    description: "Packaged Journey 4: Synthetic native label adoption, original-ID selection/correction, calibrated measurements, cold reopen, review and independent export checks",
+  },
+  "journey-5-correction-effect": {
+    obligations: ["J1", "J2", "J4", "J7", "J10"],
+    description: "Packaged Journey 5: Real synthetic correction, paired image/replicate/condition effects, explicit context, metadata recalculation, reviewed report export and portable restoration",
   },
 };
 
@@ -388,6 +398,20 @@ export async function runCoreRegressions(options, dependencies = {}) {
         script: path.join(projectRoot, "desktop", "tests", "field-assay-workflow.qa.mjs"),
         receiptFilename: "qa-receipt.json",
         obligations: CONTRACT_MAPPINGS["journey-3-field-assay"].obligations,
+      },
+      {
+        id: "journey-4-external-labels",
+        name: "Journey 4: External Labels, Original IDs, Correction, Reopen and Export",
+        script: path.join(projectRoot, "desktop", "tests", "external-label-adoption.qa.mjs"),
+        receiptFilename: "external-label-adoption-receipt.json",
+        obligations: CONTRACT_MAPPINGS["journey-4-external-labels"].obligations,
+      },
+      {
+        id: "journey-5-correction-effect",
+        name: "Journey 5: Correction Effect, Paired Weighting, Recalculation and Reviewed Report",
+        script: path.join(projectRoot, "desktop", "tests", "correction-effect.qa.mjs"),
+        receiptFilename: "correction-effect-receipt.json",
+        obligations: CONTRACT_MAPPINGS["journey-5-correction-effect"].obligations,
       },
     ];
 

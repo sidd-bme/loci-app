@@ -1,0 +1,24 @@
+.large-result-viewport { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; background: var(--graphite-900); }
+.large-result-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--line-strong); }
+.large-result-toolbar [role="status"] { margin-left: auto; font-size: var(--type-md); color: var(--ink-muted); }
+.large-result-stage { flex: 1; min-height: 160px; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+.large-result-stage img { object-fit: fill; touch-action: none; user-select: none; }
+.large-result-stage img.large-result-native-pixels { image-rendering: pixelated; }
+.large-result-viewport[data-ready="false"] img { opacity: .5; pointer-events: none; }
+.large-result-caption { font-size: var(--type-sm); color: var(--ink-muted); padding: 8px 14px; font-variant-numeric: tabular-nums; }
+.large-result-error { position: absolute; max-width: 38ch; padding: 16px; background: var(--graphite-850); }
+.large-check { display: flex !important; align-items: center; gap: 8px; }
+.large-check input { width: auto; }
+.large-facts { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; font-size: var(--type-md); font-variant-numeric: tabular-nums; }
+.large-facts dt { color: var(--ink-muted); }
+.large-facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.large-method-note { font-size: var(--type-md); line-height: 1.5; color: var(--ink-muted); }
+.large-object-page { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 12px 0; font-variant-numeric: tabular-nums; }
+.large-object-list { max-height: 280px; overflow: auto; border-block: 1px solid var(--line-strong); }
+.large-object-list table { width: 100%; border-collapse: collapse; font-size: var(--type-md); font-variant-numeric: tabular-nums; }
+.large-object-list th { text-align: right; padding: 8px 4px; }
+.large-object-list td { text-align: right; padding: 3px 4px; }
+.large-object-list th:first-child, .large-object-list td:first-child { text-align: left; }
+.large-object-list tr[aria-selected="true"] { background: color-mix(in srgb, var(--mineral) 14%, transparent); }
+.large-object-list button { min-height: 28px; padding: 3px 8px; }
+.large-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }

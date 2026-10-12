@@ -17,7 +17,7 @@
 
 .research-interchange-binding {
   overflow-wrap: anywhere;
-  font-size: 11px;
+  font-size: var(--type-sm);
 }
 
 .research-interchange-binding code {
@@ -41,5 +41,5 @@
 .research-interchange-note {
   border-left: 2px solid var(--line-strong);
   padding-left: 8px;
-  font-size: 11px;
+  font-size: var(--type-sm);
 }

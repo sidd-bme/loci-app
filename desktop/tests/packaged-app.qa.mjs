@@ -6,6 +6,7 @@ import path from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { researchSourceButtonSelector, reopenStudyFromEmptyState } from "./public-hardening-qa-helpers.mjs";
 import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { verifyResearchBatchExports } from "./research-batch-qa-helpers.mjs";
 
@@ -33,7 +34,7 @@ const baselineExport = path.join(output, "baseline-export"), correctedExport = p
 const batchExport = path.join(output, "batch-export"), summaryExport = path.join(output, "summary-export");
 const executablePath = development ? path.join(root, "desktop/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron") : path.join(appBundle, "Contents/MacOS/Loci");
 const workerPath = development ? path.join(root, "engine/.venv/bin/python") : path.join(appBundle, "Contents/Resources/loci-engine/loci-engine");
-const asar = development ? path.join(root, "desktop/.vite/build/main.js") : path.join(appBundle, "Contents/Resources/app.asar");
+const asar = development ? path.join(root, "desktop/.vite/build/main.cjs") : path.join(appBundle, "Contents/Resources/app.asar");
 const python = process.env.LOCI_QA_REFERENCE_PYTHON ?? path.join(root, "engine/.venv/bin/python");
 await fs.mkdir(output, { recursive: true });
 await Promise.all([fs.mkdir(userData), fs.mkdir(screenshots), fs.mkdir(formulaFolder),
@@ -145,14 +146,14 @@ async function until(read, accept, label, timeout = 60_000, allowAlert = false) 
   throw new Error(`${label}: timed out: ${JSON.stringify(value)}`);
 }
 async function viewerReady() {
-  await page.waitForFunction(() => Number(document.querySelector('.image-viewport')?.getAttribute('data-cache-bytes')) > 0 && !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
+  await page.waitForFunction(() => document.querySelector('.image-viewport')?.getAttribute('data-prepared') === 'true' && Number(document.querySelector('.image-viewport')?.getAttribute('data-cache-bytes')) > 0 && !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
 }
 async function selectResult(id) {
   const current = await snapshot(), result = current.results.find((item) => item.id === id);
   assert.ok(result, "The requested result is not in this study");
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
-  const sourceButton = page.locator('.research-sources > button').filter({ has: page.getByText(resultSource.name, { exact: true }) });
+  const sourceButton = page.locator(researchSourceButtonSelector).filter({ has: page.getByText(resultSource.name, { exact: true }) });
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
   await page.locator(`[data-result-id="${id}"]`).click();
   await page.locator(`[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
@@ -186,14 +187,29 @@ async function reviewAndExport(result, destination) {
   for (const item of manifest.files) { assert.equal(path.basename(item.name), item.name); assert.equal(await sha(path.join(destination, item.name)), item.sha256); }
   return exported;
 }
+async function correctionInputReady() {
+  await page.locator('.image-viewport[data-prepared="true"][data-result-overlay]').waitFor();
+  await page.getByRole('status').filter({ hasText: 'Loading the selected exact plane…' }).waitFor({ state: 'detached' });
+}
 async function imagePoint(u, v, click = true) {
+  let priorPoints;
+  if (click) {
+    await correctionInputReady();
+    const pointStatus = await page.getByText(/·\s*\d+\s+drawn points$/).textContent();
+    priorPoints = Number(pointStatus?.match(/·\s*(\d+)\s+drawn points$/)?.[1]);
+    assert.ok(Number.isSafeInteger(priorPoints), "The exact correction draft must report its point count");
+  }
   const viewport = page.locator('.image-viewport'), b = await viewport.boundingBox();
   const c = JSON.parse(await viewport.getAttribute('data-camera'));
   assert.ok(b); const point = { x: b.x + b.width / 2 + (u + 0.5 - c.x) * c.scale, y: b.y + b.height / 2 + (v + 0.5 - c.y) * c.scale };
   assert.ok(point.x >= b.x && point.y >= b.y && point.x < b.x + b.width && point.y < b.y + b.height, "Correction point is outside the visible source");
   const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName, point);
   assert.equal(hit, "CANVAS", "Correction point is obscured by UI");
-  if (click) await page.mouse.click(point.x, point.y);
+  if (click) {
+    await page.mouse.click(point.x, point.y);
+    // Observe the accepted draft before sending another point; never replay a rejected click.
+    await page.getByText(new RegExp(`·\\s*${priorPoints + 1}\\s+drawn points$`)).waitFor();
+  }
   return point;
 }
 async function moveNavigationAway() {
@@ -210,6 +226,7 @@ async function correctionReady() {
   await until(() => page.getByLabel("Correction tool", { exact: true }).isEnabled(), Boolean, "exact correction tools");
   await page.locator('.image-viewport').waitFor();
   await viewerReady();
+  await correctionInputReady();
   await moveNavigationAway();
 }
 try {
@@ -303,6 +320,7 @@ ref=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickl
 base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickle=False); assert np.unique(got[got>0]).size==int(sys.argv[3]); assert np.any(base!=got); assert np.all(base[200:,200:]==got[200:,200:]); print(json.dumps({'changes_local_to_declared_correction_margin':True,'changed_pixels':int(np.count_nonzero(base!=got))}))`, referenceLabels, path.join(correctedExport, "labels.npy"), String(expectedCount + 1)])).stdout);
   receipts.corrections.numerical = corrected;
   const saved = await snapshot(); await close(); await launch();
+  await reopenStudyFromEmptyState(page);
   const reopened = await until(snapshot, (s) => s?.results.length === saved.results.length, "exact reviewed reopen");
   assert.deepEqual(reopened.sources, saved.sources); assert.deepEqual(reopened.results, saved.results);
   assert.deepEqual((await record(vertex.id)).provenance, finalRecord.provenance);
@@ -328,7 +346,29 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await page.locator('main[aria-busy="true"]').waitFor({ state: "detached" });
   assert.match(await page.locator('.research-alert[role="alert"]').innerText(), /unsupported|not a supported|could not|cannot/i);
   const wrongImport = await snapshot(); assert.equal(wrongImport.sources.length, 1); assert.equal(wrongImport.results.length, saved.results.length);
-  await shot("05b-wrong-import"); await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  const importAlert = page.locator('.research-alert[role="alert"]');
+  const dismissImport = importAlert.getByRole("button", { name: "Dismiss", exact: true });
+  const alertBounds = await importAlert.boundingBox();
+  const canvasBounds = await page.locator('.research-canvas').boundingBox();
+  assert.ok(alertBounds && canvasBounds, "Import recovery must remain in the visible canvas track");
+  assert.ok(alertBounds.x >= canvasBounds.x && alertBounds.x + alertBounds.width <= canvasBounds.x + canvasBounds.width,
+    "Import recovery must fit between the source panel and inspector");
+  assert.ok(alertBounds.y >= canvasBounds.y, "Import recovery must sit below the actual wrapped header");
+  const dismissHitTarget = await dismissImport.evaluate((button) => {
+    const bounds = button.getBoundingClientRect();
+    const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return hit === button || button.contains(hit);
+  });
+  assert.equal(dismissHitTarget, true, "Dismiss must receive pointer input above the inspector");
+  // Keyboard focus requests help immediately; errors must keep that overlay out of the recovery path.
+  await page.keyboard.press("Tab");
+  await page.getByRole("button", { name: "Open images", exact: true }).focus();
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  assert.equal(await page.getByRole("tooltip").count(), 0, "Context help must pause during error recovery");
+  await shot("05b-wrong-import");
+  await dismissImport.click();
+  await importAlert.waitFor({ state: "detached" });
+  receipts.invalid_import_recovery = { canvas_track: true, dismiss_hit_target: dismissHitTarget, context_help_paused: true };
   picker.sources = [sourceCopy]; await installPickers();
   // Batch continuation is supplied by the reviewed batch-export integration.
   // All pending requests must be durable before the first item executes.

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run the designated local app's CLI. LOCI_APP selects an explicit test candidate.
+set -eu
+loci_repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+loci_application=${LOCI_APP:-"$loci_repository/.loci/builds/current/Loci.app"}
+loci_launcher="$loci_application/Contents/Resources/bin/loci"
+if [ ! -x "$loci_launcher" ]; then
+  printf '%s\n' 'Loci CLI is unavailable in the selected app. Build or install a CLI-enabled Loci app, or use the source command: cd engine && uv run --no-sync loci --help.' >&2
+  exit 1
+fi
+exec "$loci_launcher" "$@"

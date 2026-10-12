@@ -3,6 +3,27 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "labels_import": {
+        "mutates": True,
+        "summary": "Adopt a checked external scalar TIFF label plane on its declared native grid",
+    },
+    "workflow_validate": {"mutates": False, "summary": "Validate a typed linear workflow"},
+    "workflow_save": {"mutates": True, "summary": "Save a source-independent workflow revision"},
+    "workflow_list": {"mutates": False, "summary": "List saved visual workflows"},
+    "workflow_get": {"mutates": False, "summary": "Inspect an exact saved workflow"},
+    "workflow_preflight": {
+        "mutates": False,
+        "summary": "Validate exact workflow/source bindings and resources",
+    },
+    "workflow_preview": {"mutates": False, "summary": "Preview a typed workflow processing prefix"},
+    "workflow_run": {
+        "mutates": True,
+        "summary": "Publish a durable workflow result and run receipt",
+    },
+    "workflow_status": {
+        "mutates": False,
+        "summary": "Inspect exact workflow run review and export state",
+    },
     "puncta_preview": {
         "mutates": False,
         "summary": "Preview declared bright-blob candidates on an explicit physical grid",
@@ -114,6 +135,10 @@ OPERATION_CATALOG = {
             "Compare and save two compatible reviewed runs without treating objects as independent"
         ),
     },
+    "study_correction_effect": {
+        "mutates": True,
+        "summary": "Save exact paired correction effects with equal biological-replicate weighting",
+    },
     "tissue_preview": {
         "mutates": False,
         "summary": "Preview a declared bounded tissue-region mask",
@@ -133,6 +158,10 @@ OPERATION_CATALOG = {
     "inspect": {"mutates": False, "summary": "Inspect registered native geometry and capabilities"},
     "view": {"mutates": False, "summary": "Render selected biological channels/plane or region"},
     "volume_view": {"mutates": False, "summary": "Linked orthogonal and bounded volume display"},
+    "recipe_preflight": {
+        "mutates": False,
+        "summary": "Preflight recipe resource estimation and validation without executing",
+    },
     "validate_recipe": {
         "mutates": False,
         "summary": "Validate an explicit processing/analysis recipe",
@@ -142,7 +171,47 @@ OPERATION_CATALOG = {
         "summary": "Run a bounded preview without adopting a result",
     },
     "run_recipe": {"mutates": True, "summary": "Create an immutable derived image or label result"},
+    "large_components_preflight": {
+        "mutates": False,
+        "summary": "Validate a bounded large scalar analysis",
+    },
+    "large_components_run": {
+        "mutates": True,
+        "summary": "Segment a calibrated plane with global component identity",
+    },
+    "large_result_view": {
+        "mutates": False,
+        "summary": "Inspect a bounded region of a large result",
+    },
+    "large_result_pick": {
+        "mutates": False,
+        "summary": "Read a native label and quantitative object",
+    },
+    "large_result_locate": {
+        "mutates": False,
+        "summary": "Find an actual native pixel of an exact quantitative object",
+    },
+    "large_result_delete": {
+        "mutates": True,
+        "summary": "Remove one complete object in an immutable revision",
+    },
+    "large_result_adopt": {
+        "mutates": True,
+        "summary": "Verify and adopt an uncorrected large-components result bundle",
+    },
+    "large_result_export": {
+        "mutates": False,
+        "summary": "Stream reviewed large result to an absent destination directory",
+    },
     "result": {"mutates": False, "summary": "Inspect exact revision and linked measurements"},
+    "population_locate": {
+        "mutates": False,
+        "summary": "Find the nearest owned pixel of an exact measured object",
+    },
+    "population_query": {
+        "mutates": False,
+        "summary": "Explore a bounded exact object population with descriptive metrics",
+    },
     "result_view": {"mutates": False, "summary": "Render an exact derived image or label revision"},
     "result_label_at": {
         "mutates": False,
@@ -187,7 +256,14 @@ for _remote_name, _remote_summary in {
 
 TASK_OPERATIONS = frozenset(
     {
+        "workflow_run",
+        "workflow_preview",
         "run_recipe",
+        "labels_import",
+        "large_components_run",
+        "large_result_delete",
+        "large_result_adopt",
+        "large_result_export",
         "preview_recipe",
         "histology_run",
         "histology_preview",
@@ -215,6 +291,7 @@ TASK_OPERATIONS = frozenset(
 )
 PREVIEW_OPERATIONS = frozenset(
     {
+        "workflow_preview",
         "tissue_preview",
         "preview_recipe",
         "histology_preview",

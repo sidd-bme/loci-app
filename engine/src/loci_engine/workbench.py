@@ -23,9 +23,10 @@ import skimage
 from PIL import Image
 
 from .models import ENGINE_VERSION
-from .native_image import NativeImageSession, NativeSelection
+from .native_image import MAX_NATIVE_READ_BUDGET_BYTES, NativeImageSession, NativeSelection
 from .quantitative import (
     DEFAULT_WORKING_BYTES,
+    MAX_WORKING_BYTES,
     Geometry,
     apply_marker_gates,
     colocalisation,
@@ -36,6 +37,7 @@ from .quantitative import (
     process_scalar,
     segment_scalar,
     validate_array,
+    validate_processing_steps,
 )
 from .research_operations import OPERATION_CATALOG
 from .research_project import ResearchProject, canonical_json, checked_id, checked_text
@@ -60,6 +62,11 @@ def _study_measurement_records(
     bindings: list[dict[str, Any]] = []
     for result_id in result_ids:
         result = project.result(checked_id(result_id))
+        if result.get("schema") == "loci.research-result/v2":
+            raise ValueError(
+                "Large results support indexed object review and CSV export; "
+                "pooled study comparisons are not yet supported"
+            )
         review = project.review_state(result_id)
         if not review or review["disposition"] == "pending":
             raise ValueError(
@@ -144,9 +151,10 @@ def _png(array: np.ndarray) -> str:
 
 
 def display_scalar(
-    array: np.ndarray, display: dict[str, Any] | None = None
+    array: np.ndarray, display: dict[str, Any] | None = None,
+    *, working_bytes: int = DEFAULT_WORKING_BYTES,
 ) -> tuple[np.ndarray, dict[str, Any]]:
-    array = validate_array(array)
+    array = validate_array(array, working_bytes=working_bytes)
     if array.ndim != 2:
         raise ValueError("Display requires an explicit plane or projection")
     values = display or {}
@@ -186,9 +194,113 @@ def display_scalar(
     }
 
 
+def result_working_bytes(result: dict[str, Any]) -> int:
+    """Return the validated working memory budget for a result.
+
+    Falls back to DEFAULT_WORKING_BYTES for legacy records.
+    """
+    if not isinstance(result, dict):
+        raise ValueError("Result must be a dictionary")
+    provenance = result.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ValueError("Result provenance must be a dictionary")
+
+    inference_budgets: list[tuple[str, int]] = []
+
+    # 1. resource_guard container
+    if "resource_guard" in provenance:
+        guard = provenance["resource_guard"]
+        if not isinstance(guard, dict):
+            raise ValueError("resource_guard must be a dictionary")
+        if "working_memory_limit_bytes" in guard:
+            val = integer(
+                guard["working_memory_limit_bytes"],
+                "working_bytes",
+                1024,
+                MAX_WORKING_BYTES,
+            )
+            inference_budgets.append(("resource_guard", val))
+
+    # 2. recipe container
+    if "recipe" in provenance:
+        recipe = provenance["recipe"]
+        if not isinstance(recipe, dict):
+            raise ValueError("recipe must be a dictionary")
+        if "working_bytes" in recipe:
+            val = integer(
+                recipe["working_bytes"],
+                "working_bytes",
+                1024,
+                MAX_WORKING_BYTES,
+            )
+            inference_budgets.append(("recipe", val))
+
+    # 3. direct working_bytes in provenance (e.g. imported ONNX model)
+    if "working_bytes" in provenance:
+        val = integer(
+            provenance["working_bytes"],
+            "working_bytes",
+            1024,
+            MAX_WORKING_BYTES,
+        )
+        inference_budgets.append(("provenance", val))
+
+    # 4. accepted_request container
+    if "accepted_request" in provenance:
+        accepted = provenance["accepted_request"]
+        if not isinstance(accepted, dict):
+            raise ValueError("accepted_request must be a dictionary")
+        if "working_bytes" in accepted:
+            val = integer(
+                accepted["working_bytes"],
+                "working_bytes",
+                1024,
+                MAX_WORKING_BYTES,
+            )
+            inference_budgets.append(("accepted_request", val))
+
+    # 5. correction container (distinct operation budget, must be valid if present)
+    if "correction" in provenance:
+        correction = provenance["correction"]
+        if not isinstance(correction, dict):
+            raise ValueError("correction must be a dictionary")
+        if "working_memory_limit_bytes" in correction:
+            integer(
+                correction["working_memory_limit_bytes"],
+                "working_bytes",
+                1024,
+                MAX_WORKING_BYTES,
+            )
+        if "working_bytes" in correction:
+            integer(
+                correction["working_bytes"],
+                "working_bytes",
+                1024,
+                MAX_WORKING_BYTES,
+            )
+
+    if inference_budgets:
+        first_source, first_val = inference_budgets[0]
+        for src, val in inference_budgets[1:]:
+            if val != first_val:
+                raise ValueError(
+                    "Conflicting working memory budget declarations: "
+                    f"{first_source} has {first_val} but {src} has {val}"
+                )
+        return first_val
+
+    return DEFAULT_WORKING_BYTES
+
+
 def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
     provenance = result["provenance"]
+    imported = provenance.get("external_labels")
+    label_import = {key: imported[key] for key in (
+        "file_name", "producer", "format", "profile", "source_sha256",
+        "file_sha256", "original_dtype", "shape",
+    )} if imported else None
     return {
+        **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
         "kind": result["kind"],
@@ -199,7 +311,9 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         "arrays": result["arrays"],
         "geometry": provenance.get("geometry"),
         "selection": provenance.get("selection"),
-        "object_count": len(provenance.get("measurements", [])),
+        "object_count": result.get("object_count", len(provenance.get("measurements", []))),
+        "schema": result["schema"],
+        "working_bytes": result_working_bytes(result),
         "review": review,
     }
 
@@ -301,7 +415,7 @@ class Workbench:
         while len(self.sessions) > 4:
             self.sessions.popitem(last=False)[1].close()
 
-    def _session(self, source_id: str) -> NativeImageSession:
+    def _session(self, source_id: str, *, check=None) -> NativeImageSession:
         source = self.project.source(source_id)
         if source.get("locator_state") == "relink-required":
             raise ValueError(
@@ -333,6 +447,7 @@ class Workbench:
                     source["private_path"],
                     series=source["metadata"]["selected_series"],
                     expected_sha256=source["sha256"],
+                    **({"check": check} if check is not None else {}),
                 )
         self._remember(source_id, session)
         return session
@@ -428,10 +543,13 @@ class Workbench:
         volume = "z_stop" in selection
         depth = selection.get("z_stop", selection["z"] + 1) - selection["z"]
         voxels = depth * selection["height"] * selection["width"]
-        integer(working_bytes, "working_bytes", 1024, DEFAULT_WORKING_BYTES)
-        if voxels * 96 > working_bytes:
+        integer(working_bytes, "working_bytes", 1024, MAX_WORKING_BYTES)
+        required = voxels * 96
+        if required > working_bytes:
             raise ValueError(
-                "Selected analysis region exceeds its working-memory budget; reduce the crop"
+                f"Selected analysis region requires {required} bytes, exceeding its "
+                f"working-memory budget of {working_bytes} bytes; "
+                "reduce the crop or select a larger allowance"
             )
         if source.get("source_kind") == "medical":
             from .medical_image import read_medical
@@ -474,7 +592,7 @@ class Workbench:
                         c=selection["c"],
                         level=selection["level"],
                         series=session.metadata.selected_series,
-                        budget_bytes=min(64 * 1024**2, working_bytes),
+                        budget_bytes=min(MAX_NATIVE_READ_BUDGET_BYTES, working_bytes),
                     )
                 )
                 planes.append(region.pixels)
@@ -484,7 +602,10 @@ class Workbench:
                 session.verify_strict()
         return array, geometry, selection
 
-    def view(self, request: dict[str, Any]) -> dict[str, Any]:
+    def view(
+        self, request: dict[str, Any], *, working_bytes: int = DEFAULT_WORKING_BYTES
+    ) -> dict[str, Any]:
+        integer(working_bytes, "working_bytes", 1024, MAX_WORKING_BYTES)
         exact_keys(request, {"source_id", "selection", "channels", "projection"}, "view")
         source_id = checked_id(request.get("source_id"))
         selection = self.selection(source_id, request.get("selection"))
@@ -519,7 +640,9 @@ class Workbench:
         for display in channels:
             exact_keys(display, {"channel", "low", "high", "gamma", "visible", "color"}, "display")
             selected = {**selection, "c": display.get("channel", selection["c"])}
-            array, geometry, _ = self.load_scalar(source_id, selected, strict=False, allow_rgb=rgb)
+            array, geometry, _ = self.load_scalar(
+                source_id, selected, strict=False, allow_rgb=rgb, working_bytes=working_bytes
+            )
             if projection is not None:
                 array = (
                     np.max(array, axis=0)
@@ -537,12 +660,17 @@ class Workbench:
                     "icc": "unmanaged",
                 }
                 if source.get("source_kind") == "whole_slide":
-                    region = self._session(source_id).raw_region(NativeSelection(**selected))
+                    region = self._session(source_id).raw_region(
+                        NativeSelection(
+                            **selected,
+                            budget_bytes=min(MAX_NATIVE_READ_BUDGET_BYTES, working_bytes),
+                        )
+                    )
                     composite = region.display_rgb.astype(np.float64) / 255
                     record["icc"] = asdict(region.display_color)
                     record["level0_extent_xyxy"] = region.level0_extent_xyxy
             else:
-                colored, record = display_scalar(array, display)
+                colored, record = display_scalar(array, display, working_bytes=working_bytes)
                 composite += colored
             display_records.append({"channel": selected["c"], **record})
             statistics.append(
@@ -753,9 +881,10 @@ class Workbench:
         )
         return {"result": result_summary(result), "measurements": rows[:1000]}
 
-    def validate_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_recipe_request(self, request: dict[str, Any]) -> dict[str, Any]:
         exact_keys(request, {"source_id", "selection", "recipe"}, "recipe request")
         source_id = checked_id(request.get("source_id"))
+        source = self.project.source(source_id)
         selected = self.selection(source_id, request.get("selection"))
         recipe = request.get("recipe", {})
         exact_keys(
@@ -776,7 +905,6 @@ class Workbench:
             raise ValueError("Choose a supported explicit input transform")
         rgb_intensity = input_transform == "rgb_intensity"
         if rgb_intensity:
-            source = self.project.source(source_id)
             if source.get("source_kind") not in {"native", "whole_slide"} or self._session(
                 source_id
             ).metadata.dimensions.s not in {3, 4}:
@@ -790,8 +918,21 @@ class Workbench:
         dimensions = 3 if "z_stop" in selected else 2
         probe = np.ones((3,) * dimensions, dtype=np.float64)
         probe_geometry = Geometry.diagonal((1.0,) * dimensions)
-        # Validate operation fields with a tiny reference array. Reference-image
-        # operations require source binding and are handled separately below.
+        # Structure is source-independent; physical scales and resource guards
+        # resolve against the exact selected grid without decoding source pixels.
+        if source.get("source_kind") == "medical":
+            processing_geometry = geometry_from_dict(source["metadata"]["geometry"])
+            if dimensions == 2:
+                processing_geometry = Geometry(
+                    "YX",
+                    processing_geometry.affine,
+                    processing_geometry.unit,
+                    processing_geometry.frame,
+                )
+        else:
+            processing_geometry = self._native_geometry(
+                self._session(source_id), selected, dimensions == 3
+            )
         references = recipe.get("references", {})
         exact_keys(references, {"flatfield", "darkfield"}, "reference images")
         if rgb_intensity and references:
@@ -814,13 +955,7 @@ class Workbench:
                 "source_id": ref_id,
                 "selection": self.selection(ref_id, reference.get("selection")),
             }
-        process_scalar(
-            probe,
-            probe_geometry,
-            steps,
-            flatfield=probe if has_flatfield else None,
-            darkfield=np.zeros_like(probe) if "darkfield" in references else None,
-        )
+        validate_processing_steps(steps, geometry=processing_geometry)
         if segmentation is not None:
             segment_scalar(probe, probe_geometry, segmentation)
         channel_list = recipe.get("measurement_channels", [] if rgb_intensity else [selected["c"]])
@@ -844,7 +979,7 @@ class Workbench:
             recipe.get("working_bytes", DEFAULT_WORKING_BYTES),
             "working_bytes",
             1024,
-            DEFAULT_WORKING_BYTES,
+            MAX_WORKING_BYTES,
         )
         voxels = (
             selected["width"]
@@ -854,10 +989,6 @@ class Workbench:
         estimated = voxels * (
             96 + 8 * len(channel_list) + 16 * len(references) + (32 if rgb_intensity else 0)
         )
-        if estimated > working_bytes:
-            raise ValueError(
-                "Recipe working-memory estimate exceeds its budget; reduce the selected crop"
-            )
         normalized = {
             "steps": steps,
             "segmentation": segmentation,
@@ -871,12 +1002,49 @@ class Workbench:
             normalized["references"] = normalized_references
         return {
             "source_id": source_id,
+            "source": source,
             "selection": selected,
             "recipe": normalized,
             "estimated_working_bytes": estimated,
+            "working_bytes": working_bytes,
             "recipe_sha256": hashlib.sha256(canonical_json(normalized).encode()).hexdigest(),
             "resolved_device": "cpu",
             "scientific_validation": "unvalidated-research-method",
+        }
+
+    def validate_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_recipe_request(request)
+        if normalized["estimated_working_bytes"] > normalized["working_bytes"]:
+            raise ValueError(
+                "Recipe working-memory estimate exceeds its budget; "
+                "choose a larger explicit allowance or reduce the selected crop"
+            )
+        return {
+            "source_id": normalized["source_id"],
+            "selection": normalized["selection"],
+            "recipe": normalized["recipe"],
+            "estimated_working_bytes": normalized["estimated_working_bytes"],
+            "recipe_sha256": normalized["recipe_sha256"],
+            "resolved_device": normalized["resolved_device"],
+            "scientific_validation": normalized["scientific_validation"],
+        }
+
+    def recipe_preflight(self, request: dict[str, Any]) -> dict[str, Any]:
+        normalized = self._normalize_recipe_request(request)
+        within_budget = normalized["estimated_working_bytes"] <= normalized["working_bytes"]
+        return {
+            "source_id": normalized["source_id"],
+            "source_sha256": normalized["source"]["sha256"],
+            "selection": normalized["selection"],
+            "recipe": normalized["recipe"],
+            "recipe_sha256": normalized["recipe_sha256"],
+            "estimated_working_bytes": normalized["estimated_working_bytes"],
+            "working_bytes": normalized["working_bytes"],
+            "maximum_working_bytes": MAX_WORKING_BYTES,
+            "within_budget": within_budget,
+            "estimate_basis": "loci.recipe-working-bytes/v1",
+            "resolved_device": normalized["resolved_device"],
+            "scientific_validation": normalized["scientific_validation"],
         }
 
     def run_recipe(
@@ -886,6 +1054,7 @@ class Workbench:
         preview: bool = False,
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
+        workflow_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         validated = self.validate_recipe(request)
         source_id, recipe, selection = (
@@ -998,9 +1167,17 @@ class Workbench:
             provenance["references"] = reference_records
         if job_id is not None:
             provenance["job_id"] = job_id
+        workflow_population = None
+        if workflow_context is not None:
+            from .research_workflow import _population, validate_result_population
+
+            provenance["workflow"] = workflow_context
+            validate_result_population(provenance)
+            if preview:
+                workflow_population = _population(rows, workflow_context["definition"], {})
         if preview:
             plane = processed[processed.shape[0] // 2] if processed.ndim == 3 else processed
-            rgb, display = display_scalar(plane)
+            rgb, display = display_scalar(plane, working_bytes=recipe["working_bytes"])
             return {
                 "preview": True,
                 "image": _png(np.round(rgb * 255).astype(np.uint8)),
@@ -1009,6 +1186,11 @@ class Workbench:
                 "measurements": rows[:1000],
                 "provenance": {k: v for k, v in provenance.items() if k != "measurements"},
                 "adopted": False,
+                **(
+                    {"workflow_population": workflow_population}
+                    if workflow_context is not None
+                    else {}
+                ),
             }
         result = self.project.save_result(
             source_id=source_id,
@@ -1023,6 +1205,8 @@ class Workbench:
     def result_view(self, request: dict[str, Any]) -> dict[str, Any]:
         exact_keys(request, {"result_id", "axis", "index", "display", "labels"}, "result view")
         result = self.project.result(request["result_id"])
+        if result.get("schema") == "loci.research-result/v2":
+            raise ValueError("Use the bounded large-result viewport for this result")
         array = self.project.load_array(result["arrays"]["image"])
         geometry = geometry_from_dict(result["provenance"]["geometry"])
         axis = request.get("axis", "z")
@@ -1041,7 +1225,13 @@ class Workbench:
                 array.shape[axis_number] - 1,
             )
             plane = np.take(array, index, axis=axis_number)
-        rgb, display = display_scalar(plane, request.get("display"))
+        # An adopted recipe or segmentation retains the allowance that made
+        # this exact result possible. Reusing it for its full-resolution display
+        # avoids a lower, hidden default making a successfully published result unreviewable.
+        working_bytes = result_working_bytes(result)
+        rgb, display = display_scalar(
+            plane, request.get("display"), working_bytes=working_bytes,
+        )
         if request.get("labels", True) and "labels" in result["arrays"]:
             labels = self.project.load_array(result["arrays"]["labels"])
             label_plane = labels if labels.ndim == 2 else np.take(labels, index, axis=axis_number)
@@ -1075,6 +1265,10 @@ class Workbench:
         if "labels" not in result.get("arrays", {}):
             raise ValueError("Result does not contain a label array")
 
+        if result.get("schema") == "loci.research-result/v2":
+            from .research_large import pick
+
+            return pick(self, request)
         file, digest, size, labels = self.project._open_array_artifact(result["arrays"]["labels"])
         axis = request.get("axis", "z")
         if axis not in {"z", "y", "x"}:
@@ -1134,6 +1328,16 @@ class Workbench:
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if operation == "labels_import":
+            from .research_labels_import import import_labels
+
+            return import_labels(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation.startswith("large_"):
+            from .research_large import execute_large
+
+            return execute_large(
+                self, operation, request, job_id=job_id, publication_guard=publication_guard
+            )
         # Desktop-only display services are deliberately outside the public
         # agent operation catalog and its separately granted disclosure surface.
         if operation == "verify_source":
@@ -1153,6 +1357,7 @@ class Workbench:
                         "channel_indices",
                         "target_long_axis",
                         "focus_region_xyzxyz",
+                        "max_decoded_bytes",
                     },
                     operation,
                 )
@@ -1160,7 +1365,7 @@ class Workbench:
                 shared = {
                     "source_id": source_id,
                     "target_long_axis": request.get("target_long_axis", 128),
-                    "max_decoded_bytes": 128 * 1024**2,
+                    "max_decoded_bytes": request.get("max_decoded_bytes", 128 * 1024**2),
                     "focus_region_xyzxyz": request.get("focus_region_xyzxyz"),
                 }
                 if source.get("source_kind") == "medical":
@@ -1203,6 +1408,12 @@ class Workbench:
             return execute_annotations(self, operation, request)
         if operation not in OPERATION_CATALOG or not isinstance(request, dict):
             raise ValueError("Unknown or invalid workbench operation")
+        if operation.startswith("workflow_"):
+            from .research_workflow import execute_workflow
+
+            return execute_workflow(
+                self, operation, request, job_id=job_id, publication_guard=publication_guard
+            )
         if operation == "roi_import":
             from .research_annotation_import import import_annotations
 
@@ -1300,6 +1511,8 @@ class Workbench:
             return self.view(request)
         if operation == "volume_view":
             return self.volume_view(request)
+        if operation == "recipe_preflight":
+            return self.recipe_preflight(request)
         if operation == "validate_recipe":
             return self.validate_recipe(request)
         if operation in {"preview_recipe", "run_recipe"}:
@@ -1324,6 +1537,10 @@ class Workbench:
                 self.project, request.get("result_ids"), "study summary"
             )
             return summarize_measurements(records, value=value)
+        if operation == "study_correction_effect":
+            from .research_correction_effect import execute_effect
+
+            return execute_effect(self, request, publication_guard)
         if operation == "study_compare":
             from .study_analysis import compare_runs, summarize_measurements
 
@@ -1415,16 +1632,31 @@ class Workbench:
                     "revision": document["revision"],
                 },
             }
+        if operation == "population_locate":
+            from .research_population import population_locate
+
+            return population_locate(self.project, request)
+        if operation == "population_query":
+            from .research_population import population_query
+
+            return population_query(self.project, request)
         if operation == "result":
             exact_keys(request, {"result_id", "offset", "limit"}, "result")
             result = self.project.result(request["result_id"])
             offset = integer(request.get("offset", 0), "table offset", 0, 1_000_000)
             limit = integer(request.get("limit", 200), "table limit", 1, 1000)
-            rows = result["provenance"].get("measurements", [])
+            if result.get("schema") == "loci.research-result/v2":
+                from .research_tiled_store import object_rows
+
+                rows = object_rows(self.project, result["object_table"], offset=offset, limit=limit)
+                total = result["object_count"]
+            else:
+                all_rows = result["provenance"].get("measurements", [])
+                rows, total = all_rows[offset:offset + limit], len(all_rows)
             return {
                 "result": result_summary(result, self.project.review_state(result["id"])),
-                "measurements": rows[offset : offset + limit],
-                "total_rows": len(rows),
+                "measurements": rows,
+                "total_rows": total,
                 "provenance": {
                     k: v for k, v in result["provenance"].items() if k != "measurements"
                 },

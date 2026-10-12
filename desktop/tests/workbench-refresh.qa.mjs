@@ -63,7 +63,7 @@ const workerPath = packaged
   : path.join(projectRoot, "engine", ".venv", "bin", "python");
 const mainArtifact = packaged
   ? path.join(packagedApp, "Contents", "Resources", "app.asar")
-  : path.join(desktopRoot, ".vite", "build", "main.js");
+  : path.join(desktopRoot, ".vite", "build", "main.cjs");
 const independentPython = path.join(projectRoot, "engine", ".venv", "bin", "python");
 const fixturePaths = ["alpha", "bravo", "charlie"].map((name) =>
   path.join(fixtureRoot, `order-${name}.ome.tiff`),
@@ -700,8 +700,15 @@ try {
   await page.getByRole("button", { name: "Save study", exact: true }).click();
   await waitForFile(path.join(studyPath, "study.sqlite3"), "Save as study");
   await page.locator("main.research-workbench").waitFor({ state: "visible", timeout: 120_000 });
+  // Publishing the clone precedes snapshot/session persistence and renderer
+  // adoption. Visibility alone is also true during that deliberate lock.
+  await page.waitForFunction(() => {
+    const workspace = document.querySelector("main.research-workbench");
+    return workspace && !workspace.hasAttribute("inert") && !workspace.hasAttribute("aria-busy");
+  }, null, { timeout: 120_000 });
   assert.equal(await page.locator("main.research-workbench").getAttribute("inert"), null,
     "The workspace remained locked after Save as study.");
+  assert.equal(await page.locator("main.research-workbench").getAttribute("aria-busy"), null);
   await noUiError("Save as study");
   await capture("06-saved-as-study");
   await closeApp();
@@ -718,6 +725,25 @@ try {
     assert.equal(source.sha256, fixture?.sha256, `${source.name} lost its source binding on reopen.`);
   }
   const reopenedPalettes = await waitForPalette(expectedOrder, ["#00ffff", "#ffff00"]);
+  const reopenedActiveId = await page.locator('.research-source-item[aria-current="true"]').getAttribute("data-source-id");
+  assert.ok(reopenedActiveId, "Reopened study has no active source.");
+  await waitForActiveSource(reopenedActiveId);
+  // Snapshot persistence can finish before decoding. Require actual source
+  // pixels as well, so a blank canvas cannot become a successful reopen capture.
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('canvas[aria-label="Source image and bound annotations"]');
+    const context = canvas?.getContext("2d");
+    if (!context || !canvas.width || !canvas.height) return false;
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let first = null;
+    for (let i = 0; i < pixels.length; i += 4 * 31) {
+      if (!pixels[i + 3]) continue;
+      const color = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
+      if (first === null) first = color;
+      else if (color !== first) return true;
+    }
+    return false;
+  }, undefined, { timeout: 30_000 });
   await capture("07-explicit-reopen");
   journey.order.reopened = reopenedOrder;
   journey.batch_colors.reopened = reopenedPalettes;

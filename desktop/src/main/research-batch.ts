@@ -14,6 +14,7 @@ const OPERATIONS = new Set<ResearchBatchTask["operation"]>([
   "run_recipe",
   "classical_run",
   "cellpose_run",
+  "workflow_run",
 ]);
 const RETRYABLE_STATES = new Set<ResearchJobState>([
   "failed",
@@ -111,7 +112,7 @@ export function validateResearchBatchTasks(
     exactKeys(task, ["operation", "source", "request"], `Batch task ${index + 1}`);
     if (typeof task.operation !== "string" ||
         !OPERATIONS.has(task.operation as ResearchBatchTask["operation"])) {
-      throw new Error("A durable study batch supports generic recipes, Loci Adaptive Watershed, or Cellpose runs.");
+      throw new Error("A durable study batch supports saved workflows, generic recipes, Loci Adaptive Watershed, or Cellpose runs.");
     }
     const source = record(task.source, `Batch task ${index + 1} source binding`);
     exactKeys(source, ["id", "sha256"], `Batch task ${index + 1} source binding`);

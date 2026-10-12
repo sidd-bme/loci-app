@@ -17,6 +17,7 @@ import sqlite3
 import stat
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -1231,11 +1232,14 @@ def _validate_attached_results(
     project: ResearchProject,
     receipt: dict[str, Any],
     contract: _RequestContract,
+    publication_guard: Callable[[], None] | None = None,
 ) -> None:
+    guard = publication_guard or (lambda: None)
     tasks = receipt["task_results"]
     if not isinstance(tasks, list) or len(tasks) != len(contract.tasks):
         raise RemoteResultsError("Stored attachment receipt has an invalid task set")
     for task, item in zip(contract.tasks, tasks, strict=True):
+        guard()
         item = _exact(item, _RECEIPT_TASK_KEYS, "Stored attachment task receipt")
         if item["remote_task_id"] != task.task_id:
             raise RemoteResultsError("Stored attachment receipt task identity is invalid")
@@ -1255,8 +1259,10 @@ def _validate_attached_results(
             ):
                 raise RemoteResultsError("Stored attached result provenance is mismatched")
             for artifact in result["arrays"].values():
+                guard()
                 project.load_array(artifact)
-        except RemoteResultsError:
+                guard()
+        except (RemoteResultsError, PermissionError):
             raise
         except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise RemoteResultsError("Stored attached result or array failed verification") from exc
@@ -1271,6 +1277,8 @@ def attach_remote_results(
     outer_manifest: VerifiedOutputManifest,
     local_source_mapping: dict[str, str],
     local_job_id: str | None = None,
+    publication_guard: Callable[[], None] | None = None,
+    max_decoded_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Verify and atomically attach one retrieved ``results.zip`` publication.
 
@@ -1278,6 +1286,8 @@ def attach_remote_results(
     revision hashes bind the imported arrays to explicitly mapped local sources.
     """
 
+    guard = publication_guard or (lambda: None)
+    guard()
     if not isinstance(project, ResearchProject):
         raise RemoteResultsError("project must be an open ResearchProject")
     entry = _validated_outer(outer_manifest, expected_archive_sha256)
@@ -1295,7 +1305,8 @@ def attach_remote_results(
     existing = _existing_receipt(project, contract)
     if existing is not None:
         if _same_attachment(existing, contract, digest, local_source_mapping, local_job_id):
-            _validate_attached_results(project, existing, contract)
+            _validate_attached_results(project, existing, contract, publication_guard)
+            guard()
             return existing
         raise RemoteResultsError("This remote request key was already attached with other inputs")
 
@@ -1310,6 +1321,13 @@ def attach_remote_results(
                 if zipped.comment:
                     raise RemoteResultsError("Remote archive comment is not canonical")
                 infos = zipped.infolist()
+                if (
+                    max_decoded_bytes is not None
+                    and sum(info.file_size for info in infos) > max_decoded_bytes
+                ):
+                    raise RemoteResultsError(
+                        "Remote decoded archive exceeds the agent memory envelope"
+                    )
                 if not 3 <= len(infos) <= MAX_ARCHIVE_MEMBERS:
                     raise RemoteResultsError("Remote archive member count is invalid")
                 for info in infos:
@@ -1333,6 +1351,7 @@ def attach_remote_results(
                     raise RemoteResultsError("Remote ZIP members disagree with archive.json")
                 member_by_path = {member.path: member for member in members}
                 for member in members:
+                    guard()
                     info = by_name[member.path]
                     if info.file_size != member.size_bytes:
                         raise RemoteResultsError("Remote member size disagrees with archive.json")
@@ -1340,6 +1359,7 @@ def attach_remote_results(
                     if hashlib.sha256(encoded).hexdigest() != member.sha256:
                         raise RemoteResultsError("Remote member failed its archive.json hash")
                 for task_id, result_path in task_paths.items():
+                    guard()
                     task = task_by_id[task_id]
                     record_member = member_by_path.get(result_path)
                     if record_member is None or record_member.media_type != "application/json":
@@ -1359,6 +1379,7 @@ def attach_remote_results(
                     )
                     task_arrays: dict[str, np.ndarray] = {}
                     for name, descriptor in checked.arrays.items():
+                        guard()
                         member = member_by_path.get(descriptor["path"])
                         if (
                             member is None
@@ -1381,6 +1402,7 @@ def attach_remote_results(
                     )
                     task_artifacts: dict[str, dict[str, Any]] = {}
                     for name, array in task_arrays.items():
+                        guard()
                         try:
                             task_artifacts[name] = project.store_array(array)
                         except (OSError, RuntimeError, ValueError) as exc:
@@ -1395,6 +1417,8 @@ def attach_remote_results(
                 }
                 if set(member_by_path) != expected_paths:
                     raise RemoteResultsError("Remote archive contains unexpected published members")
+        except PermissionError:
+            raise
         except (KeyError, OSError, zipfile.BadZipFile) as exc:
             if isinstance(exc, RemoteResultsError):
                 raise
@@ -1411,6 +1435,7 @@ def attach_remote_results(
         if current["sha256"] != source_by_id[remote_id].sha256:
             raise RemoteResultsError("A mapped local source changed before publication")
 
+    guard()
     now = timestamp()
     result_records: list[dict[str, Any]] = []
     task_receipts: list[dict[str, Any]] = []
@@ -1504,6 +1529,7 @@ def attach_remote_results(
                     )
                     if artifact_digest != artifact["sha256"] or artifact_size != artifact["bytes"]:
                         raise RemoteResultsError("A staged local array changed at publication")
+            guard()
             prior = connection.execute(
                 "SELECT value FROM metadata WHERE key=?",
                 ("remote-attachment:" + contract.request_key,),
@@ -1517,6 +1543,7 @@ def attach_remote_results(
                         "This remote request was concurrently attached; retry to verify it"
                     )
                 raise RemoteResultsError("This remote request was concurrently attached")
+            guard()
             if local_job_id is not None:
                 row = connection.execute(
                     "SELECT record FROM jobs WHERE id=?", (checked_id(local_job_id),)
@@ -1544,7 +1571,8 @@ def attach_remote_results(
                 "INSERT INTO metadata VALUES(?,?)",
                 ("remote-attachment:" + contract.request_key, canonical_json(receipt)),
             )
-    except RemoteResultsError:
+            guard()
+    except (RemoteResultsError, PermissionError):
         raise
     except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
         raise RemoteResultsError("Remote results could not be atomically published") from exc

@@ -114,7 +114,7 @@ describe("ResearchQuantificationPanel", () => {
     });
     const { onPreview } = renderPanel(execute);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("puncta"));
+    fireEvent.click(screen.getByText("Puncta"));
     fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "negative control reviewed" } });
     fireEvent.click(screen.getByText("Preview puncta candidates"));
     fireEvent.change(screen.getByLabelText("Raw intensity threshold"), { target: { value: "7" } });
@@ -129,7 +129,7 @@ describe("ResearchQuantificationPanel", () => {
     );
     renderPanel(execute);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("puncta"));
+    fireEvent.click(screen.getByText("Puncta"));
     fireEvent.click(screen.getByText("Preview puncta candidates"));
     expect(
       await screen.findByText("Declare the puncta control and assumptions."),
@@ -146,7 +146,7 @@ describe("ResearchQuantificationPanel", () => {
     });
     const { onPublished } = renderPanel(execute);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("puncta"));
+    fireEvent.click(screen.getByText("Puncta"));
     fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "bead negative control" } });
     fireEvent.click(screen.getByText("Preview puncta candidates"));
     expect(await screen.findByText(/2 initial peaks before correction/)).toBeVisible();
@@ -168,7 +168,7 @@ describe("ResearchQuantificationPanel", () => {
     });
     const { onPublished } = renderPanel(execute, custom);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("association"));
+    fireEvent.click(screen.getByText("Association"));
     fireEvent.change(screen.getByLabelText("Nuclei result"), { target: { value: results[0].id } });
     await waitFor(() => expect(screen.getByLabelText("Cells result")).toHaveValue(results[1].id));
     expect(screen.getByLabelText("Cells result")).not.toContainHTML(incompatible.id);
@@ -209,7 +209,7 @@ describe("ResearchQuantificationPanel", () => {
     );
     renderPanel(execute, custom);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("association"));
+    fireEvent.click(screen.getByText("Association"));
     fireEvent.change(screen.getByLabelText("Nuclei result"), {
       target: { value: results[0].id },
     });
@@ -232,7 +232,7 @@ describe("ResearchQuantificationPanel", () => {
     });
     const { onPublished } = renderPanel(execute);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("colocalisation"));
+    fireEvent.click(screen.getByText("Colocalisation"));
     fireEvent.change(screen.getByLabelText("First colocalisation threshold"), { target: { value: "12" } });
     fireEvent.change(screen.getByLabelText("Second colocalisation threshold"), { target: { value: "34" } });
     fireEvent.change(screen.getByLabelText("Colocalisation controls and assumptions"), { target: { value: "single-stain and bleed-through controls reviewed" } });
@@ -257,7 +257,7 @@ describe("ResearchQuantificationPanel", () => {
     );
     renderPanel(execute);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("colocalisation"));
+    fireEvent.click(screen.getByText("Colocalisation"));
     fireEvent.change(screen.getByLabelText("Second colocalisation channel"), {
       target: { value: "0" },
     });

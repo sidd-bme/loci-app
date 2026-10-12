@@ -124,7 +124,7 @@ describe("ResearchPortabilityPanel", () => {
     });
     const onSnapshot = vi.fn();
     panel(api({ relinkSource }), onSnapshot);
-    fireEvent.click(screen.getByText("Relink exact series"));
+    fireEvent.click(screen.getByText("Relink series"));
     await waitFor(() =>
       expect(relinkSource).toHaveBeenCalledWith(missing.id, "dicom"),
     );

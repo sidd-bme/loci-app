@@ -3,7 +3,12 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
-import type { ResearchDesktopApi, ResearchSnapshot } from "../shared/research-contracts";
+import type { ResearchDesktopApi, ResearchSnapshot, ResearchLabelsImportBinding, ResearchLabelsImportPreview } from "../shared/research-contracts";
+
+vi.mock("./ResearchPopulationExplorer", () => ({
+  ResearchPopulationExplorer: ({ selectedLabel }: { selectedLabel: number | null }) =>
+    <output aria-label="Population selected label">{selectedLabel ?? "none"}</output>,
+}));
 
 let canvasContext: Record<string, ReturnType<typeof vi.fn>>;
 
@@ -154,6 +159,8 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
             image: "data:image/png;base64,viewertile#viewer-512x512",
             source_sha256: sampleSource.sha256,
             source_extent: [512, 512],
+            selection: args.selection ?? { t: args.t ?? 0, z: args.z ?? 0, c: args.c ?? 0, z_stop: args.z_stop ?? null },
+            projection: args.projection ?? null,
             width: 512,
             height: 512,
           };
@@ -177,7 +184,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
           };
         }
         if (op === "result_label_at") {
-          if (labelAtImpl) return labelAtImpl(args);
+          if (labelAtImpl) return { result_id: sampleResult.id, revision_hash: sampleResult.revision_hash, ...await labelAtImpl(args) };
           return {
             result_id: sampleResult.id,
             revision_hash: sampleResult.revision_hash,
@@ -192,6 +199,57 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
       }),
     } as unknown as ResearchDesktopApi;
   }
+
+  it("retains a checked label preview after reselecting Segment & measure on the active Analyze tool", async () => {
+    const api = buildApi();
+    api.labelsImportPreview = vi.fn(async (binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview> => ({ ...binding,
+      grant_id: "a".repeat(32), geometry: sampleResult.geometry, file_name: "same-tool.tif", file_sha256: "b".repeat(64),
+      file_size_bytes: 1000, original_dtype: "uint32", shape: [512, 512], axes: "YX", object_count: 3,
+      labels_sha256: "c".repeat(64), format: "TIFF", profile: "scalar-native-yx/v1", estimated_working_bytes: 1000000,
+      measurement_channel: { index: binding.selection.c, name: "Raw channel 1", basis: "raw-source-channel-values" }, calibration_handling: {},
+      image: "data:image/png;base64,same-tool-preview", preview_width: 512, preview_height: 512 }));
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze" }));
+    await screen.findByRole("button", { name: "Import labels" });
+    // Match the packaged journey's complete group + current-tool reselection.
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Analyze tool" }));
+    fireEvent.click(screen.getByRole("option", { name: "Segment & measure" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import labels" }));
+    expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toHaveAttribute("src", "data:image/png;base64,same-tool-preview");
+    expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
+    expect(screen.getByText("same-tool.tif")).toBeVisible();
+    expect(api.labelsImportPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["leaving the import pane", "choosing another result"])("uses durable selection CAS and ignores a late import selection response after %s", async (navigation) => {
+    const api = buildApi();
+    const originalExecute = api.execute;
+    const imported = { ...sampleResult, id: "e".repeat(32), revision_hash: "f".repeat(64), kind: "external-labels", review: null };
+    let finishSelection!: (value: unknown) => void;
+    api.labelsImportPreview = vi.fn(async (binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview> => ({ ...binding, grant_id: "a".repeat(32), geometry: imported.geometry,
+      file_name: "sparse.tif", file_sha256: "b".repeat(64), file_size_bytes: 1000, original_dtype: "uint32", shape: [512, 512], axes: "YX",
+      object_count: 3, labels_sha256: "c".repeat(64), format: "TIFF", profile: "scalar-native-yx/v1", estimated_working_bytes: 1000000,
+      measurement_channel: { index: binding.selection.c, name: "Raw channel 1", basis: "raw-source-channel-values" }, calibration_handling: {},
+      image: "data:image/png;base64,checked", preview_width: 512, preview_height: 512 }));
+    api.execute = vi.fn((operation, request) => {
+      if (operation === "labels_import") return Promise.resolve({ result: imported, measurements: sampleRows });
+      if (operation === "select_result") return new Promise((resolve) => { finishSelection = resolve; });
+      return originalExecute(operation, request);
+    });
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import labels" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import on this plane" }));
+    await waitFor(() => expect(api.execute).toHaveBeenCalledWith("select_result", { result_id: imported.id, revision_hash: imported.revision_hash, expected_revision: 0 }));
+    if (navigation === "leaving the import pane") fireEvent.click(screen.getByRole("button", { name: "View" }));
+    else fireEvent.click(screen.getByRole("button", { name: /cell-segmentation, 3 objects/ }));
+    finishSelection({ result: imported, selection: { id: sampleSource.id, revision: 1, data: { result_id: imported.id, revision_hash: imported.revision_hash } } });
+    await waitFor(() => expect(screen.queryByText("Working: Importing labels")).not.toBeInTheDocument());
+    expect((api.execute as ReturnType<typeof vi.fn>).mock.calls.some(([operation, request]) => operation === "result" && request.result_id === imported.id)).toBe(false);
+    expect(screen.queryByText("external-labels")).not.toBeInTheDocument();
+    if (navigation === "choosing another result") expect(screen.getByRole("button", { name: /cell-segmentation, 3 objects/ })).toHaveAttribute("aria-pressed", "true");
+  });
 
   it("selects exact sparse label ID via result_label_at and highlights corresponding table row", async () => {
     const api = buildApi((args) => {
@@ -363,4 +421,44 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
       expect(rows[1]).toHaveClass("selected");
     });
   });
+  it("resolves an image-picked object absent from the loaded measurement page", async () => {
+    const api = buildApi(() => ({ label: 999 }));
+    const original = api.execute;
+    api.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "population_query") return {
+        result_id: sampleResult.id, revision_hash: sampleResult.revision_hash,
+        source_id: sampleSource.id, source_sha256: sampleSource.sha256,
+        selected: { row: { label: 999, centroid_index: [200, 200] }, filtered_index: 998 },
+      };
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Results" }));
+    fireEvent.click(await screen.findByRole("button", { name: /cell-segmentation/ }));
+    await screen.findByText("Quantitative summary");
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Search all tools" }), { target: { value: "Statistics & objects" } });
+    fireEvent.click(screen.getByRole("option", { name: "Statistics & objects" }));
+    const target = (document.querySelector(".research-image-frame") || document.querySelector("canvas"))!;
+    fireEvent.pointerDown(target, { clientX: 200, clientY: 200, button: 0 });
+    fireEvent.pointerUp(target, { clientX: 200, clientY: 200, button: 0 });
+    await waitFor(() => expect(screen.getByLabelText("Population selected label")).toHaveTextContent("999"));
+    expect(api.execute).toHaveBeenCalledWith("population_query", {
+      result_id: sampleResult.id, revision_hash: sampleResult.revision_hash, selected_label: 999, limit: 1,
+    });
+  });
+
+  it("rejects an image pick bound to a different result revision", async () => {
+    const api = buildApi(() => ({ label: 23, revision_hash: "wrong-revision" }));
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Results" }));
+    fireEvent.click(await screen.findByRole("button", { name: /cell-segmentation/ }));
+    await screen.findByText("Quantitative summary");
+    const target = (document.querySelector(".research-image-frame") || document.querySelector("canvas"))!;
+    fireEvent.pointerDown(target, { clientX: 200, clientY: 200, button: 0 });
+    fireEvent.pointerUp(target, { clientX: 200, clientY: 200, button: 0 });
+    await waitFor(() => expect(api.execute).toHaveBeenCalledWith("result_label_at", expect.any(Object)));
+    expect(document.querySelector("tr.selected")).toBeNull();
+  });
+
 });

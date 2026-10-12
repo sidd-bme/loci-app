@@ -48,6 +48,7 @@ class FakeRunner:
         self.results = list(results)
         self.callback = callback
         self.calls: list[tuple[list[str], bytes | None, int, int]] = []
+        self.file_size_limits: list[int | None] = []
 
     def run(
         self,
@@ -56,9 +57,11 @@ class FakeRunner:
         input_bytes: bytes | None = None,
         timeout_seconds: int = 30,
         output_limit: int = remote_module.MAX_COMMAND_OUTPUT_BYTES,
+        file_size_limit: int | None = None,
     ) -> CommandResult:
         call = (list(arguments), input_bytes, timeout_seconds, output_limit)
         self.calls.append(call)
+        self.file_size_limits.append(file_size_limit)
         if self.callback is not None:
             return self.callback(call[0], input_bytes)
         return self.results.pop(0) if self.results else CommandResult(0, "", "")
@@ -436,9 +439,7 @@ def test_direct_status_accepts_only_a_verified_manifest_after_process_exit(
             CommandResult(0, manifest, ""),
         )
     )
-    client = _ready_client(
-        _profile(tmp_path, "direct", allow_direct_compute=True), runner
-    )
+    client = _ready_client(_profile(tmp_path, "direct", allow_direct_compute=True), runner)
 
     status = client.status(_submitted("direct", "123"))
 
@@ -1009,8 +1010,7 @@ def test_output_manifest_fetch_uses_real_bounded_subprocess_capture(
     assert client.fetch_output_manifest(_submitted()).entries == ()
 
     transport.write_text(
-        "import sys\n"
-        f"sys.stdout.write('x' * {remote_module.MAX_OUTPUT_MANIFEST_BYTES + 1})\n"
+        f"import sys\nsys.stdout.write('x' * {remote_module.MAX_OUTPUT_MANIFEST_BYTES + 1})\n"
     )
     with pytest.raises(RemoteComputeError, match="more output than its bounded limit"):
         client.fetch_output_manifest(_submitted())
@@ -1029,3 +1029,83 @@ def test_output_manifest_verifier_enforces_transport_aligned_size_limit() -> Non
 
     with pytest.raises(RemoteComputeError, match="Output manifest exceeds the supported size"):
         verify_output_manifest(oversized, _submitted())
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Fixed bounded transfer requires POSIX RLIMIT_FSIZE")
+@pytest.mark.parametrize("payload_size", [32, 65])
+def test_real_fixed_transfer_helper_bounds_artifact_writes_without_network(
+    tmp_path: Path, monkeypatch, payload_size: int
+) -> None:
+    # Executable stands in for SCP only in this scoped subprocess PATH. It writes
+    # one local incoming file, exercising the production helper's real OS limit.
+    executable = tmp_path / "scp"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "try:\n"
+        "    with open(sys.argv[-1], 'wb', buffering=0) as output:\n"
+        f"        payload = b'x' * {payload_size}\n"
+        "        written = output.write(payload)\n"
+        "        if written < len(payload): output.write(payload[written:])\n"
+        "except OSError:\n"
+        "    sys.exit(1)\n"
+    )
+    executable.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
+    profile = _profile(tmp_path)
+    client = RemoteComputeClient(profile)
+    destination = tmp_path / ".incoming-0"
+    result = SubprocessRunner().run(
+        [*client._scp_prefix(), "vanda:/fixed/output/results.zip", str(destination)],
+        file_size_limit=64,
+    )
+    assert destination.stat().st_size == min(payload_size, 64)
+    assert (result.returncode == 0) == (payload_size <= 64)
+
+
+def test_bounded_retrieve_admits_aggregate_and_caps_each_exact_entry(tmp_path: Path) -> None:
+    document = json.loads(_output_manifest())
+    document["outputs"].append(
+        {
+            "path": "tables/second.csv",
+            "sha256": hashlib.sha256(b"more").hexdigest(),
+            "size_bytes": 4,
+            "media_type": "text/csv",
+        }
+    )
+    manifest = json.dumps(document)
+    expected = verify_output_manifest(manifest, _submitted())
+
+    def callback(arguments: list[str], _input: bytes | None) -> CommandResult:
+        if arguments[0] == "scp":
+            payload = b"more" if arguments[-2].endswith("second.csv") else b"result"
+            Path(arguments[-1]).write_bytes(payload)
+            return CommandResult(0, "", "")
+        if remote_module._READ_OWNED_FILE_SCRIPT in shlex.split(arguments[-1]):
+            return CommandResult(0, manifest, "")
+        return CommandResult(0, "VERIFIED\n", "")
+
+    runner = FakeRunner(callback=callback)
+    client = _ready_client(_profile(tmp_path), runner)
+    destination = tmp_path / "bounded"
+    result = client.retrieve_outputs(
+        _submitted(), destination, expected_manifest=expected, max_output_bytes=10
+    )
+    assert result[0].read_bytes() == b"result"
+    assert result[1].read_bytes() == b"more"
+    assert [cap for cap in runner.file_size_limits if cap is not None] == [6, 4]
+    rejected = tmp_path / "too-small"
+    previous_calls = len(runner.calls)
+    with pytest.raises(RemoteComputeError, match="bounded transfer authority"):
+        client.retrieve_outputs(
+            _submitted(), rejected, expected_manifest=expected, max_output_bytes=9
+        )
+    assert not rejected.exists()
+    assert not any(call[0][0] == "scp" for call in runner.calls[previous_calls:])
+
+
+def test_fixed_bounded_helper_rejects_arbitrary_transport_before_exec(tmp_path: Path):
+    from loci_engine.agent_remote_transfer import exec_bounded_scp
+
+    with pytest.raises(ValueError, match="fixed SCP"):
+        exec_bounded_scp(64, ["scp", "-S", "arbitrary", "source", str(tmp_path / ".incoming-0")])

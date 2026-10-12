@@ -39,25 +39,25 @@
   --shadow-elevated:
     0 0 0 1px rgba(255, 255, 255, 0.09),
     0 14px 40px rgba(0, 0, 0, 0.38);
-  --type-3xs: 8px;
-  --type-2xs: 9px;
-  --type-xs: 10px;
-  --type-sm: 11px;
-  --type-md: 12px;
+  --type-3xs: 10px;
+  --type-2xs: 11px;
+  --type-xs: 11px;
+  --type-sm: 12px;
+  --type-md: 13px;
   --type-lg: 14px;
   --type-xl: 15px;
   --type-2xl: 18px;
 }
 
 :root[data-text-size="large"] {
-  --type-3xs: 9px;
-  --type-2xs: 10px;
-  --type-xs: 11px;
-  --type-sm: 12px;
-  --type-md: 13px;
-  --type-lg: 15px;
-  --type-xl: 16px;
-  --type-2xl: 20px;
+  --type-3xs: 11px;
+  --type-2xs: 12px;
+  --type-xs: 12px;
+  --type-sm: 13px;
+  --type-md: 14px;
+  --type-lg: 16px;
+  --type-xl: 18px;
+  --type-2xl: 21px;
 }
 
 :root[data-theme="midnight"] {
@@ -223,7 +223,8 @@ body,
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -247,12 +248,21 @@ summary:focus-visible,
   outline-offset: 2px;
 }
 
-select:focus,
-select:focus-visible {
-  outline: none !important;
-  box-shadow: none !important;
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--mineral-bright);
+  outline-offset: 2px;
   border-color: var(--mineral-bright);
 }
+
+input:not([type="range"]):not([type="checkbox"]):not([type="color"]),
+textarea {
+  caret-color: var(--mineral-bright);
+}
+
+input[type="number"] { font-variant-numeric: tabular-nums; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--mineral); }
+::selection { background: var(--mineral); color: #10201c; }
 
 .app-shell {
   display: grid;
@@ -2457,7 +2467,7 @@ input[type="range"]:disabled {
   padding: 6px 8px 6px 10px;
   border: 1px solid color-mix(in srgb, var(--line-strong) 80%, transparent);
   border-radius: 7px;
-  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  background: color-mix(in srgb, var(--graphite-850) 88%, transparent);
   color: var(--ink-muted);
   box-shadow: var(--shadow-elevated);
   font-size: var(--type-2xs);
@@ -3680,3 +3690,14 @@ input[type="range"]:disabled {
 
 :root[data-font="arial"] { --font-ui: Arial, Helvetica, sans-serif; }
 :root[data-font="verdana"] { --font-ui: Verdana, Geneva, sans-serif; }
+
+/* Recipe capacity remains adjacent to the scope; no modal or separate dashboard. */
+.recipe-resources { display: grid; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }
+.recipe-resources-estimate { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.recipe-resources-estimate strong { font-variant-numeric: tabular-nums; }
+.recipe-resources label { display: grid; gap: 6px; }
+.recipe-resources select { width: 100%; min-width: 0; }
+.recipe-resources small { color: var(--ink-secondary); line-height: 1.5; }
+.recipe-resources p { margin: 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.recipe-resources-warning { color: var(--warning); }
+.recipe-resources-recommendation { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

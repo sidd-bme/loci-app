@@ -1,3 +1,7 @@
+import type { ImageWindowPresentation } from "../shared/image-window-api";
+import { RecipeResourcePanel } from "./RecipeResourcePanel";
+import { ResearchLabelsImportPanel } from "./ResearchLabelsImportPanel";
+import { ResearchCorrectionEffectPanel, type CorrectionEffectSeed } from "./ResearchCorrectionEffectPanel";
 import { ResearchAdaptivePanel, type ResearchAdaptiveBatchConfiguration } from "./ResearchAdaptivePanel";
 import { WorkspaceRecordActions } from "./WorkspaceRecordActions";
 import {
@@ -42,14 +46,21 @@ import type {
   ManagedSessionState,
 } from "../shared/research-contracts";
 import "./ResearchWorkbench.css";
+import { firstStudyDisplayChannels } from "./first-study-display";
+import { LargeAnalysisPanel, LargeResultViewport, LargeResultInspector, isLargeResult } from "./LargeResultWorkspace";
 import {
   ResearchCorrectionPanel,
   type CorrectionPreview,
   type Plane,
   type Point,
+  type CorrectionObjectTarget,
 } from "./ResearchCorrectionPanel";
 import { ResearchRegistrationPanel } from "./ResearchRegistrationPanel";
+import { ResearchPopulationExplorer } from "./ResearchPopulationExplorer";
+import { ResearchWorkflowPanel } from "./ResearchWorkflowPanel";
 import { ResearchQuantificationPanel } from "./ResearchQuantificationPanel";
+import { AgentImagePanel } from "./AgentImagePanel";
+import { SourceDisplayFollower } from "./source-display-follower";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
 import { ResearchPortabilityPanel } from "./ResearchPortabilityPanel";
 import { ResearchVendorPanel } from "./ResearchVendorPanel";
@@ -63,15 +74,20 @@ import {
 import { ResearchHistologyPanel } from "./ResearchHistologyPanel";
 import { ImageViewport, type ImageAnnotation, type ImagePoint, type ViewerChannel } from "./ImageViewport";
 import { resolveResultPlaneOverlay, resultPixelToSourcePoint, sourcePointToResultPixel } from "./result-plane-overlay";
-import { SourceAnnotationPanel, type AnnotationTool } from "./SourceAnnotationPanel";
+import { SourceAnnotationPanel } from "./SourceAnnotationPanel";
+import { useAnnotationDrafts } from "./annotation-draft";
+import { subscribeWorkbenchCommands, type WorkbenchCommand } from "./workbench-commands";
+import { ValidatedNumberInput, useNumericValidity } from "./ValidatedNumberInput";
 import { ImageWelcome, WorkbenchTools, type WorkbenchTab } from "./WorkbenchChrome";
+import { FirstStudyGuide } from "./FirstStudyGuide";
+import { sourceRelinkKind } from "../shared/source-relink";
 import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
 import BrandMark from "./BrandMark";
 import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPanel";
 import { SourceExportPanel } from "./SourceExportPanel";
 import { SourceViewStore, type SavedSourceView } from "./source-view-store";
 import type { Camera } from "./viewer-camera";
-import { ContextHelp, ResearchError } from "./ContextHelp";
+import { ContextHelp, ResearchError, sanitizeRendererError } from "./ContextHelp";
 import { DEFAULT_PREFERENCES, type UserPreferences } from "./preferences";
 import {
   ResearchCellposePanel,
@@ -79,6 +95,7 @@ import {
 } from "./ResearchCellposePanel";
 
 type Props = {
+  initialSourceId?: string | null;
   preferences?: UserPreferences;
   api: ResearchDesktopApi;
   onBack: () => void;
@@ -86,6 +103,14 @@ type Props = {
   onSourcesReorder?: (sources: ResearchSource[]) => void;
 };
 type Tab = WorkbenchTab;
+function resultReviewState(result: ResearchResult): "pending" | "reviewed" | "excluded" {
+  // The engine binds summary review state to this exact result. If a full receipt
+  // is supplied, reject contradictory identities rather than displaying approval.
+  const review = result.review as (NonNullable<ResearchResult["review"]> & { result_id?: string; revision_hash?: string }) | null | undefined;
+  if (!review || (review.result_id !== undefined && review.result_id !== result.id)
+    || (review.revision_hash !== undefined && review.revision_hash !== result.revision_hash)) return "pending";
+  return review.disposition === "reviewed" || review.disposition === "excluded" ? review.disposition : "pending";
+}
 type Channel = ViewerChannel;
 type Volume = {
   shape: [number, number, number];
@@ -130,7 +155,7 @@ const DEFAULT_RECIPE: ResearchRecipe = {
   },
   measurement_channels: [0],
   gates: [],
-  working_bytes: 268435456,
+  working_bytes: 512 * 1024 ** 2,
 };
 const WORKING_BYTES = [
   512 * 1024 ** 2,
@@ -177,7 +202,8 @@ type StudyComparisonReceipt = {
 };
 
 function savedStudyComparison(snapshot: ResearchSnapshot): StudyComparisonReceipt | null {
-  const documents = [...(snapshot.comparisons ?? [])].sort((left, right) =>
+  const documents = [...(snapshot.comparisons ?? [])].filter(document =>
+    (document.data.receipt as { schema?: unknown } | null)?.schema === "loci.study-run-comparison/v1").sort((left, right) =>
     left.updated_at.localeCompare(right.updated_at),
   );
   const document = documents.at(-1);
@@ -202,8 +228,7 @@ function savedStudyComparison(snapshot: ResearchSnapshot): StudyComparisonReceip
 
 function message(error: unknown, fallback: string): string {
   const value = error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
-  return value.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "")
-    .replace(/\/?(?:Users|Volumes)\/[^\s]+/g, "selected source").slice(0, 1000);
+  return sanitizeRendererError(value);
 }
 function meta(source: ResearchSource) {
   const value = source.metadata ?? {};
@@ -424,15 +449,15 @@ function ComparisonPane({
       <div className="research-ab-plane-controls" aria-label={`Pane ${label} plane controls`}>
         {dimensions.t > 1 && <label>
           T
-          <input aria-label={`Pane ${label} time`} type="number" min={1} max={dimensions.t}
+          <ValidatedNumberInput key={`${source.id}:${source.sha256}`} label={`Pane ${label} time`} integer minimum={1} maximum={dimensions.t}
             value={pane.selection.t + 1} disabled={dimensions.t <= 1 || !pane.ready}
-            onChange={(event) => pane.setSelection({ ...pane.selection, t: Number(event.target.value) - 1 })} />
+            onValue={(value) => { pane.setSelection({ ...pane.selection, t: value - 1 }); return true; }} />
         </label>}
         {dimensions.z > 1 && <label>
           Z
-          <input aria-label={`Pane ${label} Z`} type="number" min={1} max={dimensions.z}
+          <ValidatedNumberInput key={`${source.id}:${source.sha256}`} label={`Pane ${label} Z`} integer minimum={1} maximum={dimensions.z}
             value={pane.selection.z + 1} disabled={dimensions.z <= 1 || !pane.ready}
-            onChange={(event) => pane.setSelection({ ...pane.selection, z: Number(event.target.value) - 1 })} />
+            onValue={(value) => { pane.setSelection({ ...pane.selection, z: value - 1 }); return true; }} />
         </label>}
         <label>
           View
@@ -787,6 +812,7 @@ const SourceListItem = memo(function SourceListItem({
 });
 
 export default function ResearchWorkbench({
+  initialSourceId,
   api: desktopApi,
   onBack,
   onOpenSettings,
@@ -794,8 +820,12 @@ export default function ResearchWorkbench({
   preferences = DEFAULT_PREFERENCES,
 }: Props): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ResearchSnapshot | null>(null);
+  const initialSource = useRef(initialSourceId);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Display");
+  const [workflowOpened, setWorkflowOpened] = useState(false);
+  const [populationOpened, setPopulationOpened] = useState(false);
+  const [statisticsFocused, setStatisticsFocused] = useState(false);
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
   const [channels, setChannels] = useState<Channel[]>([]);
   const [image, setImage] = useState<string | null>(null);
@@ -804,12 +834,18 @@ export default function ResearchWorkbench({
     "plane",
   );
   const [recipe, setRecipe] = useState(DEFAULT_RECIPE);
-  const [segmentationFamily, setSegmentationFamily] = useState<"classical" | "stain" | "adaptive" | "cellpose-sam" | "cellpose-sam-v2">("classical");
+  const [segmentationFamily, setSegmentationFamily] = useState<"classical" | "stain" | "adaptive" | "cellpose-sam" | "cellpose-sam-v2" | "large-components">("classical");
   const [adaptiveBatchConfiguration, setAdaptiveBatchConfiguration] = useState<ResearchAdaptiveBatchConfiguration | null>(null);
   const [resultId, setResultId] = useState<string | null>(null);
+  const [correctionEffectSeed, setCorrectionEffectSeed] = useState<CorrectionEffectSeed | null>(null);
+  useEffect(() => { if (tab !== "Study") setCorrectionEffectSeed(null); }, [tab]);
   const [resultView, setResultView] = useState<ResultView | null>(null);
   const [rows, setRows] = useState<Array<Record<string, unknown>>>([]);
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
+  const [populationObject, setPopulationObject] = useState<Record<string, unknown> | null>(null);
+  const [correctionObjectTarget, setCorrectionObjectTarget] = useState<CorrectionObjectTarget | null>(null);
+  const [largeObject, setLargeObject] = useState<Record<string, unknown> | null>(null);
+  const [largeFocus, setLargeFocus] = useState<{ point_index: [number, number] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [models, setModels] = useState<ModelRecord[]>([]);
@@ -912,15 +948,21 @@ export default function ResearchWorkbench({
     useState<ResearchResult | null>(null);
   const [surfaceOpen, setSurfaceOpen] = useState(false);
   const [rawVolumeOpen, setRawVolumeOpen] = useState(false);
+  const [volumeDisplay, setVolumeDisplay] = useState<NonNullable<ImageWindowPresentation["volumeDisplay"]>>({ renderMode: "blend", quality: 50 });
   const [rawVolume, setRawVolume] = useState<RawVolumeResponse | null>(null);
   const [rawVolumeLoading, setRawVolumeLoading] = useState(false);
   const [rawVolumeError, setRawVolumeError] = useState<string | null>(null);
   const rawVolumeToken = useRef(0);
   const [session, setSession] = useState<ManagedSessionState>({ status: "empty" });
   const [jobsOpen, setJobsOpen] = useState(false);
-  const [annotationTool, setAnnotationTool] = useState<AnnotationTool>("navigate");
-  const [annotationDraft, setAnnotationDraft] = useState<ImagePoint[]>([]);
   const [sourceAnnotations, setSourceAnnotations] = useState<ImageAnnotation[]>([]);
+  const [invalidNumberForms, setInvalidNumberForms] = useState<Record<string, true>>({});
+  const [numberResetEpoch, setNumberResetEpoch] = useState(0);
+  const annotationViewportReady = useRef(false);
+  const annotationViewReady = useCallback((key: string) => {
+    annotationViewportReady.current = Boolean(key);
+    setViewReadyKey(key);
+  }, []);
   const [defaultChannels, setDefaultChannels] = useState<Channel[]>([]);
   const [displayBasis, setDisplayBasis] = useState("");
   const [interpretation, setInterpretation] = useState<SourceInterpretation>("auto");
@@ -934,6 +976,10 @@ export default function ResearchWorkbench({
   const [drawingAnalysisRegion, setDrawingAnalysisRegion] = useState(false);
   const [viewSettingsReady, setViewSettingsReady] = useState(false);
   const viewStore = useRef<SourceViewStore | null>(null);
+  const [assistantFollowing, setAssistantFollowing] = useState(false);
+  const [assistantFollowBusy, setAssistantFollowBusy] = useState(false);
+  const assistantFollower = useRef<SourceDisplayFollower | null>(null);
+  const assistantFollowGeneration = useRef(0);
   const batchViewAdoption = useRef<{
     sourceId: string;
     sourceSha256: string;
@@ -944,18 +990,28 @@ export default function ResearchWorkbench({
   const resultLoadToken = useRef(0);
   const resultViewToken = useRef(0);
   const objectPickToken = useRef(0);
+  // A completed large job remains durable, but only the interaction which
+  // started it may replace the user's current source/result presentation.
+  const largeNavigationIntent = useRef(0);
+  const largeSelectionIntent = useRef(0);
   const recipePresetToken = useRef(0);
   const emptyDropDepth = useRef(0);
   const imageFrameRef = useRef<HTMLDivElement | null>(null);
   const previewScope = useRef<string | null>(null);
   const projectionSourceId = useRef<string | null>(null);
+  const projectionSourceSha256 = useRef<string | null>(null);
   const projectionSourceLocatorState = useRef<string | null>(null);
   const [documentEpoch, setDocumentEpoch] = useState(0);
   const [studyEpoch, setStudyEpoch] = useState(0);
+  useEffect(() => { setCorrectionEffectSeed(null); }, [studyEpoch]);
   const [documentSwitching, setDocumentSwitching] = useState(false);
+  const initialStudyRestore = useRef<Promise<unknown>>(Promise.resolve());
+  const nativeCommandPending = useRef(false);
   const documentSwitch = useRef(false);
   const switchDocument = useCallback(async <T,>(action: () => Promise<T>, resetDisplay = true): Promise<T> => {
     if (documentSwitch.current) throw new Error("Wait for the study to finish opening.");
+    largeNavigationIntent.current++;
+    largeSelectionIntent.current++;
     documentSwitch.current = true;
     // Native dialogs may defer rendering while the window is inactive. Commit
     // the viewport pause before entering the main-process document lock.
@@ -1010,6 +1066,8 @@ export default function ResearchWorkbench({
     ...(desktopApi.importStudy ? { importStudy: () => switchDocument(() => desktopApi.importStudy!()) } : {}),
     ...(desktopApi.openDropped ? { openDropped: (files: File[]) => switchDocument(() => desktopApi.openDropped!(files)) } : {}),
     ...(desktopApi.recoveryKeep ? { recoveryKeep: (id: string) => switchDocument(() => desktopApi.recoveryKeep!(id)) } : {}),
+    ...(desktopApi.tryExample ? { tryExample: () => switchDocument(() => desktopApi.tryExample!()) } : {}),
+    ...(desktopApi.relinkSource ? { relinkSource: (id, kind) => switchDocument(() => desktopApi.relinkSource!(id, kind), false) } : {}),
     ...(desktopApi.newSession ? { newSession: () => switchDocument(() => desktopApi.newSession!()) } : {}),
     // Working-list changes take the same main-process lock, but retain this
     // document's camera and the close/clear action's local undo receipt.
@@ -1036,7 +1094,23 @@ export default function ResearchWorkbench({
   }), [desktopApi, switchDocument]);
   const source =
     snapshot?.sources.find((entry) => entry.id === sourceId) ?? null;
-  const sourceIsChanging = Boolean(source && projectionSourceId.current !== source.id);
+  const numberScope = `${documentEpoch}:${source?.id}:${source?.sha256}`;
+  const numberKey = `${numberScope}:${numberResetEpoch}`;
+  const configurationValid = !Object.keys(invalidNumberForms).some((key) => key.startsWith(`${numberScope}:`));
+  const reportNumberValidity = useCallback((form: string, valid: boolean) => {
+    const key = `${numberScope}:${form}`;
+    setInvalidNumberForms((previous) => {
+      if (!valid) return previous[key] ? previous : { ...previous, [key]: true };
+      if (!previous[key]) return previous;
+      const { [key]: _restored, ...next } = previous;
+      return next;
+    });
+  }, [numberScope]);
+  const restoreAppliedNumbers = () => {
+    setInvalidNumberForms((previous) => Object.fromEntries(Object.entries(previous).filter(([key]) => !key.startsWith(`${numberScope}:`))));
+    setNumberResetEpoch((value) => value + 1);
+  };
+  const sourceIsChanging = Boolean(source && (projectionSourceId.current !== source.id || projectionSourceSha256.current !== source.sha256));
   const resolvedProjection =
     sourceIsChanging ? "plane" : projection;
   const maxViewPixels = source ? maxNativeViewPixels(source) : undefined;
@@ -1057,8 +1131,9 @@ export default function ResearchWorkbench({
     setSnapshot((previousSnapshot) => {
       const prevIds = new Set(previousSnapshot?.sources.map((s) => s.id) ?? []);
       const newlyAdded = next.sources.find((s) => !prevIds.has(s.id));
-      const targetId = preferredId
-        ? (next.sources.find((s) => s.id === preferredId)?.id ?? null)
+      const preferred = preferredId ?? (!previousSnapshot ? initialSource.current : undefined);
+      const targetId = preferred
+        ? (next.sources.find((s) => s.id === preferred)?.id ?? null)
         : newlyAdded?.id;
 
       setSourceId((previous) => {
@@ -1156,6 +1231,8 @@ export default function ResearchWorkbench({
         setSelectionAnchorId(clickedId);
         setSelectionPivotIds(next);
         if (clickedId !== sourceId) {
+          largeNavigationIntent.current++;
+          largeSelectionIntent.current++;
           setProjection("plane");
           setSourceId(clickedId);
         }
@@ -1168,6 +1245,8 @@ export default function ResearchWorkbench({
           const combined = Array.from(new Set([...selectionPivotIds, ...rangeIds]));
           setSelectedSourceIds(combined);
           if (clickedId !== sourceId) {
+            largeNavigationIntent.current++;
+            largeSelectionIntent.current++;
             setProjection("plane");
             setSourceId(clickedId);
           }
@@ -1177,6 +1256,8 @@ export default function ResearchWorkbench({
         setSelectionAnchorId(clickedId);
         setSelectionPivotIds([clickedId]);
         if (clickedId !== sourceId) {
+          largeNavigationIntent.current++;
+          largeSelectionIntent.current++;
           setProjection("plane");
           setSourceId(clickedId);
         }
@@ -1314,6 +1395,8 @@ export default function ResearchWorkbench({
     if (targetIds.length === 0) return;
     const sourcesToClose = snapshot.sources.filter((s) => targetIds.includes(s.id));
     if (sourcesToClose.length === 0) return;
+    largeNavigationIntent.current++;
+    largeSelectionIntent.current++;
 
     // Immediately abort any in-flight display preparation for closing sources
     displayToken.current++;
@@ -1493,6 +1576,18 @@ export default function ResearchWorkbench({
     },
     [selection, dimensions, maxViewPixels, sourceIsChanging],
   );
+  const labelImportScope = JSON.stringify([documentEpoch, source?.id, source?.sha256, shownSelection]);
+  const liveLabelImportScope = useRef(labelImportScope);
+  const labelImportBusyOwner = useRef<{ owner: string; message: string } | null>(null);
+  liveLabelImportScope.current = labelImportScope;
+  const annotationState = useAnnotationDrafts(documentEpoch, snapshot?.sources ?? [], source, shownSelection,
+    tab === "Epidermis" ? "epidermis" : "general");
+  const { tool: annotationTool, setTool: setAnnotationTool, points: annotationDraft, setPoints: setAnnotationDraft } = annotationState;
+  const updateViewportDraft = useCallback((points: ImagePoint[]) => {
+    // A viewport abort reports its old gesture after announcing that the new plane
+    // is not ready. Never write those old coordinates into the new plane's slot.
+    if (annotationViewportReady.current) setAnnotationDraft(points);
+  }, [setAnnotationDraft]);
   const autoPlaneKey = `${source?.id}:${source?.sha256}:${shownSelection.t}:${shownSelection.z}`;
   const autoPlaneRef = useRef(autoPlaneKey);
   autoPlaneRef.current = autoPlaneKey;
@@ -1504,10 +1599,12 @@ export default function ResearchWorkbench({
     [sourceMeta],
   );
   useEffect(() => {
-    void report(
-      () => api.getSnapshot().then(adopt),
+    let active = true;
+    initialStudyRestore.current = report(
+      async () => { const next = await api.getSnapshot(); if (active) adopt(next); },
       "Could not restore this study.",
     );
+    return () => { active = false; };
   }, [api, adopt, report]);
   useEffect(() => {
     void api.sessionState?.().then(setSession).catch((caught) => setError(message(caught, "Could not inspect session recovery.")));
@@ -1531,6 +1628,26 @@ export default function ResearchWorkbench({
     if (output) adopt(output.snapshot);
     setBusy(null);
   }, [api, report, adopt, onBack, resetEmptyDrop]);
+  const nativeCommandState = useRef({ busy, documentSwitching, openImages, api, report, adopt });
+  nativeCommandState.current = { busy, documentSwitching, openImages, api, report, adopt };
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = subscribeWorkbenchCommands((command: WorkbenchCommand) => {
+      const state = nativeCommandState.current;
+      if (nativeCommandPending.current || state.busy || state.documentSwitching || documentSwitch.current) return;
+      nativeCommandPending.current = true;
+      void (async () => {
+        await initialStudyRestore.current;
+        if (!active) return;
+        const current = nativeCommandState.current;
+        if (current.busy || current.documentSwitching || documentSwitch.current) return;
+        if (command === "open-images" || command === "open-folder") await current.openImages(command === "open-folder" ? "folder" : "files");
+        else if (command === "open-study") await current.report(() => current.api.openStudy().then(current.adopt), "Could not open this study.");
+        else if (current.api.saveAs) await current.report(() => current.api.saveAs!().then(current.adopt), "Could not save this study.");
+      })().finally(() => { nativeCommandPending.current = false; });
+    });
+    return () => { active = false; unsubscribe(); };
+  }, []);
   useEffect(() => {
     if (!source) {
       setRawVolumeOpen(false);
@@ -1543,12 +1660,13 @@ export default function ResearchWorkbench({
     const currentLocatorState = source.locator_state ?? "ok";
     if (source.locator_state === "relink-required") {
       projectionSourceId.current = source.id;
+      projectionSourceSha256.current = source.sha256;
       projectionSourceLocatorState.current = "relink-required";
       const previousStore = viewStore.current;
       previousStore?.discard();
       viewStore.current = null;
-      setAnnotationTool("navigate"); setAnnotationDraft([]); setSourceAnnotations([]);
-      setRawVolumeOpen(false); setRawVolume(null); rawVolumeToken.current++;
+      setSourceAnnotations([]);
+      setRawVolumeOpen(false); setRawVolume(null); setVolumeDisplay({ renderMode: "blend", quality: 50 }); rawVolumeToken.current++;
       const count = isRgb ? 1 : (dimensions?.c ?? 1);
       const fallbackChannels: Channel[] = Array.from({ length: Math.max(1, count) }, (_, channel) => ({
         channel,
@@ -1564,7 +1682,7 @@ export default function ResearchWorkbench({
       setViewSettingsReady(true);
       return;
     }
-    if (projectionSourceId.current === source.id && projectionSourceLocatorState.current === currentLocatorState) {
+    if (projectionSourceId.current === source.id && projectionSourceSha256.current === source.sha256 && projectionSourceLocatorState.current === currentLocatorState) {
       setSelection((old) => clamp(old, dimensions));
       return;
     }
@@ -1572,6 +1690,7 @@ export default function ResearchWorkbench({
     // selected RGB plane would turn an explicit single-plane histology request
     // into an invalid volume request.
     projectionSourceId.current = source.id;
+    projectionSourceSha256.current = source.sha256;
     projectionSourceLocatorState.current = currentLocatorState;
     setProjection("plane");
     setSelection(clamp({ ...DEFAULT_SELECTION, width: dimensions.x,
@@ -1586,8 +1705,8 @@ export default function ResearchWorkbench({
     previousStore?.pause();
     viewDrain.current = Promise.all([viewDrain.current, previousStore?.flush()]);
     viewStore.current = null;
-    setAnnotationTool("navigate"); setAnnotationDraft([]); setSourceAnnotations([]);
-    setRawVolumeOpen(false); setRawVolume(null); rawVolumeToken.current++;
+    setSourceAnnotations([]);
+    setRawVolumeOpen(false); setRawVolume(null); setVolumeDisplay({ renderMode: "blend", quality: 50 }); rawVolumeToken.current++;
     const token = ++displayToken.current;
     void viewDrain.current.then(() => Promise.all([api.execute("viewer_defaults", { source_id: source.id, t: 0, z: 0, auto: false }),
       api.execute("source_view", { source_id: source.id })])).then(([value, saved]) => {
@@ -1598,7 +1717,9 @@ export default function ResearchWorkbench({
       const view = saved as SavedSourceView;
       if (view.source_id !== source.id || view.source_sha256 !== source.sha256 || !Number.isInteger(view.revision))
         throw new Error("Saved display settings do not match this source.");
-      setChannels(view.state?.channels ?? defaults.channels); setDefaultChannels(defaults.channels);
+      const exampleChannels = snapshot ? firstStudyDisplayChannels(snapshot.project, source, defaults.channels) : null;
+      const initialChannels = exampleChannels ?? defaults.channels;
+      setChannels(view.state?.channels ?? initialChannels); setDefaultChannels(initialChannels);
       if (view.state) {
         setInterpretation(view.state.interpretation); setProjection(view.state.projection);
         if (view.state.interpretation === "volume" && dimensions.z > 1 && !rawVolumeUnavailable) setRawVolumeOpen(true);
@@ -1609,7 +1730,7 @@ export default function ResearchWorkbench({
       viewStore.current = new SourceViewStore(api, source.id, source.sha256, view.revision,
         (caught) => setError(message(caught, "Could not save display settings.")));
       setViewSettingsReady(true);
-      setDisplayBasis(typeof defaults.basis === "string" ? defaults.basis : "Source defaults");
+      setDisplayBasis(exampleChannels ? "Authored example display" : typeof defaults.basis === "string" ? defaults.basis : "Source defaults");
     }).catch((caught) => { if (displayToken.current === token) setError(message(caught, "Could not prepare source display settings.")); });
     setImage(null);
     setVolume(null);
@@ -1617,6 +1738,8 @@ export default function ResearchWorkbench({
     setResultView(null);
     setRows([]);
     setSelectedRow(null);
+    setPopulationObject(null);
+    objectPickToken.current++;
     setCorrectionPoints([]);
     setCorrectionPreview(null);
     setCorrectionView({ plane: "XY", index: 0 });
@@ -1630,6 +1753,7 @@ export default function ResearchWorkbench({
   }, [
     documentEpoch,
     source?.id,
+    source?.sha256,
     source?.locator_state,
     dimensions?.c,
     dimensions?.x,
@@ -1638,6 +1762,50 @@ export default function ResearchWorkbench({
     dimensions?.t,
   ]);
   useEffect(() => {
+    assistantFollowGeneration.current++;
+    const follower = assistantFollower.current;
+    assistantFollower.current = null;
+    void follower?.stop();
+    setAssistantFollowing(false); setAssistantFollowBusy(false);
+    return () => {
+      assistantFollowGeneration.current++;
+      const active = assistantFollower.current;
+      assistantFollower.current = null;
+      void active?.stop();
+    };
+  }, [api, source?.id, source?.sha256, documentEpoch, resultId]);
+  const followAssistantDisplay = async (active: boolean) => {
+    const generation = ++assistantFollowGeneration.current;
+    setAssistantFollowBusy(true);
+    autoRequestToken.current++;
+    try {
+      await assistantFollower.current?.stop();
+      assistantFollower.current = null;
+      if (generation !== assistantFollowGeneration.current) return;
+      if (!active) { setAssistantFollowing(false); return; }
+      const store = viewStore.current;
+      if (!source || !store || !viewSettingsReady) throw new Error("Wait for source display settings to load.");
+      setAssistantFollowing(true);
+      const follower = new SourceDisplayFollower(api, source.id, source.sha256, store, (nextChannels) => {
+        if (generation !== assistantFollowGeneration.current) return;
+        setChannels(nextChannels);
+      }, (caught) => {
+        if (generation !== assistantFollowGeneration.current) return;
+        setError(message(caught, "Could not follow assistant display settings."));
+        setAssistantFollowing(false);
+        void assistantFollower.current?.stop();
+      });
+      assistantFollower.current = follower;
+      await follower.start();
+    } catch (caught) {
+      if (generation === assistantFollowGeneration.current) {
+        setAssistantFollowing(false);
+        setError(message(caught, "Could not follow assistant display settings."));
+      }
+    } finally { if (generation === assistantFollowGeneration.current) setAssistantFollowBusy(false); }
+  };
+  useEffect(() => {
+    if (assistantFollowing || assistantFollowBusy) return;
     if (viewSettingsReady && channels.length && source && projectionSourceId.current === source.id) {
       const adopted = batchViewAdoption.current;
       if (adopted?.sourceId === source.id && adopted.sourceSha256 === source.sha256 && adopted.channels === channels) {
@@ -1646,7 +1814,7 @@ export default function ResearchWorkbench({
       }
       viewStore.current?.save({ interpretation, channels, projection, selection: shownSelection, camera: viewCamera, rgb_mapping: rgbMapping });
     }
-  }, [viewSettingsReady, interpretation, channels, projection, shownSelection, viewCamera, rgbMapping, source?.id]);
+  }, [viewSettingsReady, interpretation, channels, projection, shownSelection, viewCamera, rgbMapping, source?.id, assistantFollowing, assistantFollowBusy]);
   useEffect(() => () => { void viewStore.current?.flush(); }, []);
   const requestRawVolume = useCallback(async (refinement?: RawVolumeRefinementRequest) => {
     if (documentSwitch.current || !source) return;
@@ -1766,6 +1934,7 @@ export default function ResearchWorkbench({
     modelWorkingBytes,
   ]);
   const previewModel = async () => {
+    if (!configurationValid) return;
     const request = modelRequest();
     if (!request) return;
     setBusy("model preview");
@@ -1794,7 +1963,7 @@ export default function ResearchWorkbench({
     setImage(output.overlay_png);
   };
   const adoptModel = async () => {
-    if (!pendingModel) return;
+    if (!pendingModel || !configurationValid) return;
     setBusy("model run");
     const output = await report(
       () =>
@@ -1819,7 +1988,7 @@ export default function ResearchWorkbench({
     component: number,
     histologyRecipe: typeof DEFAULT_RECIPE,
   ) => {
-    if (!source) return;
+    if (!source || !configurationValid) return;
     setBusy("histology preview");
     const output = await report(
       () =>
@@ -1851,7 +2020,7 @@ export default function ResearchWorkbench({
     component: number,
     histologyRecipe: typeof DEFAULT_RECIPE,
   ) => {
-    if (!source) return;
+    if (!source || !configurationValid) return;
     setBusy("histology run");
     const output = await report(
       () =>
@@ -1881,7 +2050,8 @@ export default function ResearchWorkbench({
   };
   useEffect(() => {
     if (
-      busy !== "run" &&
+      busy !== "run" && busy !== "Large image segmentation" && busy !== "Removing object" &&
+      busy !== "Importing remote result" && busy !== "Export" &&
       !snapshot?.jobs.some(
         (job) => job.state === "queued" || job.state === "running",
       )
@@ -1926,7 +2096,8 @@ export default function ResearchWorkbench({
     if (output) setVolume(output);
     setBusy(null);
   };
-  const loadResult = async (id: string, knownResult?: ResearchResult) => {
+  const loadResult = async (id: string, knownResult?: ResearchResult, isCurrent: () => boolean = () => true, manageBusy = true) => {
+    if (!isCurrent() || documentSwitch.current) return;
     const exactResult =
       knownResult ?? snapshot?.results.find((item) => item.id === id);
     if (!exactResult) {
@@ -1935,10 +2106,14 @@ export default function ResearchWorkbench({
       );
       return;
     }
+    largeSelectionIntent.current++;
+    objectPickToken.current++;
+    setPopulationObject(null);
     const loadToken = ++resultLoadToken.current;
     // The correction effect owns its exact plane request. A second request here
     // could supersede it while source tiles are being decoded.
-    const correctionOwnsPlane = tab === "Correction";
+    const correctionOwnsPlane = tab === "Correction" || isLargeResult(exactResult);
+    if (isLargeResult(exactResult)) { setResultView(null); setRawVolumeOpen(false); setLargeObject(null); setLargeFocus(null); }
     const planeToken = correctionOwnsPlane ? resultViewToken.current : ++resultViewToken.current;
     const requestedPlane = tab === "Correction" ? correctionView.plane : "XY";
     const requestedAxis = planeAxis(requestedPlane);
@@ -1946,7 +2121,7 @@ export default function ResearchWorkbench({
       tab === "Correction" ? correctionView.index : undefined;
     setResultId(id);
     setSelectedRow(null);
-    setBusy("result");
+    if (manageBusy) setBusy("result");
     const output = await report(async () => {
       const [record, rendered] = await Promise.all([
         api.execute("result", { result_id: id, offset: 0, limit: 200 }),
@@ -1957,8 +2132,12 @@ export default function ResearchWorkbench({
           labels: true,
         }),
       ]);
+      const page = record as { result?: ResearchResult; measurements?: Array<Record<string, unknown>> };
+      if (page.result?.id !== exactResult.id || page.result?.revision_hash !== exactResult.revision_hash ||
+          page.result?.source_id !== exactResult.source_id || page.result?.source_sha256 !== exactResult.source_sha256)
+        throw new Error("Object measurements do not match the selected result revision.");
       return {
-        record: record as { measurements?: Array<Record<string, unknown>> },
+        record: page,
         rendered: rendered === null ? null : exactResultView(
           rendered,
           exactResult,
@@ -1967,15 +2146,17 @@ export default function ResearchWorkbench({
         ),
       };
     }, "Could not read the exact selected result.");
-    if (output && loadToken === resultLoadToken.current) {
+    if (output && isCurrent() && !documentSwitch.current && loadToken === resultLoadToken.current) {
       setRows(output.record.measurements ?? []);
       if (output.rendered && planeToken === resultViewToken.current)
         setResultView(output.rendered);
     }
-    if (loadToken === resultLoadToken.current)
+    if (manageBusy && loadToken === resultLoadToken.current)
       setBusy((current) => (current === "result" ? null : current));
   };
   const navigateExactResult = async (target: ResearchResult) => {
+    largeNavigationIntent.current++;
+    largeSelectionIntent.current++;
     if (target.source_id !== sourceId) {
       setPendingResultNavigation(target);
       setProjection("plane");
@@ -2008,11 +2189,24 @@ export default function ResearchWorkbench({
     if (next) adopt(next);
     await navigateExactResult(target);
   };
+  const refreshLargeHistory = async () => {
+    if (documentSwitch.current) return;
+    const intent = largeNavigationIntent.current;
+    const next = await api.getSnapshot();
+    if (intent === largeNavigationIntent.current && !documentSwitch.current) adopt(next);
+  };
   const persistRevision = async (
     target: ResearchResult,
     measurements?: Array<Record<string, unknown>>,
+    largeIntent?: number,
+    isCurrent: () => boolean = () => true,
+    preserveBusy = false,
   ): Promise<boolean> => {
-    if (!snapshot || !sourceId) return false;
+    if (!snapshot || !sourceId || !isCurrent()) return false;
+    if (largeIntent !== undefined && largeIntent !== largeNavigationIntent.current) {
+      await refreshLargeHistory();
+      return false;
+    }
     const cursor = snapshot.selections.find((item) => item.id === sourceId);
     const saved = await report(async () => {
       const output = (await api.execute("select_result", {
@@ -2036,6 +2230,11 @@ export default function ResearchWorkbench({
       return output;
     }, "Could not persist the selected immutable revision.");
     if (!saved?.selection) return false;
+    if (!isCurrent() || documentSwitch.current) return false;
+    if (largeIntent !== undefined && largeIntent !== largeNavigationIntent.current) {
+      await refreshLargeHistory();
+      return false;
+    }
     setSnapshot((current) => {
       if (!current) return current;
       return {
@@ -2052,13 +2251,14 @@ export default function ResearchWorkbench({
       };
     });
     setCorrectionPoints([]);
-    await loadResult(target.id, target);
+    await loadResult(target.id, target, isCurrent, !preserveBusy);
+    if (!isCurrent() || documentSwitch.current) return false;
     if (measurements) setRows(measurements);
     const next = await report(
       () => api.getSnapshot(),
       "Could not refresh immutable result history.",
     );
-    if (next) adopt(next);
+    if (next && isCurrent() && !documentSwitch.current && (largeIntent === undefined || largeIntent === largeNavigationIntent.current)) adopt(next);
     return true;
   };
   const moveRevision = async (direction: "undo" | "redo") => {
@@ -2083,7 +2283,8 @@ export default function ResearchWorkbench({
       );
   };
   const run = async () => {
-    if (!source) return;
+    if (!source || !configurationValid) return;
+    setError(null);
     setBusy("run");
     const output = await report(
       () =>
@@ -2104,7 +2305,8 @@ export default function ResearchWorkbench({
     }
   };
   const preview = async () => {
-    if (!source) return;
+    if (!source || !configurationValid) return;
+    setError(null);
     setBusy("preview");
     const output = await report(
       () =>
@@ -2144,7 +2346,7 @@ export default function ResearchWorkbench({
     const token = ++recipePresetToken.current;
     const checked = await report(
       () =>
-        api.execute("validate_recipe", {
+        api.execute("recipe_preflight", {
           source_id: source.id,
           selection: shownSelection,
           recipe: data.recipe,
@@ -2196,7 +2398,7 @@ export default function ResearchWorkbench({
     );
   }, []);
   useEffect(() => {
-    if (tab !== "Correction" || !selectedResult) {
+    if (tab !== "Correction" || !selectedResult || isLargeResult(selectedResult)) {
       setCorrectionViewLoading(false);
       return;
     }
@@ -2278,7 +2480,7 @@ export default function ResearchWorkbench({
     ? planeDimensions(displayedResultView.shape, displayedPlane)
     : { width: 0, height: 0 };
   const displayedCentroid = centroidOnView(
-    selectedRow === null ? null : rows[selectedRow]?.centroid_index,
+    populationObject?.centroid_index ?? (selectedRow === null ? null : rows[selectedRow]?.centroid_index),
     displayedResultView,
   );
   const sourceResultOverlay = useMemo(() => {
@@ -2392,9 +2594,48 @@ export default function ResearchWorkbench({
       }
 
       setSelectedRow(index);
+      setPopulationObject(row);
     },
     [rows, resultId, snapshot?.results, report, api, sourceResultOverlay, displayedResultView, viewCamera, selectedResult],
   );
+
+  const locatePopulationObject = async (row: Record<string, unknown>) => {
+    if (!selectedResult || !Number.isSafeInteger(row.label) || Number(row.label) < 1) return;
+    const exact = selectedResult;
+    const token = ++objectPickToken.current;
+    const navigation = largeNavigationIntent.current;
+    const current = () => token === objectPickToken.current && navigation === largeNavigationIntent.current;
+    try {
+      const located = await api.execute("population_locate", {
+        result_id: exact.id, revision_hash: exact.revision_hash, label: row.label,
+      }) as { result_id: string; revision_hash: string; label: number; point_index: number[] };
+      if (!current()) return;
+      const shape = exact.arrays?.labels?.shape ?? exact.arrays?.image?.shape;
+      const point = located.point_index;
+      if (located.result_id !== exact.id || located.revision_hash !== exact.revision_hash || located.label !== row.label ||
+          !shape || !Array.isArray(point) || point.length !== shape.length ||
+          point.some((value, index) => !Number.isSafeInteger(value) || value < 0 || value >= shape[index]))
+        throw new Error("Object location does not match this result revision.");
+      if (isLargeResult(exact)) { setLargeObject(row); setLargeFocus({ point_index: [point[0], point[1]] }); return; }
+      const index = point.length === 3 ? point[0] : 0;
+      const planeToken = ++resultViewToken.current;
+      const view = exactResultView(await api.execute("result_view", {
+        result_id: exact.id, axis: "z", index, labels: true,
+      }), exact, "z", index);
+      if (!current() || planeToken !== resultViewToken.current) return;
+      setResultView(view);
+      setPopulationObject(row);
+      const loadedIndex = rows.findIndex((item) => item.label === row.label);
+      setSelectedRow(loadedIndex < 0 ? null : loadedIndex);
+      if (source && point.length === 2) {
+        const resolved = resolveResultPlaneOverlay(source, exact, view, 1);
+        if (resolved.ok) {
+          const target = resultPixelToSourcePoint(resolved.overlay, { u: point[1], v: point[0] });
+          if (target) setControlledViewCamera({ x: target.x, y: target.y, scale: Math.max(viewCamera?.scale ?? 1, 1.5) });
+        }
+      }
+    } catch (caught) { if (current()) setError(message(caught, "Could not locate this object.")); }
+  };
 
   const handleObjectClick = useCallback(
     async (point: { x: number; y: number }) => {
@@ -2419,7 +2660,9 @@ export default function ResearchWorkbench({
         })) as { label: number; result_id: string; revision_hash: string } | undefined;
 
         if (token !== objectPickToken.current) return;
-        if (!response || response.label === 0) {
+        if (!response || response.result_id !== resultId || response.revision_hash !== displayedResultView.revisionHash) return;
+        if (response.label === 0) {
+          setPopulationObject(null);
           setSelectedRow(null);
           return;
         }
@@ -2429,13 +2672,16 @@ export default function ResearchWorkbench({
         if (targetIndex >= 0) {
           void selectObject(targetIndex, { changeSlice: false, preserveZoom: true });
         } else {
+          const population = await api.execute("population_query", { result_id: resultId, revision_hash: displayedResultView.revisionHash, selected_label: label, limit: 1 }) as { result_id: string; revision_hash: string; source_id: string; source_sha256: string; selected: { row: Record<string, unknown> } | null };
+          if (token !== objectPickToken.current || population.result_id !== resultId || population.revision_hash !== displayedResultView.revisionHash || population.source_id !== selectedResult?.source_id || population.source_sha256 !== selectedResult?.source_sha256) return;
+          setPopulationObject(population.selected?.row ?? null);
           setSelectedRow(null);
         }
       } catch {
         // Ignore pick errors or revision race
       }
     },
-    [drawingAnalysisRegion, displayedResultView, resultId, sourceResultOverlay, rows, api, selectObject],
+    [drawingAnalysisRegion, displayedResultView, resultId, sourceResultOverlay, rows, api, selectObject, selectedResult],
   );
   const displayedSpacing = planeSpacing(displayedResultView?.geometry ?? null, displayedPlane);
   const resultAspectY = displayedSpacing ? displayedSpacing.v / displayedSpacing.u : 1;
@@ -2482,15 +2728,21 @@ export default function ResearchWorkbench({
   const redoTargetId =
     redoStack.at(-1) ?? (redoChildren.length === 1 ? redoChildren[0].id : null);
   const openWorkbenchTab = (next: WorkbenchTab) => {
+    largeNavigationIntent.current++;
+    largeSelectionIntent.current++;
     setTab(next);
+    if (next === "Workflow") {
+      setWorkflowOpened(true);
+      setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
+    }
+    if (next !== "Population") setStatisticsFocused(false);
+    if (next === "Population") { setPopulationOpened(true); setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false); }
     if (next === "Annotate" || next === "Epidermis") {
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
       setProjection("plane");
       setSelection((previous) => { const { z_stop: _stop, ...plane } = previous; return plane; });
-      setAnnotationDraft([]);
       if (next === "Epidermis") {
         setResultId(null); setResultView(null); setImage(null); setVolume(null);
-        setAnnotationTool("transect");
       }
     }
   };
@@ -2531,18 +2783,19 @@ export default function ResearchWorkbench({
           <span />{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
         <ImageWelcome api={api} onOpen={(kind) => void openImages(kind)}
           onConvert={() => openWorkbenchTab("Vendor import")}
+          onExample={api.tryExample ? () => { resetEmptyDrop(); void report(() => api.tryExample!().then(adopt), "Could not create the offline example."); } : undefined}
           onStudy={() => { resetEmptyDrop(); void report(() => api.openStudy().then(adopt), "Could not open this study."); }}
           onEmptyStudy={() => { resetEmptyDrop(); void report(() => api.createStudy().then(adopt), "Could not create this study."); }}
           onLegacy={() => void openLegacy()} state={session} onRecovery={adopt} onError={setError}
           dragActive={emptyDropActive} busy={busy !== null || documentSwitching} />
         {(busy || documentSwitching) && <div className="welcome-progress" role="status">{documentSwitching ? "Updating workspace…" : "Opening images…"}</div>}
         {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
-        <ContextHelp enabled={preferences.viewer.contextualHelp} />
+        <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
       </main>
     );
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
   return (
-    <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""}`} aria-label="Research workspace"
+    <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""}`} aria-label="Research workspace"
       inert={documentSwitching} aria-busy={documentSwitching || undefined}
       style={
         {
@@ -2603,7 +2856,7 @@ export default function ResearchWorkbench({
         )}
       </header>
       {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
-      <ContextHelp enabled={preferences.viewer.contextualHelp} />
+      <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
       <div className="research-sources-pane">
         <aside className="research-sources">
           <div className="research-sources-header">
@@ -2722,8 +2975,28 @@ export default function ResearchWorkbench({
             )}
           </div>
           <h2>Layers & results</h2>
+          {source && window.lociImageWindows && <button disabled={Boolean(busy) || documentSwitching}
+            onClick={() => void report(async () => {
+              await viewStore.current?.flush();
+              await window.lociImageWindows!.restore();
+            }, "Could not restore the image-window layout.")}>Restore image windows</button>}
+          {source && window.lociImageWindows && <button
+            disabled={Boolean(busy) || documentSwitching || !viewSettingsReady || source.locator_state === "relink-required" || annotationDraft.length > 0 || correctionPoints.length > 0}
+            title={annotationDraft.length || correctionPoints.length ? "Finish or discard the current draft before detaching" : "Open this image in its own window; this window becomes the control panel"}
+            onClick={() => void report(async () => {
+              // Capture current React state before awaiting the serial persistence queue.
+              const presentation: ImageWindowPresentation = {
+                interpretation, mode: rawVolumeOpen ? "volume" : "plane", volumeDisplay,
+                channels, selection: shownSelection, projection: resolvedProjection,
+                camera: viewCamera, tool: "navigate", draft: [], annotations: [],
+                showScaleBar: preferences.viewer.showScaleBar,
+                showNavigator: preferences.viewer.showNavigator,
+              };
+              if (!await viewStore.current?.flush()) throw new Error("Save the display settings before detaching this image.");
+              await window.lociImageWindows!.open(source.id, { sourceSha256: source.sha256, presentation });
+            }, "Could not open the image window.")}>Detach image</button>}
           {source && <button className={!resultId ? "selected" : ""} aria-pressed={!resultId}
-            onClick={() => { setResultId(null); setResultView(null); setImage(null); }}>Original image</button>}
+            onClick={() => { largeNavigationIntent.current++; largeSelectionIntent.current++; objectPickToken.current++; setPopulationObject(null); setSelectedRow(null); setResultId(null); setResultView(null); setImage(null); }}>Original image</button>}
           {snapshot.results
             .filter((item) => item.source_id === sourceId)
             .map((item) => (
@@ -2731,16 +3004,22 @@ export default function ResearchWorkbench({
                 key={item.id}
                 disabled={sourceIsChanging}
                 data-result-id={item.id}
-                title={`Exact revision ${item.revision_hash}`}
+                data-review-state={resultReviewState(item)}
+                title={`Result ${item.id}\nExact revision ${item.revision_hash}\n${resultReviewState(item)} review`}
+                aria-label={`${item.kind}, ${item.object_count} objects, revision ${item.revision_hash}, ${resultReviewState(item)} review`}
                 className={item.id === resultId ? "selected" : ""}
                 aria-pressed={item.id === resultId}
                 onClick={() => {
+                  largeNavigationIntent.current++;
+                  largeSelectionIntent.current++;
                   setRedoStack([]);
                   void loadResult(item.id, item);
                 }}
               >
-                {item.kind}
-                <small>{item.object_count} objects</small>
+                <span className="research-result-kind">{item.kind}</span>
+                <small className="research-result-meta">{item.object_count} objects · {item.revision_hash.slice(0, 8)}</small>
+                <small className="research-result-meta">{resultReviewState(item)} review</small>
+                {item.label_import && <small className="research-result-meta">{item.parent_id ? "Corrected from " : "Imported "}{item.label_import.file_name} · {item.label_import.producer?.name ?? "Unknown producer"}</small>}
               </button>
             ))}
           <WorkspaceRecordActions key={studyEpoch} api={api} snapshot={snapshot} source={source}
@@ -2762,7 +3041,7 @@ export default function ResearchWorkbench({
           onKeyDown={handleSourcesResizeKeyDown}
         />
       </div>
-      <section className="research-canvas">
+      <section className="research-canvas" hidden={tab === "Population" && statisticsFocused}>
         {(resultId || (dimensions && dimensions.z > 1) || snapshot.sources.length >= 2) && <div className="research-canvas-toolbar">
           {snapshot.sources.length >= 2 && !rawVolumeOpen && !surfaceOpen && !resultId && (
             <button
@@ -2793,7 +3072,7 @@ export default function ResearchWorkbench({
           {sourceResultOverlay && (
             <>
               <span className="result-source-link">Result on source · Z {(selectedResult?.selection?.z ?? 0) + 1}, T {(selectedResult?.selection?.t ?? 0) + 1}</span>
-              {rows.length > 0 && <span className="result-source-count">{rows.length} objects</span>}
+              {selectedResult && <span className="result-source-count">{selectedResult.object_count.toLocaleString()} objects</span>}
               <button
                 type="button"
                 className="research-review-export-quick-btn"
@@ -2818,6 +3097,8 @@ export default function ResearchWorkbench({
           {resultId && (
             <button
               onClick={() => {
+                largeNavigationIntent.current++;
+                largeSelectionIntent.current++;
                 setResultId(null);
                 setResultView(null);
                 setSelectedRow(null);
@@ -2828,9 +3109,19 @@ export default function ResearchWorkbench({
             </button>
           )}
         </div>}
-        {source && rawVolumeOpen ? (
+        {selectedResult && isLargeResult(selectedResult) ? (
+          <LargeResultViewport key={selectedResult.revision_hash} api={api} result={selectedResult} focus={largeFocus}
+            onPickStart={() => ++largeSelectionIntent.current}
+            onPick={(row, intent) => { if (intent === largeSelectionIntent.current) { setLargeObject(row); if (tab !== "Population") setTab("Info"); } }} />
+        ) : source && rawVolumeOpen ? (
           <RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
-            onRequestRefinement={requestRawVolume} onExportFigure={api.exportVolumeFigure} />
+            onRequestRefinement={requestRawVolume} onExportFigure={api.exportVolumeFigure}
+            externalDisplay={{ ...volumeDisplay, channels }}
+            onDisplayChange={(display) => {
+              setVolumeDisplay({ renderMode: display.renderMode, quality: display.quality });
+              setChannels((current) => current.map((channel) =>
+                display.channels.find((next) => next.channel === channel.channel) ?? channel));
+            }} />
         ) : source && surfaceOpen ? (
           <ResearchSurfaceView
             api={api}
@@ -3054,13 +3345,23 @@ export default function ResearchWorkbench({
             showScaleBar={preferences.viewer.showScaleBar}
             showNavigator={preferences.viewer.showNavigator}
             paused={documentSwitching}
-            key={`${documentEpoch}:${source.id}`}
+            key={`${documentEpoch}:${source.id}:${source.sha256}:${annotationTool}`}
             api={api}
             source={source}
+            relinkBusy={busy !== null}
+            onRelinkSource={api.relinkSource ? () => {
+              void report(async () => {
+                setBusy("Relinking source");
+                try {
+                  const next = await api.relinkSource!(source.id, sourceRelinkKind(source));
+                  if (next) adopt(next, source.id);
+                } finally { setBusy(null); }
+              }, "The selected source did not match the archived fingerprint and size.");
+            } : undefined}
             selection={sourceResultOverlay && selectedResult?.selection ? selectedResult.selection : shownSelection}
             channels={compareDefault ? defaultChannels : channels}
             projection={sourceResultOverlay ? "plane" : resolvedProjection}
-            initialCamera={savedCamera}
+            initialCamera={viewCamera ?? savedCamera}
             controlledCamera={controlledViewCamera}
             onCamera={(camera) => {
               setViewCamera(camera);
@@ -3069,7 +3370,7 @@ export default function ResearchWorkbench({
               }
             }}
             onObjectClick={drawingAnalysisRegion ? undefined : handleObjectClick}
-            onViewReady={setViewReadyKey}
+            onViewReady={annotationViewReady}
             overrideImage={sourceResultOverlay || pendingSourceResultCanvas ? null : image}
             resultOverlay={sourceResultOverlay}
             resultDrawing={sourceResultOverlay && !busy ? resultDrawing : null}
@@ -3083,12 +3384,12 @@ export default function ResearchWorkbench({
             annotations={sourceAnnotations}
             draft={tab === "Annotate" || tab === "Epidermis" ? annotationDraft : []}
             drawingMode={tab === "Annotate" || tab === "Epidermis" ? annotationTool : "navigate"}
-            onDraftChange={setAnnotationDraft}
+            onDraftChange={updateViewportDraft}
             onPoint={(tab === "Annotate" || tab === "Epidermis") && annotationTool !== "navigate" ? (point) => setAnnotationDraft((old) => {
               const maximum = annotationTool === "point" ? 1 : ["polygon", "freehand"].includes(annotationTool) ? 2048 : 2;
               return old.length >= maximum ? [point] : [...old, point];
             }) : undefined}
-            overlayRight={is3D ? 0 : inspectorWidth}
+            overlayRight={0}
             onError={setError}
           />
         ) : (
@@ -3119,9 +3420,41 @@ export default function ResearchWorkbench({
         </div>}
       </section>
       <div className="research-inspector-shell">
-      <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />
+      {tab !== "Workflow" && tab !== "Population" && <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />}
       <aside className="research-inspector">
         <WorkbenchTools tab={tab} onTab={openWorkbenchTab} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0} />
+        {workflowOpened && source && dimensions && <div className="workflow-workspace-host" hidden={tab !== "Workflow"}>
+          <ResearchWorkflowPanel key={documentEpoch}
+            api={api} source={source} sources={snapshot.sources}
+            selection={shownSelection} recipe={recipe} jobs={snapshot.jobs}
+            displayedResult={selectedResult && resultView?.resultId === selectedResult.id &&
+              resultView.revisionHash === selectedResult.revision_hash ? selectedResult : null} active={tab === "Workflow"}
+            busy={busy !== null}
+            onBusyChange={(value) => setBusy((current) => value ? (current ?? "workflow") : current === "workflow" ? null : current)}
+            onPreview={(previewImage) => {
+              if (tab !== "Workflow") return;
+              resultLoadToken.current++; resultViewToken.current++; objectPickToken.current++;
+              setResultId(null); setResultView(null); setPopulationObject(null);
+              setSelectedRow(null); setImage(previewImage); setRawVolumeOpen(false);
+            }}
+            onResult={async (result) => {
+              await api.getSnapshot().then(adopt);
+              if (result.source_id === source.id && result.source_sha256 === source.sha256) {
+                await loadResult(result.id, result);
+              }
+            }}
+            onReview={async (result) => {
+              if (result.source_id !== source.id || result.source_sha256 !== source.sha256) {
+                throw new Error("Select this workflow result's source image before reviewing it.");
+              }
+              await loadResult(result.id, result);
+            }}
+            onExport={async (result, runId) => { await api.exportResult(result.id, result.revision_hash, runId); }}
+            onRefresh={async () => { await api.getSnapshot().then(adopt); }}
+          />
+        </div>}
+        {source && snapshot.project.first_study?.example_id === "synthetic-shapes-v1" &&
+          snapshot.project.first_study.source_id === source.id && snapshot.project.first_study.source_sha256 === source.sha256 && <FirstStudyGuide />}
         {!source && (
           <div className="research-inspector-empty">
             <div className="research-inspector-empty-body">
@@ -3137,9 +3470,21 @@ export default function ResearchWorkbench({
           <div><button aria-pressed={drawingAnalysisRegion} onClick={() => { setDrawingAnalysisRegion((value) => !value); setRawVolumeOpen(false); setResultId(null); }}>{drawingAnalysisRegion ? "Cancel drawing" : "Draw region"}</button>
             <button onClick={() => { setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 })); setDrawingAnalysisRegion(false); }}>Whole image</button></div>
           {drawingAnalysisRegion && <p>Drag a rectangle on the image. Right-drag still pans.</p>}
-          {shownSelection.width * shownSelection.height * ((shownSelection.z_stop ?? shownSelection.z + 1) - shownSelection.z) * 96 > recipe.working_bytes && <p>Select a smaller region for the current analysis memory budget.</p>}
         </div>}
-        {source && <div hidden={tab !== "Annotate" && tab !== "Epidermis"}><SourceAnnotationPanel key={`${documentEpoch}:${source.id}`} api={api} source={source}
+        {source && dimensions && (tab === "Annotate" || tab === "Epidermis") &&
+          (dimensions.z > 1 || dimensions.t > 1) && <div className="research-panel source-axes" aria-label="Annotation plane">
+            {dimensions.z > 1 && <label><span>Z <output>{shownSelection.z + 1} / {dimensions.z}</output></span>
+              <input aria-label="Z plane" type="range" min={0} max={dimensions.z - 1} value={shownSelection.z}
+                onChange={(event) => { const z = Number(event.target.value); setProjection("plane");
+                  setResultId(null); setResultView(null); setImage(null); setVolume(null); setRawVolumeOpen(false);
+                  setSelection((old) => { const { z_stop: _stop, ...plane } = old; return { ...plane, z }; }); }} /></label>}
+            {dimensions.t > 1 && <label><span>Time <output>{shownSelection.t + 1} / {dimensions.t}</output></span>
+              <input aria-label="Time frame" type="range" min={0} max={dimensions.t - 1} value={shownSelection.t}
+                onChange={(event) => { const t = Number(event.target.value); setProjection("plane");
+                  setResultId(null); setResultView(null); setImage(null); setVolume(null); setRawVolumeOpen(false);
+                  setSelection((old) => { const { z_stop: _stop, ...plane } = old; return { ...plane, t }; }); }} /></label>}
+          </div>}
+        {source && source.locator_state !== "relink-required" && <div hidden={tab !== "Annotate" && tab !== "Epidermis"}><SourceAnnotationPanel key={`${documentEpoch}:${source.id}:${source.sha256}`} api={api} source={source}
           measurementMode={tab === "Epidermis" ? "epidermis" : "general"}
           selection={shownSelection} tool={annotationTool} onTool={(tool) => {
             setAnnotationTool(tool);
@@ -3149,6 +3494,7 @@ export default function ResearchWorkbench({
               setSelection((previous) => { const { z_stop: _stop, ...plane } = previous; return plane; });
             }
           }}
+          draftControl={annotationState.control}
           points={annotationDraft} onPoints={setAnnotationDraft} onAnnotations={setSourceAnnotations} onError={setError} /></div>}
         {source && dimensions && tab === "Display" && rawVolumeOpen && <section className="volume-inspector" aria-label="Volume workspace information">
           <h2>Volume workspace</h2>
@@ -3173,7 +3519,10 @@ export default function ResearchWorkbench({
           <button onClick={() => setAbCompareMode(false)}>Return to single image</button>
         </section>}
         {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && (
-          <><SourceDisplayPanel
+          <><AgentImagePanel api={api} source={source} selection={shownSelection} channels={channels}
+            projection={resolvedProjection} following={assistantFollowing} followBusy={assistantFollowBusy || !viewSettingsReady}
+            onFollowing={(value) => void followAssistantDisplay(value)} onError={setError} />
+          <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy}><SourceDisplayPanel
             api={api}
             source={source}
             sources={snapshot.sources}
@@ -3251,11 +3600,19 @@ export default function ResearchWorkbench({
                 }));
               }, "Could not calculate a full-source range.");
             }}
-          /><SourceExportPanel api={api} source={source} selection={shownSelection} channels={channels} defaultDpi={preferences.figureDpi}
+          /></fieldset><SourceExportPanel api={api} source={source} selection={shownSelection} channels={channels} defaultDpi={preferences.figureDpi}
             projection={resolvedProjection} onError={setError} /></>
         )}
+        {source && !configurationValid && <div role="status" className="research-number-status">
+          <p>Finish numeric fields before running analysis or saving a recipe.</p>
+          <button disabled={busy !== null} onClick={restoreAppliedNumbers}>Restore applied numbers</button>
+        </div>}
+        {source && (tab === "Process" || (tab === "Analyze" && segmentationFamily === "classical")) &&
+          <RecipeResourcePanel api={api} source={source} selection={shownSelection} recipe={recipe}
+            busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
           <Process
+            key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("process", valid)}
             recipe={recipe}
             setRecipe={setRecipe}
             onPreview={() => void preview()}
@@ -3264,10 +3621,37 @@ export default function ResearchWorkbench({
         )}
         {source && dimensions && tab === "Analyze" && (
           <>
+          <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
+            navigationIntent={() => largeNavigationIntent.current}
+            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={(message, owner) => {
+              if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
+              else if (labelImportBusyOwner.current?.owner === owner) {
+                const ownMessage = labelImportBusyOwner.current.message;
+                labelImportBusyOwner.current = null;
+                setBusy((current) => current === ownMessage ? null : current);
+              }
+            }}
+            onResult={async (target, measurements, isCurrent) => {
+              const capturedScope = labelImportScope;
+              const current = () => isCurrent() && liveLabelImportScope.current === capturedScope && !documentSwitch.current;
+              if (await persistRevision(target, measurements, undefined, current, true) && current()) {
+                setRedoStack([]); setCorrectionObjectTarget(null); openWorkbenchTab("Population");
+              }
+            }} />
           <label className="segmentation-family">Segment with<select aria-label="Segmentation model" value={segmentationFamily} onChange={(event) => setSegmentationFamily(event.target.value as typeof segmentationFamily)}>
-            <option value="classical">Classical methods</option><option value="adaptive">Loci Adaptive Watershed</option>{isRgb && <option value="stain">Declared stain separation</option>}<option value="cellpose-sam">Cellpose-SAM</option><option value="cellpose-sam-v2">Cellpose-SAM v2</option>
+            <option value="classical">Classical methods</option><option value="large-components">Large image · threshold components</option><option value="adaptive">Loci Adaptive Watershed</option>{isRgb && <option value="stain">Declared stain separation</option>}<option value="cellpose-sam">Cellpose-SAM</option><option value="cellpose-sam-v2">Cellpose-SAM v2</option>
           </select></label>
-          {["classical", "stain"].includes(segmentationFamily) ? <Analyze
+          {segmentationFamily === "large-components" ? <LargeAnalysisPanel api={api} source={source} selection={shownSelection}
+            busy={busy !== null} onBusy={setBusy} onError={setError}
+            onRunStart={() => largeNavigationIntent.current}
+            onResult={async (result, intent) => {
+              if (intent !== largeNavigationIntent.current) {
+                await refreshLargeHistory();
+                return;
+              }
+              if (await persistRevision(result, undefined, intent) && intent === largeNavigationIntent.current) setTab("Info");
+            }} /> : ["classical", "stain"].includes(segmentationFamily) ? <Analyze
+            key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("analyze", valid)}
             recipe={recipe}
             channelCount={dimensions.c}
             setRecipe={setRecipe}
@@ -3285,14 +3669,19 @@ export default function ResearchWorkbench({
             snapshotRecipes={snapshot.recipes}
             onRestoreRecipe={restoreRecipePreset}
           /> : segmentationFamily === "adaptive" ? <ResearchAdaptivePanel api={api} source={source} selection={shownSelection}
-            busy={busy !== null} onBusy={setBusy} onError={setError} onBatchConfiguration={setAdaptiveBatchConfiguration}
+            busy={busy !== null} onBusy={(message) => { if (message) setError(null); setBusy(message); }} onError={setError} onBatchConfiguration={setAdaptiveBatchConfiguration}
+            workingBytes={recipe.working_bytes}
+            onWorkingBytesChange={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))}
             onResult={async (result) => { await loadResult(result.id, result); await api.getSnapshot().then(adopt); }} /> : <ResearchCellposePanel api={api} source={source} selection={shownSelection} profileId={segmentationFamily as "cellpose-sam" | "cellpose-sam-v2"}
-            busy={busy !== null} onBusy={setBusy} onError={setError}
+            busy={busy !== null} onBusy={(message) => { if (message) setError(null); setBusy(message); }} onError={setError}
+            workingBytes={recipe.working_bytes}
+            onWorkingBytesChange={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))}
             onBatchConfiguration={setCellposeBatchConfiguration}
             onResult={async (result) => { await loadResult(result.id, result); await api.getSnapshot().then(adopt); }} />}
-          {!["classical", "stain"].includes(segmentationFamily) && rows.length > 0 && (
+          {!["classical", "stain", "large-components"].includes(segmentationFamily) && rows.length > 0 && (
             <div className="research-panel-section" style={{ marginTop: 12 }}>
-              <h3>Segmented objects ({rows.length})</h3>
+              <h3>Segmented objects ({selectedResult?.object_count ?? rows.length})</h3>
+              {selectedResult && selectedResult.object_count > rows.length && <p>Showing the first {rows.length} objects. Statistics & objects shows the full population.</p>}
               <ResultTable rows={rows} selected={selectedRow} onSelect={(index) => void selectObject(index)} />
             </div>
           )}
@@ -3319,6 +3708,22 @@ export default function ResearchWorkbench({
           )}
           </>
         )}
+        {populationOpened && selectedResult && (<div className="population-workspace-host" hidden={tab !== "Population"}>
+          <ResearchPopulationExplorer key={`${selectedResult.id}:${selectedResult.revision_hash}`} api={api} result={selectedResult}
+            active={tab === "Population"} focused={statisticsFocused} onToggleFocus={() => setStatisticsFocused((value) => !value)}
+            selectedLabel={Number((isLargeResult(selectedResult) ? largeObject : populationObject)?.label) || null}
+            onSelect={(row) => {
+              objectPickToken.current++; largeSelectionIntent.current++;
+              if (isLargeResult(selectedResult)) setLargeObject(row);
+              else { setPopulationObject(row); const index = rows.findIndex((item) => item.label === row.label); setSelectedRow(index < 0 ? null : index); }
+            }}
+            onLocate={(row) => { setStatisticsFocused(false); void locatePopulationObject(row); }}
+            onEdit={isLargeResult(selectedResult) || !selectedResult.arrays?.labels ? undefined : (target) => {
+              if (busy !== null || documentSwitching || target.result_id !== selectedResult.id || target.revision_hash !== selectedResult.revision_hash) return;
+              setCorrectionObjectTarget(target); setStatisticsFocused(false); openWorkbenchTab("Correction");
+            }} />
+        </div>)}
+        {tab === "Population" && !selectedResult && <section className="research-panel population-empty-workspace"><h2>Statistics &amp; objects</h2><p>Select a saved segmentation result to explore object measurements alongside the image.</p><p>For this source image, pixel-value distributions are available under Histogram &amp; levels in Image &amp; channels.</p><button type="button" onClick={() => openWorkbenchTab("Display")}>Open image &amp; channels</button><button type="button" onClick={() => openWorkbenchTab("Analyze")}>Segment &amp; measure</button></section>}
         {source && dimensions && tab === "Quantify" && (
           <ResearchQuantificationPanel
             api={api}
@@ -3348,9 +3753,16 @@ export default function ResearchWorkbench({
             onPublished={publishGeneratedResult}
           />
         )}
-        {tab === "Correction" && (
+        {selectedResult?.kind === "corrected-labels" && selectedResult.parent_id && ["Correction", "Info", "Population"].includes(tab) && (
+          <div className="research-panel"><button disabled={busy !== null || documentSwitching} onClick={() => {
+            setCorrectionEffectSeed({ beforeId: selectedResult.parent_id!, afterId: selectedResult.id });
+            openWorkbenchTab("Study");
+          }}>Show experiment effect</button></div>
+        )}
+        {tab === "Correction" && !isLargeResult(selectedResult) && (
           <ResearchCorrectionPanel
             api={api}
+            selectedObject={correctionObjectTarget?.result_id === resultId ? correctionObjectTarget : null}
             result={
               snapshot.results.find((item) => item.id === resultId) ?? null
             }
@@ -3443,6 +3855,7 @@ export default function ResearchWorkbench({
         )}
         {source && dimensions && tab === "Model" && (
           <ModelPanel
+            key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("model", valid)}
             api={api}
             models={models}
             refreshModels={refreshModels}
@@ -3484,7 +3897,18 @@ export default function ResearchWorkbench({
           />
         )}
         {source && dimensions && tab === "Study" && (
+          <ResearchCorrectionEffectPanel key={`correction-effect:${studyEpoch}`}
+            api={api} snapshot={snapshot} seed={correctionEffectSeed}
+            contextKey={`${studyEpoch}:${documentSwitching}:${source.id}:${resultId ?? ""}`}
+            busy={busy !== null || documentSwitching} adopt={adopt} onOpenResult={async (id) => {
+              const exact = snapshot.results.find(result => result.id === id);
+              if (!exact) throw new Error("The bound revision is no longer in this study.");
+              await navigateExactResult(exact); openWorkbenchTab("Info");
+            }} />
+        )}
+        {source && dimensions && tab === "Study" && (
           <StudyPanel
+            configurationValid={configurationValid}
             snapshot={snapshot}
             api={api}
             source={source}
@@ -3545,7 +3969,40 @@ export default function ResearchWorkbench({
             }}
           />
         )}
-        {source && tab === "Info" && (
+        {selectedResult && isLargeResult(selectedResult) && ["Info", "Correction"].includes(tab) && (
+          <LargeResultInspector key={selectedResult.revision_hash} api={api} result={selectedResult} selected={largeObject}
+            onSelect={(row) => { largeSelectionIntent.current++; setLargeObject(row); }} onLocate={async (row) => {
+              const selectionIntent = ++largeSelectionIntent.current;
+              const navigationIntent = largeNavigationIntent.current;
+              const label = row.label;
+              const current = () => selectionIntent === largeSelectionIntent.current && navigationIntent === largeNavigationIntent.current;
+              try {
+                if (!Number.isInteger(label) || Number(label) < 1) throw new Error("Choose a valid object label.");
+                const located = await api.execute("large_result_locate", { result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, label }) as {
+                  result_id: string; revision_hash: string; label: number; point_index: number[];
+                };
+                if (!current()) return;
+                const [height, width] = selectedResult.arrays!.image.shape!;
+                const point = located.point_index;
+                if (located.result_id !== selectedResult.id || located.revision_hash !== selectedResult.revision_hash || located.label !== label ||
+                    !Array.isArray(point) || point.length !== 2 || !Number.isInteger(point[0]) || !Number.isInteger(point[1]) ||
+                    point[0] < 0 || point[0] >= height || point[1] < 0 || point[1] >= width)
+                  throw new Error("Object location returned a stale or invalid result pixel.");
+                setLargeFocus({ point_index: [point[0], point[1]] });
+              } catch (error) { if (current()) setError(error instanceof Error ? error.message : "Could not locate this object."); }
+            }} busy={busy !== null}
+            onBusy={setBusy} onError={setError} onActionStart={() => largeNavigationIntent.current}
+            onResult={async (child, intent) => {
+              if (intent !== largeNavigationIntent.current) {
+                await refreshLargeHistory();
+                return;
+              }
+              if (await persistRevision(child, undefined, intent)) { setRedoStack([]); setLargeObject(null); }
+            }}
+            onRefresh={async () => adopt(await api.getSnapshot())}
+            onUndo={() => void moveRevision("undo")} onRedo={() => void moveRevision("redo")} canRedo={Boolean(redoTargetId)} />
+        )}
+        {source && tab === "Info" && !isLargeResult(selectedResult) && (
           <Info
             source={source}
             snapshot={snapshot}
@@ -3617,17 +4074,21 @@ export default function ResearchWorkbench({
   );
 }
 
+type NumericFormProps = { numberKey: string; onNumberValidity: (valid: boolean) => void; configurationValid: boolean };
+
 function Process({
   recipe,
   setRecipe,
   onPreview,
   busy,
-}: {
+  numberKey, onNumberValidity, configurationValid,
+}: NumericFormProps & {
   recipe: typeof DEFAULT_RECIPE;
   setRecipe: React.Dispatch<React.SetStateAction<typeof DEFAULT_RECIPE>>;
   onPreview: () => void;
   busy: boolean;
 }) {
+  const numbers = useNumericValidity(onNumberValidity);
   const add = (op: string) =>
     setRecipe((old) => ({
       ...old,
@@ -3685,15 +4146,11 @@ function Process({
               <strong>{String(step.op).replaceAll("_", " ")}</strong>
               <label>
                 {parameter}
-                <input
-                  aria-label={`Step ${index + 1} ${parameter}`}
-                  type="number"
-                  step="any"
-                  value={Number(step[parameter])}
-                  onChange={(event) =>
-                    patch(index, { [parameter]: Number(event.target.value) })
-                  }
-                />
+                <ValidatedNumberInput key={`${numberKey}:${index}:${parameter}`}
+                  label={`Step ${index + 1} ${parameter}`} value={Number(step[parameter])}
+                  minimum={parameter === "value" ? -1e15 : 0} maximum={parameter === "value" ? 1e15 : 1e6}
+                  commitOnChange onValidity={(valid) => numbers.setValidity(`step-${index}-${parameter}`, valid)}
+                  onValue={(value) => { patch(index, { [parameter]: value }); return true; }} />
               </label>
               <div className="research-actions">
                 <button
@@ -3726,7 +4183,7 @@ function Process({
           );
         })}
       </ol>
-      <button disabled={busy} onClick={onPreview}>
+      <button disabled={busy || !numbers.valid || !configurationValid} onClick={onPreview}>
         Preview selected crop
       </button>
     </div>
@@ -3738,6 +4195,7 @@ function Analyze({
   setRecipe,
   onRun,
   busy,
+  numberKey, onNumberValidity, configurationValid,
   rows,
   selected,
   onSelect,
@@ -3749,7 +4207,7 @@ function Analyze({
   onHistologyRun,
   snapshotRecipes,
   onRestoreRecipe,
-}: {
+}: NumericFormProps & {
   recipe: typeof DEFAULT_RECIPE;
   channelCount: number;
   setRecipe: React.Dispatch<React.SetStateAction<typeof DEFAULT_RECIPE>>;
@@ -3775,6 +4233,7 @@ function Analyze({
   snapshotRecipes?: ResearchSnapshot["recipes"];
   onRestoreRecipe?: (item: unknown) => void;
 }) {
+  const numbers = useNumericValidity(onNumberValidity);
   const [basis, setBasis] = useState<"H&E" | "H-DAB">("H&E");
   const [component, setComponent] = useState(0);
   const [stainRuleEnabled, setStainRuleEnabled] = useState(false);
@@ -3905,34 +4364,15 @@ function Analyze({
           </label>
           <label>
             Stain-coordinate threshold
-            <input
-              aria-label="Stain-coordinate threshold"
-              type="number"
-              step="any"
-              value={histologySegmentation.threshold}
-              onChange={(event) =>
-                setHistologySegmentation((old) => ({
-                  ...old,
-                  threshold: Number(event.target.value),
-                }))
-              }
-            />
+            <ValidatedNumberInput key={`${numberKey}:Stain-coordinate threshold`} label="Stain-coordinate threshold" value={histologySegmentation.threshold}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Stain-coordinate threshold", valid)}
+                  onValue={(value) => { setHistologySegmentation((old) => ({ ...old, threshold: value })); return true; }} />
           </label>
           <label>
             Stain minimum object area ({stainAreaUnit})
-            <input
-              aria-label="Stain minimum object size"
-              type="number"
-              min="0"
-              step="1"
-              value={histologySegmentation.min_size}
-              onChange={(event) =>
-                setHistologySegmentation((old) => ({
-                  ...old,
-                  min_size: Number(event.target.value),
-                }))
-              }
-            />
+            <ValidatedNumberInput key={`${numberKey}:Stain minimum object size`} label="Stain minimum object size" value={histologySegmentation.min_size} minimum={0} maximum={1e20}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Stain minimum object size", valid)}
+                  onValue={(value) => { setHistologySegmentation((old) => ({ ...old, min_size: value })); return true; }} />
           </label>
           <label>
             Stain segmentation method
@@ -3953,18 +4393,9 @@ function Analyze({
           {histologySegmentation.method === "watershed" && (
             <label>
               Stain watershed split height
-              <input
-                aria-label="Stain watershed split height"
-                type="number"
-                step="any"
-                value={histologySegmentation.split_height ?? 1}
-                onChange={(event) =>
-                  setHistologySegmentation((old) => ({
-                    ...old,
-                    split_height: Number(event.target.value),
-                  }))
-                }
-              />
+              <ValidatedNumberInput key={`${numberKey}:Stain watershed split height`} label="Stain watershed split height" value={histologySegmentation.split_height ?? 1} minimum={1e-9} maximum={1e9}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Stain watershed split height", valid)}
+                  onValue={(value) => { setHistologySegmentation((old) => ({ ...old, split_height: value })); return true; }} />
             </label>
           )}
           <fieldset>
@@ -4040,16 +4471,14 @@ function Analyze({
                   />
                 </label>
                 <p>
-                  The rule is true only when the selected {stainRuleStatistic} value
-                  is strictly greater than the declared threshold. It records a
-                  measurement rule, not an inferred biological class.
+                  Rule: {stainRuleStatistic} derived stain coordinate &gt; threshold.
                 </p>
               </>
             )}
           </fieldset>
           <div className="research-actions">
             <button
-              disabled={busy || (stainRuleEnabled && !stainRuleValid)}
+              disabled={busy || !numbers.valid || !configurationValid || (stainRuleEnabled && !stainRuleValid)}
               onClick={() =>
                 onHistologyPreview(basis, component, histologyRecipe)
               }
@@ -4058,7 +4487,7 @@ function Analyze({
             </button>
             <button
               className="research-primary"
-              disabled={busy || (stainRuleEnabled && !stainRuleValid)}
+              disabled={busy || !numbers.valid || !configurationValid || (stainRuleEnabled && !stainRuleValid)}
               onClick={() => onHistologyRun(basis, component, histologyRecipe)}
             >
               Run declared stain
@@ -4070,14 +4499,9 @@ function Analyze({
         <>
           <label>
             Threshold
-            <input
-              aria-label="Threshold"
-              type="number"
-              value={Number(segmentation.threshold)}
-              onChange={(event) =>
-                patch({ threshold: Number(event.target.value) })
-              }
-            />
+            <ValidatedNumberInput key={`${numberKey}:Threshold`} label="Threshold" value={Number(segmentation.threshold)}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Threshold", valid)}
+                  onValue={(value) => { patch({ threshold: value }); return true; }} />
           </label>
           <label>
             Method
@@ -4093,21 +4517,18 @@ function Analyze({
           {segmentation.method === "watershed" && (
             <label>
               Watershed split height
-              <input
-                aria-label="Watershed split height"
-                type="number"
-                value={Number(segmentation.split_height ?? 1)}
-                onChange={(event) =>
-                  patch({ split_height: Number(event.target.value) })
-                }
-              />
+              <ValidatedNumberInput key={`${numberKey}:Watershed split height`} label="Watershed split height" value={Number(segmentation.split_height ?? 1)} minimum={1e-9} maximum={1e9}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Watershed split height", valid)}
+                  onValue={(value) => { patch({ split_height: value }); return true; }} />
             </label>
           )}
           <div className="research-grid">
             <label>Foreground<select aria-label="Object foreground" value={String(segmentation.polarity ?? "bright")} onChange={(event) => patch({ polarity: event.target.value })}>
               <option value="bright">Above threshold</option><option value="dark">Below threshold</option>
             </select></label>
-            <label>Minimum object {measureLabel}<input aria-label="Minimum object measure" type="number" min={0} step="any" value={Number(segmentation.min_size ?? 0)} onChange={(event) => patch({ min_size: Number(event.target.value) })} /></label>
+            <label>Minimum object {measureLabel}<ValidatedNumberInput key={`${numberKey}:Minimum object measure`} label="Minimum object measure" value={Number(segmentation.min_size ?? 0)} minimum={0} maximum={1e20}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Minimum object measure", valid)}
+                  onValue={(value) => { patch({ min_size: value }); return true; }} /></label>
           </div>
           <label className="research-check" title="Exclude objects touching the declared analysis region boundary"><input type="checkbox" checked={Boolean(segmentation.exclude_border)} onChange={(event) => patch({ exclude_border: event.target.checked })} /> Exclude border objects</label>
           {!rgbIntensity && <label>
@@ -4129,7 +4550,7 @@ function Analyze({
               ))}
             </select>
           </label>}
-          <button className="research-primary" disabled={busy || (rgbIntensity && recipe.input_transform !== "rgb_intensity")} onClick={onRun}>
+          <button className="research-primary" disabled={busy || !numbers.valid || !configurationValid || (rgbIntensity && recipe.input_transform !== "rgb_intensity")} onClick={onRun}>
             <Play /> {busy ? "Running…" : "Run recipe"}
           </button>
         </>
@@ -4176,7 +4597,8 @@ function ModelPanel({
   onPreview,
   onAdopt,
   busy,
-}: {
+  numberKey, onNumberValidity, configurationValid,
+}: NumericFormProps & {
   api: ResearchDesktopApi;
   models: ModelRecord[];
   refreshModels: () => Promise<void>;
@@ -4228,6 +4650,7 @@ function ModelPanel({
   onAdopt: () => void;
   busy: boolean;
 }) {
+  const numbers = useNumericValidity(onNumberValidity);
   const [importing, setImporting] = useState(false);
   const selected = models.find((item) => item.model_id === modelId);
   const recoverable = (selected?.availability as Record<string, unknown> | undefined)?.state === "reimport-required";
@@ -4393,25 +4816,15 @@ function ModelPanel({
             <>
               <label>
                 Override Y{" "}
-                <input
-                  aria-label="Override Y scale"
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={scaleY}
-                  onChange={(e) => setScaleY(Number(e.target.value))}
-                />
+                <ValidatedNumberInput key={`${numberKey}:Override Y scale`} label="Override Y scale" value={scaleY} minimum={Number.MIN_VALUE}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Override Y scale", valid)}
+                  onValue={(value) => { setScaleY(value); return true; }} />
               </label>
               <label>
                 Override X{" "}
-                <input
-                  aria-label="Override X scale"
-                  type="number"
-                  min="0"
-                  step="any"
-                  value={scaleX}
-                  onChange={(e) => setScaleX(Number(e.target.value))}
-                />
+                <ValidatedNumberInput key={`${numberKey}:Override X scale`} label="Override X scale" value={scaleX} minimum={Number.MIN_VALUE}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Override X scale", valid)}
+                  onValue={(value) => { setScaleX(value); return true; }} />
               </label>
               <label>
                 Override unit{" "}
@@ -4438,25 +4851,15 @@ function ModelPanel({
           <h3>Segmentation postprocessing</h3>
           <label>
             Probability channel{" "}
-            <input
-              aria-label="Probability channel"
-              type="number"
-              min="0"
-              value={probabilityChannel}
-              onChange={(e) => setProbabilityChannel(Number(e.target.value))}
-            />
+            <ValidatedNumberInput key={`${numberKey}:Probability channel`} label="Probability channel" value={probabilityChannel} integer minimum={0}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Probability channel", valid)}
+                  onValue={(value) => { setProbabilityChannel(value); return true; }} />
           </label>
           <label>
             Threshold{" "}
-            <input
-              aria-label="Model threshold"
-              type="number"
-              min="0"
-              max="1"
-              step="any"
-              value={threshold}
-              onChange={(e) => setThreshold(Number(e.target.value))}
-            />
+            <ValidatedNumberInput key={`${numberKey}:Model threshold`} label="Model threshold" value={threshold} minimum={0} maximum={1}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Model threshold", valid)}
+                  onValue={(value) => { setThreshold(value); return true; }} />
           </label>
           <label>
             Method{" "}
@@ -4473,26 +4876,16 @@ function ModelPanel({
           </label>
           <label>
             Physical minimum size{" "}
-            <input
-              aria-label="Physical minimum size"
-              type="number"
-              min="0"
-              step="any"
-              value={minSize}
-              onChange={(e) => setMinSize(Number(e.target.value))}
-            />
+            <ValidatedNumberInput key={`${numberKey}:Physical minimum size`} label="Physical minimum size" value={minSize} minimum={0}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Physical minimum size", valid)}
+                  onValue={(value) => { setMinSize(value); return true; }} />
           </label>
           {method === "watershed" && (
             <label>
               Watershed split height{" "}
-              <input
-                aria-label="Model watershed split height"
-                type="number"
-                min="0"
-                step="any"
-                value={splitHeight}
-                onChange={(e) => setSplitHeight(Number(e.target.value))}
-              />
+              <ValidatedNumberInput key={`${numberKey}:Model watershed split height`} label="Model watershed split height" value={splitHeight} minimum={1e-9} maximum={1e9}
+                  commitOnChange onValidity={(valid) => numbers.setValidity("Model watershed split height", valid)}
+                  onValue={(value) => { setSplitHeight(value); return true; }} />
             </label>
           )}
           <label>
@@ -4517,12 +4910,12 @@ function ModelPanel({
             </select>
           </label>
           <div className="research-actions">
-            <button disabled={busy || !mapping.length} onClick={onPreview}>
+            <button disabled={busy || !numbers.valid || !configurationValid || !mapping.length} onClick={onPreview}>
               Preview model overlay
             </button>
             <button
               className="research-primary"
-              disabled={busy || !pending}
+              disabled={busy || !numbers.valid || !configurationValid || !pending}
               onClick={onAdopt}
             >
               Adopt exact preview
@@ -4605,7 +4998,9 @@ function StudyPanel({
   onLoadResult,
   busy,
   onBusyChange,
+  configurationValid,
 }: {
+  configurationValid: boolean;
   snapshot: ResearchSnapshot;
   api: ResearchDesktopApi;
   source: ResearchSource;
@@ -4634,7 +5029,7 @@ function StudyPanel({
       }>
     >
   >;
-  batchFamily: "classical" | "stain" | "adaptive" | "cellpose-sam" | "cellpose-sam-v2";
+  batchFamily: "classical" | "stain" | "adaptive" | "cellpose-sam" | "cellpose-sam-v2" | "large-components";
   cellposeBatchConfiguration: ResearchCellposeBatchConfiguration | null;
   adaptiveBatchConfiguration?: ResearchAdaptiveBatchConfiguration | null;
   resultIds: string[];
@@ -4688,6 +5083,7 @@ function StudyPanel({
     }
   };
   const saveRecipe = async () => {
+    if (!configurationValid) return;
     const prior = snapshot.recipes.find(
       (item) =>
         typeof item === "object" &&
@@ -4710,6 +5106,7 @@ function StudyPanel({
     );
   };
   const preview = async (id: string) => {
+    if (!configurationValid) return;
     setPreviewSourceId(id);
     const output = await report(
       () =>
@@ -4763,6 +5160,7 @@ function StudyPanel({
     }
   };
   const frozenBatchTasks = (): ResearchBatchTask[] => {
+    if (batchFamily === "large-components") throw new Error("Large image analysis currently runs one explicit image scope at a time. Use Analyze.");
     const frozenSelection = structuredClone(selection);
     const cellpose = batchFamily === "cellpose-sam" || batchFamily === "cellpose-sam-v2";
     const adaptive = batchFamily === "adaptive";
@@ -4829,6 +5227,7 @@ function StudyPanel({
     });
   };
   const run = async () => {
+    if (!configurationValid) return;
     if (!api.submitBatch) throw new Error("This Loci build cannot create durable study batches.");
     const receipt = await api.submitBatch(frozenBatchTasks());
     await refreshBatchSnapshot();
@@ -4937,7 +5336,7 @@ function StudyPanel({
       return;
     const checked = await report(
       () =>
-        api.execute("validate_recipe", {
+        api.execute("recipe_preflight", {
           source_id: source.id,
           selection: data.selection,
           recipe: data.recipe,
@@ -4985,7 +5384,7 @@ function StudyPanel({
           onChange={(e) => setRecipeName(e.target.value)}
         />
       </label>
-      <button disabled={busy} onClick={() => void perform(saveRecipe)}>
+      <button disabled={busy || !configurationValid} onClick={() => void perform(saveRecipe)}>
         Save validated recipe
       </button>
       {snapshot.recipes.map((item, index) => (
@@ -5003,6 +5402,7 @@ function StudyPanel({
         </button>
       ))}
       <h3>{profileBatch ? "Frozen profile batch" : "Preview before batch"}</h3>
+      {batchFamily === "large-components" && <p>Large image analysis runs one explicit image scope at a time in Analyze. Saved recipes and previews below apply to the classical recipe.</p>}
       {profileBatch && (
         <p>
           The batch uses the exact {batchFamily === "adaptive" ? "Loci Adaptive Watershed" : batchFamily}
@@ -5028,7 +5428,7 @@ function StudyPanel({
           />
           {item.name}
           <button
-            disabled={busy || profileBatch}
+            disabled={busy || !configurationValid || profileBatch}
             onClick={() => void perform(() => preview(item.id))}
           >
             {previewSourceId === item.id ? "Previewing…" : "Preview"}
@@ -5037,7 +5437,7 @@ function StudyPanel({
       ))}
       <div className="study-batch-actions" role="group" aria-label="Batch actions"><button
         className="research-primary"
-        disabled={busy || !selectedSourceIds.length ||
+        disabled={busy || !configurationValid || batchFamily === "large-components" || !selectedSourceIds.length ||
           (profileBatch && !profileBatchConfigurationReady)}
         onClick={() => void perform(run)}
       >
@@ -5273,11 +5673,12 @@ function StudyPanel({
 function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) return "NaN";
+    if (!Number.isFinite(value)) return String(value);
+    if (value !== 0 && Math.abs(value) < 0.001) return value.toExponential(2);
     return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(3);
   }
   if (Array.isArray(value)) {
-    return `[${value.map((v) => (typeof v === "number" && Number.isFinite(v) ? (Number.isInteger(v) ? v : v.toFixed(2)) : String(v))).join(", ")}]`;
+    return `[${value.map((v) => (typeof v === "number" && Number.isFinite(v) ? formatStatValue(v) : String(v))).join(", ")}]`;
   }
   if (typeof value === "object") {
     return JSON.stringify(value);
@@ -5313,12 +5714,13 @@ function ResultTable({
     "label",
     "measure",
     "measure_unit",
+    "measure_kind",
     "area",
     "volume",
     "centroid_index",
     "centroid_world_xyz",
     "intensity",
-  ].filter((key) => key in rows[0]);
+  ].filter((key) => rows.some((row) => key in row));
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!rows.length) return;
@@ -5346,7 +5748,7 @@ function ResultTable({
       tabIndex={0}
       onKeyDown={handleKeyDown}
       role="region"
-      aria-label="Object measurements"
+      aria-label="Result measurements"
     >
       <table role="grid" aria-label="Measurements and object table" aria-rowcount={rows.length}>
         <thead>
@@ -5452,83 +5854,242 @@ export function formatStatValue(v: number): string {
   if (!Number.isFinite(v)) return "–";
   if (v === 0) return "0";
   if (Number.isInteger(v)) return v.toString();
-  if (Math.abs(v) < 0.0005) return v.toExponential(2);
+  const abs = Math.abs(v);
+  if (abs < 0.01 || abs >= 1e21) return v.toExponential(2);
   return v.toFixed(2);
 }
 
-export function computeResultStats(rows: Array<Record<string, unknown>>) {
+export interface ResultStats {
+  metric: string | null;
+  min: string | null;
+  max: string | null;
+  mean: string | null;
+  unit: string;
+  hasMixedUnits: boolean;
+  hasMixedKinds: boolean;
+  validCount: number;
+  totalCount: number;
+  incompatibleReason: string | null;
+  excludedCount: number;
+  exclusionReason: string | null;
+}
+
+export function computeResultStats(rows: Array<Record<string, unknown>>): ResultStats | null {
   const totalCount = rows.length;
   if (!totalCount) return null;
 
-  const firstRow = rows[0];
-  let metricField: string | null = null;
-  if ("measure" in firstRow) {
-    metricField = "measure";
-  } else if ("area" in firstRow) {
-    metricField = "area";
-  } else if ("volume" in firstRow) {
-    metricField = "volume";
-  } else {
-    return null;
+  const fieldSet = new Set<string>();
+  const kindSet = new Set<string>();
+  const unitSet = new Set<string>();
+
+  for (let i = 0; i < totalCount; i++) {
+    const row = rows[i];
+    let rowField: "measure" | "area" | "volume" | null = null;
+    if ("measure" in row) {
+      rowField = "measure";
+    } else if ("area" in row) {
+      rowField = "area";
+    } else if ("volume" in row) {
+      rowField = "volume";
+    }
+    if (rowField !== null) {
+      fieldSet.add(rowField);
+    }
+
+    let rowKind: string | null = null;
+    if (typeof row.measure_kind === "string" && row.measure_kind.trim().length > 0) {
+      const rawKind = row.measure_kind.trim();
+      const lower = rawKind.toLowerCase();
+      if (lower === "area") rowKind = "Area";
+      else if (lower === "volume") rowKind = "Volume";
+      else rowKind = rawKind;
+    } else if (rowField === "area") {
+      rowKind = "Area";
+    } else if (rowField === "volume") {
+      rowKind = "Volume";
+    }
+    if (rowKind !== null) {
+      kindSet.add(rowKind);
+    }
+
+    if (typeof row.measure_unit === "string" && row.measure_unit.trim().length > 0) {
+      const normalizedUnit = row.measure_unit
+        .trim()
+        .replace(/^pixel(\^2|²|2)$/i, "px²")
+        .replace(/^pixel(\^3|³|3)$/i, "px³");
+      unitSet.add(normalizedUnit);
+    }
   }
 
-  let metricLabel: string = metricField;
-  if (typeof firstRow.measure_kind === "string") {
-    const rawKind = firstRow.measure_kind.trim().toLowerCase();
-    if (rawKind === "area") {
-      metricLabel = "Area";
-    } else if (rawKind === "volume") {
-      metricLabel = "Volume";
-    } else {
-      metricLabel = firstRow.measure_kind;
+  if (fieldSet.size === 0) {
+    return {
+      metric: null,
+      min: null,
+      max: null,
+      mean: null,
+      unit: "",
+      hasMixedUnits: false,
+      hasMixedKinds: false,
+      validCount: 0,
+      totalCount,
+      incompatibleReason: "No summary metric available (measure, area or volume).",
+      excludedCount: totalCount,
+      exclusionReason: "missing measurement field",
+    };
+  }
+
+  let incompatibleReason: string | null = null;
+  let hasMixedUnits = false;
+  let hasMixedKinds = false;
+
+  if (fieldSet.size > 1) {
+    incompatibleReason = `Cannot pool measurements: incompatible metric fields (${Array.from(fieldSet).sort().join(", ")}).`;
+    hasMixedKinds = true;
+  } else if (kindSet.size > 1) {
+    incompatibleReason = `Cannot pool measurements: mixed measurement kinds (${Array.from(kindSet).sort().join(", ")}).`;
+    hasMixedKinds = true;
+  } else if (unitSet.size > 1) {
+    incompatibleReason = `Cannot pool measurements: mixed units (${Array.from(unitSet).sort().join(", ")}).`;
+    hasMixedUnits = true;
+  }
+
+  const primaryField = Array.from(fieldSet)[0];
+  let metricLabel: string = primaryField;
+  if (kindSet.size === 1) {
+    metricLabel = Array.from(kindSet)[0];
+  } else if (kindSet.size > 1) {
+    metricLabel = "mixed";
+  }
+
+  let finalUnit = "";
+  if (hasMixedUnits) {
+    finalUnit = "mixed";
+  } else if (unitSet.size === 1) {
+    finalUnit = Array.from(unitSet)[0];
+  } else {
+    finalUnit = "unspecified";
+  }
+
+  let validCount = 0;
+  let measurementRows = 0;
+  let declaredUnits = 0;
+  let declaredKinds = 0;
+
+  for (const row of rows) {
+    // Count each row's own metric, even when the result cannot be pooled.
+    const field = "measure" in row ? "measure" : "area" in row ? "area" : "volume" in row ? "volume" : null;
+    if (field === null) continue;
+    measurementRows++;
+    const value = row[field];
+    if (typeof value === "number" && Number.isFinite(value)) validCount++;
+    if (typeof row.measure_unit === "string" && row.measure_unit.trim()) declaredUnits++;
+    if ((typeof row.measure_kind === "string" && row.measure_kind.trim()) || field === "area" || field === "volume") declaredKinds++;
+  }
+
+  if (!incompatibleReason) {
+    if (declaredUnits > 0 && declaredUnits < measurementRows) {
+      incompatibleReason = "Cannot pool measurements: some records declare units while others are unspecified.";
+      hasMixedUnits = true;
+      finalUnit = "mixed";
+    } else if (declaredKinds > 0 && declaredKinds < measurementRows) {
+      incompatibleReason = "Cannot pool measurements: some records declare a measurement kind while others are unspecified.";
+      hasMixedKinds = true;
     }
+  }
+
+  const excludedCount = totalCount - validCount;
+  const exclusionReason = excludedCount > 0 ? "non-finite or missing values" : null;
+
+  if (incompatibleReason) {
+    return {
+      metric: metricLabel,
+      min: null,
+      max: null,
+      mean: null,
+      unit: finalUnit,
+      hasMixedUnits,
+      hasMixedKinds,
+      validCount,
+      totalCount,
+      incompatibleReason,
+      excludedCount,
+      exclusionReason,
+    };
+  }
+
+  if (validCount === 0) {
+    return {
+      metric: metricLabel,
+      min: null,
+      max: null,
+      mean: null,
+      unit: finalUnit,
+      hasMixedUnits: false,
+      hasMixedKinds: false,
+      validCount: 0,
+      totalCount,
+      incompatibleReason: `All ${totalCount} records excluded: no usable finite numeric values.`,
+      excludedCount: totalCount,
+      exclusionReason: "non-finite or missing values",
+    };
   }
 
   let min = Infinity;
   let max = -Infinity;
-  let sum = 0;
-  let validCount = 0;
-  let commonUnit: string | null = null;
-  let mixedUnits = false;
 
   for (let i = 0; i < totalCount; i++) {
     const row = rows[i];
-    const val = row[metricField];
-    const unitRaw = typeof row.measure_unit === "string" ? row.measure_unit.trim() : "";
-    const unit = unitRaw.replace(/pixel(\^2|²|2)/i, "px²").replace(/pixel(\^3|³|3)/i, "px³");
-
-    if (i === 0) {
-      commonUnit = unit;
-    } else if (!mixedUnits && unit !== commonUnit) {
-      mixedUnits = true;
-    }
-
+    const val = row[primaryField];
     if (typeof val === "number" && Number.isFinite(val)) {
-      validCount++;
       if (val < min) min = val;
       if (val > max) max = val;
-      sum += val;
     }
   }
 
-  if (validCount === 0) return null;
+  // Normalize before compensated summation: neither repeated large values nor
+  // cancellation of signed measurements should corrupt an otherwise finite mean.
+  const scale = Math.max(Math.abs(min), Math.abs(max));
+  let sum = 0;
+  let compensation = 0;
+  if (scale > 0) {
+    for (const row of rows) {
+      const value = row[primaryField];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const normalized = value / scale;
+      const next = sum + normalized;
+      compensation += Math.abs(sum) >= Math.abs(normalized)
+        ? (sum - next) + normalized
+        : (normalized - next) + sum;
+      sum = next;
+    }
+  }
+  const mean = ((sum + compensation) / validCount) * scale;
 
-  const mean = sum / validCount;
-  const finalUnit = mixedUnits ? "mixed" : (commonUnit || "");
+  let formattedMean: string | null = null;
+  let meanIncompatibleReason: string | null = null;
+  if (Number.isFinite(mean)) {
+    formattedMean = formatStatValue(mean);
+  } else {
+    meanIncompatibleReason = "Mean calculation exceeded finite numerical bounds.";
+  }
 
   return {
     metric: metricLabel,
     min: formatStatValue(min),
     max: formatStatValue(max),
-    mean: formatStatValue(mean),
+    mean: formattedMean,
     unit: finalUnit,
-    hasMixedUnits: mixedUnits,
+    hasMixedUnits: false,
+    hasMixedKinds: false,
     validCount,
     totalCount,
+    incompatibleReason: meanIncompatibleReason,
+    excludedCount,
+    exclusionReason,
   };
 }
 
-function Info({
+export function Info({
   source,
   snapshot,
   api,
@@ -5603,6 +6164,14 @@ function Info({
       {result ? (
         <>
           <p>Selected result · revision {result.revision_hash.slice(0, 12)}…</p>
+          {result.label_import && <dl className="research-label-import-metadata" aria-label="Label import identity">
+            <div><dt>Label file</dt><dd>{result.label_import.file_name}</dd></div>
+            <div><dt>Producer</dt><dd>{result.label_import.producer ? `${result.label_import.producer.name}${result.label_import.producer.version ? ` · ${result.label_import.producer.version}` : " · version unknown"} (declared)` : "Unknown"}</dd></div>
+            <div><dt>Import profile</dt><dd>{result.label_import.profile} · {result.label_import.original_dtype} · {result.label_import.shape.join(" × ")} YX</dd></div>
+            <div><dt>Input SHA-256</dt><dd>{result.label_import.file_sha256}</dd></div>
+            <div><dt>Upstream settings</dt><dd>Unknown</dd></div>
+            {result.parent_id && <div><dt>Correction parent</dt><dd>{result.parent_id}</dd></div>}
+          </dl>}
           <p>{reviewStatus}</p>
           <button
             disabled={busy || reviewPending || disposition === "reviewed"}
@@ -5624,16 +6193,17 @@ function Info({
           {rows.length > 0 && (
             <div className="research-result-summary-card">
               <h3>Quantitative summary</h3>
+              {result && result.object_count > rows.length && <p>Summary of the first {rows.length} of {result.object_count} objects. Use Statistics & objects for the full population.</p>}
               <div className="research-stat-grid">
                 <div className="research-stat-item">
-                  <span className="research-stat-label">Objects</span>
+                  <span className="research-stat-label">
+                    Rows
+                  </span>
                   <span className="research-stat-value">
-                    {stats && stats.validCount < stats.totalCount
-                      ? `${stats.validCount} / ${stats.totalCount}`
-                      : rows.length}
+                    {rows.length}
                   </span>
                 </div>
-                {stats && (
+                {stats && stats.mean !== null && stats.min !== null && stats.max !== null && (
                   <>
                     <div className="research-stat-item">
                       <span className="research-stat-label">Mean {stats.metric}</span>
@@ -5650,6 +6220,16 @@ function Info({
                   </>
                 )}
               </div>
+              {stats?.incompatibleReason && (
+                <p className="research-stat-notice" role="status">
+                  {stats.incompatibleReason}
+                </p>
+              )}
+              {stats && stats.excludedCount > 0 && (
+                <p className="research-stat-exclusion-note" role="status">
+                  {stats.validCount} of {stats.totalCount} rows have finite numeric values; {stats.excludedCount} excluded from statistics ({stats.exclusionReason || "non-finite or missing values"}).
+                </p>
+              )}
               <ResultTable rows={rows} selected={selectedRow} onSelect={onSelectRow ?? (() => {})} />
             </div>
           )}

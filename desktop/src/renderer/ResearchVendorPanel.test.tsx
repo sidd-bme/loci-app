@@ -123,7 +123,7 @@ describe("ResearchVendorPanel", () => {
     const convertVendor = vi.fn().mockResolvedValue(converted);
     const { onSnapshot } = renderPanel(bridge(inspectVendor, convertVendor));
 
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     expect(await screen.findByLabelText("Exact vendor inspection")).toHaveTextContent("sample.czi");
     expect(screen.getByLabelText("Exact vendor inspection")).toHaveTextContent("8.5.0");
     expect(screen.getByLabelText("Exact vendor plane selection")).toHaveTextContent("100×80");
@@ -131,7 +131,7 @@ describe("ResearchVendorPanel", () => {
 
     fireEvent.change(screen.getByLabelText("Vendor channel"), { target: { value: "1" } });
     expect(screen.getByText(/multiple RGB samples/)).toBeVisible();
-    expect(screen.getByText("Convert exact plane and import derived source")).toBeDisabled();
+    expect(screen.getByText("Convert and import plane")).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Vendor channel"), { target: { value: "0" } });
     fireEvent.change(screen.getByLabelText("Vendor Z index"), { target: { value: "2" } });
     fireEvent.change(screen.getByLabelText("Vendor T index"), { target: { value: "3" } });
@@ -143,7 +143,7 @@ describe("ResearchVendorPanel", () => {
     fireEvent.change(screen.getByLabelText("Vendor heap MiB"), { target: { value: "1024" } });
     fireEvent.change(screen.getByLabelText("Vendor timeout seconds"), { target: { value: "600" } });
     fireEvent.change(screen.getByLabelText("Vendor maximum output MiB"), { target: { value: "64" } });
-    fireEvent.click(screen.getByText("Convert exact plane and import derived source"));
+    fireEvent.click(screen.getByText("Convert and import plane"));
 
     await waitFor(() => expect(convertVendor).toHaveBeenCalledWith({
       grant_id: inspection.grant_id,
@@ -167,10 +167,10 @@ describe("ResearchVendorPanel", () => {
       .mockResolvedValueOnce(inspection)
       .mockResolvedValueOnce(null);
     renderPanel(bridge(inspectVendor));
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     await screen.findByLabelText("Exact vendor inspection");
 
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     await waitFor(() => expect(screen.queryByLabelText("Exact vendor inspection")).not.toBeInTheDocument());
     expect(await screen.findByRole("status")).toHaveTextContent("cancelled");
     expect(screen.queryByText(sourceHash)).not.toBeInTheDocument();
@@ -184,7 +184,7 @@ describe("ResearchVendorPanel", () => {
     });
     const report = reportMock as unknown as Report;
     renderPanel(bridge(inspectVendor), report);
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     await waitFor(() => expect(reportMock).toHaveBeenCalledWith(
       expect.any(Function),
       "Could not inspect the selected vendor source with the approved local reader.",
@@ -193,9 +193,9 @@ describe("ResearchVendorPanel", () => {
     cleanup();
     const convertVendor = vi.fn().mockRejectedValue(new Error("conversion failed"));
     const rendered = renderPanel(bridge(vi.fn().mockResolvedValue(inspection), convertVendor), report);
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     await screen.findByLabelText("Exact vendor inspection");
-    fireEvent.click(screen.getByText("Convert exact plane and import derived source"));
+    fireEvent.click(screen.getByText("Convert and import plane"));
     await waitFor(() => expect(reportMock).toHaveBeenCalledWith(
       expect.any(Function),
       "Could not convert and import the exact selected vendor plane.",
@@ -209,9 +209,9 @@ describe("ResearchVendorPanel", () => {
     const { onSnapshot } = renderPanel(
       bridge(vi.fn().mockResolvedValue(inspection), convertVendor),
     );
-    fireEvent.click(screen.getByText("Inspect local vendor source and reader"));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
     await screen.findByLabelText("Exact vendor inspection");
-    fireEvent.click(screen.getByText("Convert exact plane and import derived source"));
+    fireEvent.click(screen.getByText("Convert and import plane"));
     expect(screen.getByLabelText("Vendor Z index")).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Vendor Z index"), { target: { value: "1" } });
     await act(async () => {

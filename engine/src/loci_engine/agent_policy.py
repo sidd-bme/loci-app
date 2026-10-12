@@ -12,7 +12,7 @@ import hashlib
 import os
 import stat
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,12 +20,15 @@ from .export import _fsync_directory
 from .research_project import ResearchProject, canonical_json, checked_id, parse_json
 
 POLICY_SCHEMA = "loci.agent-policy/v1"
+REMOTE_POLICY_SCHEMA = "loci.agent-policy/v2"
+VISION_POLICY_SCHEMA = "loci.agent-policy/v3"
 MAX_POLICY_BYTES = 1024 * 1024
 DISCLOSURES = frozenset(
     {"geometry", "source_names", "previews", "measurements", "provenance", "agent_metadata"}
 )
 OPERATIONS = frozenset(
     {
+        "analysis_context",
         "inspect_source",
         "validate_recipe",
         "preview_recipe",
@@ -37,6 +40,11 @@ OPERATIONS = frozenset(
         "export_result",
     }
 )
+LEGACY_OPERATIONS = OPERATIONS
+VISION_OPERATIONS = frozenset(
+    {"source_image", "source_display", "set_source_display", "export_vision_handoff"}
+)
+OPERATIONS = LEGACY_OPERATIONS | VISION_OPERATIONS
 _TOP_LEVEL_KEYS = {
     "schema",
     "project",
@@ -225,6 +233,9 @@ class AgentPolicy:
     memory_bytes: int
     concurrency: int
     disclosures: frozenset[str]
+    remote_grants: dict[str, dict[str, Any]] = field(default_factory=dict)
+    schema: str = POLICY_SCHEMA
+    experimental_recipes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def recheck(self) -> None:
         encoded, identity = _read_plain_policy(self.path)
@@ -295,8 +306,14 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    root = _exact_keys(document, _TOP_LEVEL_KEYS, "policy")
-    if root["schema"] != POLICY_SCHEMA:
+    v3 = isinstance(document, dict) and document.get("schema") == VISION_POLICY_SCHEMA
+    v2 = isinstance(document, dict) and document.get("schema") in {
+        REMOTE_POLICY_SCHEMA,
+        VISION_POLICY_SCHEMA,
+    }
+    extra = ({"remote_grants"} if v2 else set()) | ({"experimental_recipes"} if v3 else set())
+    root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
+    if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, VISION_POLICY_SCHEMA}:
         raise ValueError("Unsupported policy schema")
     project_value = _exact_keys(root["project"], {"path", "id"}, "policy project")
     project_path, project_identity = _plain_directory(project_value["path"], "project path")
@@ -356,7 +373,7 @@ def _validated_document(
     ):
         raise ValueError("Policy operations must be a unique list")
     operations = frozenset(root["operations"])
-    if not operations <= OPERATIONS:
+    if not operations <= (OPERATIONS if v3 else LEGACY_OPERATIONS):
         raise ValueError("Policy contains an unsupported agent operation")
 
     if not isinstance(root["model_packages"], list) or len(root["model_packages"]) > 256:
@@ -411,6 +428,14 @@ def _validated_document(
     disclosures = frozenset(root["disclosures"])
     if not disclosures <= DISCLOSURES:
         raise ValueError("Policy contains an unsupported disclosure category")
+    if v2:
+        from .agent_remote import validate_grants
+
+        validate_grants(project, root, sources, recipes)
+    if v3:
+        from .agent_experiments import validate_templates
+
+        validate_templates(project, root, sources)
     return (
         sources,
         recipes,
@@ -465,6 +490,11 @@ def load_policy(path: str | Path) -> AgentPolicy:
         memory_bytes=limits["memory_bytes"],
         concurrency=limits["concurrency"],
         disclosures=disclosures,
+        remote_grants={item["key"]: item for item in document.get("remote_grants", [])},
+        schema=document["schema"],
+        experimental_recipes={
+            item["key"]: item for item in document.get("experimental_recipes", [])
+        },
     )
 
 
@@ -473,14 +503,32 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
-    expected = _TOP_LEVEL_KEYS - {"schema", "project"}
+    v3 = isinstance(specification, dict) and "experimental_recipes" in specification
+    v2 = isinstance(specification, dict) and ("remote_grants" in specification or v3)
+    expected = (
+        (_TOP_LEVEL_KEYS - {"schema", "project"})
+        | ({"remote_grants"} if v2 else set())
+        | ({"experimental_recipes"} if v3 else set())
+    )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": POLICY_SCHEMA,
+        "schema": VISION_POLICY_SCHEMA if v3 else REMOTE_POLICY_SCHEMA if v2 else POLICY_SCHEMA,
         "project": {"path": str(study.root), "id": study.meta["project_id"]},
         **specification,
     }
+    if v3:
+        from .agent_experiments import normalize_templates
+
+        document["experimental_recipes"] = normalize_templates(
+            study, document["experimental_recipes"]
+        )
     _validated_document(document)
+    if v2:
+        from .research_remote import _load_run
+
+        for grant in document["remote_grants"]:
+            if _load_run(study, grant["request_key"])["data"]["state"] != "staged":
+                raise PermissionError("New remote policies require a human-staged run")
     encoded = (canonical_json(document) + "\n").encode("utf-8")
     destination = Path(path).expanduser()
     if not destination.is_absolute():
@@ -512,7 +560,7 @@ def write_policy(
             temporary.unlink()
     loaded = load_policy(target)
     return {
-        "schema": POLICY_SCHEMA,
+        "schema": document["schema"],
         "policy_sha256": loaded.content_sha256,
         "project_id": loaded.project_id,
     }

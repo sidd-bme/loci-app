@@ -45,7 +45,7 @@ export async function checkSettingsAndManual(page, screenshots) {
   await page.keyboard.press("Space");
   assert.equal(await navigator.isChecked(), true, "Keyboard activation did not restore the navigator checkbox");
   await dialog.getByRole("tab", { name: "Saving & export" }).click();
-  const dpi = dialog.getByRole("spinbutton", { name: "Default figure DPI" });
+  const dpi = dialog.getByRole("textbox", { name: "Default figure DPI" });
   await dpi.fill("600"); await dpi.press("Enter");
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   const preferences = await page.evaluate(() => JSON.parse(localStorage.getItem("loci.preferences.v1")));

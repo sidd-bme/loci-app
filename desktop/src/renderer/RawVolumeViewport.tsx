@@ -26,6 +26,8 @@ import { buildRawVolumeHistograms, type RawVolumeHistogramRecord } from "./raw-v
 import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, SlidersHorizontal } from "lucide-react";
 import { MprSlicePane } from "./MprSlicePane";
 import { mprPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { configureVolumeChannelColorMix, VOLUME_AVERAGE_PROJECTION_ALGORITHM, VOLUME_CHANNEL_COMPOSITING_ALGORITHM } from "./volume-channel-mix";
+import { applyVolumeDisplayChannels, volumeDisplayChannels, type VolumeDisplayControls } from "./raw-volume-display";
 import "./RawVolumeViewport.css";
 
 export type RawVolumeScalarType =
@@ -108,6 +110,8 @@ type CameraSnapshot = {
 };
 
 type Props = {
+  externalDisplay?: VolumeDisplayControls;
+  onDisplayChange?: (display: VolumeDisplayControls) => void;
   volume: RawVolumeResponse | null;
   loading?: boolean;
   error?: string | null;
@@ -665,6 +669,8 @@ function TransferNumber({ label, value, minimum, maximum, onCommit }: {
 }
 
 export function RawVolumeViewport({
+  externalDisplay,
+  onDisplayChange,
   volume,
   loading = false,
   error = null,
@@ -677,7 +683,7 @@ export function RawVolumeViewport({
   const syncContainer = useCallback((node: HTMLDivElement | null) => {
     containerRef.current = node;
     const scene = sceneRef.current;
-    if (node && scene?.generic) {
+    if (node && scene?.generic && !scene.contextLost) {
       if (scene.generic.getContainer() !== node) {
         scene.generic.setContainer(node);
         if (scene.resize) {
@@ -768,6 +774,19 @@ export function RawVolumeViewport({
     previousContextRef.current = volume.context;
   }, [volume]);
 
+  // Detached controls use the same native scalar transfers as this viewport.
+  // Standalone workbench volumes retain their existing independent settings.
+  const externalDisplayKey = JSON.stringify(externalDisplay ?? null);
+  useEffect(() => {
+    if (!externalDisplay || !volume) return;
+    try {
+      if (sceneRef.current) sceneRef.current.stateEpoch += 1;
+      setTransfers(applyVolumeDisplayChannels(volume.context.components, externalDisplay.channels));
+      setRenderMode(externalDisplay.renderMode);
+      setQuality(externalDisplay.quality);
+    } catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Invalid volume display settings."); }
+  }, [externalDisplayKey, volume]);
+
   useEffect(() => {
     if (!volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
     // Do not replace the coarse context until its verified bytes have been
@@ -794,7 +813,13 @@ export function RawVolumeViewport({
     const onLost = (event: Event) => {
       event.preventDefault();
       const scene = sceneRef.current;
-      if (scene) scene.stateEpoch += 1;
+      if (scene) {
+        // React state updates are asynchronous. Invalidate this scene immediately
+        // so pending verification and display effects cannot revive its GPU state.
+        scene.contextLost = true;
+        scene.renderStateSignature = null;
+        scene.stateEpoch += 1;
+      }
       const camera = scene?.renderer.getActiveCamera?.();
       if (camera && scene.binding) {
         lostCameraRef.current = {
@@ -825,12 +850,12 @@ export function RawVolumeViewport({
       interactor.setDesiredUpdateRate(45);
       const interactorStyle = vtkInteractorStyleManipulator.newInstance();
       const mouseManipulators = [
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1 }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 3 }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1, shift: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ dragEnabled: false, scrollEnabled: true }),
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 2 }),
-        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, alt: true }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 2, useFocalPointAsCenterOfRotation: true }),
+        vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, alt: true, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2, shift: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 1, control: true }),
         vtkMouseCameraTrackballZoomManipulator.newInstance({ button: 3, control: true }),
@@ -847,7 +872,7 @@ export function RawVolumeViewport({
         resizeScheduled = true;
         window.requestAnimationFrame(() => {
           resizeScheduled = false;
-          if (sceneRef.current?.generic !== generic) return;
+          if (sceneRef.current?.generic !== generic || sceneRef.current.contextLost) return;
           try {
             generic.resize();
             sceneRef.current?.renderWindow?.render();
@@ -874,7 +899,7 @@ export function RawVolumeViewport({
       orientationWidget.updateViewport();
       sceneRef.current = { generic, renderer, renderWindow, apiWindow, canvas, imageRecords: [], sliceRecords: [],
         transferObjects: [], clippingPlanes: [], binding: null, initialCamera: null,
-        contextHistogram: null, stateEpoch: 0, renderStateSignature: null,
+        contextHistogram: null, stateEpoch: 0, renderStateSignature: null, contextLost: false,
         axesActor, orientationWidget, interactorStyle, mouseManipulators, resize };
     } catch (caught) {
       setRenderError(caught instanceof Error ? caught.message : "Could not initialize the volume renderer.");
@@ -908,7 +933,7 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene || !volume) return;
+    if (!scene || scene.contextLost || !volume) return;
     let cancelled = false;
     setRenderError(null);
     void (async () => {
@@ -920,7 +945,7 @@ export function RawVolumeViewport({
         if (digests.some((digest, index) => digest !== payloads[index].data_sha256)) {
           throw new Error("Raw-volume bytes failed their SHA-256 integrity check.");
         }
-        if (cancelled || sceneRef.current !== scene) return;
+        if (cancelled || sceneRef.current !== scene || scene.contextLost) return;
         setVerifiedPlanes({ volume, values: decoded.map((item) => item.values) });
         const contextHistogramKey = histogramBinding(volume.context);
         const contextHistogram = scene.contextHistogram?.binding === contextHistogramKey
@@ -951,6 +976,7 @@ export function RawVolumeViewport({
           actor.getProperty().setIndependentComponents(true);
           actor.getProperty().setInterpolationTypeToLinear();
           actor.getProperty().setShade(false);
+          configureVolumeChannelColorMix(mapper, actor.getProperty());
           return { payload, image, mapper, actor };
         });
         const nextSliceRecords = nextImageRecords.flatMap((imageRecord, payloadIndex) =>
@@ -1037,7 +1063,7 @@ export function RawVolumeViewport({
     if (volume) return;
     setTransfers([]); setDetailView("context"); setVerifiedPlanes(null);
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     scene.imageRecords.forEach((record: any) => record.actor.setVisibility(false));
     scene.sliceRecords.forEach((record: any) => record.actor.setVisibility(false));
     try { scene.renderWindow.render(); }
@@ -1046,7 +1072,9 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene || !volume || transfers.length === 0) return;
+    if (!scene || scene.contextLost || !volume || transfers.length === 0 ||
+        scene.imageRecords[0]?.payload !== volume.context ||
+        (volume.focus && scene.imageRecords[1]?.payload !== volume.focus)) return;
     const activePayloadIndex = detailView === "focus" && volume.focus ? 1 : 0;
     const sourceCrosshair = slices.map((index, axis) =>
       volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
@@ -1080,6 +1108,7 @@ export function RawVolumeViewport({
         property.setSpecular(0.25);
         property.setSpecularPower(20.0);
       }
+      configureVolumeChannelColorMix(record.mapper, property);
       transfers.forEach((component, index) => {
         // Composite volume color carries channel identity. Scalar intensity is
         // encoded by opacity, with optional explicitly recorded Phong lighting.
@@ -1143,7 +1172,7 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     if (containerRef.current && scene.generic && scene.generic.getContainer() !== containerRef.current) {
       scene.generic.setContainer(containerRef.current);
       if (scene.resize) {
@@ -1152,6 +1181,7 @@ export function RawVolumeViewport({
       }
     }
     const frame = window.requestAnimationFrame(() => {
+      if (sceneRef.current !== scene || scene.contextLost) return;
       try {
         scene.generic.resize();
         scene.renderWindow.render();
@@ -1199,7 +1229,7 @@ export function RawVolumeViewport({
 
   const resetCamera = () => {
     const scene = sceneRef.current;
-    if (!scene) return;
+    if (!scene || scene.contextLost) return;
     try {
       const camera = scene.renderer.getActiveCamera();
       const initial = scene.initialCamera;
@@ -1237,7 +1267,7 @@ export function RawVolumeViewport({
     }
     const scene = sceneRef.current;
     const camera = scene?.renderer.getActiveCamera?.();
-    if (!camera) return;
+    if (!camera || scene.contextLost) return;
     try {
       if (event.key === "ArrowLeft" || event.key === "ArrowRight")
         camera.azimuth(event.key === "ArrowLeft" ? -5 : 5);
@@ -1283,7 +1313,7 @@ export function RawVolumeViewport({
         volume, mode, detailView, transfers, clipEnabled, clipAxis, clipPosition, slices,
         activeModeDetails.shade, renderMode, quality,
       );
-      if (contextState !== "ready" || scene.binding !== expectedBinding ||
+      if (scene.contextLost || contextState !== "ready" || scene.binding !== expectedBinding ||
           scene.renderStateSignature !== expectedRenderState ||
           scene.imageRecords[0]?.payload !== volume.context ||
           (volume.focus && scene.imageRecords[1]?.payload !== volume.focus))
@@ -1330,7 +1360,7 @@ export function RawVolumeViewport({
         cameraBefore.clippingRange, cameraBefore.viewAngle, cameraBefore.parallel, cameraBefore.parallelScale,
       ]) || canvas.width !== width || canvas.height !== height || scene.binding !== expectedBinding ||
           scene.stateEpoch !== stateEpoch || scene.renderStateSignature !== expectedRenderState ||
-          sceneRef.current !== scene || scene.imageRecords[0]?.payload !== volume.context ||
+          sceneRef.current !== scene || scene.contextLost || scene.imageRecords[0]?.payload !== volume.context ||
           (volume.focus && scene.imageRecords[1]?.payload !== volume.focus))
         throw new Error("The volume view changed during figure capture; try again.");
       const clipping = clipEnabled ? contextClippingPlane(volume.context, clipAxis, clipPosition) : null;
@@ -1346,7 +1376,7 @@ export function RawVolumeViewport({
         height_px: height,
         png_base64: dataUrl.slice("data:image/png;base64,".length),
         manifest: {
-          schema_version: "loci.volume-figure/v1",
+          schema_version: "loci.volume-figure/v2",
           figure: {
             kind: "screen-resolution-rendered-figure",
             format: "png",
@@ -1368,6 +1398,8 @@ export function RawVolumeViewport({
             mode,
             extent: detailView,
             interpolation: "linear",
+            channel_compositing: mode === "volume" ? VOLUME_CHANNEL_COMPOSITING_ALGORITHM : null,
+            projection_reducer: mode === "volume" && renderMode === "average" ? VOLUME_AVERAGE_PROJECTION_ALGORITHM : null,
             shading: mode === "volume" && activeModeDetails.shade,
             blend_mode: mode === "volume" ? renderMode : null,
             quality: mode === "volume" ? quality : null,
@@ -1449,7 +1481,13 @@ export function RawVolumeViewport({
 
   const updateTransfer = (channelIndex: number, change: (value: TransferState) => TransferState) => {
     invalidateFigureCapture();
-    setTransfers((current) => current.map((value) => value.channel_index === channelIndex ? change(value) : value));
+    if (!onDisplayChange) {
+      setTransfers((current) => current.map((value) => value.channel_index === channelIndex ? change(value) : value));
+      return;
+    }
+    const next = transfers.map((value) => value.channel_index === channelIndex ? change(value) : value);
+    setTransfers(next);
+    onDisplayChange?.({ channels: volumeDisplayChannels(next), renderMode, quality });
   };
 
   const focusUsesNativeSteps = volume?.focus ? volume.focus.sampling.level_zero_indices_xyz.every((indices) =>
@@ -1563,7 +1601,9 @@ export function RawVolumeViewport({
                 value={renderMode}
                 onChange={(event) => {
                   invalidateFigureCapture();
-                  setRenderMode(event.target.value as VolumeRenderMode);
+                  const next = event.target.value as VolumeRenderMode;
+                  setRenderMode(next);
+                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode: next, quality });
                 }}
               >
                 {Object.entries(RENDER_MODE_DETAILS).map(([key, details]) => (
@@ -1584,7 +1624,9 @@ export function RawVolumeViewport({
                 value={quality}
                 onChange={(event) => {
                   invalidateFigureCapture();
-                  setQuality(Number(event.target.value));
+                  const next = Number(event.target.value);
+                  setQuality(next);
+                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode, quality: next });
                 }}
               />
               <span className="raw-volume-quality-val">{quality}%</span>
@@ -1745,7 +1787,7 @@ export function RawVolumeViewport({
               onCommit={(high) => { if (high <= component.window.low) return false; updateTransfer(component.channel_index, (value) => ({ ...value, window: { ...value.window, high } })); return true; }} /></label>
             <label>Gamma<TransferNumber label={`${component.name} gamma`} value={component.window.gamma} minimum={0.1} maximum={10}
               onCommit={(gamma) => { updateTransfer(component.channel_index, (value) => ({ ...value, window: { ...value.window, gamma } })); return true; }} /></label>
-            <label className="raw-volume-opacity">Opacity<input aria-label={`${component.name} opacity`} type="range" min={0} max={1} step={0.01} value={component.opacity}
+            <label className="raw-volume-opacity">Opacity <output aria-label={`${component.name} opacity value`}>{component.opacity}</output><input aria-label={`${component.name} opacity`} type="range" min={0} max={1} step={0.01} value={component.opacity}
               onChange={(event) => updateTransfer(component.channel_index, (value) => ({ ...value, opacity: Number(event.target.value) }))} /></label>
             <button type="button" disabled={!defaults} onClick={() => defaults && updateTransfer(component.channel_index, () => ({ ...defaults }))}>Reset channel</button>
             {histogram ? <div className="raw-volume-histogram">

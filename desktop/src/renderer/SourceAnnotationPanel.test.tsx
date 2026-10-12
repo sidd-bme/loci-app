@@ -8,6 +8,7 @@ import type {
   ResearchSource,
 } from "../shared/research-contracts";
 import { serializeTransectsCsv, SourceAnnotationPanel } from "./SourceAnnotationPanel";
+import { useAnnotationDrafts } from "./annotation-draft";
 
 afterEach(cleanup);
 
@@ -76,7 +77,80 @@ function panel(api: ResearchDesktopApi, source = sources[0], handlers = {
   />;
 }
 
+const ignoreDraftEvent = () => {};
+function ControlledDraftPanel({ api, source = sources[0], plane = selection }: {
+  api: ResearchDesktopApi; source?: ResearchSource; plane?: ResearchSelection;
+}) {
+  const draft = useAnnotationDrafts(1, sources, source, plane);
+  return <>
+    <button onClick={() => draft.setPoints([{ x: 1, y: 2 }, { x: 3, y: 4 }])}>Place draft endpoints</button>
+    <button onClick={() => draft.setPoints([{ x: 11, y: 12 }])}>Place newer endpoint</button>
+    <SourceAnnotationPanel api={api} source={source} selection={plane} tool={draft.tool} onTool={draft.setTool}
+      points={draft.points} onPoints={draft.setPoints} draftControl={draft.control}
+      onAnnotations={ignoreDraftEvent} onError={ignoreDraftEvent} />
+  </>;
+}
+
 describe("SourceAnnotationPanel interchange", () => {
+  it("preserves separate controlled draft geometry and labels when drawing tools change", async () => {
+    render(<ControlledDraftPanel api={bridge()} />);
+    await screen.findByText("0 saved");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Place draft endpoints" }));
+    fireEvent.change(screen.getByLabelText("Annotation label"), { target: { value: "Distance A" } });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Polygon" }));
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+    expect(screen.getByLabelText("Annotation label")).toHaveValue("");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    expect(screen.getByLabelText("Annotation label")).toHaveValue("Distance A");
+  });
+
+  it("binds a pending save to its original plane and keeps newer points", async () => {
+    let finishSave!: (value: unknown) => void;
+    const execute = vi.fn((operation: string) => operation === "annotate_source"
+      ? new Promise((resolve) => { finishSave = resolve; }) : Promise.resolve(receipt(sources[0])));
+    render(<ControlledDraftPanel api={bridge({ execute })} />);
+    await screen.findByText("0 saved");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Place draft endpoints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    expect(execute).toHaveBeenCalledWith("annotate_source", expect.objectContaining({
+      source_id: sources[0].id, source_sha256: sources[0].sha256, expected_revision: 4,
+      annotation: expect.objectContaining({ kind: "line", z: 0, t: 0, points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }),
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Place newer endpoint" }));
+    await act(async () => { finishSave(receipt(sources[0], 5)); });
+    expect(screen.getByRole("button", { name: "Clear draft" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Place draft endpoints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    expect(execute).toHaveBeenLastCalledWith("annotate_source", expect.objectContaining({ expected_revision: 5 }));
+  });
+
+  it("clears only a successfully submitted old-source draft after changing sources", async () => {
+    let finishSave!: (value: unknown) => void;
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => operation === "annotate_source"
+      ? new Promise((resolve) => { finishSave = resolve; })
+      : Promise.resolve(receipt(sources.find((source) => source.id === request.source_id)!)));
+    const api = bridge({ execute });
+    const view = render(<ControlledDraftPanel api={api} />);
+    await screen.findByText("0 saved");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Place draft endpoints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    view.rerender(<ControlledDraftPanel api={api} source={sources[1]} />);
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("source_annotations", { source_id: sources[1].id }));
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Place newer endpoint" }));
+    await act(async () => { finishSave(receipt(sources[0], 5)); });
+    expect(screen.getByRole("button", { name: "Clear draft" })).toBeEnabled();
+    view.rerender(<ControlledDraftPanel api={api} />);
+    await screen.findByText("0 saved");
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Clear draft" })).toBeDisabled();
+  });
   it("binds import and export to the loaded revision and treats dialog cancellation as no change", async () => {
     const exportSourceAnnotations = vi.fn().mockResolvedValue(null);
     const importSourceAnnotations = vi.fn().mockResolvedValue(null);
@@ -330,14 +404,14 @@ describe("SourceAnnotationPanel interchange", () => {
     expect(screen.getByLabelText("Upper boundary")).toHaveValue("Stratum granulosum (viable epidermis)");
     expect(screen.getByLabelText("Lower boundary")).toHaveValue("Dermal-epidermal junction");
 
-    // Approval remains fail-closed until a reviewer identity is present.
-    fireEvent.click(screen.getByLabelText("Confirm transect review"));
-    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Enter the reviewer name");
+    // Reviewed saving is a deliberate action bound to the current draft.
+    expect(screen.queryByLabelText("Confirm transect review")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save reviewed transect" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save transect" })).toBeEnabled();
     fireEvent.change(screen.getByLabelText("Transect reviewer"), { target: { value: "Dr Bob" } });
 
     // Save transect
-    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save reviewed transect" }));
 
     await waitFor(() => expect(execute).toHaveBeenCalledWith("annotate_source", expect.objectContaining({
       action: "add",
@@ -363,7 +437,7 @@ describe("SourceAnnotationPanel interchange", () => {
     expect(screen.getByText(/Ridge-base \(1\)/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Export transects CSV" })).toBeVisible();
     expect(screen.getByText(/Different or missing protocols/)).toBeVisible();
-    expect(screen.getByLabelText("Confirm transect review")).not.toBeChecked();
+    expect(screen.queryByLabelText("Confirm transect review")).not.toBeInTheDocument();
   });
 
   it("serializes each transect's saved protocol and neutralizes every text field", () => {

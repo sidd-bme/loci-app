@@ -584,7 +584,7 @@ def _compute(
         array, current_geometry, selected = workbench.load_scalar(
             source_id,
             {**base_selection, "c": channel},
-            working_bytes=min(working_bytes, DEFAULT_WORKING_BYTES),
+            working_bytes=working_bytes,
         )
         if array.ndim != 2:
             raise ValueError("Model inference requires one two-dimensional source plane")

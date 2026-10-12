@@ -16,6 +16,7 @@ import math
 import re
 import stat
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -360,10 +361,12 @@ class _Inspection:
     kind: Literal["tiff", "ims", "ordinary"]
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, check: Callable[[], None] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            if check:
+                check()
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -373,10 +376,12 @@ def _validate_expected_sha256(expected: str) -> None:
         raise NativeImageError("expected_sha256 must be 64 lowercase hexadecimal characters.")
 
 
-def _checked_fingerprint(path: Path, expected: str | None = None) -> str:
+def _checked_fingerprint(
+    path: Path, expected: str | None = None, check: Callable[[], None] | None = None
+) -> str:
     if expected is not None:
         _validate_expected_sha256(expected)
-    fingerprint = _sha256(path)
+    fingerprint = _sha256(path) if check is None else _sha256(path, check=check)
     if expected is not None and not hmac.compare_digest(fingerprint, expected):
         raise NativeSourceChangedError(
             "The source does not match the expected full SHA-256 fingerprint."
@@ -2102,6 +2107,7 @@ class NativeImageSession:
         *,
         series: int = 0,
         expected_sha256: str | None = None,
+        check: Callable[[], None] | None = None,
     ) -> None:
         # Keep the user-selected link path absolute so a later process cwd
         # change cannot retarget a relative session path accidentally.
@@ -2112,7 +2118,7 @@ class NativeImageSession:
             raise NativeImageError("The selected native image is not accessible.") from exc
         self._closed = False
         self._identity = _file_identity(self._path)
-        fingerprint = _checked_fingerprint(self._path, expected_sha256)
+        fingerprint = _checked_fingerprint(self._path, expected_sha256, check=check)
         self._inspection = _inspect_source(self._path, series=series, sha256=fingerprint)
         self._validate_identity()
 
@@ -2284,11 +2290,11 @@ class NativeImageSession:
             unit,
         )
 
-    def verify_strict(self) -> NativeIntegrityReceipt:
+    def verify_strict(self, check: Callable[[], None] | None = None) -> NativeIntegrityReceipt:
         """Rehash the source and confirm it still matches the opening SHA-256."""
 
         self._validate_identity()
-        fingerprint = _sha256(self._path)
+        fingerprint = _sha256(self._path, check=check)
         self._validate_identity()
         if not hmac.compare_digest(fingerprint, self._inspection.metadata.sha256):
             raise NativeSourceChangedError(

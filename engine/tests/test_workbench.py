@@ -420,3 +420,235 @@ def test_rgb_samples_cannot_be_relabelled_as_biological_channels(workbench, tmp_
         workbench.execute(
             "channels", {"source_id": source["id"], "channels": [{"index": 0, "name": "DNA"}]}
         )
+
+
+def test_viewer_volume_honors_explicit_aggregate_budget(workbench, tmp_path):
+    file, source = import_stack(workbench, tmp_path)
+    original = hashlib.sha256(file.read_bytes()).hexdigest()
+    response = workbench.execute("viewer_volume", {
+        "source_id": source["id"], "channel_indices": [0, 1],
+        "target_long_axis": 128, "max_decoded_bytes": 1024**2,
+    })
+    sampling = response["context"]["sampling"]
+    assert sampling["aggregate_budget_bytes"] == 1024**2
+    assert sampling["estimated_aggregate_bytes"] <= 1024**2
+    assert response["context"]["source_sha256"] == original
+    assert hashlib.sha256(file.read_bytes()).hexdigest() == original
+    legacy = workbench.execute("viewer_volume", {"source_id": source["id"]})
+    assert legacy["context"]["sampling"]["aggregate_budget_bytes"] == 128 * 1024**2
+
+
+@pytest.mark.parametrize("budget", [True, 0, -1, 1024.5, 129 * 1024**2, None])
+def test_viewer_volume_rejects_invalid_explicit_budget(workbench, tmp_path, budget):
+    _, source = import_stack(workbench, tmp_path)
+    with pytest.raises(ValueError, match="max_decoded_bytes"):
+        workbench.execute("viewer_volume", {"source_id": source["id"], "max_decoded_bytes": budget})
+
+
+def test_result_working_bytes_resolution_and_validation() -> None:
+    from loci_engine.quantitative import DEFAULT_WORKING_BYTES
+    from loci_engine.workbench import result_summary, result_working_bytes
+
+    # 1. Historical record without allowance provenance falls back to DEFAULT_WORKING_BYTES
+    historical = {
+        "schema": "loci.research-result/v1",
+        "id": "res1",
+        "source_id": "src1",
+        "kind": "segmentation",
+        "created_at": "2026-09-01T00:00:00Z",
+        "parent_id": None,
+        "revision_hash": "a" * 64,
+        "source_sha256": "b" * 64,
+        "arrays": {},
+        "provenance": {"geometry": {}, "measurements": []},
+    }
+    assert result_working_bytes(historical) == DEFAULT_WORKING_BYTES
+    assert result_summary(historical)["working_bytes"] == DEFAULT_WORKING_BYTES
+    assert result_summary(historical)["schema"] == "loci.research-result/v1"
+
+    # 2. Recipe provenance working_bytes
+    recipe_res = {
+        **historical,
+        "provenance": {"recipe": {"working_bytes": 2 * 1024**3}, "measurements": []},
+    }
+    assert result_working_bytes(recipe_res) == 2 * 1024**3
+    assert result_summary(recipe_res)["working_bytes"] == 2 * 1024**3
+
+    # 3. Cellpose / Adaptive resource_guard working_memory_limit_bytes
+    cellpose_res = {
+        **historical,
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 4 * 1024**3},
+            "measurements": [],
+        },
+    }
+    assert result_working_bytes(cellpose_res) == 4 * 1024**3
+    assert result_summary(cellpose_res)["working_bytes"] == 4 * 1024**3
+
+    # 4. ONNX model provenance working_bytes
+    model_res = {
+        **historical,
+        "provenance": {"working_bytes": 1024**3, "measurements": []},
+    }
+    assert result_working_bytes(model_res) == 1024**3
+    assert result_summary(model_res)["working_bytes"] == 1024**3
+
+    # 5. Accepted request fallback
+    accepted_res = {
+        **historical,
+        "provenance": {"accepted_request": {"working_bytes": 2 * 1024**3}, "measurements": []},
+    }
+    assert result_working_bytes(accepted_res) == 2 * 1024**3
+
+    # 6. Malformed allowance fails closed
+    for bad_budget in [False, True, "2GiB", -1, 0, 9 * 1024**3]:
+        bad_res = {
+            **historical,
+            "provenance": {
+                "resource_guard": {"working_memory_limit_bytes": bad_budget},
+                "measurements": [],
+            },
+        }
+        with pytest.raises(ValueError, match="working_bytes must be an integer"):
+            result_working_bytes(bad_res)
+
+    # 7. Malformed allowance-bearing containers fail closed
+    for bad_container in ["resource_guard", "recipe", "accepted_request", "correction"]:
+        bad_container_res = {
+            **historical,
+            "provenance": {
+                bad_container: False,
+                "measurements": [],
+            },
+        }
+        with pytest.raises(ValueError, match=f"{bad_container} must be a dictionary"):
+            result_working_bytes(bad_container_res)
+
+    # 8. Malformed secondary values fail closed even when primary is valid
+    secondary_bad = {
+        **historical,
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 2 * 1024**3},
+            "accepted_request": {"working_bytes": False},
+            "measurements": [],
+        },
+    }
+    with pytest.raises(ValueError, match="working_bytes must be an integer"):
+        result_working_bytes(secondary_bad)
+
+    # 9. Conflicting inference budget declarations fail closed
+    conflicting_res = {
+        **historical,
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 2 * 1024**3},
+            "accepted_request": {"working_bytes": 1024**3},
+            "measurements": [],
+        },
+    }
+    with pytest.raises(ValueError, match="Conflicting working memory budget declarations"):
+        result_working_bytes(conflicting_res)
+
+    # 10. Valid consistent dual declarations succeed
+    consistent_res = {
+        **historical,
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 2 * 1024**3},
+            "accepted_request": {"working_bytes": 2 * 1024**3},
+            "measurements": [],
+        },
+    }
+    assert result_working_bytes(consistent_res) == 2 * 1024**3
+
+    # 11. Corrected children resolve image inference allowance while validating correction audit
+    corrected_child = {
+        **historical,
+        "kind": "corrected-labels",
+        "parent_id": "res1",
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 2 * 1024**3},
+            "accepted_request": {"working_bytes": 2 * 1024**3},
+            "correction": {
+                "parent_id": "res1",
+                "parent_revision_hash": "a" * 64,
+                "working_memory_limit_bytes": 4 * 1024**3,
+            },
+            "measurements": [],
+        },
+    }
+    assert result_working_bytes(corrected_child) == 2 * 1024**3
+
+    # Corrected child with malformed correction budget fails closed
+    bad_corrected = {
+        **historical,
+        "kind": "corrected-labels",
+        "provenance": {
+            "resource_guard": {"working_memory_limit_bytes": 2 * 1024**3},
+            "correction": {"working_memory_limit_bytes": False},
+        },
+    }
+    with pytest.raises(ValueError, match="working_bytes must be an integer"):
+        result_working_bytes(bad_corrected)
+
+    # Corrected child of legacy parent without inference allowance defaults to 512 MiB
+    legacy_child = {
+        **historical,
+        "kind": "corrected-labels",
+        "parent_id": "res1",
+        "provenance": {
+            "correction": {
+                "parent_id": "res1",
+                "parent_revision_hash": "a" * 64,
+                "working_memory_limit_bytes": 2 * 1024**3,
+            },
+            "measurements": [],
+        },
+    }
+    assert result_working_bytes(legacy_child) == DEFAULT_WORKING_BYTES
+
+
+def test_result_view_restores_recorded_allowance_for_large_display(workbench, tmp_path) -> None:
+    # 3000 x 3000 uint8 array.
+    # display_scalar requires 3000 * 3000 * 64 = 576,000,000 bytes.
+    # 576,000,000 bytes exceeds DEFAULT_WORKING_BYTES (536,870,912 bytes).
+    _, source = import_stack(workbench, tmp_path)
+    plane = np.zeros((3000, 3000), dtype=np.uint8)
+    plane[100:200, 100:200] = 200
+
+    # 1. Result saved with 1 GiB recorded allowance in resource_guard
+    res_1gib = workbench.project.save_result(
+        source_id=source["id"],
+        kind="adaptive-segmentation",
+        arrays={"image": plane},
+        provenance={
+            "geometry": {
+                "axes": "YX",
+                "affine": np.eye(4).tolist(),
+                "unit": "um",
+                "frame": "image",
+            },
+            "resource_guard": {"working_memory_limit_bytes": 1024**3},
+            "measurements": [],
+        },
+    )
+    view = workbench.result_view({"result_id": res_1gib["id"]})
+    assert view["result_id"] == res_1gib["id"]
+    assert view["shape"] == [3000, 3000]
+
+    # 2. Result saved with default 512 MiB allowance fails display budget check
+    res_512mib = workbench.project.save_result(
+        source_id=source["id"],
+        kind="adaptive-segmentation",
+        arrays={"image": plane},
+        provenance={
+            "geometry": {
+                "axes": "YX",
+                "affine": np.eye(4).tolist(),
+                "unit": "um",
+                "frame": "image",
+            },
+            "resource_guard": {"working_memory_limit_bytes": 512 * 1024**2},
+            "measurements": [],
+        },
+    )
+    with pytest.raises(ValueError, match=r"working-memory budget; choose a crop"):
+        workbench.result_view({"result_id": res_512mib["id"]})

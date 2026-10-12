@@ -1,3 +1,4 @@
+import type { StatisticsFigureExportRequest, StatisticsFigureExportReceipt } from "./statistics-figure-contracts";
 /** Renderer-safe records for the native research workbench bridge. */
 export interface ResearchDimensions {
   t: number;
@@ -45,6 +46,7 @@ export interface ResearchSource {
   };
 }
 export interface ResearchResult {
+  schema?: "loci.research-result/v1" | "loci.research-result/v2";
   id: string;
   source_id: string;
   kind: string;
@@ -65,6 +67,44 @@ export interface ResearchResult {
   selection?: (ResearchSelection & { elapsed_time_s?: number }) | null;
   parent_id?: string | null;
   review?: { disposition: string } | null;
+  working_bytes?: number;
+  label_import?: ResearchLabelImportIdentity;
+}
+export interface ResearchLabelImportIdentity {
+  file_name: string;
+  producer: { name: string; version: string | null } | null;
+  format: string;
+  profile: string;
+  source_sha256: string;
+  file_sha256: string;
+  original_dtype: string;
+  shape: [number, number];
+}
+export interface ResearchLabelsImportBinding {
+  source_id: string;
+  source_sha256: string;
+  selection: ResearchSelection;
+  working_bytes: number;
+}
+export interface ResearchLabelsImportPreview extends ResearchLabelsImportBinding {
+  grant_id: string;
+  geometry: ResearchResult["geometry"];
+  file_name: string;
+  file_sha256: string;
+  file_size_bytes: number;
+  original_dtype: "uint8" | "uint16" | "uint32";
+  shape: [number, number];
+  axes: "YX";
+  object_count: number;
+  labels_sha256: string;
+  format: "TIFF";
+  profile: "scalar-native-yx/v1";
+  estimated_working_bytes: number;
+  measurement_channel: { index: number; name: string; basis: "raw-source-channel-values" };
+  calibration_handling: Record<string, unknown>;
+  image: string;
+  preview_width: number;
+  preview_height: number;
 }
 export interface ResearchChannelDeclaration {
   index: number;
@@ -106,10 +146,34 @@ export type ResearchAgentDisclosure =
   | "measurements"
   | "provenance"
   | "agent_metadata";
+export interface ResearchAgentInteractiveAccess {
+  allow_image: boolean;
+  allow_display: boolean;
+  allow_handoff: boolean;
+  channels: number[];
+  handoff_names: string[];
+  parameters: Partial<Record<"threshold" | "min_size", { min: number; max: number }>>;
+}
+export interface ResearchVisionRequest {
+  source_id: string;
+  selection: ResearchSelection;
+  channels: Array<{ channel: number; low: number; high: number; gamma: number; color: string; opacity: number; visible: boolean }>;
+  projection: "plane" | "max" | "mean";
+  max_size: number;
+}
+export interface ResearchVisionReceipt {
+  schema: "loci.vision-handoff-receipt/v1";
+  basename: string;
+  source_id: string;
+  source_sha256: string;
+  status: "provisional-visualization";
+  artifacts: Record<string, { sha256: string; size_bytes: number }>;
+}
 export interface ResearchAgentAccessRequest {
   source_id: string;
   selection: ResearchSelection;
   recipe: ResearchRecipe;
+  interactive?: ResearchAgentInteractiveAccess;
   allow_preview: boolean;
   allow_run: boolean;
   allow_export: boolean;
@@ -118,12 +182,13 @@ export interface ResearchAgentAccessRequest {
   limits: { cpu_seconds: number; memory_bytes: number; concurrency: number };
 }
 export interface ResearchAgentAccessReceipt {
-  schema: "loci.agent-policy/v1";
+  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3";
   policy_sha256: string;
   project_id: string;
   recipe_sha256: string;
   policy_filename: string;
   config_filename: string;
+  plugin_filename?: "plugin/plugin.json";
   disclosures: ResearchAgentDisclosure[];
   operations: string[];
   source_id: string;
@@ -168,7 +233,7 @@ export interface ResearchBatchSourceBinding {
   sha256: string;
 }
 export interface ResearchBatchTask {
-  operation: "run_recipe" | "classical_run" | "cellpose_run";
+  operation: "run_recipe" | "classical_run" | "cellpose_run" | "workflow_run";
   source: ResearchBatchSourceBinding;
   request: Record<string, unknown>;
 }
@@ -186,7 +251,9 @@ export interface ResearchSourceOrderChange {
   sources: Array<{ id: string; sha256: string }>;
 }
 export interface ResearchSnapshot {
-  project: { title: string; counts?: Record<string, number> };
+  project: { title: string; counts?: Record<string, number>; first_study?: {
+    example_id: string; source_id: string; source_sha256: string;
+  } };
   sources: ResearchSource[];
   results: ResearchResult[];
   workspace?: { revision: number; closed_sources: ResearchSource[]; hidden_results: ResearchResult[] };
@@ -251,6 +318,164 @@ export type VolumeFigurePayloadRecord = {
   };
 };
 
+export type VolumeChannelCompositing = "opacity-weighted-channels/v1";
+
+export type VolumeFigureManifestV1 = {
+  schema_version: "loci.volume-figure/v1";
+  figure: {
+    kind: "screen-resolution-rendered-figure";
+    format: "png";
+    width_px: number;
+    height_px: number;
+    device_pixel_ratio: number;
+    capture_scale: 1;
+  };
+  source: { source_id: string; source_sha256: string; t: number };
+  payloads: { context: VolumeFigurePayloadRecord; focus: VolumeFigurePayloadRecord | null };
+  representation: {
+    mode: "volume" | "mpr";
+    extent: "context" | "focus";
+    interpolation: "linear";
+    shading: boolean;
+    lighting?: { ambient: number; diffuse: number; specular: number; specular_power: number; gradient_opacity: false } | null;
+    orientation_axes: true;
+  };
+  camera: {
+    projection: "perspective" | "parallel";
+    position_xyz: [number, number, number];
+    focal_point_xyz: [number, number, number];
+    view_up_xyz: [number, number, number];
+    clipping_range: [number, number];
+    view_angle_degrees: number;
+    parallel_scale: number | null;
+  };
+  transfers: Array<{
+    channel_index: number;
+    name: string;
+    color_rgb: [number, number, number];
+    color_mode: "constant" | "intensity";
+    window: { low: number; high: number; gamma: number };
+    opacity: number;
+    visible: boolean;
+    source_opacity_points: [number, number][];
+    resolved_points: Array<{
+      scalar: number;
+      opacity: number;
+      color_rgb: [number, number, number];
+    }>;
+    opacity_unit_distance: number | null;
+    provenance: Record<string, string>;
+  }>;
+  clipping: { enabled: false } | {
+    enabled: true;
+    axis: "x" | "y" | "z";
+    position_percent: number;
+    plane_origin_xyz: [number, number, number];
+    plane_normal_xyz: [number, number, number];
+  };
+  mpr: null | {
+    context_display_indices_xyz: [number, number, number];
+    active_payload_indices_xyz: [number, number, number];
+    source_indices_xyz: [number, number, number];
+    world_xyz: [number, number, number];
+  };
+  background: { rgb: [number, number, number] };
+  software: {
+    renderer: "vtk.js";
+    renderer_version: "36.12.0";
+    capture_method: "captureNextImage";
+  };
+  provenance: {
+    artifact_semantics: "Rendered display RGB at native canvas resolution; not original-value scientific data.";
+    screen_resolution_only: true;
+    scale_bar_included: false;
+    high_resolution_claim: false;
+    biological_or_clinical_validation_claim: false;
+    metadata_contains_source_pixel_data: false;
+  };
+};
+
+export type VolumeFigureManifestV2 = {
+  schema_version: "loci.volume-figure/v2";
+  figure: {
+    kind: "screen-resolution-rendered-figure";
+    format: "png";
+    width_px: number;
+    height_px: number;
+    device_pixel_ratio: number;
+    capture_scale: 1;
+  };
+  source: { source_id: string; source_sha256: string; t: number };
+  payloads: { context: VolumeFigurePayloadRecord; focus: VolumeFigurePayloadRecord | null };
+  representation: {
+    mode: "volume" | "mpr";
+    extent: "context" | "focus";
+    interpolation: "linear";
+    channel_compositing: VolumeChannelCompositing | null;
+    shading: boolean;
+    blend_mode: "blend" | "normal_shading" | "mip" | "average" | "minip" | null;
+    projection_reducer: "sample-distance-weighted-mean/v1" | null;
+    quality: number | null;
+    lighting: { ambient: number; diffuse: number; specular: number; specular_power: number; gradient_opacity: false } | null;
+    orientation_axes: true;
+  };
+  camera: {
+    projection: "perspective" | "parallel";
+    position_xyz: [number, number, number];
+    focal_point_xyz: [number, number, number];
+    view_up_xyz: [number, number, number];
+    clipping_range: [number, number];
+    view_angle_degrees: number;
+    parallel_scale: number | null;
+  };
+  transfers: Array<{
+    channel_index: number;
+    name: string;
+    color_rgb: [number, number, number];
+    color_mode: "constant" | "intensity";
+    window: { low: number; high: number; gamma: number };
+    opacity: number;
+    visible: boolean;
+    source_opacity_points: [number, number][];
+    resolved_points: Array<{
+      scalar: number;
+      opacity: number;
+      color_rgb: [number, number, number];
+    }>;
+    opacity_unit_distance: number | null;
+    provenance: Record<string, string>;
+  }>;
+  clipping: { enabled: false } | {
+    enabled: true;
+    axis: "x" | "y" | "z";
+    position_percent: number;
+    plane_origin_xyz: [number, number, number];
+    plane_normal_xyz: [number, number, number];
+  };
+  mpr: null | {
+    context_display_indices_xyz: [number, number, number];
+    active_payload_indices_xyz: [number, number, number];
+    source_indices_xyz: [number, number, number];
+    world_xyz: [number, number, number];
+  };
+  background: { rgb: [number, number, number] };
+  software: {
+    renderer: "vtk.js";
+    renderer_version: "36.12.0";
+    capture_method: "captureNextImage";
+  };
+  provenance: {
+    artifact_semantics: "Rendered display RGB at native canvas resolution; not original-value scientific data.";
+    screen_resolution_only: true;
+    scale_bar_included: false;
+    high_resolution_claim: false;
+    biological_or_clinical_validation_claim: false;
+    metadata_contains_source_pixel_data: false;
+  };
+};
+
+export type VolumeFigureManifest = VolumeFigureManifestV1 | VolumeFigureManifestV2;
+
 export type VolumeFigureExportRequest = {
   schema_version: "loci.volume-figure-request/v1";
   source_id: string;
@@ -258,82 +483,7 @@ export type VolumeFigureExportRequest = {
   width_px: number;
   height_px: number;
   png_base64: string;
-  manifest: {
-    schema_version: "loci.volume-figure/v1";
-    figure: {
-      kind: "screen-resolution-rendered-figure";
-      format: "png";
-      width_px: number;
-      height_px: number;
-      device_pixel_ratio: number;
-      capture_scale: 1;
-    };
-    source: { source_id: string; source_sha256: string; t: number };
-    payloads: { context: VolumeFigurePayloadRecord; focus: VolumeFigurePayloadRecord | null };
-    representation: {
-      mode: "volume" | "mpr";
-      extent: "context" | "focus";
-      interpolation: "linear";
-      shading: boolean;
-      blend_mode?: string | null;
-      quality?: number | null;
-      lighting?: { ambient: number; diffuse: number; specular: number; specular_power: number; gradient_opacity: false } | null;
-      orientation_axes: true;
-    };
-    camera: {
-      projection: "perspective" | "parallel";
-      position_xyz: [number, number, number];
-      focal_point_xyz: [number, number, number];
-      view_up_xyz: [number, number, number];
-      clipping_range: [number, number];
-      view_angle_degrees: number;
-      parallel_scale: number | null;
-    };
-    transfers: Array<{
-      channel_index: number;
-      name: string;
-      color_rgb: [number, number, number];
-      color_mode: "constant" | "intensity";
-      window: { low: number; high: number; gamma: number };
-      opacity: number;
-      visible: boolean;
-      source_opacity_points: [number, number][];
-      resolved_points: Array<{
-        scalar: number;
-        opacity: number;
-        color_rgb: [number, number, number];
-      }>;
-      opacity_unit_distance: number | null;
-      provenance: Record<string, string>;
-    }>;
-    clipping: { enabled: false } | {
-      enabled: true;
-      axis: "x" | "y" | "z";
-      position_percent: number;
-      plane_origin_xyz: [number, number, number];
-      plane_normal_xyz: [number, number, number];
-    };
-    mpr: null | {
-      context_display_indices_xyz: [number, number, number];
-      active_payload_indices_xyz: [number, number, number];
-      source_indices_xyz: [number, number, number];
-      world_xyz: [number, number, number];
-    };
-    background: { rgb: [number, number, number] };
-    software: {
-      renderer: "vtk.js";
-      renderer_version: "36.12.0";
-      capture_method: "captureNextImage";
-    };
-    provenance: {
-      artifact_semantics: "Rendered display RGB at native canvas resolution; not original-value scientific data.";
-      screen_resolution_only: true;
-      scale_bar_included: false;
-      high_resolution_claim: false;
-      biological_or_clinical_validation_claim: false;
-      metadata_contains_source_pixel_data: false;
-    };
-  };
+  manifest: VolumeFigureManifest;
 };
 
 export type VolumeFigureExportReceipt = {
@@ -386,6 +536,9 @@ export interface ResearchExecuteOptions {
   viewer_lane: string;
 }
 export interface ResearchDesktopApi {
+  /** Native TIFF picker; the external file path never enters renderer state. */
+  labelsImportPreview?(binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview | null>;
+  recipeResources?(): Promise<import("./recipe-resources").RecipeResources>;
   updateWorkspace?(request: ResearchWorkspaceChange): Promise<ResearchSnapshot>;
   reorderSources?(request: ResearchSourceOrderChange): Promise<ResearchSnapshot>;
   exportSourceView?(request: Record<string, unknown>): Promise<{
@@ -393,6 +546,7 @@ export interface ResearchDesktopApi {
     format?: "png" | "tiff"; dtype?: "uint8" | "uint16"; channels?: number;
     display_revision?: string;
   } | null>;
+  exportStatisticsFigure?(request: StatisticsFigureExportRequest): Promise<StatisticsFigureExportReceipt | null>;
   exportVolumeFigure?(request: VolumeFigureExportRequest): Promise<VolumeFigureExportReceipt | null>;
   exportSourceAnnotations?(binding: { source_id: string; source_sha256: string; expected_revision: number }): Promise<{ basename: string; sha256: string; annotation_count: number } | null>;
   importSourceAnnotations?(binding: { source_id: string; source_sha256: string; expected_revision: number }): Promise<unknown | null>;
@@ -401,6 +555,8 @@ export interface ResearchDesktopApi {
   openDropped?(files: File[]): Promise<ResearchSnapshot | null>;
   sessionState?(): Promise<ManagedSessionState>;
   newSession?(): Promise<ManagedSessionState>;
+  /** Creates a fixed offline synthetic source in a newly allocated managed study. */
+  tryExample?(): Promise<ResearchSnapshot | null>;
   saveAs?(): Promise<ResearchSnapshot | null>;
   recoveryList?(): Promise<ManagedSessionSummary[]>;
   recoveryKeep?(sessionId: string): Promise<ResearchSnapshot | null>;
@@ -413,7 +569,15 @@ export interface ResearchDesktopApi {
   } | null>;
   /** Native archive dialogs keep canonical paths outside renderer-safe state. */
   exportStudy?(): Promise<unknown | null>;
+  /** Native picker publishes the exact saved report; no renderer output path is accepted. */
+  exportCorrectionEffect?(receiptSha256: string): Promise<import("./correction-effect-contracts").CorrectionEffectExport | null>;
   importStudy?(): Promise<ResearchSnapshot | null>;
+  /** Opens native directory dialog; exchange paths never cross the renderer boundary. */
+  importLargeResult?(sourceId: string): Promise<{
+    snapshot: ResearchSnapshot;
+    result: ResearchResult;
+    measurements?: Array<Record<string, unknown>>;
+  } | null>;
   relinkSource?(
     sourceId: string,
     kind: "file" | "dicom" | "ome_zarr",
@@ -430,6 +594,8 @@ export interface ResearchDesktopApi {
   createAgentAccess?(
     request: ResearchAgentAccessRequest,
   ): Promise<ResearchAgentAccessReceipt | null>;
+  /** Exports a provisional image and context through a native destination picker. */
+  exportVisionHandoff?(request: ResearchVisionRequest, sourceSha256: string): Promise<ResearchVisionReceipt | null>;
   execute(
     operation: string,
     request: Record<string, unknown>,
@@ -459,7 +625,7 @@ export interface ResearchDesktopApi {
     revisionHash: string,
     disposition: "reviewed" | "excluded" | "pending",
   ): Promise<unknown>;
-  exportResult(resultId: string, revisionHash: string): Promise<unknown>;
+  exportResult(resultId: string, revisionHash: string, workflowRunId?: string): Promise<unknown>;
   cancelJob(jobId: string): Promise<unknown>;
 }
 

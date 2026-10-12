@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
+import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
+import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 
 const vtk = vi.hoisted(() => ({
   failInitialization: false,
@@ -246,6 +249,89 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(await screen.findByText("No compatible graphics device")).toBeTruthy();
   });
 
+  it.each([
+    { name: "left drag", button: 1, alt: false },
+    { name: "middle drag", button: 2, alt: false },
+    { name: "Alt-left drag", button: 1, alt: true },
+  ])("keeps fractional $name centered on the current off-origin focal point, including after pan", async ({ button, alt }) => {
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
+    // Exercise the real locked VTK implementation with the viewport's actual
+    // constructor settings. The lifecycle harness replaces only the GPU scene.
+    const { default: vtkCamera } = await vi.importActual<typeof import("@kitware/vtk.js/Rendering/Core/Camera")>("@kitware/vtk.js/Rendering/Core/Camera");
+    const { default: vtkRotate } = await vi.importActual<typeof import("@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator")>("@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator");
+    const { default: vtkPan } = await vi.importActual<typeof import("@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballPanManipulator")>("@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballPanManipulator");
+    const settings = vtk.addMouseManipulator.mock.calls.map(([manipulator]) =>
+      manipulator.values as IMouseCameraTrackballRotateManipulatorInitialValues);
+    const rotateSettings = settings.find((values) => values.button === button &&
+      Boolean(values.alt) === alt && !values.shift && !values.control && values.dragEnabled !== false);
+    expect(rotateSettings).toBeDefined();
+    const rotate = vtkRotate.newInstance(rotateSettings);
+    const camera = vtkCamera.newInstance({
+      focalPoint: [1024.5, -512.25, 7.75],
+      position: [1024.5, -512.25, 130.875],
+      viewUp: [0, 1, 0],
+      parallelScale: 40,
+    });
+    const renderer = {
+      getActiveCamera: () => camera,
+      resetCameraClippingRange: vi.fn(),
+    } as unknown as vtkRenderer;
+    const interactor = {
+      getView: () => ({ getViewportSize: () => [1024, 768] }),
+      getLightFollowCamera: () => false,
+    } as unknown as vtkRenderWindowInteractor;
+    const distance = () => Math.hypot(...camera.getPosition().map((value, axis) => value - camera.getFocalPoint()[axis]));
+    const expectCentered = (focalPoint: number[], radius: number) => {
+      camera.getFocalPoint().forEach((value, axis) => expect(value).toBeCloseTo(focalPoint[axis], 9));
+      expect(distance()).toBeCloseTo(radius, 9);
+      expect([...camera.getPosition(), ...camera.getViewUp()].every(Number.isFinite)).toBe(true);
+      expect(Math.hypot(...camera.getViewUp())).toBeCloseTo(1, 10);
+      const direction = camera.getDirectionOfProjection();
+      expect(camera.getViewUp().reduce((sum, value, axis) => sum + value * direction[axis], 0)).toBeCloseTo(0, 10);
+    };
+    try {
+      const initialFocal = [...camera.getFocalPoint()];
+      const initialRadius = distance();
+      rotate.onButtonDown(interactor, renderer, { x: 512, y: 384 });
+      rotate.onMouseMove(interactor, renderer, { x: 512.25, y: 384 });
+      expectCentered(initialFocal, initialRadius);
+      // Independent trigonometric oracle also rejects a no-op or rounded drag.
+      const angle = -2 * Math.PI * 0.25 / 1024;
+      expect(camera.getPosition()[0]).toBeCloseTo(initialFocal[0] + initialRadius * Math.sin(angle), 9);
+      expect(camera.getPosition()[2]).toBeCloseTo(initialFocal[2] + initialRadius * Math.cos(angle), 9);
+      for (let step = 2; step <= 32; step += 1) {
+        rotate.onMouseMove(interactor, renderer, { x: 512 + step * 0.25, y: 384 + (step - 1) * 0.125 });
+        expectCentered(initialFocal, initialRadius);
+      }
+
+      // Real VTK parallel pan translates both camera and focal point. Switch
+      // back to the viewport's perspective projection before the next orbit.
+      for (const panSettings of settings.filter((values) => values.shift || (values.button === 3 && !values.control))) {
+        const pan = vtkPan.newInstance(panSettings);
+        try {
+          const beforePan = [...camera.getFocalPoint()];
+          camera.setParallelProjection(true);
+          pan.onButtonDown(interactor, renderer, { x: 512, y: 384 });
+          pan.onMouseMove(interactor, renderer, { x: 544.5, y: 368.75 });
+          camera.setParallelProjection(false);
+          const pannedFocal = [...camera.getFocalPoint()];
+          expect(Math.hypot(...pannedFocal.map((value, axis) => value - beforePan[axis]))).toBeGreaterThan(1);
+          expect(distance()).toBeCloseTo(initialRadius, 9);
+          const beforeOrbit = [...camera.getPosition()];
+          // The real interactor style sets its default center on each press.
+          // The rotate option must follow the current focal point nonetheless.
+          rotate.setCenter(0, 0, 0);
+          rotate.onButtonDown(interactor, renderer, { x: 512, y: 384 });
+          for (let step = 1; step <= 32; step += 1) {
+            rotate.onMouseMove(interactor, renderer, { x: 512 + step * 0.25, y: 384 + step * 0.125 });
+            expectCentered(pannedFocal, initialRadius);
+          }
+          expect(camera.getPosition()).not.toEqual(beforeOrbit);
+        } finally { pan.delete(); }
+      }
+    } finally { rotate.delete(); camera.delete(); }
+  });
+
   it("links three verified slice panes and expands/restores each without recreating the 3D camera", async () => {
     const rendered = render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
     await screen.findByLabelText("XY plane resliced image");
@@ -313,7 +399,7 @@ describe("RawVolumeViewport lifecycle", () => {
     await waitFor(() => expect(vtk.resetCamera).toHaveBeenCalledTimes(1));
     expect(vtk.render).toHaveBeenCalled();
     expect(vtk.addMouseManipulator.mock.calls.slice(0, 4).map(([item]) => item.values)).toEqual([
-      { button: 1 },
+      { button: 1, useFocalPointAsCenterOfRotation: true },
       { button: 3 },
       { button: 1, shift: true },
       { dragEnabled: false, scrollEnabled: true },
@@ -354,6 +440,7 @@ describe("RawVolumeViewport lifecycle", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     const opacity = screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement;
     fireEvent.change(opacity, { target: { value: "0.25" } });
+    expect(screen.getByLabelText("C1 opacity value").textContent).toBe("0.25");
     fireEvent.change(screen.getByLabelText("C1 colour"), { target: { value: "#336699" } });
     const low = screen.getByLabelText("C1 low") as HTMLInputElement;
     fireEvent.change(low, { target: { value: "12" } });
@@ -372,16 +459,56 @@ describe("RawVolumeViewport lifecycle", () => {
     expect((screen.getByLabelText("C1 low") as HTMLInputElement).value).toBe("12");
     expect((screen.getByLabelText("C1 gamma") as HTMLInputElement).value).toBe("1.7");
 
-    vtk.canvas!.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    fireEvent(vtk.canvas!, new Event("webglcontextlost", { cancelable: true }));
     expect(await screen.findByText(/Graphics context lost/)).toBeTruthy();
     const lostCanvas = vtk.canvas;
     const priorAddVolumeCalls = vtk.addVolume.mock.calls.length;
     const priorSetPositionCalls = vtk.setPosition.mock.calls.length;
-    vtk.canvas!.dispatchEvent(new Event("webglcontextrestored"));
+    fireEvent(vtk.canvas!, new Event("webglcontextrestored"));
+    await waitFor(() => {
+      expect(vtk.canvas).not.toBe(lostCanvas);
+      expect(vtk.addVolume.mock.calls.length).toBeGreaterThan(priorAddVolumeCalls);
+      expect(vtk.setPosition.mock.calls.length).toBeGreaterThan(priorSetPositionCalls);
+    });
     expect(await screen.findByText(/source voxels/)).toBeTruthy();
-    expect(vtk.canvas).not.toBe(lostCanvas);
-    expect(vtk.addVolume.mock.calls.length).toBeGreaterThan(priorAddVolumeCalls);
-    expect(vtk.setPosition.mock.calls.length).toBeGreaterThan(priorSetPositionCalls);
+  });
+
+  it("blocks a deferred verified payload and display updates after context loss until a fresh renderer binds", async () => {
+    const initial: RawVolumeResponse = { schema_version: 1, context: context(), focus: null };
+    const verifiedDigest = await crypto.subtle.digest("SHA-256", new Uint8Array([0, 1, 2, 3]));
+    let finishDigest!: (value: ArrayBuffer) => void;
+    const digest = vi.spyOn(crypto.subtle, "digest").mockImplementationOnce(() =>
+      new Promise<ArrayBuffer>((resolve) => { finishDigest = resolve; }));
+    const exportFigure = vi.fn().mockResolvedValue(null);
+    render(<RawVolumeViewport volume={initial} onExportFigure={exportFigure} />);
+    expect(digest).toHaveBeenCalledOnce();
+    const lostCanvas = vtk.canvas!;
+    fireEvent(lostCanvas, new Event("webglcontextlost", { cancelable: true }));
+    expect(screen.getByText(/Graphics context lost/)).toBeTruthy();
+    const rendersAtLoss = vtk.render.mock.calls.length;
+    fireEvent.change(screen.getByRole("slider", { name: "C1 opacity" }), { target: { value: "0.25" } });
+    fireEvent.keyDown(screen.getByLabelText("Interactive three-dimensional volume"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset camera" }));
+    await act(async () => { finishDigest(verifiedDigest); });
+    expect(vtk.addVolume).not.toHaveBeenCalled();
+    expect(vtk.render).toHaveBeenCalledTimes(rendersAtLoss);
+    expect(screen.getByText(/Graphics context lost/)).toBeTruthy();
+    const exportButton = screen.getByRole("button", { name: "Export PNG…" });
+    expect(exportButton.hasAttribute("disabled")).toBe(true);
+    fireEvent.click(exportButton);
+    expect(vtk.captureNextImage).not.toHaveBeenCalled();
+    expect(exportFigure).not.toHaveBeenCalled();
+
+    fireEvent(lostCanvas, new Event("webglcontextrestored"));
+    await waitFor(() => {
+      expect(vtk.canvas).not.toBe(lostCanvas);
+      expect(vtk.addVolume).toHaveBeenCalledOnce();
+      expect(vtk.render.mock.calls.length).toBeGreaterThan(rendersAtLoss);
+      expect(exportButton.hasAttribute("disabled")).toBe(false);
+    });
+    expect(digest).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement).value).toBe("0.25");
+    expect(screen.queryByText(/Graphics context lost/)).toBeNull();
   });
 
   it("shows focus separately and applies one context-world clipping plane to both payloads", async () => {
@@ -462,8 +589,17 @@ describe("RawVolumeViewport lifecycle", () => {
       height_px: 3,
       png_base64: "iVBORw0KGgo=",
       manifest: {
+        schema_version: "loci.volume-figure/v2",
         figure: { kind: "screen-resolution-rendered-figure", capture_scale: 1 },
-        representation: { mode: "mpr", extent: "context", shading: false },
+        representation: {
+          mode: "mpr",
+          extent: "context",
+          channel_compositing: null,
+          shading: false,
+          blend_mode: null,
+          quality: null,
+          lighting: null,
+        },
         camera: { projection: "perspective", parallel_scale: null },
         clipping: { enabled: true, axis: "z", position_percent: 50 },
         mpr: {
@@ -485,15 +621,24 @@ describe("RawVolumeViewport lifecycle", () => {
     const exportFigure = vi.fn().mockResolvedValue(null);
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} onExportFigure={exportFigure} />);
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledTimes(1));
+    const volumeActor = vtk.addVolume.mock.calls[0][0];
+    expect(volumeActor.getProperty().getColorMixPreset?.()).toBe(3);
+    expect(volumeActor.getMapper().getViewSpecificProperties?.().OpenGL?.ShaderReplacements?.[0]?.originalValue)
+      .toBe("//VTK::CustomColorMix");
+
     fireEvent.change(screen.getByLabelText("3D rendering mode"), { target: { value: "normal_shading" } });
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
     await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
-    expect(exportFigure.mock.calls[0][0].manifest.representation).toMatchObject({
-      mode: "volume",
-      shading: true,
-      blend_mode: "normal_shading",
-      quality: 50,
-      lighting: { ambient: 0.22, diffuse: 0.68, specular: 0.25, specular_power: 20, gradient_opacity: false },
+    expect(exportFigure.mock.calls[0][0].manifest).toMatchObject({
+      schema_version: "loci.volume-figure/v2",
+      representation: {
+        mode: "volume",
+        channel_compositing: "opacity-weighted-channels/v1",
+        shading: true,
+        blend_mode: "normal_shading",
+        quality: 50,
+        lighting: { ambient: 0.22, diffuse: 0.68, specular: 0.25, specular_power: 20, gradient_opacity: false },
+      },
     });
   });
 
@@ -506,6 +651,7 @@ describe("RawVolumeViewport lifecycle", () => {
     // Switch to MIP mode
     fireEvent.change(screen.getByLabelText("3D rendering mode"), { target: { value: "mip" } });
     expect(volumeActor.getProperty().getShade?.()).toBe(false);
+    expect(volumeActor.getProperty().getColorMixPreset?.()).toBe(3);
 
     // Change quality slider from 50 to 80
     const qualitySlider = screen.getByRole("slider", { name: "3D rendering quality" });
@@ -514,11 +660,16 @@ describe("RawVolumeViewport lifecycle", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
     await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
-    expect(exportFigure.mock.calls[0][0].manifest.representation).toMatchObject({
-      mode: "volume",
-      shading: false,
-      blend_mode: "mip",
-      quality: 80,
+    expect(exportFigure.mock.calls[0][0].manifest).toMatchObject({
+      schema_version: "loci.volume-figure/v2",
+      representation: {
+        mode: "volume",
+        channel_compositing: "opacity-weighted-channels/v1",
+        shading: false,
+        blend_mode: "mip",
+        quality: 80,
+        lighting: null,
+      },
     });
   });
 

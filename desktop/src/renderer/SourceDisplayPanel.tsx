@@ -10,27 +10,9 @@ import type { ViewerChannel } from "./ImageViewport";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
 import { checkedHistogram, HistogramPlot, type SourceHistogram } from "./DisplayHistogram";
 import { BatchChannelColorsDialog } from "./BatchChannelColorsDialog";
+import { ValidatedNumberInput as NumberSetting } from "./ValidatedNumberInput";
 
 export type SourceInterpretation = "auto" | "generic" | "histology" | "fluorescence" | "volume" | "medical";
-
-function NumberSetting({ label, value, onValue, minimum, maximum }: {
-  label: string; value: number; onValue: (value: number) => boolean; minimum?: number; maximum?: number;
-}) {
-  const [text, setText] = useState(String(value));
-  const [invalid, setInvalid] = useState(false);
-  useEffect(() => { setText(String(value)); setInvalid(false); }, [value]);
-  const commit = () => {
-    const number = Number(text);
-    if (!text.trim() || !Number.isFinite(number) || minimum !== undefined && number < minimum || maximum !== undefined && number > maximum || !onValue(number)) {
-      setInvalid(true); return;
-    }
-    setInvalid(false);
-  };
-  return <input aria-label={label} aria-invalid={invalid} inputMode="decimal" value={text}
-    title={invalid ? "Enter a finite value within the displayed range" : label}
-    onChange={(event) => setText(event.target.value)} onBlur={commit}
-    onKeyDown={(event) => { if (event.key === "Enter") { commit(); event.currentTarget.blur(); } }} />;
-}
 
 export function SourceDisplayPanel({ source, selection, onSelection, channels, onChannels,
   projection, onProjection, onAuto, onReset, onCompare, interpretation, onInterpretation,
@@ -217,11 +199,11 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       <p className="source-colour-policy">One tone curve for all RGB components. Embedded profiles are applied once.</p>
       {channels[0] && <div className="source-tone-settings">
         {histogramFor(channels[0], true)}
-        <label>Black point<NumberSetting label="RGB black point" minimum={0} maximum={rgbMaximum} value={channels[0].low ?? 0} onValue={(low) => {
+        <label>Black point<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB black point" minimum={0} maximum={rgbMaximum} rejectionHint="Black point must be below white point." value={channels[0].low ?? 0} onValue={(low) => {
           if (low >= (channels[0].high ?? rgbMaximum)) return false; update(0, { low }); return true;
-        }} /></label><label>White point<NumberSetting label="RGB white point" minimum={0} maximum={rgbMaximum} value={channels[0].high ?? rgbMaximum} onValue={(high) => {
+        }} /></label><label>White point<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB white point" minimum={0} maximum={rgbMaximum} rejectionHint="White point must be above black point." value={channels[0].high ?? rgbMaximum} onValue={(high) => {
           if (high <= (channels[0].low ?? 0)) return false; update(0, { high }); return true;
-        }} /></label><label>Gamma<NumberSetting label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
+        }} /></label><label>Gamma<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
           onValue={(gamma) => { update(0, { gamma }); return true; }} /></label>
         <label>Gamma slider<input aria-label="RGB gamma slider" type="range" min={0.1} max={5} step={0.05} value={Math.min(5, channels[0].gamma)} onChange={(event) => update(0, { gamma: Number(event.target.value) })} /></label>
       </div>}</> : <>
@@ -258,42 +240,48 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       {channels.map((channel) => <details className="source-channel" key={channel.channel}>
         <summary><input type="checkbox" aria-label={`Channel ${channel.channel + 1} visible`} checked={channel.visible} onClick={(event) => event.stopPropagation()} onChange={(event) => update(channel.channel, { visible: event.target.checked })} />
           <i style={{ background: channel.color }} /><span>{source.metadata.channel_names?.[channel.channel] || `Channel ${channel.channel + 1}`}</span></summary>
-        <div className="source-channel-settings">{histogramFor(channel)}<label>Low <NumberSetting label={`Channel ${channel.channel + 1} low`} value={channel.low ?? 0} onValue={(low) => {
+        <div className="source-channel-settings">{histogramFor(channel)}<label>Low <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} low`} rejectionHint="Low must be below high." value={channel.low ?? 0} onValue={(low) => {
           if (low >= (channel.high ?? 1)) return false; update(channel.channel, { low }); return true;
-        }} /></label><label>High <NumberSetting label={`Channel ${channel.channel + 1} high`} value={channel.high ?? 1} onValue={(high) => {
+        }} /></label><label>High <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} high`} rejectionHint="High must be above low." value={channel.high ?? 1} onValue={(high) => {
           if (high <= (channel.low ?? 0)) return false; update(channel.channel, { high }); return true;
-        }} /></label><label>Gamma <NumberSetting label={`Channel ${channel.channel + 1} gamma`} value={channel.gamma} minimum={0.1} maximum={10} onValue={(gamma) => { update(channel.channel, { gamma }); return true; }} /></label>
+        }} /></label><label>Gamma <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} gamma`} value={channel.gamma} minimum={0.1} maximum={10} onValue={(gamma) => { update(channel.channel, { gamma }); return true; }} /></label>
         {(source.source_kind === "medical" || interpretation === "medical") && <>
-          <label>Window<NumberSetting label={`Channel ${channel.channel + 1} window`} value={(channel.high ?? 1) - (channel.low ?? 0)} minimum={Number.MIN_VALUE} onValue={(width) => {
+          <label>Window<NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} window`} value={(channel.high ?? 1) - (channel.low ?? 0)} minimum={Number.MIN_VALUE} onValue={(width) => {
             const level = ((channel.high ?? 1) + (channel.low ?? 0)) / 2;
             if (!Number.isFinite(level - width / 2) || !Number.isFinite(level + width / 2) || level - width / 2 >= level + width / 2) return false;
             update(channel.channel, { low: level - width / 2, high: level + width / 2 }); return true;
-          }} /></label><label>Level<NumberSetting label={`Channel ${channel.channel + 1} level`} value={((channel.high ?? 1) + (channel.low ?? 0)) / 2} onValue={(level) => {
+          }} /></label><label>Level<NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} level`} value={((channel.high ?? 1) + (channel.low ?? 0)) / 2} onValue={(level) => {
             const half = ((channel.high ?? 1) - (channel.low ?? 0)) / 2;
             if (!Number.isFinite(level - half) || !Number.isFinite(level + half) || level - half >= level + half) return false;
             update(channel.channel, { low: level - half, high: level + half }); return true;
           }} /></label>
         </>}
         <label>Colour <input aria-label={`Channel ${channel.channel + 1} color`} type="color" value={channel.color} onChange={(event) => update(channel.channel, { color: event.target.value })} /></label>
-        <label className="source-opacity">Opacity <input aria-label={`Channel ${channel.channel + 1} opacity`} type="range" min={0} max={1} step={0.01} value={channel.opacity ?? 1} onChange={(event) => update(channel.channel, { opacity: Number(event.target.value) })} /></label>
+        <label className="source-opacity">Opacity <output aria-label={`Channel ${channel.channel + 1} opacity value`}>{channel.opacity ?? 1}</output><input aria-label={`Channel ${channel.channel + 1} opacity`} type="range" min={0} max={1} step={0.01} value={channel.opacity ?? 1} onChange={(event) => update(channel.channel, { opacity: Number(event.target.value) })} /></label>
         <button onClick={() => onAuto(channel.channel)} title="Set a stable full-image range for this channel.">Auto range</button></div>
       </details>)}
     </>}
       <button className="compare-source" title="Hold to compare with acquisition/default display settings" onPointerDown={() => onCompare(true)} onPointerUp={() => onCompare(false)} onPointerLeave={() => onCompare(false)} onBlur={() => onCompare(false)}
         onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); onCompare(true); } }} onKeyUp={(event) => { if (event.key === " ") onCompare(false); }}>Hold for source display</button>
     <details className="analysis-region-settings"><summary>Analysis region</summary><p>Used by analysis tools. Moving the camera does not change this region.</p><div className="research-grid">
-      {(["x", "y", "width", "height", "c"] as const).map((key) => <label key={key}>{key === "c" ? "Analysis channel" : key}<input type="number" aria-label={key === "c" ? "C" : key[0].toUpperCase() + key.slice(1)} value={selection[key]}
-        min={key === "width" || key === "height" ? 1 : 0} max={key === "c" ? dimensions.c - 1 : key === "x" || key === "width" ? dimensions.x : dimensions.y}
-        onChange={(event) => onSelection({ ...selection, [key]: Number(event.target.value) })} /></label>)}
+      {(["x", "y", "width", "height", "c"] as const).map((key) => <label key={key}>{key === "c" ? "Analysis channel" : key}<NumberSetting
+        key={`${source.id}:${source.sha256}`} integer label={key === "c" ? "C" : key[0].toUpperCase() + key.slice(1)} value={selection[key]}
+        minimum={key === "width" || key === "height" ? 1 : 0}
+        maximum={key === "c" ? dimensions.c - 1 : key === "x" ? dimensions.x - selection.width
+          : key === "y" ? dimensions.y - selection.height : key === "width" ? dimensions.x - selection.x : dimensions.y - selection.y}
+        onValue={(value) => { onSelection({ ...selection, [key]: value }); return true; }} /></label>)}
       {dimensions.z > 1 && <>
-        <label>Start Z (0-based)<input type="number" aria-label="Z" value={selection.z} min={0} max={dimensions.z - 1} onChange={(event) => onSelection({ ...selection, z: Number(event.target.value) })} /></label>
+        <label>Start Z (0-based)<NumberSetting key={`${source.id}:${source.sha256}`} integer label="Z" value={selection.z} minimum={0}
+          maximum={Math.min(dimensions.z - 1, (selection.z_stop ?? dimensions.z) - 1)} onValue={(z) => { onSelection({ ...selection, z }); return true; }} /></label>
         <label>Depth<select aria-label="Analysis depth" value={selection.z_stop === undefined ? "plane" : "volume"} onChange={(event) => {
           const { z_stop: _stop, ...plane } = selection;
           onSelection(event.target.value === "plane" ? plane : { ...plane, z_stop: dimensions.z });
         }}><option value="plane">One plane</option><option value="volume">Z range</option></select></label>
-        {selection.z_stop !== undefined && <label>Stop Z (exclusive)<input type="number" aria-label="Z stop" value={selection.z_stop} min={selection.z + 1} max={dimensions.z} onChange={(event) => onSelection({ ...selection, z_stop: Number(event.target.value) })} /></label>}
+        {selection.z_stop !== undefined && <label>Stop Z (exclusive)<NumberSetting key={`${source.id}:${source.sha256}`} integer label="Z stop" value={selection.z_stop}
+          minimum={selection.z + 1} maximum={dimensions.z} onValue={(z_stop) => { onSelection({ ...selection, z_stop }); return true; }} /></label>}
       </>}
-      {dimensions.t > 1 && <label>Time (0-based)<input type="number" aria-label="T" value={selection.t} min={0} max={dimensions.t - 1} onChange={(event) => onSelection({ ...selection, t: Number(event.target.value) })} /></label>}
+      {dimensions.t > 1 && <label>Time (0-based)<NumberSetting key={`${source.id}:${source.sha256}`} integer label="T" value={selection.t}
+        minimum={0} maximum={dimensions.t - 1} onValue={(t) => { onSelection({ ...selection, t }); return true; }} /></label>}
     </div></details>
       {batchColorsOpen && sources && api && (
         <BatchChannelColorsDialog

@@ -8,7 +8,7 @@ export function loadInspectorWidth(): number {
     const width = Number(localStorage.getItem(KEY));
     if (Number.isFinite(width) && width >= MIN && width <= MAX) return width;
   } catch { /* The current session still supports resizing without storage. */ }
-  return 304;
+  return 330;
 }
 
 export function InspectorResizeHandle({ width, onChange }: {
@@ -47,7 +47,7 @@ export function InspectorResizeHandle({ width, onChange }: {
       drag.current = { x: event.clientX, width: actual, current: actual };
       setIsDragging(true);
     }}
-    onDoubleClick={() => { onChange(304); save(304); }}
+    onDoubleClick={() => { onChange(330); save(330); }}
     onKeyDown={(event) => {
       const next = event.key === "ArrowLeft" ? bounded(width) + 16 : event.key === "ArrowRight" ? bounded(width) - 16 :
         event.key === "Home" ? MIN : event.key === "End" ? MAX : null;

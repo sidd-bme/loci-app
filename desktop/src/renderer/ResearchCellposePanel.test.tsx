@@ -175,7 +175,8 @@ describe("ResearchCellposePanel", () => {
     expect(native.getCellposeStatus).toHaveBeenCalledWith("cellpose-sam-v2");
     expect(native.importCellposeModel).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
-    expect(screen.getByText(/Opening an image never downloads a model/)).toBeVisible();
+    expect(screen.getByText("Model, licence & validation")).toBeVisible();
+    expect(screen.queryByText(/Opening an image never downloads a model/)).not.toBeInTheDocument();
   });
 
   it("imports only after the explicit readiness action and enables the verified profile", async () => {
@@ -254,9 +255,138 @@ describe("ResearchCellposePanel", () => {
       activeSelection: { ...selection, z_stop: 3 },
     });
 
-    expect(await screen.findByText(/Choose a single plane to run/)).toBeVisible();
+    expect(await screen.findByText(/Choose a single Z plane to run/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("allows selecting 2 GiB memory allowance and includes it in batch configuration and execution", async () => {
+    installNative();
+    const execute = vi.fn().mockResolvedValue({ result });
+    const onBatchConfiguration = vi.fn();
+    renderPanel({ api: researchApi(execute), onBatchConfiguration });
+
+    expect(await screen.findByRole("button", { name: "Segment image" })).toBeEnabled();
+    const select = screen.getByLabelText("Cellpose memory allowance");
+    expect(select).toHaveValue(String(512 * 1024 ** 2));
+
+    fireEvent.change(select, { target: { value: String(2 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(2 * 1024 ** 3));
+
+    await waitFor(() =>
+      expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          workingBytes: 2 * 1024 ** 3,
+        }),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
+    await waitFor(() =>
+      expect(execute).toHaveBeenCalledWith(
+        "cellpose_run",
+        expect.objectContaining({
+          working_bytes: 2 * 1024 ** 3,
+        }),
+      ),
+    );
+  });
+
+  it("supports both cellpose-sam and cellpose-sam-v2 profile IDs", async () => {
+    const native = installNative();
+    const execute = vi.fn().mockResolvedValue({ result });
+    const { rerender } = render(
+      <ResearchCellposePanel
+        api={researchApi(execute)}
+        source={source}
+        selection={selection}
+        profileId="cellpose-sam"
+        busy={false}
+        onBusy={vi.fn()}
+        onError={vi.fn()}
+        onResult={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(native.getCellposeStatus).toHaveBeenCalledWith("cellpose-sam"));
+
+    rerender(
+      <ResearchCellposePanel
+        api={researchApi(execute)}
+        source={source}
+        selection={selection}
+        profileId="cellpose-sam-v2"
+        busy={false}
+        onBusy={vi.fn()}
+        onError={vi.fn()}
+        onResult={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(native.getCellposeStatus).toHaveBeenCalledWith("cellpose-sam-v2"));
+  });
+
+  it("allows selecting 4 GiB or 8 GiB allowance even when 2 GiB is recommended", async () => {
+    installNative();
+    const api = researchApi();
+    api.recipeResources = vi.fn().mockResolvedValue({
+      total_memory_bytes: 16 * 1024 ** 3,
+      recommended_working_bytes: 2 * 1024 ** 3,
+      limits: { min_bytes: 512 * 1024 ** 2, max_bytes: 8 * 1024 ** 3 },
+    });
+    const onBatchConfiguration = vi.fn();
+    renderPanel({ api, onBatchConfiguration });
+
+    expect(await screen.findByText(/16 GiB installed · 2 GiB recommended/i)).toBeVisible();
+    const select = screen.getByLabelText("Cellpose memory allowance");
+
+    // Select 4 GiB
+    fireEvent.change(select, { target: { value: String(4 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(4 * 1024 ** 3));
+    expect(await screen.findByText(/Above the 2 GiB recommendation/i)).toBeVisible();
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 4 * 1024 ** 3,
+      }),
+    );
+
+    // Select 8 GiB
+    fireEvent.change(select, { target: { value: String(8 * 1024 ** 3) } });
+    expect(select).toHaveValue(String(8 * 1024 ** 3));
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 8 * 1024 ** 3,
+      }),
+    );
+
+    // Click "Use recommended"
+    const useRecommendedButton = screen.getByRole("button", { name: "Use recommended" });
+    fireEvent.click(useRecommendedButton);
+    expect(select).toHaveValue(String(2 * 1024 ** 3));
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workingBytes: 2 * 1024 ** 3,
+      }),
+    );
+  });
+
+  it("disables memory allowance selection when busy", async () => {
+    installNative();
+    render(
+      <ResearchCellposePanel
+        api={researchApi()}
+        source={source}
+        selection={selection}
+        profileId="cellpose-sam-v2"
+        busy={true}
+        onBusy={vi.fn()}
+        onError={vi.fn()}
+        onResult={vi.fn()}
+      />,
+    );
+
+    const select = await screen.findByLabelText("Cellpose memory allowance");
+    expect(select).toBeDisabled();
   });
 });

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .research_operations import PREVIEW_OPERATIONS, TASK_OPERATIONS
@@ -16,6 +18,43 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in job.items() if k not in {"pid"}}
 
 
+def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -> str:
+    """Inspect only the grant and destination; never infer bundle integrity here."""
+    request = job.get("request", {}).get("task_request", {})
+    grant_id = request.get("grant_id")
+    if not isinstance(grant_id, str):
+        return "Export publication status is unknown; inspect the destination before retrying."
+    try:
+        grant = next(
+            (
+                doc["data"]
+                for doc in project.documents("large_export_grant")
+                if doc["id"] == grant_id
+            ),
+            None,
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return "Export publication status is unknown; inspect the destination before retrying."
+    if (
+        not grant
+        or grant.get("result_id") != request.get("result_id")
+        or grant.get("revision_hash") != request.get("revision_hash")
+    ):
+        return "Export publication status is unknown; inspect the destination before retrying."
+    destination = grant.get("destination")
+    if not isinstance(destination, str) or not Path(destination).is_absolute():
+        return "Export publication status is unknown; inspect the destination before retrying."
+    try:
+        mode = Path(destination).lstat().st_mode
+    except FileNotFoundError:
+        return "Export destination is absent; no bundle is published there."
+    except OSError:
+        return "Export publication status is unknown; inspect the destination before retrying."
+    if stat.S_ISDIR(mode):
+        return "Export destination exists; bundle completeness is not verified."
+    return "Export publication status is unknown; inspect the destination before retrying."
+
+
 def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
     """Mark lost processes interrupted; never restart them or reuse a submission."""
     for job in project.list_jobs():
@@ -25,12 +64,15 @@ def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
         alive = False if not isinstance(pid, int) or pid <= 0 else process_alive(pid)
         if not alive:
             try:
+                error = "Execution stopped before publication; submit a new key to retry."
+                if job.get("operation") == "large_result_export":
+                    error = "Execution stopped. " + _export_interruption_detail(project, job)
                 project.update_job(
                     job["id"],
                     expected_state="running",
                     state="cancelled" if job["cancel_requested"] else "interrupted",
                     finished_at=timestamp(),
-                    error="Execution stopped before publication; submit a new key to retry.",
+                    error=error,
                 )
             except ValueError:
                 # A live executor may have committed completion since this read.
@@ -44,7 +86,31 @@ def submit_job(
 ) -> dict[str, Any]:
     if operation not in TASK_OPERATIONS:
         raise ValueError("Unknown local task operation")
-    if operation in {"run_recipe", "preview_recipe"}:
+    if operation == "labels_import":
+        from .research_labels_import import validate_request
+
+        grant = validate_request(workbench, request)
+        workbench.project.source(grant["source_id"], verify=True)
+        normalized = {"source_id": grant["source_id"], "task_request": request}
+    elif operation in {"workflow_run", "workflow_preview"}:
+        from .quantitative import exact_keys
+        from .research_workflow import BINDING_KEYS, preflight, workflow_context
+
+        exact_keys(
+            request,
+            BINDING_KEYS | ({"target_node_id"} if operation == "workflow_preview" else set()),
+            "workflow task",
+        )
+        resolved = preflight(
+            workbench, {key: value for key, value in request.items() if key != "target_node_id"}
+        )
+        request = {**request, "selection": resolved["selection"]}
+        normalized = {
+            "source_id": resolved["source_id"],
+            "task_request": request,
+            "workflow_context": workflow_context(resolved),
+        }
+    elif operation in {"run_recipe", "preview_recipe"}:
         validated = workbench.validate_recipe(request)
         normalized = {k: validated[k] for k in ("source_id", "selection", "recipe")}
     else:
@@ -52,7 +118,14 @@ def submit_job(
         # registered source can be bound to a durable task before it starts.
         if not isinstance(request, dict):
             raise ValueError("Task request must be an object")
-        if operation in {"correct_result", "roi_add", "roi_import", "correct_tracks"}:
+        if operation in {
+            "correct_result",
+            "roi_add",
+            "roi_import",
+            "correct_tracks",
+            "large_result_delete",
+            "large_result_export",
+        }:
             parent = workbench.project.result(request.get("result_id"))
             if parent["revision_hash"] != request.get("revision_hash"):
                 raise ValueError("Task revision is stale")
@@ -107,6 +180,13 @@ def submit_job(
             ):
                 raise ValueError("Task requires the exact stored model preview")
             source_id = preview["data"]["source"]["id"]
+        elif operation == "large_result_adopt":
+            source_id = request.get("source_id")
+            if not isinstance(source_id, str):
+                raise ValueError("Adoption requires an exact source identity")
+            grant_id = request.get("grant_id")
+            if not isinstance(grant_id, str):
+                raise ValueError("Adoption requires an exact grant identity")
         else:
             source_id = request.get("source_id")
         workbench.project.source(source_id, verify=True)
@@ -138,6 +218,18 @@ def run_job(
     project = workbench.project
     job = project.job(job_id)
     if job["state"] != "queued":
+        if job["state"] == "succeeded" and job["operation"] == "workflow_run":
+            from .research_workflow import _recover_run
+            from .workbench import result_summary
+
+            run = _recover_run(workbench, job_id)
+            result = project.result(run["data"]["result_id"])
+            return {
+                "job": public_job(job),
+                "run": run,
+                "result": result_summary(result),
+                "measurements": result["provenance"]["measurements"][:1000],
+            }
         return {"job": public_job(job)}
     if job["operation"] not in TASK_OPERATIONS:
         raise ValueError("Unknown local task operation")
@@ -190,12 +282,15 @@ def run_job(
     except BaseException as exc:
         current = project.job(job_id)
         if current["state"] == "running":
+            err_msg = f"{type(exc).__name__}: execution stopped before publication."
+            if job["operation"] == "large_result_export":
+                err_msg = f"{type(exc).__name__}: " + _export_interruption_detail(project, job)
             project.update_job(
                 job_id,
                 expected_state="running",
                 finished_at=timestamp(),
                 state="cancelled" if current["cancel_requested"] else "failed",
                 # Source paths and untrusted metadata never enter job diagnostics.
-                error=f"{type(exc).__name__}: execution stopped before publication.",
+                error=err_msg,
             )
         raise

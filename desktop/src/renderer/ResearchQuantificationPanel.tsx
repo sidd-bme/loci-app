@@ -205,12 +205,6 @@ export function ResearchQuantificationPanel({
   const [fieldAssayManualPointsAnnotationId, setFieldAssayManualPointsAnnotationId] = useState("");
   const [fieldAssayReviewer, setFieldAssayReviewer] = useState("");
   const [fieldAssayNotes, setFieldAssayNotes] = useState("");
-  const [fieldAssayConfirmChannel, setFieldAssayConfirmChannel] = useState(false);
-  const [fieldAssayConfirmAcq, setFieldAssayConfirmAcq] = useState(false);
-  const [fieldAssayConfirmFocus, setFieldAssayConfirmFocus] = useState(false);
-  const [fieldAssayConfirmNuclei, setFieldAssayConfirmNuclei] = useState(false);
-  const [fieldAssayConfirmBackground, setFieldAssayConfirmBackground] = useState(false);
-  const [fieldAssayConfirmSaturation, setFieldAssayConfirmSaturation] = useState(false);
   const [fieldAssayPreviewFingerprint, setFieldAssayPreviewFingerprint] = useState<string | null>(null);
 
   const [fieldAssayPreview, setFieldAssayPreview] = useState<{
@@ -337,7 +331,7 @@ export function ResearchQuantificationPanel({
           : "Could not load source annotations.",
       );
     });
-    return () => { annotationToken.current += 1; };
+    return () => { annotationToken.current += 1; fieldAssayPreviewToken.current += 1; };
   }, [api, source.id, source.sha256]);
 
   const planeAnnotations = sourceAnnotations.filter(
@@ -548,6 +542,7 @@ export function ResearchQuantificationPanel({
   const currentAssayConfigFingerprint = JSON.stringify({
     sourceId: source.id,
     sourceSha256: source.sha256,
+    channelMetadataRevision: metadata?.revision,
     annotationRevision: sourceAnnotationRevision,
     nuclei: fieldAssayNucleiChannel,
     signal: fieldAssaySignalChannel,
@@ -641,10 +636,9 @@ export function ResearchQuantificationPanel({
       };
 
       if (!res.preview || !res.qc_overlay) throw new Error("The engine did not return a field assay preview.");
-      if (res.overlay && res.measurements) {
-        onPreview(res.overlay, res.measurements);
-      }
       return {
+        overlay: res.overlay,
+        measurements: res.measurements,
         summary: res.summary ?? {},
         warnings: res.warnings ?? [],
         qc_overlay: res.qc_overlay,
@@ -663,12 +657,14 @@ export function ResearchQuantificationPanel({
       token === fieldAssayPreviewToken.current &&
       fingerprint === fieldAssayConfigRef.current
     ) {
-      setFieldAssayPreview(output);
+      const { overlay, measurements, ...preview } = output;
+      if (overlay && measurements) onPreview(overlay, measurements);
+      setFieldAssayPreview(preview);
       setFieldAssayPreviewFingerprint(fingerprint);
     }
   };
 
-  const adoptFieldAssay = async () => {
+  const adoptFieldAssay = async (isReviewed: boolean) => {
     await run("Could not adopt field assay.", async () => {
       const nuclei = finite(fieldAssayNucleiChannel, "Nuclei channel");
       const signal = finite(fieldAssaySignalChannel, "Signal channel");
@@ -678,12 +674,6 @@ export function ResearchQuantificationPanel({
         throw new Error("Configuration has changed since preview. Please re-run preview before adopting.");
       }
 
-      const isReviewed =
-        fieldAssayConfirmChannel &&
-        fieldAssayConfirmAcq &&
-        fieldAssayConfirmFocus &&
-        fieldAssayConfirmNuclei &&
-        fieldAssayConfirmBackground;
 
       if (isReviewed) {
         if (!fieldAssayReviewer.trim()) {
@@ -714,12 +704,12 @@ export function ResearchQuantificationPanel({
         reviewer: fieldAssayReviewer.trim() || undefined,
         assay_notes: fieldAssayNotes.trim() || undefined,
         endpoint_status: isReviewed ? "reviewed" : "exploratory",
-        channel_identity_confirmed: fieldAssayConfirmChannel,
-        acquisition_comparable: fieldAssayConfirmAcq,
-        focus_reviewed: fieldAssayConfirmFocus,
-        nuclei_reviewed: fieldAssayConfirmNuclei,
-        background_reviewed: fieldAssayConfirmBackground,
-        saturation_reviewed: fieldAssayConfirmSaturation,
+        channel_identity_confirmed: isReviewed,
+        acquisition_comparable: isReviewed,
+        focus_reviewed: isReviewed,
+        nuclei_reviewed: isReviewed,
+        background_reviewed: isReviewed,
+        saturation_reviewed: isReviewed,
         config: {
           nuclear_threshold: manualThresh,
           segmentation_method: fieldAssaySegmentationMethod,
@@ -729,12 +719,12 @@ export function ResearchQuantificationPanel({
           max_nucleus_area_px: finite(fieldAssayMaxArea, "Max nucleus area"),
           watershed_min_distance_px: finite(fieldAssayWatershedMinDist, "Watershed distance"),
           endpoint_status: isReviewed ? "reviewed" : "exploratory",
-          channel_identity_confirmed: fieldAssayConfirmChannel,
-          acquisition_comparable: fieldAssayConfirmAcq,
-          focus_reviewed: fieldAssayConfirmFocus,
-          nuclei_reviewed: fieldAssayConfirmNuclei,
-          background_reviewed: fieldAssayConfirmBackground,
-          saturation_reviewed: fieldAssayConfirmSaturation,
+          channel_identity_confirmed: isReviewed,
+          acquisition_comparable: isReviewed,
+          focus_reviewed: isReviewed,
+          nuclei_reviewed: isReviewed,
+          background_reviewed: isReviewed,
+          saturation_reviewed: isReviewed,
           reviewer: fieldAssayReviewer.trim() || undefined,
           assay_notes: fieldAssayNotes.trim() || undefined,
         },
@@ -816,14 +806,14 @@ export function ResearchQuantificationPanel({
     <div className="research-panel research-quantification">
       <div className="research-mode-tabs research-quantification-tabs">
         {(["channels", "recipe", "puncta", "colocalisation", "association", "field-assay"] as const).map((item) => (
-          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{item === "field-assay" ? "Field assay" : item}</button>
+          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{({ channels: "Channels", recipe: "Recipe", puncta: "Puncta", colocalisation: "Colocalisation", association: "Association", "field-assay": "Field assay" })[item]}</button>
         ))}
       </div>
       {actionError && <p role="alert">{actionError}</p>}
 
       {mode === "channels" && <>
-        <h2>Biological channel declarations</h2>
-        <p>Acquisition names remain immutable. Marker and fluorophore identities are explicit user declarations; none are inferred from appearance.</p>
+        <h2>Channel identities</h2>
+        <p>Name each channel and record its marker and fluorophore.</p>
         {isRgb ? <p role="alert">RGB samples are colour components and cannot be declared as independent biological channels.</p> : channelError ? <p role="alert">{channelError}</p> : !metadata ? <p role="status">Loading exact channel metadata…</p> : <>
           {channelDraft.map((channel, index) => <fieldset key={channel.index}>
             <legend>Acquisition channel {index + 1} · original: {metadata.original_names[index]}</legend>
@@ -832,7 +822,7 @@ export function ResearchQuantificationPanel({
             </label>)}
           </fieldset>)}
           <button className="research-primary" disabled={locked} onClick={() => void saveChannels()}>Save declarations at revision {metadata.revision}</button>
-          <p className="research-summary">Basis: {metadata.basis}</p>
+          <details><summary>Acquisition metadata</summary><p>{metadata.basis}</p></details>
         </>}
       </>}
 
@@ -1021,8 +1011,8 @@ export function ResearchQuantificationPanel({
           <button className="research-primary" disabled={locked || !fieldAssayInputsReady} onClick={() => void previewFieldAssay()}>Preview field assay</button>
 
           {isAssayConfigStale && (
-            <p className="research-callout" role="alert" style={{ fontSize: "12px", color: "#c02020", margin: "8px 0" }}>
-              Configuration changed since preview. Please click "Preview field assay" to update preview before adopting.
+            <p className="research-callout" role="alert" >
+              Settings changed. Preview again before saving.
             </p>
           )}
 
@@ -1038,7 +1028,7 @@ export function ResearchQuantificationPanel({
               <div><dt>Focus area</dt><dd>{fieldAssayPreview.focus_mask_pixels.toLocaleString()} px</dd></div>
               <div><dt>Raw signal sum</dt><dd>{fieldAssayPreview.raw_signal_sum.toLocaleString()} ADU</dd></div>
               <div><dt>Background ADU</dt><dd>{String(fieldAssayPreview.summary.background_value_adu ?? "—")}</dd></div>
-              <div><dt>Signed corrected total</dt><dd style={{ color: fieldAssayPreview.integrated_signal_minus_background < 0 ? "#f47d7d" : undefined }}>{fieldAssayPreview.integrated_signal_minus_background.toLocaleString()} ADU</dd></div>
+              <div><dt>Signed corrected total</dt><dd style={{ color: fieldAssayPreview.integrated_signal_minus_background < 0 ? "var(--warning)" : undefined }}>{fieldAssayPreview.integrated_signal_minus_background.toLocaleString()} ADU</dd></div>
               <div><dt>Reviewed nuclei count</dt><dd>{fieldAssayPreview.reviewed_count} ({fieldAssayPreview.count_mode})</dd></div>
               <div><dt>Signal per nucleus</dt><dd>{fieldAssayPreview.field_ratio !== null ? `${fieldAssayPreview.field_ratio} ADU` : "Undefined (0 nuclei)"}</dd></div>
               <div><dt>Saturation</dt><dd>Nuclei: {fieldAssayPreview.saturation.nuclei}, Signal: {fieldAssayPreview.saturation.signal}, BG: {fieldAssayPreview.saturation.background}</dd></div>
@@ -1049,26 +1039,11 @@ export function ResearchQuantificationPanel({
               <ul>{fieldAssayPreview.warnings.map((w, idx) => <li key={idx}>{w}</li>)}</ul>
             </div>}
 
-            <fieldset><legend>Human scientific review & adoption</legend>
-              <label className="research-check"><input type="checkbox" aria-label="Confirm channel identity" checked={fieldAssayConfirmChannel} onChange={(event) => setFieldAssayConfirmChannel(event.target.checked)} /> Channel identity confirmed</label>
-              <label className="research-check"><input type="checkbox" aria-label="Confirm acquisition comparable" checked={fieldAssayConfirmAcq} onChange={(event) => setFieldAssayConfirmAcq(event.target.checked)} /> Acquisition settings matched within experiment</label>
-              <label className="research-check"><input type="checkbox" aria-label="Confirm focus reviewed" checked={fieldAssayConfirmFocus} onChange={(event) => setFieldAssayConfirmFocus(event.target.checked)} /> Focus region inspected and approved</label>
-              <label className="research-check"><input type="checkbox" aria-label="Confirm nuclei reviewed" checked={fieldAssayConfirmNuclei} onChange={(event) => setFieldAssayConfirmNuclei(event.target.checked)} /> Nuclei count and segmentation reviewed</label>
-              <label className="research-check"><input type="checkbox" aria-label="Confirm background reviewed" checked={fieldAssayConfirmBackground} onChange={(event) => setFieldAssayConfirmBackground(event.target.checked)} /> Background selection reviewed (cell-free)</label>
-              {(fieldAssayPreview.saturation.nuclei > 0 || fieldAssayPreview.saturation.signal > 0 || fieldAssayPreview.saturation.background > 0) && (
-                <label className="research-check"><input type="checkbox" aria-label="Confirm saturation reviewed" checked={fieldAssayConfirmSaturation} onChange={(event) => setFieldAssayConfirmSaturation(event.target.checked)} /> Saturated pixels inspected and accepted</label>
-              )}
-              <label>Reviewer name<input aria-label="Reviewer name" value={fieldAssayReviewer} onChange={(event) => setFieldAssayReviewer(event.target.value)} placeholder="Required for reviewed publication" /></label>
-              <label>Assay notes<textarea aria-label="Assay notes" value={fieldAssayNotes} onChange={(event) => setFieldAssayNotes(event.target.value)} placeholder="Field observations, focal quality, exclusions..." /></label>
-
+            <fieldset className="field-assay-adoption"><legend>Save field assay</legend>
+              <label>Reviewer name<input aria-label="Reviewer name" value={fieldAssayReviewer} onChange={(event) => setFieldAssayReviewer(event.target.value)} placeholder="Required to approve" /></label>
+              <label>Assay notes<textarea aria-label="Assay notes" value={fieldAssayNotes} onChange={(event) => setFieldAssayNotes(event.target.value)} placeholder="Observations or exclusions" /></label>
+              <p id="field-review-scope">Approval records your review of channel identity, acquisition comparability, focus, nuclei and background{(fieldAssayPreview.saturation.nuclei > 0 || fieldAssayPreview.saturation.signal > 0 || fieldAssayPreview.saturation.background > 0) ? ", including the saturated pixels shown above" : ""}.</p>
               {(() => {
-                const isReviewCandidate =
-                  fieldAssayConfirmChannel &&
-                  fieldAssayConfirmAcq &&
-                  fieldAssayConfirmFocus &&
-                  fieldAssayConfirmNuclei &&
-                  fieldAssayConfirmBackground;
-
                 const dynamicWithoutManual =
                   (fieldAssaySegmentationMethod === "otsu" || fieldAssaySegmentationMethod === "yen") &&
                   fieldAssayManualCountMode === "none";
@@ -1076,35 +1051,23 @@ export function ResearchQuantificationPanel({
                   fieldAssayFocusMode === "all" ||
                   (fieldAssayBackgroundMode === "value" &&
                     (Number(fieldAssayBackgroundValue) === 0 || !fieldAssayBackgroundValue.trim()));
-                const reviewerMissing = isReviewCandidate && !fieldAssayReviewer.trim();
-
-                const cannotAdoptReviewedReason = !isReviewCandidate
-                  ? null
-                  : reviewerMissing
-                  ? "Reviewer name is required for reviewed adoption."
+                const cannotAdoptReviewedReason = !fieldAssayReviewer.trim()
+                  ? "Enter a reviewer name to approve."
                   : dynamicWithoutManual
-                  ? "Fixed calibrated threshold or manual count required for reviewed adoption (Otsu/Yen varies per image)."
+                  ? "Approval needs a fixed threshold or manual count."
                   : invalidReviewedRegion
-                  ? "Human-reviewed focus ROI and cell-free background measurement required for reviewed adoption."
+                  ? "Approval needs a focus ROI and measured background."
                   : null;
-
-                return (
-                  <>
-                    {cannotAdoptReviewedReason && (
-                      <p className="research-callout" role="alert" style={{ fontSize: "12px", color: "#c02020", margin: "6px 0" }}>
-                        {cannotAdoptReviewedReason}
-                      </p>
-                    )}
-
-                    <button
-                      className="research-primary"
+                return <>
+                  {cannotAdoptReviewedReason && <p className="field-assay-review-reason" id="field-review-reason">{cannotAdoptReviewedReason}</p>}
+                  <div className="research-actions">
+                    <button disabled={locked || isAssayConfigStale}
+                      onClick={() => void adoptFieldAssay(false)}>Save exploratory</button>
+                    <button className="research-primary" aria-describedby={`field-review-scope${cannotAdoptReviewedReason ? " field-review-reason" : ""}`}
                       disabled={locked || isAssayConfigStale || Boolean(cannotAdoptReviewedReason)}
-                      onClick={() => void adoptFieldAssay()}
-                    >
-                      {isReviewCandidate ? "Adopt reviewed field assay" : "Adopt exploratory field assay"}
-                    </button>
-                  </>
-                );
+                      onClick={() => void adoptFieldAssay(true)}>Approve & save</button>
+                  </div>
+                </>;
               })()}
             </fieldset>
           </div>}

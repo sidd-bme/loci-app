@@ -12,6 +12,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 import loci_engine.cellpose_backend as backend
+from loci_engine.models import ENGINE_VERSION
 from loci_engine.profiles import (
     CELLPOSE_PROFILE_ID,
     CELLPOSE_WEBSITE_PROFILE_ID,
@@ -549,7 +550,7 @@ def test_cellpose_segmentation_uses_verified_path_current_api_and_source_grid(
     result = response["result"]
     assert result["cell_count"] == 2
     assert result["profile"]["id"] == CELLPOSE_PROFILE_ID
-    assert result["engine"] == {"id": CELLPOSE_PROFILE_ID, "version": "0.1.0"}
+    assert result["engine"] == {"id": CELLPOSE_PROFILE_ID, "version": ENGINE_VERSION}
     assert result["runtime"]["requested_device"] == "auto"
     assert result["runtime"]["resolved_device"] == "mps"
     assert result["runtime"]["fallback_reason"] is None

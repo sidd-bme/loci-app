@@ -461,10 +461,15 @@ try {
   assert.equal(reopened.results.length, 1);
   assert.equal(reopened.jobs.find((job) => job.id === cancelledJob.id)?.state, "cancelled");
   assert.equal(reopened.jobs.find((job) => job.id === succeededJob.id)?.state, "succeeded");
-  await reopenedPage.getByText(`cancelled · ${cancelledJob.id.slice(0, 8)}`, { exact: true })
-    .waitFor({ state: "visible" });
-  await reopenedPage.getByText(`succeeded · ${succeededJob.id.slice(0, 8)}`, { exact: true })
-    .waitFor({ state: "visible" });
+  await reopenedPage.getByRole("button", { name: "Jobs", exact: true }).click();
+  const jobCenter = reopenedPage.getByRole("region", { name: "Job center", exact: true });
+  for (const [job, label] of [[cancelledJob, "Cancelled"], [succeededJob, "Completed"]]) {
+    const row = jobCenter.locator("li").filter({ has: reopenedPage.getByText(`#${job.id.slice(0, 8)}`, { exact: true }) });
+    assert.equal(await row.count(), 1, "Each durable job must have its own visible row");
+    await row.getByText(label, { exact: true }).waitFor({ state: "visible" });
+  }
+  await reopenedPage.screenshot({ path: path.join(screenshotsPath, "reopened-job-states.png") });
+  await reopenedPage.getByRole("button", { name: "Close Job Center", exact: true }).click();
   const reopenedResult = reopenedPage.locator(`[data-result-id="${durable.results[0].id}"]`);
   await reopenedResult.waitFor({ state: "visible" });
   await reopenedResult.click();

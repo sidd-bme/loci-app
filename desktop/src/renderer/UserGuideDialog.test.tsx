@@ -19,9 +19,10 @@ describe("bundled user manual", () => {
     fireEvent.keyDown(search, { key: "Escape" }); expect(close).toHaveBeenCalledOnce();
   });
   it("resolves repository manual links to the public documentation and retains local anchors", () => {
-    render(<GuideBody text={'[Capabilities](CAPABILITY_MATRIX.md#learned-analysis-routes) [Release](RELEASE_STATUS.md) [Here](#open-images) [outside](../secret.md)'} />);
+    render(<GuideBody text={'[Capabilities](CAPABILITY_MATRIX.md#learned-analysis-routes) [Release](RELEASE_STATUS.md) [First study](workflows/FIRST_STUDY.md) [Here](#open-images) [outside](../secret.md)'} />);
     expect(screen.getByRole("link", { name: "Capabilities" })).toHaveAttribute("href", "https://github.com/sidd-bme/loci-app/blob/main/docs/CAPABILITY_MATRIX.md#learned-analysis-routes");
     expect(screen.getByRole("link", { name: "Release" })).toHaveAttribute("href", "https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md");
+    expect(screen.getByRole("link", { name: "First study" })).toHaveAttribute("href", "https://github.com/sidd-bme/loci-app/blob/main/docs/workflows/FIRST_STUDY.md");
     expect(screen.getByRole("link", { name: "Here" })).toHaveAttribute("href", "#manual-open-images");
     expect(screen.queryByRole("link", { name: "outside" })).toBeNull();
   });

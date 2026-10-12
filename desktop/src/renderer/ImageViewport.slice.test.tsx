@@ -76,7 +76,8 @@ describe("ImageViewport smooth slice navigation", () => {
         image: `data:image/png;base64,slice-z${z}#viewer-400x300`,
         source_sha256: source.sha256,
         source_extent: [400, 300],
-        selection: request.selection,
+        selection: (request.selection as ResearchSelection) ?? { t: Number(request.t ?? 0), z, c: Number(request.c ?? 0), level: 0, x: 0, y: 0, width: 400, height: 300 },
+        projection: (request.projection as "plane" | "max" | "mean") ?? null,
       };
     });
     const api = { execute } as unknown as ResearchDesktopApi;

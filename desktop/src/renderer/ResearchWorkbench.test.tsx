@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,6 +10,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
+import { dispatchWorkbenchCommand } from "./workbench-commands";
+import { FIRST_STUDY_SOURCE_SHA256 } from "./first-study-display";
 import type {
   ResearchBatchReceipt,
   ResearchBatchTask,
@@ -157,6 +160,15 @@ function resultView(
     geometry,
   };
 }
+function resultPage(
+  request: Record<string, unknown>,
+  results: ResearchSnapshot["results"],
+  measurements: Array<Record<string, unknown>> = [],
+) {
+  const result = results.find((item) => item.id === request.result_id);
+  if (!result) throw new Error("Result page mock requires an exact fixture identity");
+  return { result, measurements };
+}
 function viewerContractResponse(
   operation: string,
   request: Record<string, unknown>,
@@ -221,6 +233,8 @@ function viewerContractResponse(
       source_sha256: source.sha256,
       ...(request.overview ? {
         source_extent: [dimensions.x, dimensions.y],
+        selection: { t: request.t ?? 0, z: request.z ?? 0, c: request.c ?? 0, z_stop: request.z_stop ?? null },
+        projection: request.projection ?? null,
         width,
         height,
       } : { selection: request.selection }),
@@ -270,7 +284,7 @@ function api(overrides: Partial<ResearchDesktopApi> = {}): ResearchDesktopApi {
         return { image: "data:image/png;base64,one" };
       }
       if (operation === "result") {
-        return { measurements: [{ label: 1, area: 22 }] };
+        return resultPage(request, activeSnapshot.results, [{ label: 1, area: 22 }]);
       }
       if (operation === "result_view") return resultView();
       return {};
@@ -361,10 +375,157 @@ async function openAdvancedTool(tool: string) {
   fireEvent.change(await screen.findByLabelText("Search all tools"), {
     target: { value: tool },
   });
-  fireEvent.click(await screen.findByRole("button", { name: tool }));
+  fireEvent.click(await screen.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
 }
 describe("ResearchWorkbench", () => {
-  it("opens the dedicated epidermal measurement workflow and finds IL4R by task name", async () => {
+  it("opens Study from the selected correction and sends only its exact direct parent/child pair", async () => {
+    const parent = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256,
+      arrays: { labels: { sha256: "1".repeat(64), shape: [3, 48, 64], dtype: "uint32" } } };
+    const child = { ...parent, id: "e".repeat(32), revision_hash: "f".repeat(64), kind: "corrected-labels", parent_id: parent.id };
+    const study = { ...snapshot, results: [parent, child], samples: [{ id: snapshot.sources[0].id, revision: 1,
+      data: { study: "Study", sample: "Field", condition: "Control", biological_replicate: "R1" } }] };
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,view" });
+      if (operation === "result") return Promise.resolve(resultPage(request, study.results));
+      if (operation === "result_view") return Promise.resolve(resultView(request.result_id === child.id ? child : parent));
+      return Promise.resolve({});
+    });
+    render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(study), execute })} onBack={vi.fn()} />);
+    await selectHistoryResult(/corrected-labels/);
+    await openTool("Results", "Info");
+    fireEvent.click(screen.getByRole("button", { name: "Show experiment effect" }));
+    expect(await screen.findByRole("region", { name: "Experiment effect" })).toBeInTheDocument();
+    expect(screen.getByLabelText("After correction revision")).toHaveValue(child.id);
+    fireEvent.click(screen.getByRole("button", { name: "Calculate experiment effect" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("study_correction_effect", {
+      before_result_ids: [parent.id], after_result_ids: [child.id], value: "measure",
+    }));
+  });
+  it("recovers an annotation draft across task groups and incompatible tools with its exact save scope", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const execute = vi.fn(async (operation: string) => operation === "annotate_source" ? {
+      source_id: snapshot.sources[0].id, source_sha256: snapshot.sources[0].sha256,
+      revision: 1, annotations: [], can_undo: true, can_redo: false,
+    } : {});
+    const bridge = api({ execute });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Annotate", "Annotate");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    await waitFor(() => expect(screen.getByLabelText("Image viewer: Specimen")).toHaveAttribute("data-prepared", "true"));
+    for (const coordinate of [100, 200]) {
+      const canvas = screen.getByLabelText("Source image and bound annotations");
+      fireEvent.pointerDown(canvas, { button: 0, clientX: coordinate, clientY: coordinate });
+      fireEvent.pointerUp(canvas, { button: 0, clientX: coordinate, clientY: coordinate });
+    }
+    fireEvent.change(screen.getByLabelText("Annotation label"), { target: { value: "Unfinished distance" } });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    fireEvent.click(screen.getByRole("button", { name: "Annotate" }));
+    expect(screen.getByRole("button", { name: "Distance" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    expect(screen.getByLabelText("Annotation label")).toHaveValue("Unfinished distance");
+    fireEvent.click(screen.getByRole("button", { name: "Polygon" }));
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("annotate_source", expect.objectContaining({
+      source_id: snapshot.sources[0].id, source_sha256: snapshot.sources[0].sha256, expected_revision: 0,
+      annotation: expect.objectContaining({ kind: "line", z: 1, t: 0, label: "Unfinished distance", points: expect.arrayContaining([
+        expect.objectContaining({ x: expect.any(Number), y: expect.any(Number) }),
+      ]) }),
+    })));
+  });
+
+  it("recovers plane drafts without applying their points to another plane or replacement document", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const bridge = api();
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Annotate", "Annotate");
+    fireEvent.click(screen.getByRole("button", { name: "Point" }));
+    await waitFor(() => expect(screen.getByLabelText("Image viewer: Specimen")).toHaveAttribute("data-prepared", "true"));
+    const canvas = screen.getByLabelText("Source image and bound annotations");
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 100, clientY: 100 });
+    fireEvent.pointerUp(canvas, { button: 0, clientX: 100, clientY: 100 });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Z plane"), { target: { value: "2" } });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Z plane"), { target: { value: "1" } });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    fireEvent.click(screen.getByText("File"));
+    fireEvent.click(screen.getByRole("button", { name: "Open study" }));
+    await waitFor(() => expect(bridge.openStudy).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Point" })).toHaveAttribute("aria-pressed", "false"));
+    fireEvent.click(screen.getByRole("button", { name: "Point" }));
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
+  });
+
+  it("shows result revision and review state while rejecting contradictory review receipts", async () => {
+    const active = structuredClone(snapshot);
+    active.results[0].review = { disposition: "reviewed" };
+    active.results.push({ ...active.results[0], id: "e".repeat(32), revision_hash: "f".repeat(64),
+      review: { disposition: "reviewed", revision_hash: "stale" } as never });
+    render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(active) })} onBack={vi.fn()} />);
+    const first = await screen.findByRole("button", { name: new RegExp(`revision ${active.results[0].revision_hash}, reviewed review`) });
+    expect(first).toHaveAttribute("data-review-state", "reviewed");
+    expect(first).toHaveTextContent("1 objects · dddddddd");
+    expect(first.getAttribute("data-loci-help") ?? first.title).toContain(active.results[0].id);
+    const second = screen.getByRole("button", { name: new RegExp(`revision ${active.results[1].revision_hash}, pending review`) });
+    expect(second).toHaveAttribute("data-review-state", "pending");
+  });
+
+  it("waits for initial restoration before a native image command and ignores duplicate commands", async () => {
+    let finishRestore!: (value: ResearchSnapshot) => void;
+    let finishOpen!: (value: ResearchSnapshot) => void;
+    const openImages = vi.fn(() => new Promise<ResearchSnapshot>((resolve) => { finishOpen = resolve; }));
+    const bridge = api({ openImages, getSnapshot: vi.fn(() => new Promise<ResearchSnapshot>((resolve) => { finishRestore = resolve; })) });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    act(() => { expect(dispatchWorkbenchCommand("open-images")).toBe(true); dispatchWorkbenchCommand("open-folder"); });
+    expect(openImages).not.toHaveBeenCalled();
+    await act(async () => { finishRestore(snapshot); });
+    await waitFor(() => expect(openImages).toHaveBeenCalledExactlyOnceWith("files"));
+    await act(async () => { finishOpen(snapshot); });
+  });
+
+  it.each(["open-folder", "open-study", "save-study"] as const)("routes native %s through the current workbench", async (command) => {
+    const openImages = vi.fn().mockResolvedValue(snapshot);
+    const saveAs = vi.fn().mockResolvedValue(snapshot);
+    const bridge = api({ openImages, saveAs });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await screen.findAllByText("Specimen");
+    act(() => { expect(dispatchWorkbenchCommand(command)).toBe(true); });
+    await waitFor(() => {
+      if (command === "open-folder") expect(openImages).toHaveBeenCalledExactlyOnceWith("folder");
+      else if (command === "open-study") expect(bridge.openStudy).toHaveBeenCalledOnce();
+      else expect(saveAs).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("detaches the current unsaved display state with its source fingerprint", async () => {
+    const open = vi.fn().mockResolvedValue({ views: [] });
+    window.lociImageWindows = { open } as unknown as NonNullable<Window["lociImageWindows"]>;
+    try {
+      render(<ResearchWorkbench api={api()} onBack={vi.fn()} />);
+      await openTool("View", "Display");
+      const opacity = await screen.findByLabelText("Channel 1 opacity");
+      fireEvent.change(opacity, { target: { value: "0.37" } });
+      fireEvent.click(screen.getByRole("button", { name: "Detach image" }));
+      await waitFor(() => expect(open).toHaveBeenCalledWith(snapshot.sources[0].id,
+        expect.objectContaining({ sourceSha256: snapshot.sources[0].sha256,
+          presentation: expect.objectContaining({ channels: expect.arrayContaining([
+            expect.objectContaining({ channel: 0, opacity: 0.37 }),
+          ]), mode: "plane", tool: "navigate" }) })));
+    } finally { delete window.lociImageWindows; }
+  });
+
+  it("returns from detached controls to the chosen source rather than the first imported image", async () => {
+    const second = { ...snapshot.sources[0], id: "e".repeat(32), sha256: "f".repeat(64), name: "Return target" };
+    const desktop = api({ getSnapshot: async () => ({ ...snapshot, sources: [...snapshot.sources, second] }) });
+    render(<ResearchWorkbench api={desktop} initialSourceId={second.id} onBack={vi.fn()} />);
+    expect(await screen.findByLabelText("Image viewer: Return target")).toBeVisible();
+    expect(screen.queryByLabelText("Image viewer: Specimen")).not.toBeInTheDocument();
+  });
+
+  it("opens the dedicated epidermal measurement workflow and finds fluorescence by task name", async () => {
     const desktop = api();
     const execute = vi.mocked(desktop.execute);
     render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
@@ -388,8 +549,8 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByRole("button", { name: "Epidermal Transect" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByRole("button", { name: "Rectangle" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
-    fireEvent.change(screen.getByLabelText("Search all tools"), { target: { value: "IL4R" } });
-    expect(screen.getByRole("button", { name: "Fluorescence & field assay" })).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Search all tools"), { target: { value: "fluorescence" } });
+    expect(screen.getByRole("option", { name: /Fluorescence & field assay/ })).toBeVisible();
   });
 
   it("keeps file drag state stable across children and clears it on every exit path", async () => {
@@ -481,6 +642,44 @@ describe("ResearchWorkbench", () => {
     await waitFor(() =>
       expect(historyButton).toHaveAttribute("aria-pressed", "true"),
     );
+  });
+
+  it.each(["empty", "loaded"] as const)("pauses contextual help during %s workspace error recovery and restores it after dismissal", async (state) => {
+    const failure = new Error("Study destination is unavailable");
+    const desktop = api(state === "empty"
+      ? { getSnapshot: vi.fn().mockResolvedValue(null), openStudy: vi.fn().mockRejectedValue(failure) }
+      : { saveAs: vi.fn().mockRejectedValue(failure) });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} onOpenSettings={vi.fn()} />);
+    await screen.findByRole("main", { name: state === "empty" ? "Loci workspace" : "Research workspace" });
+    if (state === "loaded") {
+      await waitFor(() => expect(screen.getByLabelText("Image viewer: Specimen")).toHaveAttribute("data-prepared", "true"));
+    }
+    const settings = screen.getByRole("button", { name: "Open settings" });
+    await waitFor(() => expect(settings).toHaveAttribute("data-loci-help", "Appearance and preferences"));
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    fireEvent.focusIn(settings);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Appearance and preferences");
+
+    fireEvent.click(screen.getByRole("button", { name: state === "empty" ? "Open study" : "Save study" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(failure.message);
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    expect(settings).not.toHaveAttribute("aria-describedby");
+    vi.useFakeTimers();
+    try {
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      fireEvent.focusIn(settings);
+      fireEvent.pointerOver(settings);
+      act(() => vi.advanceTimersByTime(500));
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      fireEvent.keyDown(document.body, { key: "Tab" });
+      fireEvent.focusIn(settings);
+      act(() => vi.advanceTimersByTime(0));
+      expect(screen.getByRole("tooltip")).toHaveTextContent("Appearance and preferences");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("locks the visible workspace while Save as study settles and always releases it", async () => {
@@ -1056,9 +1255,11 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByText("5,000 × 4,000 · one plane")).toBeVisible();
     await openTool("View", "Display");
     fireEvent.change(screen.getByLabelText("Width"), { target: { value: "2048" } });
+    fireEvent.blur(screen.getByLabelText("Width"));
     fireEvent.change(screen.getByLabelText("Height"), { target: { value: "2048" } });
-    expect(screen.getByLabelText("Width")).toHaveValue(2048);
-    expect(screen.getByLabelText("Height")).toHaveValue(2048);
+    fireEvent.blur(screen.getByLabelText("Height"));
+    expect(screen.getByLabelText("Width")).toHaveValue("2048");
+    expect(screen.getByLabelText("Height")).toHaveValue("2048");
     await openTool("Analyze", "Analyze");
     expect(screen.getByText("Selected region")).toBeVisible();
     expect(screen.getByText("2,048 × 2,048 · one plane")).toBeVisible();
@@ -1187,6 +1388,78 @@ describe("ResearchWorkbench", () => {
     );
   });
 
+  it("opens the offline example as a normal source-only study and shows bound guidance", async () => {
+    const practice = {
+      ...snapshot,
+      project: { title: "Synthetic shapes practice", first_study: {
+        example_id: "synthetic-shapes-v1", source_id: snapshot.sources[0].id, source_sha256: snapshot.sources[0].sha256,
+      } },
+      results: [],
+    };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(null), tryExample: vi.fn().mockResolvedValue(practice) });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Try an example" }));
+    expect(await screen.findByText("Practice guide · synthetic shapes")).toBeVisible();
+    expect(bridge.tryExample).toHaveBeenCalledWith();
+    expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    expect(screen.queryByText(/segmentation ·/)).not.toBeInTheDocument();
+  });
+
+  it("defers pixel-dependent annotation setup during portable import and restores it after exact relinking", async () => {
+    const available: ResearchSnapshot = { ...snapshot, results: snapshot.results.map((result) => ({ ...result, review: { disposition: "reviewed" } })) };
+    const missing: ResearchSnapshot = { ...available, sources: available.sources.map((source) => ({ ...source, locator_state: "relink-required" })) };
+    let current = available;
+    const bridge = api({ getSnapshot: vi.fn(async () => current),
+      importStudy: vi.fn(async () => { current = missing; return missing; }),
+      relinkSource: vi.fn(async () => { current = available; return available; }),
+    });
+    const original = bridge.execute;
+    const unavailableReads: string[] = [];
+    const annotation = { id: "stored-point", kind: "point", points: [{ x: 10, y: 12 }],
+      label: "Stored source annotation", color: "#ffd36a", z: 0, t: 0, length: null, area: null, unit: "px" };
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (current === missing && ["viewer_defaults", "viewer_tile", "viewer_volume", "source_annotations"].includes(operation)) {
+        unavailableReads.push(operation);
+        throw new Error("Source locator is unavailable after interchange; relink an exact local copy");
+      }
+      if (operation === "source_annotations") return { source_id: available.sources[0].id, source_sha256: available.sources[0].sha256,
+        revision: 3, annotations: [annotation], can_undo: true, can_redo: false };
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_tile", expect.anything(), expect.anything()));
+    await openAdvancedTool("Import & share results");
+    fireEvent.click(screen.getByRole("button", { name: "Import portable study" }));
+    expect(await screen.findByText(/This source needs an exact local copy/)).toBeVisible();
+    expect(unavailableReads).toEqual([]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(annotation.label)).not.toBeInTheDocument();
+    const readsBeforeRelink = vi.mocked(bridge.execute).mock.calls.filter(([op]) => op === "viewer_defaults").length;
+    const annotationsBeforeRelink = vi.mocked(bridge.execute).mock.calls.filter(([op]) => op === "source_annotations").length;
+    fireEvent.click(screen.getAllByRole("button", { name: "Relink exact source" })[0]);
+    await waitFor(() => expect(vi.mocked(bridge.execute).mock.calls.filter(([op]) => op === "viewer_defaults")).toHaveLength(readsBeforeRelink + 1));
+    await waitFor(() => expect(Number(screen.getByLabelText("Image viewer: Specimen").getAttribute("data-cache-bytes"))).toBeGreaterThan(0));
+    await openTool("Annotate", "Annotate");
+    expect(await screen.findByText(annotation.label)).toBeVisible();
+    expect(vi.mocked(bridge.execute).mock.calls.filter(([op]) => op === "source_annotations")).toHaveLength(annotationsBeforeRelink + 1);
+    expect(screen.getByRole("button", { name: "Undo annotation" })).toBeEnabled();
+    expect(current.results).toEqual(available.results);
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    expect(bridge.execute).not.toHaveBeenCalledWith("annotate_source", expect.anything());
+    expect(unavailableReads).toEqual([]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+  it("retains annotation setup errors for an available source", async () => {
+    const bridge = api();
+    const original = bridge.execute;
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "source_annotations") throw new Error("Source contents changed; exact original bytes are required");
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Source contents changed; exact original bytes are required");
+  });
   it("keeps imported source pixels locked until exact relinking and then refreshes the same source ID", async () => {
     const missing: ResearchSnapshot = {
       ...snapshot,
@@ -1202,12 +1475,34 @@ describe("ResearchWorkbench", () => {
     expect(bridge.execute).not.toHaveBeenCalledWith(
       "viewer_tile", expect.anything(), expect.anything(),
     );
-    await openAdvancedTool("Import & share results");
     fireEvent.click(await screen.findByRole("button", { name: "Relink exact source" }));
+    await waitFor(() => expect(bridge.relinkSource).toHaveBeenCalledWith(snapshot.sources[0].id, "file"));
     await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_tile", expect.objectContaining({
       source_id: snapshot.sources[0].id,
     }), expect.objectContaining({ viewer_lane: expect.stringMatching(/^image-viewport-/) })));
     expect(await screen.findByLabelText("Image viewer: Specimen")).toBeVisible();
+  });
+
+  it.each([
+    ["native", undefined, "file"],
+    ["medical", { selection_kind: "series", file_count: 2 }, "dicom"],
+    ["ome_zarr", undefined, "ome_zarr"],
+  ])("routes direct recovery for %s and retains unavailable state after mismatch", async (kind, hint, picker) => {
+    const missing = {
+      ...snapshot,
+      sources: snapshot.sources.map((source) => ({ ...source, source_kind: kind, relink_hint: hint, locator_state: "relink-required" })),
+      results: [],
+    } as ResearchSnapshot;
+    const bridge = api({
+      getSnapshot: vi.fn().mockResolvedValue(missing),
+      relinkSource: vi.fn().mockRejectedValue(new Error("Relink rejected: selected bytes do not exactly match the source")),
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Relink exact source" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("do not exactly match");
+    expect(bridge.relinkSource).toHaveBeenCalledWith(snapshot.sources[0].id, picker);
+    expect(await screen.findByText(/This source needs an exact local copy/)).toBeVisible();
+    expect(bridge.execute).not.toHaveBeenCalledWith("viewer_tile", expect.anything(), expect.anything());
   });
 
   it("renders real orthogonal planes and maps clicks using the returned crop shape", async () => {
@@ -1309,6 +1604,46 @@ describe("ResearchWorkbench", () => {
       "Study schema is unsupported",
     );
   });
+  it("blocks empty preprocessing drafts and previews the exact restored decimal", async () => {
+    const bridge = api();
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Process");
+    fireEvent.click(screen.getByText("gaussian", { exact: true }));
+    const sigma = screen.getByLabelText("Step 1 sigma");
+    fireEvent.change(sigma, { target: { value: "" } });
+    expect(sigma).toHaveValue("");
+    expect(screen.getByText("Preview selected crop")).toBeDisabled();
+    expect(bridge.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
+    for (const text of ["1", "1.", "1.25"]) {
+      fireEvent.change(sigma, { target: { value: text } });
+      expect(sigma).toHaveValue(text);
+    }
+    await waitFor(() => expect(screen.getByText("Preview selected crop")).toBeEnabled());
+    fireEvent.click(screen.getByText("Preview selected crop"));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("preview_recipe",
+      expect.objectContaining({ recipe: expect.objectContaining({ steps: [{ op: "gaussian", sigma: 1.25 }] }) })));
+  });
+  it("blocks invalid scientific drafts across study handoff until explicitly restored", async () => {
+    const bridge = api();
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    const threshold = screen.getByLabelText("Threshold");
+    fireEvent.change(threshold, { target: { value: "-1.2e" } });
+    expect(threshold).toHaveValue("-1.2e");
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
+    await openTool("Results", "Study");
+    expect(screen.getByText("Save validated recipe")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview" })).toBeDisabled();
+    expect(screen.getByText("Run selected sources sequentially")).toBeDisabled();
+    fireEvent.click(screen.getByText("Restore applied numbers"));
+    await waitFor(() => expect(screen.getByText("Save validated recipe")).toBeEnabled());
+    await openTool("Analyze", "Analyze");
+    fireEvent.change(screen.getByLabelText("Threshold"), { target: { value: "-0.123456789" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe",
+      expect.objectContaining({ recipe: expect.objectContaining({ segmentation: expect.objectContaining({ threshold: -0.123456789 }) }) })));
+  });
   it("previews ordered edits without adopting them and preserves the parameter", async () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
@@ -1333,6 +1668,35 @@ describe("ResearchWorkbench", () => {
       expect.anything(),
     );
   });
+  it.each([false, true])("persists the exact example display through the existing source-view API (saved=%s)", async (saved) => {
+    const source = { ...snapshot.sources[0], sha256: FIRST_STUDY_SOURCE_SHA256,
+      metadata: { ...snapshot.sources[0].metadata, dimensions: { x: 256, y: 256, z: 1, t: 1, c: 1 },
+        levels: [{ index: 0, dimensions: { x: 256, y: 256, z: 1, t: 1, c: 1 } }], channel_names: ["Authored intensity"] } };
+    const practice: ResearchSnapshot = { ...snapshot, sources: [source], results: [], project: {
+      title: "Practice", first_study: { example_id: "synthetic-shapes-v1", source_id: source.id, source_sha256: source.sha256 },
+    } };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(practice) });
+    const original = bridge.execute;
+    const initial = { channel: 0, low: 0, high: 65535, gamma: 1, color: "#ffffff", opacity: 1, visible: true };
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "viewer_defaults") return { source_id: source.id, source_sha256: source.sha256, channels: [initial], basis: "Native dtype range" };
+      if (operation === "source_view") return { source_id: source.id, source_sha256: source.sha256, revision: 0,
+        state: saved ? { interpretation: "auto", channels: [{ ...initial, low: 7, high: 125 }], projection: "plane",
+          selection: { level: 0, t: 0, c: 0, z: 0, x: 0, y: 0, width: 256, height: 256 }, camera: null, rgb_mapping: null } : null };
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByLabelText("Channel 1 high")).toHaveValue(saved ? "125" : "200"));
+    expect(screen.getByLabelText("Channel 1 low")).toHaveValue(saved ? "7" : "0");
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+      source_id: source.id, source_sha256: source.sha256, state: expect.objectContaining({
+        channels: [{ ...initial, low: saved ? 7 : 0, high: saved ? 125 : 200 }],
+      }),
+    })));
+    expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
+    expect(practice.results).toEqual([]);
+    expect(initial.high).toBe(65535);
+  });
   it("uses the source-bound tile operation and keeps display changes out of recipes", async () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
@@ -1350,6 +1714,20 @@ describe("ResearchWorkbench", () => {
       "recipe",
       expect.anything(),
     );
+  });
+  it("keeps Z navigation available while annotating and requests the selected native plane", async () => {
+    const bridge = api();
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await screen.findAllByText("Specimen");
+    fireEvent.click(screen.getByRole("button", { name: "Annotate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Point" }));
+    const slider = screen.getByLabelText("Z plane");
+    expect(slider).toBeVisible();
+    fireEvent.change(slider, { target: { value: "2" } });
+    expect(slider).toHaveValue("2");
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_tile",
+      expect.objectContaining({ overview: true, z: 2, t: 0 }), expect.anything()));
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
   });
   it("discards an older tile response after a newer selection request", async () => {
     let first!: (value: unknown) => void;
@@ -1485,7 +1863,7 @@ describe("ResearchWorkbench", () => {
     });
     expect(screen.queryByLabelText("Threshold")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Stain-coordinate threshold")).toHaveValue(
-      0.15,
+      "0.15",
     );
     fireEvent.change(screen.getByLabelText("Stain-coordinate threshold"), {
       target: { value: "0.27" },
@@ -1531,7 +1909,7 @@ describe("ResearchWorkbench", () => {
     await openTool("Analyze", "Analyze");
     fireEvent.change(screen.getByLabelText("Segmentation model"), { target: { value: "stain" } });
     expect(screen.getByText("Stain minimum object area (um²)")).toBeVisible();
-    expect(screen.getByLabelText("Stain minimum object size")).toHaveValue(10);
+    expect(screen.getByLabelText("Stain minimum object size")).toHaveValue("10");
   });
   it("sends only the explicit stain-coordinate rule with its retained control", async () => {
     const rgb = structuredClone(snapshot);
@@ -1587,7 +1965,7 @@ describe("ResearchWorkbench", () => {
         }],
       }),
     ));
-    expect(screen.getByText(/strictly greater than the declared threshold/)).toBeVisible();
+    expect(screen.getByText("Rule: max derived stain coordinate > threshold.", { exact: true })).toBeVisible();
   });
   it("binds model adoption to the returned exact preview", async () => {
     const model = {
@@ -2113,7 +2491,7 @@ describe("ResearchWorkbench", () => {
   it("renders the initial correction plane when the child reports its unchanged XY view on mount", async () => {
     const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
       if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,source" });
-      if (operation === "result") return Promise.resolve({ measurements: [] });
+      if (operation === "result") return Promise.resolve(resultPage(request, snapshot.results));
       if (operation === "result_view") {
         const axis = (request.axis as "x" | "y" | "z") ?? "z";
         const index = Number(request.index ?? 1);
@@ -2166,7 +2544,7 @@ describe("ResearchWorkbench", () => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,source" });
         if (operation === "result")
-          return Promise.resolve({ measurements: [] });
+          return Promise.resolve(resultPage(request, [...snapshot.results, child]));
         if (operation === "correction_info")
           return Promise.resolve({
             result_id: snapshot.results[0].id,
@@ -2249,6 +2627,25 @@ describe("ResearchWorkbench", () => {
     );
   });
 
+  it("clears a previous recipe refusal when the researcher retries with a larger allowance", async () => {
+    let attempts = 0;
+    const execute = vi.fn(async (operation: string) => {
+      if (operation === "run_recipe" && ++attempts === 1)
+        throw new Error("Recipe estimate exceeds its allowance");
+      return {};
+    });
+    render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Recipe estimate exceeds its allowance");
+    fireEvent.change(screen.getByLabelText("Recipe memory allowance"), { target: { value: String(1024 ** 3) } });
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      recipe: expect.objectContaining({ working_bytes: 1024 ** 3 }),
+    })));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("uses an explicit valid projection range, deletes it for 2D, and starts fitted", async () => {
     const execute = vi.fn((operation: string) =>
       operation === "view"
@@ -2300,7 +2697,7 @@ describe("ResearchWorkbench", () => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,view" });
         if (operation === "result")
-          return Promise.resolve({ measurements: [] });
+          return Promise.resolve(resultPage(request, changed.results));
         if (operation === "result_view")
           return Promise.resolve(
             resultView(
@@ -2356,7 +2753,7 @@ describe("ResearchWorkbench", () => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,view" });
         if (operation === "result")
-          return Promise.resolve({ measurements: [] });
+          return Promise.resolve(resultPage(request, [...snapshot.results, child]));
         if (operation === "result_view") {
           const target =
             request.result_id === child.id ? child : snapshot.results[0];
@@ -2456,7 +2853,7 @@ describe("ResearchWorkbench", () => {
       execute: vi.fn((operation: string, request: Record<string, unknown>) => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,view" });
-        if (operation === "result") return Promise.resolve({ measurements: [] });
+        if (operation === "result") return Promise.resolve(resultPage(request, [...snapshot.results, child]));
         if (operation === "result_view") {
           const target = request.result_id === child.id ? child : snapshot.results[0];
           return Promise.resolve(
@@ -2548,8 +2945,8 @@ describe("ResearchWorkbench", () => {
     result.selection = { x: 10, y: 20, width: 12, height: 8, z: 0, t: 0, c: 0, level: 0 };
     result.geometry = planeGeometry;
     result.arrays = { image: { shape: [8, 12], dtype: "float64" } };
-    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(async (operation) => {
-      if (operation === "result") return { measurements: [{ label: 1, centroid_index: [2.5, 3.25] }] };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(async (operation, request) => {
+      if (operation === "result") return resultPage(request, active.results, [{ label: 1, centroid_index: [2.5, 3.25] }]);
       if (operation === "result_view") return { ...resultView(result, "z", 0, [8, 12]),
         image: "data:image/png;base64,result#viewer-12x8", geometry: planeGeometry };
       return {};
@@ -2596,7 +2993,7 @@ describe("ResearchWorkbench", () => {
     const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(
       (operation: string, request: Record<string, unknown>) => {
         const target = request.result_id === child.id ? child : original;
-        if (operation === "result") return Promise.resolve({ measurements: [] });
+        if (operation === "result") return Promise.resolve(resultPage(request, active.results));
         if (operation === "result_view") {
           if (target.id === child.id) return childView;
           return Promise.resolve({ ...resultView(target, "z", 0, [8, 12]),
@@ -2657,7 +3054,7 @@ describe("ResearchWorkbench", () => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,view" });
         if (operation === "result")
-          return Promise.resolve({ measurements: [] });
+          return Promise.resolve(resultPage(request, changed.results));
         if (operation === "result_view")
           return Promise.resolve(
             resultView(
@@ -2707,7 +3104,7 @@ describe("ResearchWorkbench", () => {
         if (operation === "view")
           return Promise.resolve({ image: "data:image/png;base64,view" });
         if (operation === "result")
-          return Promise.resolve({ measurements: [] });
+          return Promise.resolve(resultPage(request, revised.results));
         const target = revised.results.find(
           (item) => item.id === request.result_id,
         );
@@ -2794,7 +3191,7 @@ describe("ResearchWorkbench", () => {
     const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
       if (operation === "view")
         return Promise.resolve({ image: "data:image/png;base64,source" });
-      if (operation === "result") return Promise.resolve({ measurements: [] });
+      if (operation === "result") return Promise.resolve(resultPage(request, changed.results));
       if (operation === "result_view") {
         const target = changed.results.find((item) => item.id === request.result_id)!;
         return Promise.resolve(resultView(target));
@@ -2890,5 +3287,44 @@ describe("ResearchWorkbench", () => {
     // Close Job Center
     fireEvent.click(screen.getByRole("button", { name: "Close Job Center" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Job center" })).not.toBeInTheDocument());
+  });
+
+  it("exposes task headers and analysis controls to keyboard focus", async () => {
+    const desktop = api();
+    const { container } = render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await screen.findByLabelText("Image viewer: Specimen");
+
+    // Verify the inspector and sticky tools header exist
+    const inspector = container.querySelector(".research-inspector");
+    expect(inspector).toBeInTheDocument();
+    const toolsHeader = container.querySelector(".workbench-tools");
+    expect(toolsHeader).toBeInTheDocument();
+
+    // Verify task group buttons are present and keyboard accessible
+    const analyzeGroup = screen.getByRole("button", { name: "Analyze" });
+    expect(analyzeGroup).toBeInTheDocument();
+
+    analyzeGroup.focus();
+    expect(analyzeGroup).toHaveFocus();
+    fireEvent.click(analyzeGroup);
+    expect(analyzeGroup).toHaveAttribute("aria-pressed", "true");
+
+    // Open Analyze tool dropdown
+    const toolSelect = await screen.findByRole("combobox", { name: "Analyze tool" });
+    expect(toolSelect).toBeInTheDocument();
+    toolSelect.focus();
+    expect(toolSelect).toHaveFocus();
+
+    // Verify analysis scope control buttons are reachable and interactive
+    const wholeImageBtn = screen.getByRole("button", { name: "Whole image" });
+    expect(wholeImageBtn).toBeInTheDocument();
+    wholeImageBtn.focus();
+    expect(wholeImageBtn).toHaveFocus();
+    fireEvent.click(wholeImageBtn);
+
+    const drawRegionBtn = screen.getByRole("button", { name: "Draw region" });
+    expect(drawRegionBtn).toBeInTheDocument();
+    drawRegionBtn.focus();
+    expect(drawRegionBtn).toHaveFocus();
   });
 });

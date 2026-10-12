@@ -579,6 +579,12 @@ def _medical_display(dtype_name: str) -> dict[str, Any]:
     }
 
 
+def _medical_decode_peak_bytes(voxels: int, itemsize: int) -> int:
+    # Known reader arrays: SimpleITK image, NumPy copy, and finite-check mask.
+    # This is an allocation estimate, not a ceiling on total process RSS.
+    return voxels * (2 * itemsize + np.dtype(np.bool_).itemsize)
+
+
 def _medical_block(
     source: Any,
     inspection: Any,
@@ -595,7 +601,16 @@ def _medical_block(
     x0, x1, y0, y1, z0, z1 = extent_xyzxyz
     source_shape_xyz = (x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1)
     dtype, scalar_type, encoding_basis = _output_dtype([inspection.dtype])
-    output_shape_xyz = _fit_shape(source_shape_xyz, target, 1, dtype.itemsize, budget)
+    source_read_bytes = (
+        decoded_full.nbytes
+        if decoded_full is not None
+        else _medical_decode_peak_bytes(
+            source_shape_xyz[0] * source_shape_xyz[1], np.dtype(inspection.dtype).itemsize
+        )
+    )
+    output_shape_xyz = _fit_shape(
+        source_shape_xyz, target, 1, dtype.itemsize, budget - source_read_bytes
+    )
     x_indices = _indices(source_shape_xyz[0], output_shape_xyz[0]) + x0
     y_indices = _indices(source_shape_xyz[1], output_shape_xyz[1]) + y0
     z_indices = _indices(source_shape_xyz[2], output_shape_xyz[2]) + z0
@@ -608,16 +623,8 @@ def _medical_block(
         if sampled.dtype.kind == "f" and not np.isfinite(sampled).all():
             raise ViewerVolumeError("A medical volume contains non-finite values.")
         values[..., 0] = sampled.astype(dtype, copy=False)
+        del sampled
     else:
-        plane_bytes = (
-            source_shape_xyz[0]
-            * source_shape_xyz[1]
-            * np.dtype(inspection.dtype).itemsize
-        )
-        if plane_bytes + _aggregate_bytes(output_shape_xyz, 1, dtype.itemsize) > budget:
-            raise ViewerVolumeError(
-                "A medical source plane and its whole-volume overview exceed the memory budget."
-            )
         if inspection.format == "dicom-series":
             raise ViewerVolumeError(
                 "This DICOM series requires an eager whole-series decode above the renderer budget."
@@ -638,6 +645,8 @@ def _medical_block(
                 raise ViewerVolumeError("A medical volume contains non-finite values.")
             sampled = plane[np.ix_(y_indices - y0, x_indices - x0)]
             values[output_z, :, :, 0] = sampled.astype(dtype, copy=False)
+            # Do not retain a previous source plane while decoding the next one.
+            del sampled, plane, volume
 
     geometry = inspection.geometry.cropped((z0, y0, x0))
     origin, spacing, direction, affine = _decompose_geometry(
@@ -681,9 +690,44 @@ def _medical_block(
                 z_indices.tolist(),
             ],
             "aggregate_budget_bytes": budget,
-            "estimated_aggregate_bytes": _aggregate_bytes(output_shape_xyz, 1, dtype.itemsize),
+            "estimated_aggregate_bytes": max(
+                _aggregate_bytes(output_shape_xyz, 1, dtype.itemsize) + source_read_bytes,
+                _medical_decode_peak_bytes(decoded_full.size, decoded_full.dtype.itemsize)
+                if decoded_full is not None else 0,
+            ),
         },
     }
+
+
+def _medical_context_plan(
+    inspection: Any, target: int, budget: int, *, requires_eager_decode: bool = False
+) -> tuple[tuple[int, int, int], bool]:
+    """Use the same source allocation and grid bounds for loading and refinement."""
+    shape_xyz = tuple(reversed(inspection.shape))
+    dtype, _, _ = _output_dtype([inspection.dtype])
+    decode_peak = 2 * inspection.estimated_decoded_bytes + math.prod(shape_xyz)
+    if requires_eager_decode or inspection.format == "dicom-series":
+        # DICOM and compressed medical sources require a full decode even for
+        # a region request. Refuse unsafe copy peaks before reading any pixels.
+        if decode_peak > budget:
+            raise ViewerVolumeError("The medical whole-source decode exceeds the memory budget.")
+        return _fit_shape(
+            shape_xyz, target, 1, dtype.itemsize, budget - inspection.estimated_decoded_bytes
+        ), True
+    candidate = _fit_shape(shape_xyz, target, 1, dtype.itemsize, budget)
+    eager = (
+        decode_peak <= budget
+        and inspection.estimated_decoded_bytes + _aggregate_bytes(candidate, 1, dtype.itemsize)
+        <= budget
+    )
+    source_read_bytes = (
+        inspection.estimated_decoded_bytes
+        if eager
+        else _medical_decode_peak_bytes(
+            shape_xyz[0] * shape_xyz[1], np.dtype(inspection.dtype).itemsize
+        )
+    )
+    return _fit_shape(shape_xyz, target, 1, dtype.itemsize, budget - source_read_bytes), eager
 
 
 def build_medical_volume_payload(
@@ -697,12 +741,10 @@ def build_medical_volume_payload(
 ) -> dict[str, Any]:
     """Build the same bounded contract for NIfTI, NRRD, or an explicit DICOM series."""
 
-    from .medical_image import inspect_medical, read_medical
+    from .medical_image import _file_plan, _safe_file, inspect_medical, read_medical
 
     target = _integer(target_long_axis, "target_long_axis", 16, MAX_VOLUME_TARGET)
-    budget = _integer(
-        max_decoded_bytes, "max_decoded_bytes", 1024 * 1024, MAX_VOLUME_BUDGET_BYTES
-    )
+    budget = _integer(max_decoded_bytes, "max_decoded_bytes", 1024 * 1024, MAX_VOLUME_BUDGET_BYTES)
     inspection = inspect_medical(source)
     if (
         expected_source_identity is not None
@@ -712,17 +754,18 @@ def build_medical_volume_payload(
     if len(inspection.shape) != 3 or inspection.shape[0] < 2:
         raise ViewerVolumeError("Raw 3D rendering requires at least two source Z planes.")
     full_shape_xyz = tuple(reversed(inspection.shape))
-    output_dtype, _, _ = _output_dtype([inspection.dtype])
     block_budget = budget // 2 if focus_region_xyzxyz is not None else budget
-    context_output_shape = _fit_shape(
-        full_shape_xyz, target, 1, output_dtype.itemsize, block_budget
+    eager_required = (
+        inspection.format == "dicom-series" or _file_plan(_safe_file(source))[2]
+    )
+    _, eager = _medical_context_plan(
+        inspection, target, block_budget, requires_eager_decode=eager_required
+    )
+    maximum_output_shape, _ = _medical_context_plan(
+        inspection, MAX_VOLUME_TARGET, block_budget, requires_eager_decode=eager_required
     )
     decoded_full = None
-    if (
-        inspection.estimated_decoded_bytes
-        + _aggregate_bytes(context_output_shape, 1, output_dtype.itemsize)
-        <= block_budget
-    ):
+    if eager:
         decoded_full = np.asarray(
             read_medical(
                 source,
@@ -748,7 +791,7 @@ def build_medical_volume_payload(
         decoded_full=decoded_full,
     )
     context["refinement"] = {
-        "available": context["dimensions_xyz"] != list(full_shape_xyz),
+        "available": max(context["dimensions_xyz"]) < max(maximum_output_shape),
         "maximum_target_long_axis": MAX_VOLUME_TARGET,
         "focus_supported": True,
     }

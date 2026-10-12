@@ -1,3 +1,5 @@
+import { DetachedControlPanel } from "./DetachedControlPanel";
+import type { ImageWindowState } from "../shared/image-window-api";
 import {
   AlertTriangle,
   Ban,
@@ -83,6 +85,7 @@ import type {
 import { MODEL_EVIDENCE_REGISTRY } from "../shared/model-registry";
 import BrandMark from "./BrandMark";
 import ResearchWorkbench from "./ResearchWorkbench";
+import { dispatchWorkbenchCommand, type WorkbenchCommand } from "./workbench-commands";
 import JobCenter from "./JobCenter";
 import ModelTrustCard from "./ModelTrustCard";
 import ReviewContactSheet from "./ReviewContactSheet";
@@ -540,7 +543,30 @@ function PreviewHistogram({
 }
 
 export default function App(): React.JSX.Element {
+  const [imageWindowsState, setImageWindowsState] = useState<ImageWindowState | null>(null);
+  const [returnSourceId, setReturnSourceId] = useState<string | null>(null);
+  const [pendingWorkbenchCommand, setPendingWorkbenchCommand] = useState<WorkbenchCommand | null>(null);
+  const [nativeCommandError, setNativeCommandError] = useState<string | null>(null);
+  const returningWorkbench = useRef(false);
+  useEffect(() => {
+    const windows = window.lociImageWindows;
+    if (!windows) return;
+    let live = true;
+    let receivedState = false;
+    const stop = windows.onState((state) => {
+      receivedState = true;
+      if (live) {
+        if (state.target) setReturnSourceId(state.target.sourceId);
+        setImageWindowsState(state);
+      }
+    });
+    void windows.state().then((state) => { if (live && !receivedState) setImageWindowsState(state); });
+    return () => { live = false; stop(); };
+  }, []);
+
   const [researchOpen, setResearchOpen] = useState(true);
+  const researchActive = useRef(researchOpen);
+  researchActive.current = researchOpen && Boolean(window.lociResearch);
   const api: LociDesktopApi | undefined = typeof window === "undefined" ? undefined : window.loci;
   const [sources, setSources] = useState<ImportedImage[]>([]);
   const [activeSourceId, setActiveSourceId] = useState<string | null>(null);
@@ -2189,15 +2215,54 @@ export default function App(): React.JSX.Element {
     };
   }, [api, projectSummary?.projectId]);
 
+  const returnToWorkbench = useCallback(async (command?: WorkbenchCommand) => {
+    if (returningWorkbench.current) return;
+    const windows = window.lociImageWindows;
+    if (!windows) return;
+    returningWorkbench.current = true;
+    setNativeCommandError(null);
+    try {
+      await windows.closeAll();
+      if (!researchActive.current) return;
+      if (imageWindowsState?.target) setReturnSourceId(imageWindowsState.target.sourceId);
+      setImageWindowsState(null);
+      if (command) setPendingWorkbenchCommand(command);
+    } catch {
+      setNativeCommandError("Could not return to the workspace. Try Return to workspace again.");
+    } finally {
+      returningWorkbench.current = false;
+    }
+  }, [imageWindowsState]);
+
+  const routeNativeCommand = useCallback((command: WorkbenchCommand, legacy: () => unknown) => {
+    if (!researchOpen || !window.lociResearch) { void legacy(); return; }
+    setNativeCommandError(null);
+    if (window.lociImageWindows && imageWindowsState?.views.length) {
+      void returnToWorkbench(command);
+    } else if (!dispatchWorkbenchCommand(command)) {
+      setNativeCommandError("The workspace is opening. Try the command again.");
+    }
+  }, [researchOpen, imageWindowsState, returnToWorkbench]);
+
   useEffect(() => {
-    if (!api) return undefined;
-    return api.onImportRequested(() => void importImages());
-  }, [api, importImages]);
+    if (!pendingWorkbenchCommand) return;
+    if (!researchOpen || !window.lociResearch) { setPendingWorkbenchCommand(null); return; }
+    if (imageWindowsState?.views.length) return;
+    setPendingWorkbenchCommand(null);
+    if (!dispatchWorkbenchCommand(pendingWorkbenchCommand)) {
+      setNativeCommandError("The workspace is opening. Try the command again.");
+    }
+  }, [pendingWorkbenchCommand, imageWindowsState, researchOpen]);
 
   useEffect(() => {
     if (!api) return undefined;
-    return api.onFolderImportRequested(() => void importFolder());
-  }, [api, importFolder]);
+    return api.onImportRequested(() => routeNativeCommand("open-images", importImages));
+  }, [api, importImages, routeNativeCommand]);
+
+  useEffect(() => {
+    if (!api) return undefined;
+    return api.onFolderImportRequested(() => routeNativeCommand("open-folder", importFolder));
+  }, [api, importFolder, routeNativeCommand]);
 
   useEffect(() => {
     void refreshRecentProjects();
@@ -2223,13 +2288,13 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!api) return undefined;
-    return api.onOpenProjectRequested(() => void openProjectFile());
-  }, [api, openProjectFile]);
+    return api.onOpenProjectRequested(() => routeNativeCommand("open-study", openProjectFile));
+  }, [api, openProjectFile, routeNativeCommand]);
 
   useEffect(() => {
     if (!api) return undefined;
-    return api.onSaveProjectRequested(() => void saveCurrentProject());
-  }, [api, saveCurrentProject]);
+    return api.onSaveProjectRequested(() => routeNativeCommand("save-study", saveCurrentProject));
+  }, [api, saveCurrentProject, routeNativeCommand]);
 
   useEffect(() => {
     if (!api) return undefined;
@@ -2269,6 +2334,14 @@ export default function App(): React.JSX.Element {
     if (!api) return undefined;
     return api.onSettingsRequested(() => setSettingsOpen(true));
   }, [api]);
+
+  useEffect(() => api?.onGuideRequested?.(() => {
+    setSettingsOpen(false); setManualOpen(true);
+  }), [api]);
+
+  useEffect(() => api?.onWorkspaceRequested?.(() => {
+    if (researchOpen && window.lociResearch && imageWindowsState?.views.length) void returnToWorkbench();
+  }), [api, researchOpen, imageWindowsState, returnToWorkbench]);
 
   useEffect(() => {
     if (!api) return undefined;
@@ -2665,6 +2738,12 @@ export default function App(): React.JSX.Element {
     ? activeSource?.previewDataUrl
     : activeResult?.previewDataUrl ?? activeSource?.previewDataUrl;
   const platform = api?.platform ?? (navigator.platform.toLowerCase().includes("mac") ? "darwin" : "unknown");
+  const nativeErrorBanner = nativeCommandError && <div className="error-banner" role="alert">
+    <AlertTriangle size={17} aria-hidden="true" />
+    <div className="banner-copy">{nativeCommandError}</div>
+    <button className="button button-quiet icon-button" type="button" aria-label="Dismiss command error"
+      onClick={() => setNativeCommandError(null)}><X size={15} /></button>
+  </div>;
   const settingsDialog = <>{settingsOpen ? (
     <SettingsDialog
       preferences={preferences}
@@ -2675,10 +2754,16 @@ export default function App(): React.JSX.Element {
     />
   ) : null}{manualOpen && <UserGuideDialog onClose={() => setManualOpen(false)} />}</>;
 
+  if (researchOpen && window.lociResearch && window.lociImageWindows && imageWindowsState?.views.length) {
+    return <>{nativeErrorBanner}<DetachedControlPanel api={window.lociImageWindows} researchApi={window.lociResearch}
+      preferences={preferences} onReturn={() => setImageWindowsState(null)} />{settingsDialog}</>;
+  }
   if (researchOpen && window.lociResearch) {
     return (
       <>
+        {nativeErrorBanner}
         <ResearchWorkbench
+          initialSourceId={returnSourceId}
           api={window.lociResearch}
           preferences={preferences}
           onBack={() => setResearchOpen(false)}

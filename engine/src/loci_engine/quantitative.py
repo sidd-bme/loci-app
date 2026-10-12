@@ -19,6 +19,7 @@ from skimage.morphology import h_maxima
 from skimage.segmentation import watershed
 
 DEFAULT_WORKING_BYTES = 512 * 1024 * 1024
+MAX_WORKING_BYTES = 8 * 1024**3
 MAX_OBJECTS = 100_000
 
 
@@ -121,7 +122,7 @@ def validate_array(
     bytes_per_voxel: int = 64,
 ) -> np.ndarray:
     array = np.asarray(image)
-    integer(working_bytes, "working_bytes", 1024, 8 * 1024**3)
+    integer(working_bytes, "working_bytes", 1024, MAX_WORKING_BYTES)
     if array.ndim not in {2, 3} or any(n < 1 for n in array.shape):
         raise ValueError("Expected a nonempty scalar YX or ZYX array")
     if geometry is not None and array.ndim != len(geometry.axes):
@@ -145,10 +146,67 @@ def validate_array(
     return array
 
 
-def _footprint(radius: float, spacing: tuple[float, ...]) -> np.ndarray:
+_PROCESSING_FIELDS = {
+    "gaussian": {"op", "sigma"},
+    "subtract_background": {"op", "sigma", "clip_negative"},
+    "subtract_constant": {"op", "value", "clip_negative"},
+    "median": {"op", "radius"},
+    "opening": {"op", "radius"},
+    "closing": {"op", "radius"},
+    "flatfield": {"op", "clip_negative"},
+}
+
+
+def _sigma_voxels(sigma: float, spacing: tuple[float, ...]) -> tuple[float, ...]:
+    pixels = tuple(sigma / s for s in spacing)
+    if not all(math.isfinite(value) for value in pixels) or max(pixels) > 256:
+        raise ValueError("Gaussian sigma exceeds 256 voxels; choose a smaller scale")
+    return pixels
+
+
+def _footprint_extents(radius: float, spacing: tuple[float, ...]) -> list[int]:
+    if not all(math.isfinite(radius / step) for step in spacing):
+        raise ValueError("Morphology footprint is too large; reduce physical radius")
     extents = [int(math.ceil(radius / step)) for step in spacing]
     if math.prod(2 * e + 1 for e in extents) > 1_000_000:
         raise ValueError("Morphology footprint is too large; reduce physical radius")
+    return extents
+
+
+def validate_processing_steps(steps: Any, *, geometry: Geometry | None = None) -> None:
+    """Validate schema, then optional source-resolved scales without processing pixels.
+
+    Saved definitions have no source calibration. Source-bound preflight and
+    execution must also supply the selected grid to enforce voxel/resource limits.
+    Reference binding and reference pixel validation remain the caller's concern.
+    """
+    if not isinstance(steps, list) or len(steps) > 32:
+        raise ValueError("A recipe must contain at most 32 processing steps")
+    for step in steps:
+        exact_keys(step, {"op", "sigma", "radius", "value", "clip_negative"}, "processing")
+        op = step.get("op")
+        if not isinstance(op, str) or op not in _PROCESSING_FIELDS:
+            raise ValueError(f"Unknown scalar processing operation: {op}")
+        exact_keys(step, _PROCESSING_FIELDS[op], op)
+        if "clip_negative" in step and not isinstance(step["clip_negative"], bool):
+            raise ValueError("clip_negative must be an explicit boolean")
+        if op in {"gaussian", "subtract_background"}:
+            finite_number(step.get("sigma"), "sigma", 0, 1e6)
+        elif op in {"median", "opening", "closing"}:
+            finite_number(step.get("radius"), "radius", 0, 1e6)
+        elif op == "subtract_constant":
+            finite_number(step.get("value"), "value", -1e15, 1e15)
+    if geometry is not None:
+        spacing = geometry.orthogonal_spacing()
+        for step in steps:
+            if step["op"] in {"gaussian", "subtract_background"}:
+                _sigma_voxels(float(step["sigma"]), spacing)
+            elif step["op"] in {"median", "opening", "closing"}:
+                _footprint_extents(float(step["radius"]), spacing)
+
+
+def _footprint(radius: float, spacing: tuple[float, ...]) -> np.ndarray:
+    extents = _footprint_extents(radius, spacing)
     grid = np.ogrid[tuple(slice(-e, e + 1) for e in extents)]
     distance = sum((values * step) ** 2 for values, step in zip(grid, spacing, strict=True))
     return np.asarray(distance <= radius**2)
@@ -165,34 +223,16 @@ def process_scalar(
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Execute an explicit float64 recipe, preserving raw array and value scale."""
     raw = validate_array(image, geometry=geometry, working_bytes=working_bytes)
-    if not isinstance(steps, list) or len(steps) > 32:
-        raise ValueError("A recipe must contain at most 32 processing steps")
+    validate_processing_steps(steps, geometry=geometry)
     spacing = geometry.orthogonal_spacing()
     result = raw.astype(np.float64, copy=True)
     records: list[dict[str, Any]] = []
     for step in steps:
-        exact_keys(step, {"op", "sigma", "radius", "value", "clip_negative"}, "processing")
         op = step.get("op")
         record: dict[str, Any] = {"op": op, "input_basis": "preceding-derived-or-raw"}
-        allowed = {
-            "gaussian": {"op", "sigma"},
-            "subtract_background": {"op", "sigma", "clip_negative"},
-            "subtract_constant": {"op", "value", "clip_negative"},
-            "median": {"op", "radius"},
-            "opening": {"op", "radius"},
-            "closing": {"op", "radius"},
-            "flatfield": {"op", "clip_negative"},
-        }
-        if op not in allowed:
-            raise ValueError(f"Unknown scalar processing operation: {op}")
-        exact_keys(step, allowed[op], str(op))
-        if "clip_negative" in step and not isinstance(step["clip_negative"], bool):
-            raise ValueError("clip_negative must be an explicit boolean")
         if op in {"gaussian", "subtract_background"}:
             sigma = finite_number(step.get("sigma"), "sigma", 0, 1e6)
-            pixels = tuple(sigma / s for s in spacing)
-            if max(pixels) > 256:
-                raise ValueError("Gaussian sigma exceeds 256 voxels; choose a smaller scale")
+            pixels = _sigma_voxels(sigma, spacing)
             smooth = ndi.gaussian_filter(result, pixels, mode="reflect", truncate=4.0)
             result = smooth if op == "gaussian" else result - smooth
             record.update(sigma=sigma, sigma_voxels=pixels, unit=geometry.unit, boundary="reflect")
@@ -229,7 +269,7 @@ def process_scalar(
             record.update(formula="(image-dark)*mean(flat-dark)/(flat-dark)", scale=scale)
         if step.get("clip_negative", False):
             result = np.maximum(result, 0)
-        if "clip_negative" in allowed[op]:
+        if "clip_negative" in _PROCESSING_FIELDS[op]:
             record["clip_negative"] = step.get("clip_negative", False)
         if not np.isfinite(result).all():
             raise ValueError("Processing produced non-finite values; result was rejected")
@@ -272,13 +312,19 @@ def segment_scalar(
     if not isinstance(border, bool):
         raise ValueError("exclude_border must be boolean")
     connectivity = ndi.generate_binary_structure(raw.ndim, 1)
-    if method == "watershed" and mask.any():
-        height = finite_number(
+    # Validate settings even on empty foreground: recipe/workflow preflight
+    # uses a tiny probe whose mask may be empty at the chosen threshold.
+    height = (
+        finite_number(
             settings.get("split_height", min(spacing)),
             "split_height",
             1e-9,
             1e9,
         )
+        if method == "watershed"
+        else None
+    )
+    if method == "watershed" and mask.any():
         # Padding gives an actual exterior background even when foreground fills
         # the crop, avoiding EDT's implicit asymmetric off-array convention.
         padded = np.pad(mask, 1, mode="constant")
@@ -304,7 +350,6 @@ def segment_scalar(
         labels = watershed(-distances, markers, mask=mask, connectivity=connectivity)
     else:
         labels, _ = ndi.label(mask, structure=connectivity)
-        height = None
     ids, counts = np.unique(labels, return_counts=True)
     removed = set(int(v) for v in ids[counts * voxel_measure < min_size])
     if border:

@@ -1,6 +1,6 @@
 # Loci capability matrix
 
-**Current source update:** 8 September 2026, image-first implementation.
+This matrix covers the current source implementation.
 
 This matrix describes implemented subsets, not biological validation or public
 release clearance. The [release status](RELEASE_STATUS.md) records the published
@@ -28,9 +28,12 @@ journeys and external qualifications remain separate evidence categories.
 These limits are safety and working-memory bounds, not performance
 recommendations. The common quantitative layer accepts finite real scalar
 `YX` or `ZYX` arrays, uses float64 processing, limits one recipe to 32 steps,
-and defaults to a 512 MiB operation budget. Some lower-level APIs allow an
-explicit budget up to 8 GiB; the desktop recipe route remains capped at
-512 MiB on the current development profile.
+and defaults to a 512 MiB operation budget. Native desktop recipes expose an
+explicit allowance up to 8 GiB, with an engine estimate and optional recommendation
+based on installed RAM. The choice is saved with the recipe and used for preview,
+execution and result review. It is not reserved/free memory or a guarantee that a
+source fits its separate decoder bounds. Model-operation and native segment/read
+limits remain separate; choosing a larger recipe allowance does not bypass them.
 
 ## Unified viewing and document contract
 
@@ -152,9 +155,9 @@ biological accuracy or supplies missing model/training-data rights.
 - The fluorescence field assay measures unthresholded target-channel signal in
   a reviewed native-plane ROI, explicit background and reviewed nuclei counts.
   Preview/QC and an explicit reviewed result route retain source/plane/settings
-  provenance. The IL4R use case is a field-level signal-per-nucleus proxy; it
+  provenance. This is a field-level signal-per-nucleus proxy; it
   does not delineate individual cell membranes, establish specificity, assign
-  biological replicates or compute a validated knockdown percentage.
+  biological replicates or establish a validated treatment effect.
 - GeoJSON uses Loci's explicitly non-geographical voxel/world profile. ImageJ
   import accepts only a Loci-authored, identity-bound single-plane XY polygon.
   Annotation import accepts at most 1,000 polygons and creates a new unreviewed

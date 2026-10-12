@@ -64,6 +64,7 @@ class CommandRunner(Protocol):
         input_bytes: bytes | None = None,
         timeout_seconds: int = 30,
         output_limit: int = MAX_COMMAND_OUTPUT_BYTES,
+        file_size_limit: int | None = None,
     ) -> CommandResult: ...
 
 
@@ -77,15 +78,31 @@ class SubprocessRunner:
         input_bytes: bytes | None = None,
         timeout_seconds: int = 30,
         output_limit: int = MAX_COMMAND_OUTPUT_BYTES,
+        file_size_limit: int | None = None,
     ) -> CommandResult:
         if not arguments:
             raise RemoteComputeError("A command argument vector cannot be empty.")
         if not 1 <= output_limit <= MAX_COMMAND_OUTPUT_BYTES:
             raise RemoteComputeError("Command output limit is outside the supported range.")
+        command = list(arguments)
+        if file_size_limit is not None:
+            if os.name != "posix":
+                raise RemoteComputeError(
+                    "Bounded artifact transfer requires POSIX file-size limits"
+                )
+            if type(file_size_limit) is not int or not 1 <= file_size_limit <= MAX_STAGE_FILE_BYTES:
+                raise RemoteComputeError("Artifact file-size limit is invalid")
+            from .research_process import research_command
+
+            # The fixed helper execs SCP in this same owned process group and
+            # applies RLIMIT_FSIZE before it can write any transfer file.
+            command = research_command(
+                ["bounded-transfer", "--file-size-limit", str(file_size_limit), *command]
+            )
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             try:
                 completed = subprocess.run(
-                    list(arguments),
+                    command,
                     input=input_bytes,
                     stdout=stdout,
                     stderr=stderr,
@@ -210,8 +227,7 @@ class ConnectionProfile:
         ):
             raise ValueError("remote_input_roots must be a tuple of at most 16 paths")
         resolved_inputs = [
-            _plain_absolute_path(value, "remote_input_root")
-            for value in self.remote_input_roots
+            _plain_absolute_path(value, "remote_input_root") for value in self.remote_input_roots
         ]
         if len(set(resolved_inputs)) != len(resolved_inputs):
             raise ValueError("remote_input_roots must be unique")
@@ -221,9 +237,11 @@ class ConnectionProfile:
                 if input_path.is_relative_to(other) or other.is_relative_to(input_path):
                     raise ValueError("Remote input roots must be separate trees")
             for managed in (PurePosixPath(project), PurePosixPath(output)):
-                if input_path == managed or input_path.is_relative_to(
-                    managed
-                ) or managed.is_relative_to(input_path):
+                if (
+                    input_path == managed
+                    or input_path.is_relative_to(managed)
+                    or managed.is_relative_to(input_path)
+                ):
                     raise ValueError("Remote input roots must be separate from managed run roots")
         if not 1 <= self.connect_timeout_seconds <= 60:
             raise ValueError("connect_timeout_seconds must be between 1 and 60")
@@ -448,9 +466,7 @@ class RemoteRecipeTask:
             validate_declarations(self.channel_declarations, len(self.channel_declarations))
 
 
-REMOTE_CELLPOSE_RIGHTS_BASES = frozenset(
-    {"noncommercial-research", "written-commercial-clearance"}
-)
+REMOTE_CELLPOSE_RIGHTS_BASES = frozenset({"noncommercial-research", "written-commercial-clearance"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -598,8 +614,7 @@ class RemoteWorkerRequest:
         cuda_tasks = [
             task
             for task in self.tasks
-            if isinstance(task, RemoteCellposeTask)
-            and task.cellpose["requested_device"] == "cuda"
+            if isinstance(task, RemoteCellposeTask) and task.cellpose["requested_device"] == "cuda"
         ]
         if cuda_tasks and self.resources.gpus < 1:
             raise ValueError("A CUDA Cellpose task requires at least one requested GPU")
@@ -1922,10 +1937,29 @@ class RemoteComputeClient:
         )
         return verify_output_manifest(result.stdout, identity)
 
-    def retrieve_outputs(self, identity: RemoteJobIdentity, destination: Path) -> tuple[Path, ...]:
+    def retrieve_outputs(
+        self,
+        identity: RemoteJobIdentity,
+        destination: Path,
+        *,
+        expected_manifest: VerifiedOutputManifest | None = None,
+        max_output_bytes: int | None = None,
+    ) -> tuple[Path, ...]:
         """Retrieve verified plain outputs into one absent local directory."""
 
         manifest = self.fetch_output_manifest(identity)
+        bounded = expected_manifest is not None or max_output_bytes is not None
+        if bounded and (
+            not isinstance(expected_manifest, VerifiedOutputManifest)
+            or type(max_output_bytes) is not int
+            or max_output_bytes < 1
+            or manifest != expected_manifest
+            or sum(entry.size_bytes for entry in manifest.entries) > max_output_bytes
+            or any(entry.size_bytes < 1 for entry in manifest.entries)
+        ):
+            raise RemoteComputeError(
+                "Refetched output manifest exceeds or differs from bounded transfer authority"
+            )
         if not destination.is_absolute() or destination.exists() or destination.is_symlink():
             raise ValueError("Output destination must be an absent absolute path")
         parent = destination.parent.resolve(strict=True)
@@ -1955,6 +1989,7 @@ class RemoteComputeClient:
                         str(incoming),
                     ],
                     timeout_seconds=3600,
+                    **({"file_size_limit": entry.size_bytes} if bounded else {}),
                 )
                 if transfer.returncode:
                     raise RemoteComputeError("Secure copy failed while retrieving an output")

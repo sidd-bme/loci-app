@@ -9,7 +9,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 import loci_engine.profiles as profile_module
-from loci_engine.models import SegmentationSettings
+from loci_engine.models import ENGINE_VERSION, SegmentationSettings
 from loci_engine.profiles import (
     CELLPOSE_PROFILE_ID,
     CELLPOSE_WEBSITE_PROFILE_ID,
@@ -194,7 +194,7 @@ def test_segment_defaults_to_classical_and_explicit_selection_is_compatible(
         }
     )["result"]
 
-    assert default_result["engine"] == {"id": "loci-classical", "version": "0.1.0"}
+    assert default_result["engine"] == {"id": "loci-classical", "version": ENGINE_VERSION}
     assert default_result["profile"] == CLASSICAL_PROFILE.provenance_dict()
     assert explicit_result["profile"] == default_result["profile"]
     assert explicit_result["metrics"] == default_result["metrics"]

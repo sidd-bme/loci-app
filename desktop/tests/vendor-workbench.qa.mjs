@@ -260,14 +260,14 @@ try {
   await visible(
     page,
     page.getByRole("button", {
-      name: "Inspect local vendor source and reader",
+      name: "Choose vendor image…",
       exact: true,
     }),
     "vendor import controls",
   );
   await page
     .getByRole("button", {
-      name: "Inspect local vendor source and reader",
+      name: "Choose vendor image…",
       exact: true,
     })
     .click();
@@ -315,7 +315,7 @@ try {
   assert.equal(
     await page
       .getByRole("button", {
-        name: "Convert exact plane and import derived source",
+        name: "Convert and import plane",
         exact: true,
       })
       .isEnabled(),
@@ -326,7 +326,7 @@ try {
 
   await page
     .getByRole("button", {
-      name: "Convert exact plane and import derived source",
+      name: "Convert and import plane",
       exact: true,
     })
     .click();

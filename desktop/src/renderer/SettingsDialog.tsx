@@ -1,5 +1,5 @@
 import { BookOpen, Boxes, Eye, Palette, Power, Save, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import type { InterfaceTextSize, LociTheme, UserPreferences } from "./preferences";
 import CapabilityOverview from "./CapabilityOverview";
@@ -42,13 +42,12 @@ function moveChoice(event: React.KeyboardEvent<HTMLElement>, selector: string): 
   event.preventDefault(); choices[next].focus(); choices[next].click();
 }
 
-function ChoiceButton({ checked, label, note, onClick, swatch }: {
-  checked: boolean; label: string; note: string; onClick: () => void; swatch?: LociTheme;
+function ChoiceButton({ checked, label, note, onClick }: {
+  checked: boolean; label: string; note?: string; onClick: () => void;
 }): React.JSX.Element {
   return <button className={`settings-choice ${checked ? "is-selected" : ""}`} type="button"
     role="radio" aria-checked={checked} tabIndex={checked ? 0 : -1} onClick={onClick}>
-    {swatch && <span className={`theme-swatch is-${swatch}`} aria-hidden="true" />}
-    <span className="settings-choice-copy"><strong>{label}</strong><span>{note}</span></span>
+    <span className="settings-choice-copy"><strong>{label}</strong>{note && <span>{note}</span>}</span>
   </button>;
 }
 
@@ -64,13 +63,16 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
   SettingsDialogProps): React.JSX.Element {
   const [page, setPage] = useState<SettingsPage>("appearance");
   const [dpiDraft, setDpiDraft] = useState(String(preferences.figureDpi));
+  const [dpiError, setDpiError] = useState(false);
+  const dpiDirty = useRef(false);
+  const dpiHelpId = useId();
+  const dpiErrorId = useId();
   const closeButton = useRef<HTMLButtonElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
-  const dpiInput = useRef<HTMLInputElement>(null);
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => {
-    if (document.activeElement !== dpiInput.current) setDpiDraft(String(preferences.figureDpi));
+    if (!dpiDirty.current) setDpiDraft(String(preferences.figureDpi));
   }, [preferences.figureDpi]);
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -95,9 +97,14 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
     ...preferences, viewer: { ...preferences.viewer, [key]: value },
   });
   const commitDpi = () => {
+    if (!dpiDirty.current) return;
     const dpi = Number(dpiDraft);
-    if (Number.isInteger(dpi) && dpi >= 72 && dpi <= 1200) onChange({ ...preferences, figureDpi: dpi });
-    else setDpiDraft(String(preferences.figureDpi));
+    if (dpiDraft.trim() && Number.isInteger(dpi) && dpi >= 72 && dpi <= 1200) {
+      dpiDirty.current = false;
+      setDpiError(false);
+      setDpiDraft(String(dpi));
+      onChange({ ...preferences, figureDpi: dpi });
+    } else setDpiError(true);
   };
   const activeLabel = pages.find((item) => item.id === page)!.label;
   return <div className="modal-backdrop" onMouseDown={(event) => {
@@ -121,7 +128,7 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
         <div className="settings-pane" role="tabpanel" id="settings-active-panel"
           aria-labelledby={`settings-tab-${page}`} tabIndex={0}>
           {page === "appearance" && <>
-            <div className="settings-pane-heading"><h3>{activeLabel}</h3><p>Adjust the workspace appearance.</p></div>
+            <div className="settings-pane-heading"><h3>{activeLabel}</h3></div>
             <label className="settings-select-row">Theme
               <select aria-label="Application theme" value={preferences.theme}
                 onChange={(event) => setTheme(event.target.value as LociTheme)}>
@@ -137,48 +144,62 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
             <fieldset><legend>Interface text</legend><div className="inline-choice-group" role="radiogroup"
               aria-label="Interface text size" onKeyDown={(event) => moveChoice(event, "[role='radio']")}>
               <ChoiceButton checked={preferences.textSize === "standard"} label="Standard"
-                note="Balanced density" onClick={() => setTextSize("standard")} />
+                onClick={() => setTextSize("standard")} />
               <ChoiceButton checked={preferences.textSize === "large"} label="Large"
-                note="Higher legibility" onClick={() => setTextSize("large")} />
+                onClick={() => setTextSize("large")} />
             </div></fieldset>
             <fieldset><legend>Motion</legend><div className="inline-choice-group" role="radiogroup"
               aria-label="Interface motion" onKeyDown={(event) => moveChoice(event, "[role='radio']")}>
               <ChoiceButton checked={preferences.motion === "system"} label="Follow system"
-                note="Use the operating system motion preference" onClick={() => onChange({ ...preferences, motion: "system" })} />
+                note="Use system preference" onClick={() => onChange({ ...preferences, motion: "system" })} />
               <ChoiceButton checked={preferences.motion === "reduced"} label="Reduce motion"
-                note="Minimize nonessential transitions" onClick={() => onChange({ ...preferences, motion: "reduced" })} />
+                note="Limit transitions" onClick={() => onChange({ ...preferences, motion: "reduced" })} />
             </div></fieldset>
           </>}
-          {page === "viewing" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3>
-            <p>Control navigation aids and explanations around the image.</p></div><div className="settings-list">
+          {page === "viewing" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3></div><div className="settings-list">
             <ToggleRow checked={preferences.viewer.showScaleBar} label="Viewer scale bar"
-              note="Show only when the source declares physical calibration."
+              note="Requires physical calibration."
               onChange={(value) => setViewer("showScaleBar", value)} />
             <ToggleRow checked={preferences.viewer.showNavigator} label="Overview navigator"
-              note="Show the full-image navigator for large sources."
+              note="Full-image overview for large sources."
               onChange={(value) => setViewer("showNavigator", value)} />
             <ToggleRow checked={preferences.viewer.contextualHelp} label="Contextual guidance"
-              note="Show short explanations beside unfamiliar controls."
+              note="Explanations beside unfamiliar controls."
               onChange={(value) => setViewer("contextualHelp", value)} />
           </div></>}
-          {page === "saving" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3>
-            <p>Set publication defaults and understand what Loci saves.</p></div>
-            <label className="settings-number-field"><span><strong>Rendered figure resolution</strong>
-              <small>PNG and TIFF metadata; accepted range 72–1200 DPI.</small></span>
-              <input ref={dpiInput} aria-label="Default figure DPI" type="number" min="72" max="1200"
-                step="1" inputMode="numeric" value={dpiDraft} onChange={(event) => setDpiDraft(event.target.value)}
-                onBlur={commitDpi} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>
-            <div className="settings-explainers"><article><strong>Rendered figures</strong>
-              <p>PNG8 and TIFF16 reproduce the current display. Optional scale bars and channel keys sit in a footer outside source pixels.</p></article>
-              <article><strong>Derived results</strong><p>Measurements, labels, tables, and method records export from an exact reviewed result revision.</p></article>
-              <article><strong>Recoverable local sessions</strong><p>Unsaved work remains in Loci-managed local storage. Save as creates a named study without copying source images.</p></article></div>
+          {page === "saving" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3></div>
+            <div className="settings-number-field"><label htmlFor={dpiHelpId + "-input"}>
+              <strong>Rendered figure resolution</strong>
+              <small id={dpiHelpId}>PNG and TIFF metadata · 72–1200 DPI</small></label>
+              <input id={dpiHelpId + "-input"} aria-label="Default figure DPI" type="text"
+                inputMode="numeric" value={dpiDraft} aria-invalid={dpiError}
+                aria-describedby={dpiError ? `${dpiHelpId} ${dpiErrorId}` : dpiHelpId}
+                onChange={(event) => {
+                  dpiDirty.current = true;
+                  setDpiDraft(event.target.value);
+                  setDpiError(false);
+                }} onBlur={commitDpi} onKeyDown={(event) => {
+                  if (event.key === "Enter") { event.preventDefault(); commitDpi(); }
+                  if (event.key === "Escape" && dpiDirty.current) {
+                    event.preventDefault(); event.stopPropagation();
+                    dpiDirty.current = false;
+                    setDpiDraft(String(preferences.figureDpi)); setDpiError(false);
+                  }
+                }} />
+              {dpiError && <p className="settings-field-error" id={dpiErrorId} role="alert">
+                Enter a whole number from 72 to 1200. Escape restores {preferences.figureDpi} DPI.
+              </p>}
+            </div>
+            <dl className="settings-explainers"><div><dt>Rendered figures</dt>
+              <dd>PNG8 and TIFF16 use the current display; scale bars and channel keys sit outside source pixels.</dd></div>
+              <div><dt>Derived results</dt><dd>Measurements, labels, tables and method records use the reviewed result revision.</dd></div>
+              <div><dt>Recoverable local sessions</dt><dd>Unsaved work stays local. Save as names a study without copying source images.</dd></div></dl>
           </>}
-          {page === "capabilities" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3>
-            <p>Implemented routes remain bounded by source format, geometry, runtime, and review contracts.</p></div><CapabilityOverview /></>}
+          {page === "capabilities" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3></div><CapabilityOverview /></>}
           {page === "guide" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3>
-            <p>Open the bundled manual for viewing, analysis, review, recovery, and export workflows.</p></div>
+            <p>Viewing, analysis, review, recovery and export.</p></div>
             <div className="settings-guide-card"><BookOpen size={22} /><div><strong>Using Loci</strong>
-              <p>The guide is local and opens without sending source data or metadata anywhere.</p></div>
+              <p>Bundled offline manual.</p></div>
               <button className="button button-primary" type="button" disabled={!onOpenGuide}
                 onClick={onOpenGuide}>Open user guide</button></div></>}
         </div>

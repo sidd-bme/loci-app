@@ -144,7 +144,7 @@ def test_mcp_exchange_requires_exact_tools_and_safe_catalog() -> None:
         initialized, listed, catalog
     ) == {
         "protocol": "2025-11-25",
-        "tool_count": 10,
+        "tool_count": 12,
         "catalog": "passed",
     }
 
@@ -170,3 +170,21 @@ def test_mcp_exchange_requires_exact_tools_and_safe_catalog() -> None:
         match="exact research tool surface",
     ):
         verify_frozen_engine_bundle._validate_mcp_exchange(initialized, listed, catalog)
+
+
+def test_expected_context_denial_never_allows_additional_diagnostics():
+    expected = (
+        "Tool 'analysis_context' failed: 'Error executing tool analysis_context: "
+        "The operation, source scope, disclosure or resource limit "
+        "is not authorized by the active policy.'\n"
+    )
+    check = verify_frozen_engine_bundle._validate_context_denial_diagnostics
+    check("")
+    check(expected)
+    for forbidden in (
+        "/private/source.tif",
+        expected + "/private/source.tif",
+        expected * 2,
+    ):
+        with pytest.raises(verify_frozen_engine_bundle.BundleVerificationError):
+            check(forbidden)

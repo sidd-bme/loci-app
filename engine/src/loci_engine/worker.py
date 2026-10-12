@@ -377,6 +377,10 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--loci":
+        from .cli import main as loci_main
+
+        raise SystemExit(loci_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "--cli":
         from .research_cli import main as research_main
 

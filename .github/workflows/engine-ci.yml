@@ -198,6 +198,14 @@ jobs:
             .loci/qa/research-*/screenshots/*.png
             .loci/qa/research-*/qa-report.json
             .loci/qa/research-*/failure-ui.txt
+            .loci/qa/folder-import-*/folder-import.png
+            .loci/qa/folder-import-*/failure.png
+            .loci/qa/folder-import-*/failure-page.html
+            .loci/qa/folder-import-*/failure-snapshot.json
+            ${{ runner.temp }}/loci-core-qa/packaged-*/screenshots/*.png
+            ${{ runner.temp }}/loci-core-qa/packaged-*/qa-report.json
+            ${{ runner.temp }}/loci-core-qa/packaged-*/qa-failure.json
+            ${{ runner.temp }}/loci-core-qa/packaged-*/failure-ui.txt
           if-no-files-found: warn
           retention-days: 7
 

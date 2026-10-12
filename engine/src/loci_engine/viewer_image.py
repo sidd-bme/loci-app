@@ -157,11 +157,20 @@ def _mapped_z_range(
     return start, max(start + 1, stop)
 
 
-def _select_native_overview_level(metadata: NativeImageMetadata, max_edge: int) -> int | None:
+def _select_native_overview_level(
+    metadata: NativeImageMetadata, max_edge: int, *, exact_plane: bool = False
+) -> int | None:
     fitting = [
         level
         for level in metadata.levels[1:]
         if max(level.dimensions.x, level.dimensions.y) <= max_edge
+        and (
+            not exact_plane
+            or (
+                level.dimensions.z == metadata.dimensions.z
+                and level.dimensions.t == metadata.dimensions.t
+            )
+        )
     ]
     if not fitting:
         return None
@@ -1374,7 +1383,7 @@ def _overview_tile(
     if metadata.sample_semantics != "none" and (projection is not None or z_stop is not None):
         raise ViewerImageError("Interleaved RGB overview does not support Z projection.")
     requested_c = _integer(request.get("c", settings[0].channel), "c", 0, metadata.dimensions.c - 1)
-    level = _select_native_overview_level(metadata, max_edge)
+    level = _select_native_overview_level(metadata, max_edge, exact_plane=projection is None)
     display = _display_payload(settings)
     if level is None:
         preparation = "derived-cache"

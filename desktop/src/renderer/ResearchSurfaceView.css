@@ -6,7 +6,7 @@
   min-width: 0;
   overflow: auto;
   color: var(--ink);
-  background: #090e12;
+  background: var(--graphite-900);
 }
 .research-surface-controls {
   display: flex;
@@ -20,7 +20,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--type-sm);
   color: var(--ink-muted);
 }
 .research-surface-controls input {
@@ -53,8 +53,8 @@
 .research-surface p {
   margin: 10px;
   color: var(--ink-muted);
-  font-size: 12px;
+  font-size: var(--type-md);
 }
 .research-surface-caption {
-  font-size: 11px !important;
+  font-size: var(--type-sm) !important;
 }

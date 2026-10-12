@@ -14,8 +14,10 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
-from .agent_policy import AgentPolicy, load_policy
+from .agent_experiments import matching_templates
+from .agent_policy import VISION_POLICY_SCHEMA, AgentPolicy, load_policy
 from .export import _rename_noreplace
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
 from .research_process import research_command
@@ -24,15 +26,61 @@ from .workbench import Workbench, runtime_record
 
 _TOOL_CATALOG = (
     ("catalog", "Describe the static policy-bound Loci tool surface without study data."),
+    (
+        "recipe_guide",
+        "Read static recipe request structure, units and source-independent examples.",
+    ),
+    (
+        "analysis_context",
+        "Read only pinned source/recipe grants and limits; offset is zero-based and limit is 1-50. "
+        "Requires analysis_context and agent_metadata; names and geometry "
+        "are independent disclosures.",
+    ),
     ("inspect_source", "Inspect an exact permitted source with explicit metadata disclosures."),
-    ("validate_recipe", "Normalize and validate a recipe proposal without executing it."),
+    (
+        "validate_recipe",
+        "Normalize a request containing source_id, selection and recipe without executing; "
+        "returns its hash, resource estimate and approved preview/run status. "
+        "Read recipe_guide for fields and units.",
+    ),
     ("preview_recipe", "Run an exact policy-approved recipe as a non-adopted preview."),
-    ("submit_recipe", "Submit and asynchronously start an exact approved durable recipe job."),
+    (
+        "submit_recipe",
+        "Submit an exact approved recipe and start a durable job; reuse the same request_key "
+        "with the same request for idempotent retries. Poll job_status using the returned job ID.",
+    ),
     ("job_status", "Read one exact policy-scoped durable job."),
     ("cancel_job", "Cancel one exact policy-scoped job."),
-    ("result", "Read one exact policy-scoped result with disclosure filtering."),
+    (
+        "result",
+        "Read one supplied policy-verifiable result ID; offset/limit paginate measurement rows, "
+        "disclosed only when measurements is granted. Geometry, names and provenance "
+        "remain independent.",
+    ),
     ("result_view", "Render one exact policy-scoped result view."),
     ("export_result", "Atomically export one reviewed revision to its policy filename."),
+)
+_REMOTE_TOOL_CATALOG = tuple(
+    ("remote_" + op, "Use one exact human-prestaged remote grant: " + op)
+    for op in ("submit", "status", "cancel", "retrieve", "attach")
+)
+_VISION_TOOL_CATALOG = (
+    (
+        "source_image",
+        "Render an explicit permitted crop and channel display as a native image; "
+        "requires previews.",
+    ),
+    ("source_display", "Read only granted channel display settings and optimistic view revision."),
+    (
+        "set_source_display",
+        "Patch only granted channel display settings at the exact source and view revision; "
+        "analysis values remain unchanged.",
+    ),
+    (
+        "export_vision_handoff",
+        "Write a provisional visualization handoff to an exact granted .loci-vision filename; "
+        "no scientific review is created.",
+    ),
 )
 _EXPORT_DISCLOSURES = ("geometry", "source_names", "previews", "measurements", "provenance")
 
@@ -50,6 +98,7 @@ class JobSupervisor:
         self._popen = popen
         self._lock = threading.Lock()
         self._children: dict[str, subprocess.Popen[bytes]] = {}
+        self._external_children: dict[str, subprocess.Popen[bytes]] = {}
         self._preview_count = 0
 
     def _command(self, project: ResearchProject, job_id: str) -> list[str]:
@@ -152,12 +201,20 @@ class JobSupervisor:
             if existing is not None and existing.poll() is None:
                 return job
             owned_active = {
-                job_id for job_id, process in self._children.items() if process.poll() is None
+                job_id
+                for job_id, process in (self._children | self._external_children).items()
+                if process.poll() is None
             }
             durable_active = {
                 item["id"] for item in project.list_jobs() if item["state"] == "running"
             }
-            active = len(owned_active | durable_active) + self._preview_count
+            from .agent_remote import active_remote_count
+
+            active = (
+                len(owned_active | durable_active)
+                + self._preview_count
+                + active_remote_count(self.policy, project)
+            )
             if active >= self.policy.concurrency:
                 raise PermissionError("The policy concurrency limit is already in use")
             command = self._command(project, job["id"])
@@ -182,15 +239,126 @@ class JobSupervisor:
     def preview(self, workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         """Reserve capacity without blocking cancellation of other owned jobs."""
         with self._lock:
-            owned = {key for key, process in self._children.items() if process.poll() is None}
+            owned = {
+                key
+                for key, process in (self._children | self._external_children).items()
+                if process.poll() is None
+            }
             running = {
                 job["id"] for job in workbench.project.list_jobs() if job["state"] == "running"
             }
-            if len(owned | running) + self._preview_count >= self.policy.concurrency:
+            from .agent_remote import active_remote_count
+
+            if (
+                len(owned | running)
+                + self._preview_count
+                + active_remote_count(self.policy, workbench.project)
+                >= self.policy.concurrency
+            ):
                 raise PermissionError("The policy concurrency limit is already in use")
             self._preview_count += 1
         try:
             return self._preview(workbench, request)
+        finally:
+            with self._lock:
+                self._preview_count -= 1
+
+    def vision(self, workbench: Workbench, request: dict[str, Any], operation: str):
+        from .agent_remote import active_remote_count, terminate_owned_tree
+        from .research_project import canonical_json
+
+        with self._lock:
+            owned = {
+                key
+                for key, process in (self._children | self._external_children).items()
+                if process.poll() is None
+            }
+            running = {
+                job["id"] for job in workbench.project.list_jobs() if job["state"] == "running"
+            }
+            if (
+                len(owned | running)
+                + self._preview_count
+                + active_remote_count(self.policy, workbench.project)
+                >= self.policy.concurrency
+            ):
+                raise PermissionError("The shared policy concurrency limit is in use")
+            # Count vision reservations in the existing shared preview counter,
+            # including during spawn; remote/local admission already observes it.
+            self._preview_count += 1
+        try:
+            policy = self.policy
+
+            def identity(value):
+                return "none" if value is None else ":".join(map(str, value))
+
+            command = research_command(
+                [
+                    "vision-render",
+                    "--project",
+                    str(workbench.project.root),
+                    "--operation",
+                    operation,
+                    "--request",
+                    "-",
+                    "--cpu-seconds",
+                    str(policy.cpu_seconds),
+                    "--memory-bytes",
+                    str(policy.memory_bytes),
+                    "--policy",
+                    str(policy.path),
+                    "--policy-sha256",
+                    policy.content_sha256,
+                    "--policy-file-identity",
+                    identity(policy.file_identity),
+                    "--project-directory-identity",
+                    identity(policy.project_directory_identity),
+                    "--export-directory-identity",
+                    identity(policy.export_root_identity),
+                ]
+            )
+            with tempfile.TemporaryFile() as output:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=output,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+                try:
+                    process.stdin.write(canonical_json(request).encode())
+                    process.stdin.close()
+                    deadline = time.monotonic() + policy.cpu_seconds * 2 + 30
+                    while process.poll() is None:
+                        policy.recheck()
+                        policy.source_grant(workbench.project, request["source_id"])
+                        if time.monotonic() > deadline or output.tell() > 32 * 1024**2:
+                            raise PermissionError(
+                                "Vision child exceeded its time or response bound"
+                            )
+                        if os.name == "posix" and os.uname().sysname == "Darwin":
+                            usage = subprocess.run(
+                                ["/bin/ps", "-o", "rss=", "-p", str(process.pid)],
+                                capture_output=True,
+                                timeout=1,
+                                check=False,
+                            )
+                            rss = usage.stdout.strip()
+                            if rss and int(rss) * 1024 > policy.memory_bytes:
+                                raise PermissionError("Vision child exceeded observed memory bound")
+                        time.sleep(0.05)
+                    policy.recheck()
+                    if process.returncode:
+                        raise ValueError("The bounded vision child failed")
+                    output.seek(0)
+                    encoded = output.read(32 * 1024**2 + 1)
+                    if len(encoded) > 32 * 1024**2:
+                        raise ValueError("The bounded vision response is too large")
+                    return parse_json(encoded.decode())
+                finally:
+                    terminate_owned_tree(process)
+                    process.wait(timeout=5)
         finally:
             with self._lock:
                 self._preview_count -= 1
@@ -257,6 +425,10 @@ class PolicyAgent:
     def __init__(self, policy: AgentPolicy, supervisor: JobSupervisor | None = None) -> None:
         self.policy = policy
         self.supervisor = supervisor or JobSupervisor(policy)
+        from .agent_remote import RemoteSupervisor
+
+        self.remote_supervisor = RemoteSupervisor(self)
+        self.supervisor._external_children = self.remote_supervisor._children
 
     def _workbench(self, operation: str) -> Workbench:
         self.policy.recheck()
@@ -296,6 +468,38 @@ class PolicyAgent:
                 value["channel_metadata"].pop("source_sha256", None)
         if "agent_metadata" not in self.policy.disclosures:
             value.pop("job_id", None)
+        if "measurements" not in self.policy.disclosures and isinstance(
+            value.get("segmentation"), dict
+        ):
+            value["segmentation"] = {
+                key: item for key, item in value["segmentation"].items() if key != "count"
+            }
+        if "remote_attachment" in value:
+            original_remote = value.pop("remote_attachment")
+            if (
+                isinstance(original_remote, dict)
+                and original_remote.get("schema") == "loci.remote-result-provenance/v1"
+            ):
+                allowed = {
+                    "schema",
+                    "request_sha256",
+                    "remote_result_revision_hash",
+                    "remote_result_record_sha256",
+                    "archive_sha256",
+                    "review_state",
+                }
+                if "agent_metadata" in self.policy.disclosures:
+                    allowed |= {
+                        "request_key",
+                        "remote_project_id",
+                        "remote_task_id",
+                        "remote_source_id",
+                        "remote_internal_source_id",
+                        "remote_result_id",
+                    }
+                value["remote_attachment"] = {
+                    key: original_remote[key] for key in allowed if key in original_remote
+                }
         return value
 
     def _validate(
@@ -322,7 +526,9 @@ class PolicyAgent:
             raise PermissionError("The recipe working-memory budget exceeds the policy")
         if purpose is not None:
             recipe = self.policy.recipes.get(validation["recipe_sha256"])
-            if recipe is None or not getattr(recipe, purpose):
+            if (recipe is None or not getattr(recipe, purpose)) and not matching_templates(
+                self.policy, validation, purpose
+            ):
                 raise PermissionError(
                     "Execution requires the exact approved normalized recipe hash"
                 )
@@ -362,7 +568,165 @@ class PolicyAgent:
             raise PermissionError("The result runtime identity is outside the pinned policy")
         self.policy.require_runtime(runtime)
         self.policy.require_model(provenance.get("model"))
+        attachment = provenance.get("remote_attachment")
+        if attachment is not None and self.policy.remote_grants:
+            from .agent_remote import authorize
+
+            granted = False
+            for key, grant in self.policy.remote_grants.items():
+                if (
+                    attachment.get("request_key") == grant["request_key"]
+                    and attachment.get("request_sha256") == grant["request_sha256"]
+                    and attachment.get("remote_task_id") == grant["task_id"]
+                    and attachment.get("remote_source_id") == grant["source_id"]
+                ):
+                    operation = "attach" if "attach" in grant["operations"] else "status"
+                    _, envelope, _ = authorize(self, workbench, key, operation)
+                    receipt = envelope["data"].get("attachment")
+                    if receipt is None:
+                        with workbench.project.connection() as connection:
+                            row = connection.execute(
+                                "SELECT value FROM metadata WHERE key=?",
+                                ("remote-attachment:" + grant["request_key"],),
+                            ).fetchone()
+                        receipt = parse_json(row[0]) if row else None
+                    granted = bool(
+                        receipt
+                        and receipt["archive_sha256"] == attachment.get("archive_sha256")
+                        and any(
+                            item["local_result_id"] == result["id"]
+                            and item["local_revision_hash"] == result["revision_hash"]
+                            for item in receipt["task_results"]
+                        )
+                    )
+            if not granted:
+                raise PermissionError("Remote result is outside the exact pinned run")
         return result
+
+    def remote_operation(self, grant_key: str, operation: str) -> dict[str, Any]:
+        import copy
+        from dataclasses import asdict
+
+        from . import research_remote as remote
+        from .agent_remote import (
+            _save_snapshot,
+            _snapshot,
+            active_remote_count,
+            authorize,
+            safe_run,
+        )
+
+        self.policy.recheck()
+        workbench = Workbench(ResearchProject(self.policy.project_path))
+        try:
+            grant, envelope, profile = authorize(self, workbench, grant_key, operation)
+            project = workbench.project
+            request = {"alias": envelope["data"]["alias"], "request_key": grant["request_key"]}
+            if operation in {"retrieve", "attach"}:
+                job = self.remote_supervisor.start(workbench, grant, operation)
+                current = remote._load_run(project, grant["request_key"])["data"]
+                output = safe_run(self, grant, current)
+                output["work"] = {"operation": operation, "state": job["state"]}
+                return output
+            if operation == "submit":
+                with self.supervisor._lock:
+                    if envelope["data"]["state"] == "staged":
+                        running = {
+                            item["id"] for item in project.list_jobs() if item["state"] == "running"
+                        }
+                        owned = {
+                            job_id
+                            for job_id, proc in (
+                                self.supervisor._children | self.supervisor._external_children
+                            ).items()
+                            if proc.poll() is None
+                        }
+                        if (
+                            len(running | owned)
+                            + self.supervisor._preview_count
+                            + active_remote_count(self.policy, project)
+                            >= self.policy.concurrency
+                        ):
+                            raise PermissionError("The shared policy concurrency limit is in use")
+                        _save_snapshot(
+                            project,
+                            self.policy.content_sha256,
+                            grant_key,
+                            {
+                                "profile": copy.deepcopy(profile),
+                                "identity": None,
+                                "cancel_on_revocation": grant["cancel_on_revocation"],
+                                "revocation_cancellation": "unconfirmed",
+                            },
+                        )
+                    remote._submit(workbench, request)
+                    current = remote._load_run(project, grant["request_key"])
+                    owned = _snapshot(project, self.policy.content_sha256, grant_key)
+                    if owned is not None:
+                        # Identity is accepted only from the just validated fixed
+                        # submission response. A retry cannot silently replace it.
+                        identity = asdict(remote._identity_from_run(current["data"]))
+                        if owned["identity"] is not None and any(
+                            owned["identity"].get(key) != identity.get(key)
+                            for key in (
+                                "request_key",
+                                "request_sha256",
+                                "scheduler",
+                                "remote_job_id",
+                            )
+                        ):
+                            raise PermissionError("Owned scheduler identity changed")
+                        _save_snapshot(
+                            project,
+                            self.policy.content_sha256,
+                            grant_key,
+                            {**owned, "identity": identity},
+                        )
+                        self.remote_supervisor.watch_remote(grant, current, profile)
+            elif operation == "status":
+                if envelope["data"]["state"] in {
+                    "submitted",
+                    "queued",
+                    "running",
+                    "unknown",
+                    "cancel_requested",
+                }:
+                    remote._status(workbench, request)
+            elif operation == "cancel":
+                for job in project.list_jobs():
+                    if (
+                        job["operation"].startswith("agent_remote_")
+                        and job["request"].get("policy_sha256") == self.policy.content_sha256
+                        and job["state"] in {"queued", "running"}
+                    ):
+                        cancel_job(project, job["id"])
+                if envelope["data"]["state"] in {"retrieved", "attached"}:
+                    # Scheduler work is already terminal. Cancel only pending
+                    # local transfer/adoption work; existing publication remains.
+                    remote._put(
+                        project,
+                        envelope,
+                        {**envelope["data"], "cancel_requested": True},
+                        publication_guard=self.policy.recheck,
+                    )
+                else:
+                    remote._cancel(workbench, request)
+            else:
+                raise PermissionError("Unknown remote grant operation")
+            self.policy.recheck()
+            output = safe_run(self, grant, remote._load_run(project, grant["request_key"])["data"])
+            output["work"] = [
+                {
+                    "operation": job["operation"].removeprefix("agent_remote_"),
+                    "state": self.remote_supervisor.work_state(job),
+                }
+                for job in project.list_jobs()
+                if job["operation"].startswith("agent_remote_")
+                and job["request"].get("policy_sha256") == self.policy.content_sha256
+            ]
+            return output
+        finally:
+            workbench.close()
 
     def catalog(self) -> dict[str, Any]:
         self.policy.recheck()
@@ -370,7 +734,12 @@ class PolicyAgent:
             "schema": "loci.agent-tools/v1",
             "transport": "stdio",
             "tools": [
-                {"name": name, "description": description} for name, description in _TOOL_CATALOG
+                {"name": name, "description": description}
+                for name, description in (
+                    _TOOL_CATALOG
+                    + (_VISION_TOOL_CATALOG if self.policy.schema == VISION_POLICY_SCHEMA else ())
+                    + (_REMOTE_TOOL_CATALOG if self.policy.remote_grants else ())
+                )
             ],
             "dataset_contents_included": False,
         }
@@ -382,6 +751,82 @@ class PolicyAgent:
                 "disclosures": sorted(self.policy.disclosures),
             }
         return output
+
+    def analysis_context(self, offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("Context offset must be a nonnegative integer")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ValueError("Context limit must be an integer from 1 to 50")
+        workbench = self._workbench("analysis_context")
+        try:
+            self.policy.require_disclosure("agent_metadata")
+            sources = sorted(self.policy.sources)
+            recipes = sorted(self.policy.recipes)
+            source_grants = []
+            for source_id in sources[offset : offset + limit]:
+                grant = self.policy.source_grant(workbench.project, source_id)
+                record: dict[str, Any] = {"source_id": source_id, "source_sha256": grant.sha256}
+                if "source_names" in self.policy.disclosures:
+                    record["name"] = workbench.project.source(source_id)["name"]
+                if "geometry" in self.policy.disclosures:
+                    record["permitted_scope"] = {
+                        "crop_xywh": list(grant.crop),
+                        **{
+                            name: list(getattr(grant, name))
+                            for name in ("t", "c", "z", "level", "measurement_channels")
+                        },
+                    }
+                source_grants.append(record)
+            recipe_grants = [
+                {
+                    "sha256": key,
+                    "preview": self.policy.recipes[key].preview,
+                    "run": self.policy.recipes[key].run,
+                }
+                for key in recipes[offset : offset + limit]
+            ]
+            next_offset = (
+                offset + limit
+                if offset + limit
+                < max(len(sources), len(recipes), len(self.policy.experimental_recipes))
+                else None
+            )
+            output = {
+                "schema": "loci.agent-context/v1",
+                "policy": {
+                    "sha256": self.policy.content_sha256,
+                    "project_id": self.policy.project_id,
+                    "operations": sorted(self.policy.operations),
+                    "disclosures": sorted(self.policy.disclosures),
+                    "limits": {
+                        "cpu_seconds": self.policy.cpu_seconds,
+                        "memory_bytes": self.policy.memory_bytes,
+                        "concurrency": self.policy.concurrency,
+                    },
+                },
+                "source_grants": source_grants,
+                "recipe_grants": recipe_grants,
+                "pagination": {
+                    "offset": offset,
+                    "limit": limit,
+                    "next_offset": next_offset,
+                    "source_grants_count": len(sources),
+                    "recipe_grants_count": len(recipes),
+                },
+                "continuation": "Use analysis_context(offset=next_offset, limit=limit) for "
+                "subsequent pages. Grants are authorization, not scientific validation.",
+            }
+            if self.policy.schema == VISION_POLICY_SCHEMA:
+                templates = sorted(self.policy.experimental_recipes)
+                output["experimental_recipes"] = [
+                    self.policy.experimental_recipes[key]
+                    for key in templates[offset : offset + limit]
+                ]
+                output["pagination"]["experimental_recipes_count"] = len(templates)
+            self.policy.recheck()
+            return output
+        finally:
+            workbench.close()
 
     def validate_recipe(self, request: dict[str, Any]) -> dict[str, Any]:
         workbench = self._workbench("validate_recipe")
@@ -396,10 +841,20 @@ class PolicyAgent:
                 "resolved_device": validated["resolved_device"],
                 "scientific_validation": validated["scientific_validation"],
                 "approved": {
-                    "preview": bool(recipe and recipe.preview),
-                    "run": bool(recipe and recipe.run),
+                    "preview": bool(
+                        recipe
+                        and recipe.preview
+                        or matching_templates(self.policy, validated, "preview")
+                    ),
+                    "run": bool(
+                        recipe and recipe.run or matching_templates(self.policy, validated, "run")
+                    ),
                 },
             }
+            if self.policy.schema == VISION_POLICY_SCHEMA:
+                output["experimental_templates"] = [
+                    item["key"] for item in matching_templates(self.policy, validated)
+                ]
             if "geometry" in self.policy.disclosures:
                 output["selection"] = validated["selection"]
             return output
@@ -587,6 +1042,217 @@ class PolicyAgent:
         finally:
             workbench.close()
 
+    def _vision_frame(
+        self,
+        workbench: Workbench,
+        request: dict[str, Any],
+        *,
+        supervised: bool = True,
+        operation: str = "source_image",
+    ) -> dict[str, Any]:
+        from .agent_vision import render_source_image, validate_source_image
+
+        self.policy.require_disclosure("previews")
+        self.policy.require_runtime(runtime_record())
+        if not isinstance(request, dict):
+            raise ValueError("Vision request must be an object")
+        # Resolve metadata and bounds before any pixel decoding; every display
+        # channel has its own source-scope check, including invisible channels.
+        grant = self.policy.source_grant(workbench.project, request.get("source_id"))
+        checked = validate_source_image(workbench, request, working_bytes=self.policy.memory_bytes)
+        if not grant.allows(checked["selection"], []):
+            raise PermissionError("Vision selection exceeds policy")
+        for channel in checked["channels"]:
+            if not grant.allows({**checked["selection"], "c": channel["channel"]}, []):
+                raise PermissionError("Vision crop, axes, level or display channel exceeds policy")
+        self.policy.recheck()
+        frame = (
+            self.supervisor.vision(workbench, request, operation)
+            if supervised
+            else render_source_image(workbench, request, working_bytes=self.policy.memory_bytes)
+        )
+        if (
+            not isinstance(frame, dict)
+            or set(frame) != {"image", "source_id", "source_sha256", "rendering"}
+            or frame["source_id"] != checked["source_id"]
+            or frame["source_sha256"] != checked["source_sha256"]
+        ):
+            raise ValueError("Vision child returned an incompatible source frame")
+        self.policy.source_grant(workbench.project, checked["source_id"])
+        self.policy.recheck()
+        return frame
+
+    def source_image(self, request: dict[str, Any]) -> dict[str, Any]:
+        workbench = self._workbench("source_image")
+        try:
+            frame = self._vision_frame(workbench, request)
+            output = {
+                "image": frame["image"],
+                "source_id": frame["source_id"],
+                "display_only": True,
+                "scientific_validation": "not established",
+            }
+            if "agent_metadata" in self.policy.disclosures:
+                output["source_sha256"] = frame["source_sha256"]
+            if "provenance" in self.policy.disclosures:
+                output["rendering"] = {
+                    key: value
+                    for key, value in frame["rendering"].items()
+                    if key not in {"selection", "geometry", "output_size"}
+                }
+            if "geometry" in self.policy.disclosures:
+                output.update(
+                    {
+                        key: frame["rendering"][key]
+                        for key in ("selection", "geometry", "output_size")
+                    }
+                )
+            if "source_names" in self.policy.disclosures:
+                output["source_name"] = workbench.project.source(frame["source_id"])["name"]
+            return output
+        finally:
+            workbench.close()
+
+    def _display_state(self, workbench: Workbench, source_id: str):
+        for category in ("geometry", "provenance", "agent_metadata"):
+            self.policy.require_disclosure(category)
+        from .source_view_state import _default_view_state_for_source, execute_view_state
+
+        self.policy.require_runtime(runtime_record())
+        grant = self.policy.source_grant(workbench.project, source_id)
+        value = execute_view_state(workbench, "source_view", {"source_id": source_id})
+        state = value["state"]
+        if state is None:
+            # Build the full metadata-only human default before filtering a
+            # response. Persisting a patch must preserve ungranted channels and
+            # interpretation as well as the other presentation settings.
+            source = workbench.project.source(source_id)
+            dimensions = source["metadata"].get("dimensions") or {"c": 1}
+            count = dimensions.get("c", 1)
+            if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 16:
+                raise ValueError("Unsaved display defaults require 1-16 source channels")
+            state = _default_view_state_for_source(source)
+        return grant, value, state
+
+    def _display_response(self, grant, value, state):
+        output = {
+            "source_id": grant.source_id,
+            "revision": value["revision"],
+            "channels": [item for item in state["channels"] if item["channel"] in grant.c],
+            "display_only": True,
+        }
+        if "agent_metadata" in self.policy.disclosures:
+            output["source_sha256"] = grant.sha256
+        return output
+
+    def source_display(self, source_id: str) -> dict[str, Any]:
+        workbench = self._workbench("source_display")
+        try:
+            grant, value, state = self._display_state(workbench, source_id)
+            self.policy.recheck()
+            return self._display_response(grant, value, state)
+        finally:
+            workbench.close()
+
+    def set_source_display(
+        self,
+        source_id: str,
+        source_sha256: str,
+        expected_revision: int,
+        channels: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        import copy
+
+        from .agent_vision import validate_channels
+        from .quantitative import integer
+        from .source_view_state import SCHEMA, execute_view_state, validate_view_data
+
+        workbench = self._workbench("set_source_display")
+        try:
+            channels = validate_channels(channels)
+            integer(expected_revision, "expected revision", 0, 2**31 - 1)
+            grant, value, original = self._display_state(workbench, source_id)
+            if source_sha256 != grant.sha256 or expected_revision != value["revision"]:
+                raise ValueError("Source or saved display revision changed")
+            if any(item["channel"] not in grant.c for item in channels):
+                raise PermissionError("Display channel exceeds policy")
+            state = copy.deepcopy(original)
+            updates = {item["channel"]: item for item in channels}
+            state["channels"] = [updates.pop(item["channel"], item) for item in state["channels"]]
+            state["channels"].extend(updates.values())
+            validate_view_data(
+                {
+                    "schema": SCHEMA,
+                    "source_id": source_id,
+                    "source_sha256": source_sha256,
+                    "state": state,
+                },
+                workbench.project.source(source_id),
+            )
+
+            def guard():
+                self.policy.require_runtime(runtime_record())
+                self.policy.source_grant(workbench.project, source_id)
+                self.policy.recheck()
+
+            guard()
+            value = execute_view_state(
+                workbench,
+                "save_source_view",
+                {
+                    "source_id": source_id,
+                    "source_sha256": source_sha256,
+                    "expected_revision": expected_revision,
+                    "state": state,
+                },
+                publication_guard=guard,
+            )
+            self.policy.source_grant(workbench.project, source_id)
+            self.policy.recheck()
+            return self._display_response(grant, value, state)
+        finally:
+            workbench.close()
+
+    def export_vision_handoff(self, request: dict[str, Any], filename: str) -> dict[str, Any]:
+        workbench = self._workbench("export_vision_handoff")
+        try:
+            for category in ("previews", "geometry", "provenance", "agent_metadata"):
+                self.policy.require_disclosure(category)
+            if (
+                self.policy.export_root is None
+                or filename not in self.policy.export_filenames
+                or Path(filename).name != filename
+                or not filename.endswith(".loci-vision")
+            ):
+                raise PermissionError("Vision export destination is outside policy")
+            frame = self._vision_frame(workbench, request, operation="export_vision_handoff")
+            context = {
+                "schema": "loci.vision-context/v1",
+                "status": "provisional-visualization",
+                "scientific_validation": "not established",
+                "source_id": frame["source_id"],
+                "source_sha256": frame["source_sha256"],
+                "rendering": frame["rendering"],
+                "policy_sha256": self.policy.content_sha256,
+            }
+            if "source_names" in self.policy.disclosures:
+                context["source_name"] = workbench.project.source(frame["source_id"])["name"]
+
+            def guard():
+                self.policy.recheck()
+                self.policy.source_grant(workbench.project, frame["source_id"])
+
+            from .vision_handoff import write_vision_handoff
+
+            receipt = write_vision_handoff(
+                self.policy.export_root / filename, frame=frame, context=context, guard=guard
+            )
+            guard()
+            allowed = {"schema", "basename", "source_id", "source_sha256", "status", "artifacts"}
+            return {key: receipt[key] for key in allowed if key in receipt}
+        finally:
+            workbench.close()
+
     def export_result(self, result_id: str, revision_hash: str, filename: str) -> dict[str, Any]:
         workbench = self._workbench("export_result")
         try:
@@ -644,25 +1310,139 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "shell commands."
         ),
     )
+    descriptions = dict(_TOOL_CATALOG + _REMOTE_TOOL_CATALOG + _VISION_TOOL_CATALOG)
 
-    def invoke(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-        from mcp.server.mcpserver.exceptions import ToolError
+    def annotations(name: str) -> ToolAnnotations:
+        read_only = name in {
+            "catalog",
+            "recipe_guide",
+            "analysis_context",
+            "inspect_source",
+            "validate_recipe",
+            "result",
+            "result_view",
+            "source_image",
+            "source_display",
+        }
+        return ToolAnnotations(
+            read_only_hint=read_only,
+            destructive_hint=name in {"cancel_job", "remote_cancel"},
+            idempotent_hint=name
+            not in {
+                "preview_recipe",
+                "export_result",
+                "export_vision_handoff",
+                "set_source_display",
+            },
+            open_world_hint=name
+            in {
+                "remote_submit",
+                "remote_status",
+                "remote_cancel",
+                "remote_retrieve",
+            },
+        )
+
+    async def strict_remote_arguments(context, call_next):
+        # The SDK's default Pydantic argument model ignores extra keys. Reject
+        # extra remote arguments at the public raw-request middleware boundary.
+        params = context.params
+        if context.method == "tools/call" and isinstance(params, dict):
+            name = params.get("name")
+            if name in {item[0] for item in _VISION_TOOL_CATALOG}:
+                arguments = params.get("arguments")
+                expected = {
+                    "source_image": {"request"},
+                    "source_display": {"source_id"},
+                    "set_source_display": {
+                        "source_id",
+                        "source_sha256",
+                        "expected_revision",
+                        "channels",
+                    },
+                    "export_vision_handoff": {"request", "filename"},
+                }[name]
+                valid = isinstance(arguments, dict) and set(arguments) == expected
+                if valid and name == "set_source_display":
+                    valid = isinstance(arguments["expected_revision"], int) and not isinstance(
+                        arguments["expected_revision"], bool
+                    )
+                if valid:
+                    valid = all(
+                        isinstance(arguments[key], str)
+                        for key in ({"source_id", "source_sha256", "filename"} & expected)
+                    )
+                if not valid:
+                    return {
+                        "content": [
+                            {"type": "text", "text": "Vision tool arguments failed validation."}
+                        ],
+                        "isError": True,
+                    }
+            if name in {"recipe_guide", "analysis_context"}:
+                arguments = params.get("arguments")
+                arguments = {} if arguments is None else arguments
+                valid = isinstance(arguments, dict)
+                if valid and name == "recipe_guide":
+                    valid = not arguments
+                elif valid:
+                    valid = set(arguments) <= {"offset", "limit"} and all(
+                        isinstance(value, int) and not isinstance(value, bool)
+                        for value in arguments.values()
+                    )
+                if not valid:
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Recipe guidance takes no arguments; context accepts "
+                                "only integer offset and limit.",
+                            }
+                        ],
+                        "isError": True,
+                    }
+        if (
+            context.method == "tools/call"
+            and isinstance(params, dict)
+            and params.get("name") in {name for name, _ in _REMOTE_TOOL_CATALOG}
+        ):
+            arguments = params.get("arguments")
+            if (
+                not isinstance(arguments, dict)
+                or set(arguments) != {"grant_key"}
+                or not isinstance(arguments["grant_key"], str)
+            ):
+                return {
+                    "content": [
+                        {"type": "text", "text": "Remote tools require only an opaque grant key."}
+                    ],
+                    "isError": True,
+                }
+        return await call_next(context)
+
+    server.middleware.append(strict_remote_arguments)
+
+    def invoke(action: Callable[[], Any], *, resource: bool = False) -> Any:
+        from mcp.server.mcpserver.exceptions import ResourceError, ToolError
+
+        boundary_error = ResourceError if resource else ToolError
 
         try:
+            agent.policy.recheck()
             result = action()
             # Revocation during a long read prevents a late response from
             # disclosing previously authorized image or metadata content.
             agent.policy.recheck()
             return result
         except PermissionError:
-            raise ToolError(
+            raise boundary_error(
                 "The operation, source scope, disclosure or resource limit "
                 "is not authorized by the active policy."
             ) from None
         except (ValueError, OSError, RuntimeError, TypeError, KeyError):
             # Native decoder and filesystem exceptions can contain private
             # paths or source metadata. Keep exact diagnostics in local tools.
-            raise ToolError(
+            raise boundary_error(
                 "The research operation failed validation or execution. "
                 "Inspect the source and settings in Loci."
             ) from None
@@ -670,55 +1450,266 @@ def build_server(policy_path: str | Path) -> MCPServer:
             # Unexpected implementation failures must not put exception text or
             # tracebacks containing local paths onto the client-visible stdio
             # diagnostic stream.
-            raise ToolError(
+            raise boundary_error(
                 "The research operation failed validation or execution. "
                 "Inspect the source and settings in Loci."
             ) from None
 
-    @server.tool(name="catalog", structured_output=True)
+    def image_result(action):
+        def response():
+            value = action()
+            if agent.policy.schema != VISION_POLICY_SCHEMA:
+                return value
+            from .agent_vision import validate_png
+            from .research_project import canonical_json
+
+            image_url = value.pop("image")
+            validate_png(image_url)
+            metadata = canonical_json(value)
+            if len(metadata.encode()) > 4 * 1024**2:
+                raise ValueError("The research image metadata exceeds its bound")
+            return CallToolResult(
+                content=[
+                    TextContent(type="text", text=metadata),
+                    ImageContent(
+                        type="image", data=image_url.split(",", 1)[1], mime_type="image/png"
+                    ),
+                ],
+                structured_content=value,
+            )
+
+        # Image verification/serialization is inside the same sanitized boundary,
+        # including its final pinned-policy check before protocol disclosure.
+        return invoke(response)
+
+    @server.tool(
+        name="catalog",
+        structured_output=True,
+        description=descriptions["catalog"],
+        annotations=annotations("catalog"),
+    )
     def catalog() -> dict[str, Any]:
         return invoke(agent.catalog)
 
-    @server.tool(name="validate_recipe", structured_output=True)
+    @server.tool(
+        name="recipe_guide",
+        structured_output=True,
+        description=descriptions["recipe_guide"],
+        annotations=annotations("recipe_guide"),
+    )
+    def guide() -> dict[str, Any]:
+        from .research_recipe_guide import recipe_guide
+
+        return invoke(
+            lambda: recipe_guide(experimental=agent.policy.schema == VISION_POLICY_SCHEMA)
+        )
+
+    @server.tool(
+        name="analysis_context",
+        structured_output=True,
+        description=descriptions["analysis_context"],
+        annotations=annotations("analysis_context"),
+    )
+    def analysis_context(offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        return invoke(lambda: agent.analysis_context(offset, limit))
+
+    @server.resource("loci://guides/recipes", mime_type="application/json")
+    def guide_resource() -> str:
+        from .research_project import canonical_json
+        from .research_recipe_guide import recipe_guide
+
+        return canonical_json(
+            invoke(
+                lambda: recipe_guide(experimental=agent.policy.schema == VISION_POLICY_SCHEMA),
+                resource=True,
+            )
+        )
+
+    @server.resource("loci://context", mime_type="application/json")
+    def context_resource() -> str:
+        from .research_project import canonical_json
+
+        return canonical_json(invoke(agent.analysis_context, resource=True))
+
+    @server.tool(
+        name="validate_recipe",
+        structured_output=True,
+        description=descriptions["validate_recipe"],
+        annotations=annotations("validate_recipe"),
+    )
     def validate_recipe(request: dict[str, Any]) -> dict[str, Any]:
         return invoke(lambda: agent.validate_recipe(request))
 
-    @server.tool(name="inspect_source", structured_output=True)
+    @server.tool(
+        name="inspect_source",
+        structured_output=True,
+        description=descriptions["inspect_source"],
+        annotations=annotations("inspect_source"),
+    )
     def inspect_source(source_id: str) -> dict[str, Any]:
         return invoke(lambda: agent.inspect_source(source_id))
 
-    @server.tool(name="preview_recipe", structured_output=True)
+    @server.tool(
+        name="preview_recipe",
+        structured_output=True,
+        description=descriptions["preview_recipe"],
+        annotations=annotations("preview_recipe"),
+    )
     def preview_recipe(request: dict[str, Any]) -> dict[str, Any]:
-        return invoke(lambda: agent.preview_recipe(request))
+        return image_result(lambda: agent.preview_recipe(request))
 
-    @server.tool(name="submit_recipe", structured_output=True)
+    @server.tool(
+        name="submit_recipe",
+        structured_output=True,
+        description=descriptions["submit_recipe"],
+        annotations=annotations("submit_recipe"),
+    )
     def submit_recipe(request: dict[str, Any], request_key: str) -> dict[str, Any]:
         return invoke(lambda: agent.submit_recipe(request, request_key))
 
-    @server.tool(name="job_status", structured_output=True)
+    @server.tool(
+        name="job_status",
+        structured_output=True,
+        description=descriptions["job_status"],
+        annotations=annotations("job_status"),
+    )
     def job_status(job_id: str) -> dict[str, Any]:
         return invoke(lambda: agent.job_status(job_id))
 
-    @server.tool(name="cancel_job", structured_output=True)
+    @server.tool(
+        name="cancel_job",
+        structured_output=True,
+        description=descriptions["cancel_job"],
+        annotations=annotations("cancel_job"),
+    )
     def cancel(job_id: str) -> dict[str, Any]:
         return invoke(lambda: agent.cancel_job(job_id))
 
-    @server.tool(name="result", structured_output=True)
+    @server.tool(
+        name="result",
+        structured_output=True,
+        description=descriptions["result"],
+        annotations=annotations("result"),
+    )
     def result(result_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
         return invoke(lambda: agent.result(result_id, offset, limit))
 
-    @server.tool(name="result_view", structured_output=True)
+    @server.tool(
+        name="result_view",
+        structured_output=True,
+        description=descriptions["result_view"],
+        annotations=annotations("result_view"),
+    )
     def result_view(
         result_id: str,
         axis: str = "z",
         index: int | None = None,
         labels: bool = True,
     ) -> dict[str, Any]:
-        return invoke(lambda: agent.result_view(result_id, axis, index, labels))
+        return image_result(lambda: agent.result_view(result_id, axis, index, labels))
 
-    @server.tool(name="export_result", structured_output=True)
+    @server.tool(
+        name="export_result",
+        structured_output=True,
+        description=descriptions["export_result"],
+        annotations=annotations("export_result"),
+    )
     def export_result(result_id: str, revision_hash: str, filename: str) -> dict[str, Any]:
         return invoke(lambda: agent.export_result(result_id, revision_hash, filename))
+
+    if agent.policy.schema == VISION_POLICY_SCHEMA:
+
+        @server.tool(
+            name="source_image",
+            structured_output=True,
+            description=descriptions["source_image"],
+            annotations=annotations("source_image"),
+        )
+        def source_image(request: dict[str, Any]) -> dict[str, Any]:
+            return image_result(lambda: agent.source_image(request))
+
+        @server.tool(
+            name="source_display",
+            structured_output=True,
+            description=descriptions["source_display"],
+            annotations=annotations("source_display"),
+        )
+        def source_display(source_id: str) -> dict[str, Any]:
+            return invoke(lambda: agent.source_display(source_id))
+
+        @server.tool(
+            name="set_source_display",
+            structured_output=True,
+            description=descriptions["set_source_display"],
+            annotations=annotations("set_source_display"),
+        )
+        def set_source_display(
+            source_id: str,
+            source_sha256: str,
+            expected_revision: int,
+            channels: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            return invoke(
+                lambda: agent.set_source_display(
+                    source_id, source_sha256, expected_revision, channels
+                )
+            )
+
+        @server.tool(
+            name="export_vision_handoff",
+            structured_output=True,
+            description=descriptions["export_vision_handoff"],
+            annotations=annotations("export_vision_handoff"),
+        )
+        def export_vision_handoff(request: dict[str, Any], filename: str) -> dict[str, Any]:
+            return invoke(lambda: agent.export_vision_handoff(request, filename))
+
+    if agent.policy.remote_grants:
+
+        @server.tool(
+            name="remote_submit",
+            structured_output=True,
+            description=descriptions["remote_submit"],
+            annotations=annotations("remote_submit"),
+        )
+        def remote_submit(grant_key: str) -> dict[str, Any]:
+            return invoke(lambda: agent.remote_operation(grant_key, "submit"))
+
+        @server.tool(
+            name="remote_status",
+            structured_output=True,
+            description=descriptions["remote_status"],
+            annotations=annotations("remote_status"),
+        )
+        def remote_status(grant_key: str) -> dict[str, Any]:
+            return invoke(lambda: agent.remote_operation(grant_key, "status"))
+
+        @server.tool(
+            name="remote_cancel",
+            structured_output=True,
+            description=descriptions["remote_cancel"],
+            annotations=annotations("remote_cancel"),
+        )
+        def remote_cancel(grant_key: str) -> dict[str, Any]:
+            return invoke(lambda: agent.remote_operation(grant_key, "cancel"))
+
+        @server.tool(
+            name="remote_retrieve",
+            structured_output=True,
+            description=descriptions["remote_retrieve"],
+            annotations=annotations("remote_retrieve"),
+        )
+        def remote_retrieve(grant_key: str) -> dict[str, Any]:
+            return invoke(lambda: agent.remote_operation(grant_key, "retrieve"))
+
+        @server.tool(
+            name="remote_attach",
+            structured_output=True,
+            description=descriptions["remote_attach"],
+            annotations=annotations("remote_attach"),
+        )
+        def remote_attach(grant_key: str) -> dict[str, Any]:
+            return invoke(lambda: agent.remote_operation(grant_key, "attach"))
 
     return server
 

@@ -521,10 +521,6 @@ export function ResearchRegistrationPanel({
       </div>
       {mode === "register" ? (
         <>
-          <p>
-            Estimate a technical transform between exact immutable result arrays. Preview
-            quality does not establish anatomical, biological, or clinical correctness.
-          </p>
           <label>
             Fixed result
             <select
@@ -655,10 +651,10 @@ export function ResearchRegistrationPanel({
               disabled={!hasMatchingLabels(moving, movingArray)}
               onChange={(event) => setIncludeLabels(event.target.checked)}
             />
-            Resample the moving labels array with nearest-neighbour interpolation.
+            Include moving labels · nearest neighbour
           </label>
           <label>
-            Working-memory budget
+            Memory allowance
             <select
               aria-label="Registration working-memory budget"
               value={workingBytes}
@@ -675,17 +671,14 @@ export function ResearchRegistrationPanel({
           </label>
           <div className="research-actions">
             <button disabled={!canPreview} onClick={() => void preview()}>
-              Preview exact registration
+              Preview registration
             </button>
             <button className="research-primary" disabled={busy || !pending} onClick={() => void adopt()}>
-              Adopt this exact receipt
+              Apply registration
             </button>
           </div>
           {pending && (
             <section aria-label="Exact registration preview">
-              <p>
-                Receipt {pending.preview_sha256.slice(0, 12)}… · {pending.preview.meaning}
-              </p>
               <h3>Moving XYZ world → fixed XYZ world</h3>
               <table className="research-matrix">
                 <tbody>
@@ -697,23 +690,22 @@ export function ResearchRegistrationPanel({
               <p>
                 Output grid {pending.preview.output_grid.geometry.axes} [{pending.preview.output_grid.shape.join(", ")}] · {pending.preview.output_grid.geometry.unit}
               </p>
-              <h3>Measured technical quality</h3>
+              <h3>Registration quality</h3>
               <dl className="research-kv">
                 {Object.entries(pending.preview.quality).map(([key, value]) => (
-                  <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>
+                  <div key={key}><dt>{key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</dt><dd>{String(value)}</dd></div>
                 ))}
               </dl>
+              <details><summary>Preview record</summary>
+                <p>SHA-256 {pending.preview_sha256} · {pending.preview.meaning}</p>
+              </details>
             </section>
           )}
         </>
       ) : (
         <>
-          <p>
-            Create an immutable derived result on a declared crop, shape, and physical
-            spacing within the parent world grid. Array-axis order remains explicit.
-          </p>
           <label>
-            Parent exact result
+            Parent result
             <select aria-label="Grid parent result" value={parentId} onChange={(event) => setParentId(event.target.value)}>
               <option value="">Choose parent…</option>
               {results.map((result) => <option key={result.id} value={result.id}>{resultLabel(result, snapshot)}</option>)}
@@ -752,10 +744,10 @@ export function ResearchRegistrationPanel({
           </label>
           <label className="research-check">
             <input type="checkbox" aria-label="Include parent labels" checked={gridLabels} disabled={!hasMatchingLabels(parent, parentArray)} onChange={(event) => setGridLabels(event.target.checked)} />
-            Resample the parent labels array as exact nearest-neighbour labels.
+            Include parent labels · nearest neighbour
           </label>
           <label>
-            Working-memory budget
+            Memory allowance
             <select
               aria-label="Grid working-memory budget"
               value={workingBytes}
@@ -772,13 +764,15 @@ export function ResearchRegistrationPanel({
           </label>
           {!gridValid && <p role="alert">Start, shape, and positive spacing must match the parent array axes and remain within its declared grid.</p>}
           <p className="research-derived-notice">
-            Publishing creates an immutable resampled-derived child. Scalar measurements are REGISTERED-DERIVED values on the output grid.
+            Measurements use resampled values on the output grid.
           </p>
           <button className="research-primary" disabled={!gridValid} onClick={() => void runGrid()}>
-            Publish declared output grid
+            Create resampled result
           </button>
         </>
       )}
+      <details><summary>Registration and resampling</summary><p>Transforms and previews apply to the selected result revisions.
+        Resampling creates a derived result on the specified physical grid.</p></details>
     </div>
   );
 }

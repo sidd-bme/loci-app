@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import type { ViewerChannel } from "./ImageViewport";
 
@@ -36,16 +36,20 @@ export function SourceExportPanel({ api, source, selection, channels, projection
 }) {
   const [format, setFormat] = useState<"png" | "tiff">("png");
   const [scope, setScope] = useState<"overview" | "whole" | "region">("overview");
-  const [dpi, setDpi] = useState(defaultDpi);
+  const [dpiDraft, setDpiDraft] = useState(String(defaultDpi));
+  const lastValidDpi = useRef(defaultDpi);
+  const dpi = Number(dpiDraft);
+  const dpiValid = Boolean(dpiDraft.trim()) && Number.isInteger(dpi) && dpi >= 72 && dpi <= 1200;
   const [scaleBar, setScaleBar] = useState(false);
   const [channelLegend, setChannelLegend] = useState(false);
   const [channelLabels, setChannelLabels] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false), [receipt, setReceipt] = useState("");
   const generation = useRef(0);
+  const scaleReasonId = useId();
   useEffect(() => {
     generation.current++; setReceipt(""); setBusy(false); setScaleBar(false); setChannelLegend(false);
     setChannelLabels({});
-  }, [source.id]);
+  }, [source.id, source.sha256]);
   const calibration = source.metadata.physical_calibration;
   const hasPhysicalScale = source.metadata.sample_semantics !== "RGBA" &&
     (source.metadata.geometry ? hasValidPhysicalGeometry(source) : Boolean(
@@ -59,7 +63,7 @@ export function SourceExportPanel({ api, source, selection, channels, projection
   const tooLarge = format === "png" && scope === "region" &&
     (selection.width > 2048 || selection.height > 2048);
   const exportView = async () => {
-    if (!api.exportSourceView || busy || tooLarge) return;
+    if (!api.exportSourceView || busy || tooLarge || !dpiValid) return;
     const token = generation.current; setBusy(true); setReceipt("");
     try {
       const { z_stop, ...plane } = selection;
@@ -107,11 +111,23 @@ export function SourceExportPanel({ api, source, selection, channels, projection
         <option value="whole">Whole selected plane · full resolution</option>}
       <option value="region">Analysis region · source pixels</option>
     </select></label>
-    <label>Resolution (DPI)<input aria-label="Rendered export DPI" type="number" min="72" max="1200" step="1"
-      value={dpi} onChange={(event) => setDpi(Number(event.target.value))} /></label>
+    <label>Resolution (DPI)<input aria-label="Rendered export DPI" inputMode="numeric"
+      aria-invalid={!dpiValid} value={dpiDraft} onChange={(event) => {
+        const text = event.target.value, next = Number(text);
+        setDpiDraft(text);
+        if (text.trim() && Number.isInteger(next) && next >= 72 && next <= 1200) lastValidDpi.current = next;
+      }} onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault(); event.stopPropagation(); setDpiDraft(String(lastValidDpi.current));
+        }
+      }} /></label>
+    {!dpiValid && <p role="alert">Enter a whole number from 72 to 1200 DPI.</p>}
     <label><span><input aria-label="Include calibrated scale bar" type="checkbox" checked={scaleBar}
-      disabled={!hasPhysicalScale} onChange={(event) => setScaleBar(event.target.checked)} /> Include calibrated scale bar</span></label>
-    {!hasPhysicalScale && <p className="research-derived-notice">A scale bar requires trustworthy physical X/Y calibration. Pixel-only, unknown, and RGBA geometry are left unlabelled.</p>}
+      disabled={!hasPhysicalScale} aria-describedby={!hasPhysicalScale ? scaleReasonId : undefined} onChange={(event) => setScaleBar(event.target.checked)} /> Include calibrated scale bar</span></label>
+    {!hasPhysicalScale && <p id={scaleReasonId} className="research-derived-notice">
+      {source.metadata.sample_semantics === "RGBA" ? "Scale bar unavailable for RGBA sources." :
+        "Scale bar unavailable: no supported physical calibration."}
+    </p>}
     <label><span><input aria-label="Include channel legend" type="checkbox" checked={channelLegend}
       disabled={!canLegend && !channelLegend}
       onChange={(event) => setChannelLegend(event.target.checked)} /> Include channel legend</span></label>
@@ -121,11 +137,11 @@ export function SourceExportPanel({ api, source, selection, channels, projection
         value={resolvedChannelLabel(entry.channel)}
         onChange={(event) => setChannelLabels((old) => ({ ...old, [entry.channel]: event.target.value }))} />
     </label>)}
-    <p>{format === "png" ? "Display RGB with the current channel settings and embedded rendering provenance." :
-      "16-bit display RGB from the selected source plane, with exact channel settings and embedded rendering provenance."} No annotations or original-value measurements.</p>
+    <p>{format === "png" ? "8-bit display RGB with rendering provenance." :
+      "16-bit display RGB with rendering provenance."} Uses display settings; excludes raw values and annotations.</p>
     {tooLarge && <p className="research-derived-notice">Draw a region no larger than 2048 × 2048 pixels for a source-resolution PNG.</p>}
-    <button disabled={busy || tooLarge || !channels.length || !api.exportSourceView ||
-      !Number.isInteger(dpi) || dpi < 72 || dpi > 1200 ||
+    <button type="button" disabled={busy || tooLarge || !channels.length || !api.exportSourceView ||
+      !dpiValid ||
       (channelLegend && (!canLegend || visibleChannels.some((entry) =>
         !resolvedChannelLabel(entry.channel).trim())))}
       onClick={() => void exportView()}>{busy ? "Rendering…" : format === "png" ? "Export PNG…" : "Export TIFF16…"}</button>

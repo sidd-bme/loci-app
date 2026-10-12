@@ -20,11 +20,11 @@
 .research-remote-map { display: grid; grid-template-columns: minmax(72px, 0.45fr) minmax(0, 1fr); gap: 8px; align-items: end; min-inline-size: 0; }
 .research-remote-map code, .research-remote-receipt code { grid-column: 1 / -1; overflow-wrap: anywhere; color: var(--ink-secondary); }
 .research-remote-task { margin-top: 10px; }
-.research-remote-model { display: grid; gap: 5px; min-inline-size: 0; padding: 8px; border-left: 3px solid var(--accent); color: var(--ink-secondary); font-size: var(--type-md); }
+.research-remote-model { display: grid; gap: 5px; min-inline-size: 0; padding: 8px; border-top: 1px solid var(--line-strong); color: var(--ink-secondary); font-size: var(--type-md); }
 .research-remote-model strong { color: var(--ink); }
 .research-remote-model span, .research-remote-model code { min-inline-size: 0; overflow-wrap: anywhere; }
 .research-remote-model p { margin: 0; }
-.research-remote-receipt { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; min-inline-size: 0; margin-top: 8px; padding: 8px; border-left: 3px solid var(--accent); }
+.research-remote-receipt { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; min-inline-size: 0; margin-top: 8px; padding: 8px; border-top: 1px solid var(--line-strong); }
 .research-remote-receipt > * { min-inline-size: 0; overflow-wrap: anywhere; }
 .research-remote-receipt p { grid-column: 1 / -1; margin: 0; white-space: pre-wrap; }
 .research-remote-receipt .wide { grid-column: 1 / -1; color: var(--ink-secondary); }
@@ -35,7 +35,8 @@
 .research-remote-log { min-inline-size: 0; margin-top: 10px; }
 .research-remote-log > label { display: flex; align-items: center; gap: 5px; }
 .research-remote-log pre { box-sizing: border-box; max-width: 100%; max-height: 180px; overflow: auto; padding: 8px; border: 1px solid var(--line); background: var(--graphite-950); white-space: pre-wrap; overflow-wrap: anywhere; }
-.research-remote-error { min-inline-size: 0; border-left: 3px solid var(--danger); background: color-mix(in srgb, var(--danger) 12%, transparent); padding: 8px 10px; overflow-wrap: anywhere; }
-.research-remote-check.danger { color: var(--danger); }
+.research-remote-error { min-inline-size: 0; border: 1px solid var(--error); background: color-mix(in srgb, var(--error) 12%, transparent); padding: 8px 10px; overflow-wrap: anywhere; }
+.research-remote-check.danger { color: var(--error); }
 .research-remote-remove { margin-top: 8px; }
+.research-remote-scope { margin: 8px 0 0; color: var(--ink-secondary); font-size: var(--type-md); overflow-wrap: anywhere; }
 @container (max-width: 260px) { .research-remote-grid, .research-remote-map { grid-template-columns: minmax(0, 1fr); } }

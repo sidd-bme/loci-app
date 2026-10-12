@@ -25,6 +25,143 @@ function mount(overrides: Partial<Parameters<typeof SourceDisplayPanel>[0]> = {}
   return { ...render(<SourceDisplayPanel {...props} />), onRgbMapping, onInterpretation, props };
 }
 describe("image information disclosure", () => {
+  it.each(["", "1.5", "0", "9000"])("rejects invalid analysis width draft %j without changing selection", (draft) => {
+    const view = mount();
+    fireEvent.click(screen.getByText("Analysis region", { exact: true }));
+    const input = screen.getByLabelText("Width");
+    fireEvent.change(input, { target: { value: draft } });
+    expect(view.props.onSelection).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(view.props.onSelection).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect((input as HTMLInputElement).value).toBe("512");
+  });
+  it("commits an integer analysis region and discards typed text when source identity changes", () => {
+    const view = mount();
+    const input = screen.getByLabelText("Width") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "1024" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(view.props.onSelection).toHaveBeenCalledExactlyOnceWith({ ...view.props.selection, width: 1024 });
+    fireEvent.change(input, { target: { value: "unfinished" } });
+    view.rerender(<SourceDisplayPanel {...view.props} source={{ ...source, sha256: "c".repeat(64) }} />);
+    expect((screen.getByLabelText("Width") as HTMLInputElement).value).toBe("512");
+  });
+  it("rejects crop offsets outside the remaining source extent", () => {
+    const view = mount({ selection: { t: 0, c: 0, z: 0, x: 8800, y: 0, width: 198, height: 512, level: 0 } });
+    const input = screen.getByLabelText("X");
+    fireEvent.change(input, { target: { value: "8801" } });
+    fireEvent.blur(input);
+    expect(view.props.onSelection).not.toHaveBeenCalled();
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+  it("publishes a numeric draft once on Enter or changed blur without rounding", () => {
+    const view = mount();
+    fireEvent.click(screen.getByText("Image info", { exact: true }));
+    const gamma = screen.getByLabelText("Channel 1 gamma") as HTMLInputElement;
+    gamma.closest("details")!.open = true;
+    gamma.focus();
+    fireEvent.change(gamma, { target: { value: "1.23456789012345" } });
+    expect(view.props.onChannels).not.toHaveBeenCalled();
+    fireEvent.keyDown(gamma, { key: "Enter" });
+    expect(view.props.onChannels).toHaveBeenCalledTimes(1);
+    expect(view.props.onChannels).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ channel: 0, gamma: 1.23456789012345 }),
+    ]));
+    fireEvent.blur(gamma);
+    expect(view.props.onChannels).toHaveBeenCalledTimes(1);
+    fireEvent.change(gamma, { target: { value: "2.5" } });
+    fireEvent.blur(gamma);
+    fireEvent.blur(gamma);
+    expect(view.props.onChannels).toHaveBeenCalledTimes(2);
+    expect(view.props.onChannels).toHaveBeenLastCalledWith(expect.arrayContaining([
+      expect.objectContaining({ channel: 0, gamma: 2.5 }),
+    ]));
+  });
+
+  it.each(["", " ", "NaN", "Infinity", "not a number", "0.05", "11"])(
+    "rejects invalid gamma draft %j and restores the applied value with Escape",
+    (draft) => {
+      const view = mount();
+      fireEvent.click(screen.getByText("Image info", { exact: true }));
+      const gamma = screen.getByLabelText("Channel 1 gamma") as HTMLInputElement;
+      gamma.closest("details")!.open = true;
+      gamma.focus();
+      fireEvent.change(gamma, { target: { value: draft } });
+      fireEvent.keyDown(gamma, { key: "Enter" });
+      expect(view.props.onChannels).not.toHaveBeenCalled();
+      expect(gamma.getAttribute("aria-invalid")).toBe("true");
+      expect(gamma.title).toBe("Enter a finite value from 0.1 to 10.");
+      expect(screen.getByRole("alert").textContent).toBe(gamma.title);
+      gamma.focus();
+      fireEvent.keyDown(gamma, { key: "Escape" });
+      expect(gamma.value).toBe("1");
+      expect(gamma.getAttribute("aria-invalid")).toBe("false");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("Image info", { exact: true }).closest("details")!.open).toBe(true);
+      fireEvent.blur(gamma);
+      expect(view.props.onChannels).not.toHaveBeenCalled();
+    },
+  );
+
+  it("restores the last applied value and synchronizes external values and source identity", () => {
+    const view = mount();
+    fireEvent.click(screen.getByText("Image info", { exact: true }));
+    let gamma = screen.getByLabelText("Channel 1 gamma") as HTMLInputElement;
+    fireEvent.change(gamma, { target: { value: "2" } });
+    fireEvent.blur(gamma);
+    fireEvent.change(gamma, { target: { value: "bad" } });
+    fireEvent.blur(gamma);
+    fireEvent.keyDown(gamma, { key: "Escape" });
+    expect(gamma.value).toBe("2");
+    expect(view.props.onChannels).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(gamma, { target: { value: "bad" } });
+    fireEvent.blur(gamma);
+    const channels = view.props.channels.map((channel) => ({ ...channel, gamma: 3 }));
+    view.rerender(<SourceDisplayPanel {...view.props} channels={channels} />);
+    expect(gamma.value).toBe("3");
+    expect(gamma.getAttribute("aria-invalid")).toBe("false");
+
+    fireEvent.change(gamma, { target: { value: "9" } });
+    const nextSource = { ...source, id: "c".repeat(32) };
+    view.rerender(<SourceDisplayPanel {...view.props} channels={channels} source={nextSource} />);
+    gamma = screen.getByLabelText("Channel 1 gamma") as HTMLInputElement;
+    expect(gamma.value).toBe("3");
+    fireEvent.change(gamma, { target: { value: "8" } });
+    view.rerender(<SourceDisplayPanel {...view.props} channels={channels} source={{ ...nextSource, sha256: "d".repeat(64) }} />);
+    gamma = screen.getByLabelText("Channel 1 gamma") as HTMLInputElement;
+    expect(gamma.value).toBe("3");
+    fireEvent.blur(gamma);
+    expect(view.props.onChannels).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects unordered limits with the corresponding reason", () => {
+    const view = mount();
+    fireEvent.click(screen.getByText("Image info", { exact: true }));
+    const low = screen.getByLabelText("Channel 1 low") as HTMLInputElement;
+    fireEvent.change(low, { target: { value: "255" } });
+    fireEvent.blur(low);
+    expect(low.title).toBe("Low must be below high.");
+    fireEvent.keyDown(low, { key: "Escape" });
+    const high = screen.getByLabelText("Channel 1 high") as HTMLInputElement;
+    fireEvent.change(high, { target: { value: "0" } });
+    fireEvent.blur(high);
+    expect(high.title).toBe("High must be above low.");
+    expect(view.props.onChannels).not.toHaveBeenCalled();
+  });
+
+  it("shows the opacity value in the slider's 0–1 units as controlled channels update", () => {
+    const view = mount();
+    fireEvent.click(screen.getByText("Image info", { exact: true }));
+    expect(screen.getByLabelText("Channel 1 opacity value").textContent).toBe("1");
+    fireEvent.change(screen.getByRole("slider", { name: "Channel 1 opacity" }), { target: { value: "0.42" } });
+    const updated = vi.mocked(view.props.onChannels).mock.lastCall![0];
+    expect(updated[0].opacity).toBe(0.42);
+    view.rerender(<SourceDisplayPanel {...view.props} channels={updated} />);
+    expect(screen.getByLabelText("Channel 1 opacity value").textContent).toBe("0.42");
+  });
+
   it("reads histograms only on request and does not resample when the analysis crop moves", async () => {
     const execute = vi.fn(async () => ({ source_id: source.id, source_sha256: source.sha256,
       sample: { kind: "deterministic-native-pyramid-level", t: 0, z: 0, level: 0, viewport_dependent: false, sample_count_per_component: 100, shape: [10, 10] },

@@ -90,6 +90,8 @@ function api(sourceForTiles: ResearchSource = source): ResearchDesktopApi {
         image: `data:image/png;base64,overview#viewer-${dimensions.x}x${dimensions.y}`,
         source_sha256: sourceForTiles.sha256,
         source_extent: [dimensions.x, dimensions.y],
+        selection: { t: Number(request.t ?? 0), z: Number(request.z ?? 0), c: Number(request.c ?? 0), level: 0, x: 0, y: 0, width: dimensions.x, height: dimensions.y },
+        projection: (request.projection as "plane" | "max" | "mean") ?? null,
       };
       const selection = request.selection as { width: number; height: number };
       return {

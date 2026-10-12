@@ -164,3 +164,50 @@ def test_adaptive_rgb_mapping_is_explicit_and_raw_component_measurement_is_refus
     with pytest.raises(ValueError, match="RGB samples cannot be measured as biological channels"):
         workbench.execute("classical_run", {**request, "measurement_channels": [0]})
     workbench.close()
+
+
+def test_adaptive_honors_explicit_working_memory_allowance_for_large_source(tmp_path):
+    # Reported 3088 x 2076 dimensions:
+    # voxels * 96 = 3088 * 2076 * 96 = 615,426,048 bytes (>512 MiB DEFAULT_WORKING_BYTES).
+    # Aggregate required = 6,410,688 * 1 + 6,410,688 * 160 = 1,032,120,768 bytes (~984.3 MiB).
+    image = np.full((2076, 3088), 225, dtype=np.uint8)
+    image[100:200, 100:200] = 55
+    image[500:600, 500:600] = 55
+    path = tmp_path / "large_3088x2076.png"
+    Image.fromarray(image).save(path)
+
+    project = ResearchProject.create(tmp_path / "large_adaptive.loci-study", "Large adaptive")
+    workbench = Workbench(project)
+    source = workbench.import_native(str(path))
+
+    # 1. 512 MiB allowance rejects before inference and publishes nothing
+    low_request = _request(source["id"], 3088, 2076, measurement_channels=[])
+    low_request["working_bytes"] = 512 * 1024**2
+    with pytest.raises(
+        ValueError,
+        match=r"working-memory budget.*reduce the crop or select a larger allowance",
+    ):
+        workbench.execute("classical_run", low_request)
+    assert project.list_results() == []
+
+    # 2. 2 GiB allowance passes, reaches inference, and records the exact allowance
+    high_request = _request(source["id"], 3088, 2076, measurement_channels=[])
+    high_request["working_bytes"] = 2 * 1024**3
+    response = workbench.execute("classical_run", high_request)
+    result = project.result(response["result"]["id"])
+
+    assert result["provenance"]["resource_guard"]["working_memory_limit_bytes"] == 2 * 1024**3
+    assert result["provenance"]["accepted_request"]["working_bytes"] == 2 * 1024**3
+    assert len(result["provenance"]["measurements"]) == 2
+
+    # 3. Survives study reopen and review display
+    from loci_engine.workbench import result_summary
+
+    reopened = Workbench(ResearchProject(project.root))
+    view = reopened.result_view({"result_id": result["id"]})
+    assert view["result_id"] == result["id"]
+    assert view["shape"] == [2076, 3088]
+    summary = result_summary(result)
+    assert summary["working_bytes"] == 2 * 1024**3
+    workbench.close()
+    reopened.close()

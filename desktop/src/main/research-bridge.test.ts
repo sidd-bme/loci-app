@@ -42,6 +42,7 @@ vi.mock("./legacy-project-adapter", () => ({
   prepareLegacyProjectImport: (...args: unknown[]) => mocks.prepareLegacy(...args),
 }));
 
+import type { StatisticsFigureExportRequest } from "../shared/statistics-figure-contracts";
 import { ResearchBridge } from "./research-bridge";
 import type {
   ResearchJob,
@@ -267,6 +268,190 @@ describe("native research bridge", () => {
   afterEach(async () => {
     delete process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const labelBinding = () => ({ source_id: "b".repeat(32), source_sha256: sha,
+    selection: { x: 0, y: 0, width: 8, height: 4, t: 0, c: 1, z: 0, level: 0 }, working_bytes: 64 * 1024 ** 2 });
+
+  it("exports the exact correction receipt through a trusted native destination and returns only bounded fields", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Effect.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const destination = path.join(root, "Effect report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    mocks.request.mockResolvedValueOnce({ receipt_sha256: sha, manifest_sha256: sha,
+      files: ["receipt.json", "conditions.csv"], destination, input_path: "/private/input" });
+    expect(await call("export-correction-effect", sha)).toEqual({ receipt_sha256: sha, manifest_sha256: sha, files: ["receipt.json", "conditions.csv"] });
+    expect(mocks.request).toHaveBeenCalledWith("research_export_correction_effect", {
+      project: path.join(root, "Effect.loci-study"), receipt_sha256: sha, destination,
+    }, 0);
+  });
+
+  it("rejects renderer paths and invalid correction receipt hashes before picking; cancellation publishes nothing", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Effect.loci-study") });
+    await call("create"); mocks.request.mockClear(); mocks.save.mockClear();
+    await expect(call("export-correction-effect", { receipt_sha256: sha, destination: "/private/output" })).rejects.toThrow(/exact saved/);
+    await expect(call("export-correction-effect", "bad hash")).rejects.toThrow(/exact saved/);
+    expect(mocks.save).not.toHaveBeenCalled(); expect(mocks.request).not.toHaveBeenCalled();
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("export-correction-effect", sha)).toBeNull(); expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it("pins the correction report picker to its study and rejects mismatched engine export identities", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Effect.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let finish!: (value: unknown) => void;
+    mocks.save.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const exporting = call("export-correction-effect", sha);
+    await expect(call("create")).rejects.toThrow(/active study operation/);
+    finish({ canceled: false, filePath: path.join(root, "Report") });
+    mocks.request.mockResolvedValueOnce({ receipt_sha256: "b".repeat(64), manifest_sha256: sha, files: ["receipt.json"] });
+    await expect(exporting).rejects.toThrow(/invalid experiment-effect export receipt/);
+  });
+
+  it("keeps label picker cancellation unpublished and rejects renderer paths before picking", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Labels.loci-study") });
+    await call("create"); mocks.request.mockClear(); mocks.open.mockResolvedValue({ canceled: true, filePaths: [] });
+    expect(await call("labels-import-preview", labelBinding())).toBeNull(); expect(mocks.request).not.toHaveBeenCalled();
+    mocks.open.mockClear();
+    await expect(call("labels-import-preview", { ...labelBinding(), path: "/private/labels.tif" })).rejects.toThrow(/Invalid label-import/);
+    expect(mocks.open).not.toHaveBeenCalled(); expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it("pins the TIFF picker and grant to the captured study and blocks document switching while pending", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Labels.loci-study") });
+    await call("create"); const project = mocks.request.mock.calls.find(([method]) => method === "research_create")![1].path;
+    mocks.request.mockClear();
+    let finish!: (value: { canceled: boolean; filePaths: string[] }) => void;
+    mocks.open.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const pending = call("labels-import-preview", labelBinding());
+    await expect(call("create")).rejects.toThrow(/Finish|Wait/);
+    await expect(call("execute", "labels_import", { source_id: "b".repeat(32) })).rejects.toThrow(/finish opening/);
+    finish({ canceled: false, filePaths: ["/selected/sparse.tif"] }); await pending;
+    expect(mocks.request).toHaveBeenCalledWith("research_labels_import_grant", { project, path: "/selected/sparse.tif", ...labelBinding() }, 0);
+  });
+
+  it("routes label adoption through the durable worker task instead of the control execute route", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Labels.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    mocks.request.mockImplementation(async (method: string) => method === "research_submit" ? { id: "c".repeat(32) } : { result: {} });
+    const request = { source_id: "b".repeat(32), source_sha256: sha, grant_id: "d".repeat(32), alignment: "same-native-yx-grid" };
+    await call("execute", "labels_import", request);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ request, operation: "labels_import" }));
+    expect(mocks.request).toHaveBeenCalledWith("research_run", expect.objectContaining({ job_id: "c".repeat(32) }), 0);
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_execute")).toBe(false);
+  });
+
+
+  it("binds native vision handoff publication to the selected source and sanitizes its receipt", async () => {
+    const project = path.join(root, "Vision study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project }); await call("create");
+    const request = { source_id: "b".repeat(32), selection: { x: 0, y: 0, width: 10, height: 10, t: 0, c: 0, z: 0, level: 0 },
+      channels: [{ channel: 0, low: 0, high: 255, gamma: 1, color: "#ffffff", opacity: 1, visible: true }], projection: "plane", max_size: 512 };
+    const receipt = { schema: "loci.vision-handoff-receipt/v1", source_id: request.source_id, source_sha256: sha,
+      basename: "candidate.loci-vision", status: "provisional-visualization", artifacts: Object.fromEntries(
+        ["image.png", "context.json", "README.md", "manifest.json"].map((name) => [name, { sha256: sha, size_bytes: 10 }])) };
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, receipt.basename) });
+    mocks.request.mockResolvedValueOnce(receipt);
+    expect(await call("vision-handoff", request, sha)).toEqual(receipt);
+    expect(mocks.request).toHaveBeenLastCalledWith("research_vision_handoff", {
+      project, request, source_sha256: sha, destination: path.join(root, receipt.basename),
+    }, 0);
+    const calls = mocks.save.mock.calls.length;
+    await expect(call("vision-handoff", { ...request, path: "/private/file" }, sha)).rejects.toThrow();
+    expect(mocks.save.mock.calls).toHaveLength(calls);
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("vision-handoff", request, sha)).toBeNull();
+  });
+
+  it("requests an export root for a handoff-only agent grant and freezes the clicked request", async () => {
+    const project = path.join(root, "Agent study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project }); await call("create");
+    const value = { allow_export: false, interactive: { allow_handoff: true }, source_id: "b".repeat(32) };
+    let folderReady!: (value: unknown) => void;
+    mocks.open.mockImplementationOnce(() => new Promise((done) => { folderReady = done; }));
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "access") });
+    const pending = call("agent-access", value);
+    value.interactive.allow_handoff = false;
+    folderReady({ canceled: false, filePaths: [root] });
+    await pending;
+    expect(mocks.request).toHaveBeenLastCalledWith("research_agent_access", {
+      project, request: { ...value, interactive: { allow_handoff: true } }, export_root: root, destination: path.join(root, "access"),
+    }, 0);
+  });
+
+  it("preflights every workflow target before any batch submission", async () => {
+    const project = path.join(root, "Workflow study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const sources = ["a", "b"].map((id) => ({
+      id: id.repeat(32), sha256: id.repeat(64), name: id, metadata: {},
+    }));
+    const tasks = sources.map((source) => ({
+      operation: "workflow_run" as const,
+      source: { id: source.id, sha256: source.sha256 },
+      request: { source_id: source.id, source_sha256: source.sha256,
+        workflow_id: "c".repeat(32), workflow_revision: 1, definition_sha256: "d".repeat(64), selection: {} },
+    }));
+    const events: string[] = [];
+    let rejectSecond = true;
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_snapshot") return nativeSnapshot(sources);
+      if (method === "research_execute") {
+        expect(params.operation).toBe("workflow_preflight");
+        const request = params.request as Record<string, unknown>;
+        events.push(`preflight:${request.source_id}`);
+        if (rejectSecond && request.source_id === sources[1].id) throw new Error("Incompatible channel count");
+        return {};
+      }
+      if (method === "research_submit") {
+        events.push("submit");
+        return { id: "e".repeat(32) };
+      }
+      return {};
+    });
+    await expect(call("batch-submit", tasks)).rejects.toThrow("Incompatible channel count");
+    expect(events).toEqual(sources.map((source) => `preflight:${source.id}`));
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_submit")).toBe(false);
+    rejectSecond = false;
+    events.length = 0;
+    await call("batch-submit", tasks);
+    expect(events).toEqual([...sources.map((source) => `preflight:${source.id}`), "submit", "submit"]);
+  });
+
+  it("exports exact workflow runs only through the native destination picker", async () => {
+    const project = path.join(root, "Workflow export study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const resultId = "a".repeat(32), revision = "b".repeat(64), runId = "c".repeat(32);
+    const destination = path.join(root, "Reviewed workflow");
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "research_snapshot") return nativeSnapshot([]);
+      if (method === "research_workflow_export") return {
+        export_name: "Reviewed workflow", manifest_sha256: "d".repeat(64), destination,
+      };
+      return {};
+    });
+    await expect(call("export", resultId, revision, "invalid")).rejects.toThrow("exact saved workflow run");
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    await expect(call("export", resultId, revision, runId)).resolves.toBeNull();
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_workflow_export")).toBe(false);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const receipt = await call("export", resultId, revision, runId);
+    expect(mocks.request).toHaveBeenLastCalledWith("research_workflow_export", {
+      project, run_id: runId, result_id: resultId, revision_hash: revision, destination,
+    }, 0);
+    expect(receipt).toMatchObject({ name: "Reviewed workflow", manifest_sha256: "d".repeat(64) });
+    expect(JSON.stringify(receipt)).not.toContain(root);
+  });
+
+  it("returns installed-memory guidance without a study and enforces sender trust", async () => {
+    expect(await call("recipe-resources")).toMatchObject({
+      total_memory_bytes: os.totalmem(), maximum_working_bytes: 8 * 1024 ** 3,
+      recommendation_basis: "quarter-installed-memory/v1",
+    });
+    expect(mocks.request).not.toHaveBeenCalled();
+    new ResearchBridge().register(() => { throw new Error("Untrusted sender"); });
+    await expect(call("recipe-resources")).rejects.toThrow("Untrusted sender");
   });
 
   it("keeps vendor paths in main and binds conversion to the inspected source hash", async () => {
@@ -540,6 +725,46 @@ describe("native research bridge", () => {
       name.endsWith(".loci-figure") || name.startsWith(".loci-volume-figure-"))).toEqual([]);
   });
 
+  it("rejects untrusted statistics export senders before touching a project or picker", async () => {
+    new ResearchBridge().register(() => { throw new Error("Untrusted sender"); });
+    await expect(call("export-statistics-figure", {})).rejects.toThrow("Untrusted sender");
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+
+  it("keeps study switches locked during statistics picker and uses dedicated export RPC", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Study.loci-study") });
+    await call("create");
+    const request: StatisticsFigureExportRequest = {
+      schema_version: "loci.statistics-figure-request/v1", source_id: "b".repeat(32), source_sha256: sha,
+      result_id: "c".repeat(32), revision_hash: "d".repeat(64), query_sha256: "e".repeat(64), membership_sha256: "f".repeat(64),
+      query: { x_metric: "measure", y_metric: "voxel_count", filters: [], sort: null, offset: 0, limit: 25, plot_limit: 500, bins: 16, selected_label: null },
+      chart: "histogram", domain: { mode: "full" }, width_mm: 85, height_mm: 65, preset: "publication-monochrome",
+    };
+    const destination = path.join(root, "Statistics.loci-figure");
+    const receipt = {
+      schema_version: "loci.statistics-figure-receipt/v1", basename: "Statistics.loci-figure",
+      source_id: request.source_id, source_sha256: sha, result_id: request.result_id, revision_hash: request.revision_hash,
+      query_sha256: request.query_sha256, membership_sha256: request.membership_sha256,
+      width_mm: 85, height_mm: 65, width_px: 2008, height_px: 1535, dpi: 600,
+      artifacts: Object.fromEntries(["figure.svg", "figure.png", "manifest.json"].map((name) => [name, { sha256: sha, size_bytes: 12 }])),
+    };
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_execute" && params.operation === "population_query") return { schema: "loci.population/v1", ...request };
+      if (method === "research_statistics_figure_export") return receipt;
+      throw new Error(`Unexpected method ${method}`);
+    });
+    let closePicker!: (value: { canceled: false; filePath: string }) => void;
+    mocks.save.mockImplementationOnce(() => new Promise((resolve) => { closePicker = resolve; }));
+    const pending = call("export-statistics-figure", request);
+    await vi.waitFor(() => expect(closePicker).toBeTypeOf("function"));
+    await expect(call("new-session")).rejects.toThrow(/active study operation/);
+    closePicker({ canceled: false, filePath: destination });
+    await expect(pending).resolves.toEqual(receipt);
+    expect(mocks.request.mock.calls.filter(([method, params]) => method === "research_execute" && params.operation === "population_query")).toHaveLength(2);
+    expect(mocks.request).toHaveBeenCalledWith("research_statistics_figure_export", expect.objectContaining({ request, destination, application_version: "0.1.0" }), 0);
+    await expect(call("export-statistics-figure", { ...request, membership_sha256: "9".repeat(64) })).rejects.toThrow(/changed/);
+  });
+
   it("rejects a volume figure when the post-picker source verification is stale", async () => {
     const project = path.join(root, "Study.loci-study");
     const destination = path.join(root, "Stale.loci-figure");
@@ -642,6 +867,92 @@ describe("native research bridge", () => {
     await expect(call("vendor-inspect")).rejects.toThrow("Untrusted sender");
     expect(mocks.open).not.toHaveBeenCalled();
     expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it("creates a fixed offline example without renderer path authority", async () => {
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create_example") {
+        await createEngineStudy(params.path as string);
+        return { project: { title: "Synthetic shapes practice" }, sources: [{ id: "b".repeat(32) }], results: [] };
+      }
+      return {};
+    });
+    await expect(call("try-example", "/arbitrary/source")).rejects.toThrow("does not accept source paths");
+    expect(mocks.request).not.toHaveBeenCalled();
+    const next = await call("try-example") as ResearchSnapshot;
+    expect(next.results).toEqual([]);
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.save).not.toHaveBeenCalled();
+    expect(await call("session-state")).toMatchObject({ status: "ready", storage: "managed", title: "Synthetic shapes practice" });
+    const request = mocks.request.mock.calls.find(([method]) => method === "research_create_example")![1];
+    expect(Object.keys(request)).toEqual(["path"]);
+    expect(path.dirname(request.path)).toBe(path.join(root, "sessions"));
+    expect(JSON.stringify(next)).not.toContain(root);
+  });
+
+  it("keeps the app-owned example source after Save As and managed-session discard", async () => {
+    let sourcePath = "";
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create_example") {
+        await createEngineStudy(params.path as string);
+        sourcePath = `${params.path}.source`;
+        await fs.mkdir(sourcePath);
+        await fs.writeFile(path.join(sourcePath, "synthetic-shapes-v1.ome.tiff"), "immutable source");
+      }
+      if (method === "research_project_clone") await fs.cp(params.project as string, params.destination as string, { recursive: true, errorOnExist: true, force: false });
+      return {};
+    });
+    await call("try-example");
+    const session = await call("session-state") as { sessionId: string };
+    const saved = path.join(root, "Saved.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: saved });
+    await call("save-as");
+    await call("new-session");
+    await call("recovery-discard", session.sessionId);
+    expect(await fs.readFile(path.join(sourcePath, "synthetic-shapes-v1.ome.tiff"), "utf8")).toBe("immutable source");
+    expect(await fs.readFile(path.join(saved, "study.sqlite3"), "utf8")).toBe("engine-study");
+  });
+
+  it("preserves the previous active session when offline creation fails", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Prior.loci-study") });
+    await call("create");
+    const prior = await call("session-state");
+    mocks.request.mockRejectedValueOnce(new Error("Example import rejected"));
+    await expect(call("try-example")).rejects.toThrow("Example import rejected");
+    expect(await call("session-state")).toEqual(prior);
+    await expect(call("snapshot")).resolves.toEqual({});
+  });
+
+  it("holds the study lock through exact relink and preserves the study on picker cancellation", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Prior.loci-study") });
+    await call("create");
+    const prior = await call("session-state");
+    let finish!: (value: { canceled: boolean; filePaths: string[] }) => void;
+    mocks.open.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = call("relink-source", "b".repeat(32), "file");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await expect(call("new-session")).rejects.toThrow("Finish or cancel");
+    await expect(call("try-example")).rejects.toThrow("Finish or cancel");
+    finish({ canceled: true, filePaths: [] });
+    await expect(pending).resolves.toBeNull();
+    expect(await call("session-state")).toEqual(prior);
+    await expect(call("new-session")).resolves.toEqual({ status: "empty" });
+  });
+
+  it.each([
+    ["file", ["openFile"], "/exact.tiff"],
+    ["dicom", ["openFile", "multiSelections"], ["/exact-1.dcm", "/exact-2.dcm"]],
+    ["ome_zarr", ["openDirectory"], "/exact.zarr"],
+  ])("keeps the native %s relink route and propagates mismatches", async (kind, properties, candidate) => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Study.loci-study") });
+    await call("create");
+    mocks.request.mockClear();
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: Array.isArray(candidate) ? candidate : [candidate] });
+    mocks.request.mockRejectedValueOnce(new Error("Relink rejected: selected bytes do not exactly match the source"));
+    await expect(call("relink-source", "b".repeat(32), kind)).rejects.toThrow("do not exactly match");
+    expect(mocks.open).toHaveBeenLastCalledWith(expect.objectContaining({ properties }));
+    expect(mocks.request).toHaveBeenCalledWith("research_relink", expect.objectContaining({ source_id: "b".repeat(32), candidate }), 0);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_snapshot", expect.anything());
   });
 
   it("does not allocate a managed session when the image picker is cancelled", async () => {
@@ -1071,6 +1382,23 @@ describe("native research bridge", () => {
     expect(mocks.clients[3].request).toHaveBeenCalled();
   });
 
+  it("isolates large result decoding so control requests settle while a view is pending", async () => {
+    const project = path.join(root, "Large.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const control = mocks.clients[1];
+    const viewer = mocks.clients[2];
+    let finish!: (value: unknown) => void;
+    viewer.request.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = call("execute", "large_result_view", { result_id: "a".repeat(32), revision_hash: "b".repeat(64) });
+    await vi.waitFor(() => expect(viewer.request).toHaveBeenCalled());
+    await call("snapshot");
+    expect(control.request).toHaveBeenLastCalledWith("research_snapshot", { project });
+    expect(control.request).not.toHaveBeenCalledWith("research_execute", expect.objectContaining({ operation: "large_result_view" }));
+    finish({ image: "exact" });
+    await expect(view).resolves.toEqual({ image: "exact" });
+  });
+
   it("routes a local Cellpose run through the cancellable durable-job worker", async () => {
     const project = path.join(root, "Study.loci-study");
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
@@ -1128,6 +1456,259 @@ describe("native research bridge", () => {
       );
     },
   );
+
+  it("routes large result remote adoption through private grant and durable worker without path exposure", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const worker = mocks.clients[0];
+    const control = mocks.clients[1];
+    const sourceId = "a".repeat(32);
+    const bundleDir = path.join(root, "remote_bundle");
+    const grantId = "g".repeat(32);
+    const manifestSha = "m".repeat(64);
+    const jobId = "j".repeat(32);
+    const adoptedResult = { id: "r".repeat(32), kind: "large-components" };
+    const adoptedMeasurements = [{ id: 1, area: 100 }];
+
+    // Dialog cancelled
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await expect(call("import-large-result", sourceId)).resolves.toBeNull();
+
+    // Dialog selected
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [bundleDir] });
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_large_exchange_grant") {
+        return {
+          grant_id: grantId,
+          source_id: sourceId,
+          source_sha256: sha,
+          manifest_sha256: manifestSha,
+          bundle_name: "remote_bundle",
+        };
+      }
+      if (method === "research_submit") {
+        return { id: jobId };
+      }
+      if (method === "research_run") {
+        return { result: adoptedResult, measurements: adoptedMeasurements };
+      }
+      if (method === "research_snapshot") {
+        return nativeSnapshot([]);
+      }
+      return {};
+    });
+
+    const res = await call("import-large-result", sourceId) as {
+      snapshot: ResearchSnapshot;
+      result: typeof adoptedResult;
+      measurements: typeof adoptedMeasurements;
+    };
+
+    expect(control.request).toHaveBeenCalledWith(
+      "research_large_exchange_grant",
+      { project, source_id: sourceId, directory: bundleDir },
+      0,
+    );
+    expect(control.request).toHaveBeenCalledWith(
+      "research_submit",
+      {
+        project,
+        request: {
+          source_id: sourceId,
+          grant_id: grantId,
+          manifest_sha256: manifestSha,
+        },
+        request_key: expect.any(String),
+        operation: "large_result_adopt",
+      },
+    );
+    // Ensure native bundleDir path is NOT sent in public submit request
+    const submitCall = mocks.request.mock.calls.find(
+      ([method]) => method === "research_submit",
+    );
+    expect(JSON.stringify(submitCall)).not.toContain(bundleDir);
+
+    expect(worker.request).toHaveBeenCalledWith(
+      "research_run",
+      { project, job_id: jobId },
+      0,
+    );
+    expect(res.result).toEqual(adoptedResult);
+    expect(res.measurements).toEqual(adoptedMeasurements);
+  });
+
+  it("holds the study through large import grant and durable execution", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const bundle = path.join(root, "bundle");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [bundle] });
+    let releaseGrant!: (value: unknown) => void;
+    let grantEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { grantEntered = resolve; });
+    let releaseWorker!: (value: unknown) => void;
+    let workerEntered!: () => void;
+    const executing = new Promise<void>((resolve) => { workerEntered = resolve; });
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "research_large_exchange_grant") {
+        grantEntered();
+        return new Promise((resolve) => { releaseGrant = resolve; });
+      }
+      if (method === "research_submit") return { id: "j".repeat(32) };
+      if (method === "research_run") {
+        workerEntered();
+        return new Promise((resolve) => { releaseWorker = resolve; });
+      }
+      if (method === "research_snapshot") return nativeSnapshot([]);
+      return {};
+    });
+    const importing = call("import-large-result", "s".repeat(32));
+    await entered;
+    await expect(call("create")).rejects.toThrow(/active study operation/);
+    await expect(call("import-large-result", "s".repeat(32))).rejects.toThrow(/active study operation/);
+    releaseGrant({ grant_id: "g".repeat(32), source_id: "s".repeat(32),
+      source_sha256: sha, manifest_sha256: "m".repeat(64), bundle_name: "bundle" });
+    await executing;
+    await expect(call("create")).rejects.toThrow(/active study operation/);
+    releaseWorker({ result: { id: "r".repeat(32) }, measurements: [] });
+    await importing;
+  });
+
+  it("routes large-components export through private grant and durable worker, redacting paths", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const worker = mocks.clients[0];
+    const control = mocks.clients[1];
+    const resultId = "r".repeat(32);
+    const revisionHash = "h".repeat(64);
+    const exportDest = path.join(root, "Exported Large Result");
+    const grantId = "g".repeat(32);
+    const jobId = "j".repeat(32);
+
+    // Provide a snapshot with a large-components result
+    const snapshotWithLargeResult = nativeSnapshot([]);
+    snapshotWithLargeResult.results = [
+      {
+        id: resultId,
+        schema: "loci.research-result/v2" as const,
+        kind: "large-components" as const,
+        source_id: "s".repeat(32),
+        source_sha256: sha,
+        created_at: "2026-09-08T00:00:00Z",
+        revision_hash: revisionHash,
+        object_count: 100,
+      },
+    ];
+
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "research_snapshot") return snapshotWithLargeResult;
+      if (method === "research_large_export_grant") {
+        return {
+          grant_id: grantId,
+          result_id: resultId,
+          revision_hash: revisionHash,
+          export_name: "Exported Large Result",
+        };
+      }
+      if (method === "research_submit") return { id: jobId };
+      if (method === "research_run") {
+        return {
+          ok: true,
+          manifest_sha256: "m".repeat(64),
+          destination: exportDest,
+          output_directory: exportDest,
+        };
+      }
+      return {};
+    });
+
+    // Save dialog canceled
+    mocks.save.mockResolvedValueOnce({ canceled: true, filePath: undefined });
+    await expect(call("export", resultId, revisionHash)).resolves.toBeNull();
+
+    // Save dialog selected
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: exportDest });
+    const receipt = await call("export", resultId, revisionHash) as Record<string, unknown>;
+
+    expect(control.request).toHaveBeenCalledWith(
+      "research_large_export_grant",
+      {
+        project,
+        result_id: resultId,
+        revision_hash: revisionHash,
+        destination: exportDest,
+      },
+      0,
+    );
+    expect(control.request).toHaveBeenCalledWith(
+      "research_submit",
+      {
+        project,
+        request: {
+          result_id: resultId,
+          revision_hash: revisionHash,
+          grant_id: grantId,
+        },
+        request_key: expect.any(String),
+        operation: "large_result_export",
+      },
+    );
+    expect(worker.request).toHaveBeenCalledWith(
+      "research_run",
+      { project, job_id: jobId },
+      0,
+    );
+    // Destination/output_directory must be redacted from renderer return
+    expect(receipt.destination).toBeUndefined();
+    expect(receipt.output_directory).toBeUndefined();
+    expect(receipt.name).toBe("Exported Large Result");
+  });
+
+  it("reserves the corrected v2 export across its picker and grant", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const resultId = "r".repeat(32);
+    const revisionHash = "h".repeat(64);
+    const destination = path.join(root, "Corrected export");
+    const snapshot = nativeSnapshot([]);
+    snapshot.results = [{ id: resultId, schema: "loci.research-result/v2",
+      kind: "large-corrected-labels", source_id: "s".repeat(32),
+      source_sha256: sha, created_at: "2026-09-08T00:00:00Z",
+      revision_hash: revisionHash, object_count: 1 }];
+    let releasePicker!: (value: { canceled: boolean; filePath: string }) => void;
+    let pickerEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { pickerEntered = resolve; });
+    mocks.save.mockImplementationOnce(() => {
+      pickerEntered();
+      return new Promise((resolve) => { releasePicker = resolve; });
+    });
+    mocks.request.mockImplementation(async (method: string) => {
+      if (method === "research_snapshot") return snapshot;
+      if (method === "research_large_export_grant") return {
+        grant_id: "g".repeat(32), result_id: resultId,
+        revision_hash: revisionHash, export_name: "Corrected export",
+      };
+      if (method === "research_submit") return { id: "j".repeat(32) };
+      if (method === "research_run") return { destination, output_directory: destination };
+      return {};
+    });
+    const exporting = call("export", resultId, revisionHash);
+    await entered;
+    await expect(call("create")).rejects.toThrow(/active study operation/);
+    await expect(call("export", resultId, revisionHash)).rejects.toThrow(/active study operation/);
+    releasePicker({ canceled: false, filePath: destination });
+    await exporting;
+    expect(mocks.request).toHaveBeenCalledWith("research_large_export_grant", {
+      project, result_id: resultId, revision_hash: revisionHash, destination,
+    }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({
+      operation: "large_result_export",
+    }));
+    expect(mocks.request).not.toHaveBeenCalledWith("research_export", expect.anything(), 0);
+  });
 
   it("keeps annotation interchange paths behind native pickers and exact source bindings", async () => {
     const project = path.join(root, "Study.loci-study");

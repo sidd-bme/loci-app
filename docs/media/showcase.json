@@ -1,0 +1,81 @@
+{
+  "schema": "loci.showcase/v1",
+  "date": "2026-10-12",
+  "images": [
+    {
+      "file": "histology-current.png",
+      "sha256": "d22048685278b1976acccf0190a7fbc9a9786a88937c3928784a876df1cb4b5a",
+      "subject": "CMU-1 histology",
+      "capture": "native development app",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "fluorescence-volume-current.png",
+      "sha256": "ba3686fbc9811bc2a5e522ccdf7930d422545397653e1d5da1365b7f244a4ba9",
+      "subject": "BBBC032 fluorescence volume",
+      "capture": "native development app",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "linked-mri-current.png",
+      "sha256": "bf20137b329b920ed6d14a5ef17c7758d13cdd2411407554166b9e26ffc55043",
+      "subject": "MNI ICBM152 template",
+      "capture": "native development app",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "launch-poster.png",
+      "sha256": "05b4215e68ce63e90b3b4e6e4202fb3139e45e08521d129a27de11802e184db3",
+      "subject": "Film title card",
+      "capture": "film title card",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "cli-workflow.gif",
+      "sha256": "a3e9a57db0d5a869f8c3a06813e566e67d9d13f1443c059da44c60cb8d79db70",
+      "subject": "Loci command-line session",
+      "capture": "Excerpt of genuine PTY output replay from the finished film; pacing conformed",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "medical-volume.gif",
+      "sha256": "e46bde8b166d7a4f26a16a37b7e59798c88c9fa92357c41f609c8e361658cc0e",
+      "subject": "MNI ICBM152 template",
+      "capture": "Resized sequence of native development-app volume captures",
+      "release_specific": false,
+      "credits": "launch-credits.md"
+    },
+    {
+      "file": "mcp-overview.svg",
+      "sha256": "6262bc3289e7a1e46284b7d6e3403f89003c4dc181ab67d5460a72f1e8f2f0df",
+      "subject": "MCP capability overview",
+      "capture": "Editable explanatory SVG based on docs/AGENT_ACCESS.md",
+      "release_specific": false
+    },
+    {
+      "file": "cellpose-population-current.png",
+      "sha256": "acd4ded9a5b82961363685b34fbd5dc7cd89073d17546c77d8ed3b573522f20e",
+      "subject": "Maintainer-authorized image with 4,837 imported Cellpose label IDs",
+      "capture": "Native packaged application, full population statistics and label overlay",
+      "release_specific": false,
+      "source_commit": "c041ff2c0c12176d492d46fc7c4c3e338e160861",
+      "application_sha256": "056f65701b9a83594419cd58da8b92c398c06bb88d3faf8b4fc90b13f4e971c5",
+      "worker_sha256": "4d85857bf74c18cc1f8f8e237054fe70049769d9a80dbc49e8355b311fb4273d",
+      "credits": "launch-credits.md"
+    }
+  ],
+  "film": {
+    "filename": "Loci-film-1080p60.mp4",
+    "sha256": "c41082de974290128bcff583e0a895f2170439ba9145f77ac351e5ecf5b7c6d5",
+    "duration_seconds": 74,
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "credits": "launch-credits.md"
+  }
+}

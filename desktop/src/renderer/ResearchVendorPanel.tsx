@@ -356,26 +356,13 @@ export function ResearchVendorPanel({
   return (
     <div className="research-panel research-vendor">
       <h2>Vendor image conversion</h2>
-      <p>
-        Convert one explicitly selected scalar plane from CZI, LIF, or ND2 into a
-        derived OME-TIFF source. The vendor file remains immutable; the converted
-        source carries an identity-bound receipt and enters <strong>{snapshot.project.title}</strong>.
-      </p>
-      <div className="research-vendor-boundary">
-        <strong>Optional external reader</strong>
-        <p>
-          Loci never downloads or bundles Bio-Formats or Java. Choose a locally
-          provisioned official Bio-Formats 8.5.0 package and Java executable in the
-          native dialogs. Bio-Formats carries GPL and commercial-licence options;
-          confirm the terms for your use and distribution.
-        </p>
-      </div>
+      <p>Convert a CZI, LIF or ND2 plane to a derived OME-TIFF in <strong>{snapshot.project.title}</strong>.</p>
       <button
         className="research-primary"
         disabled={disabled || !vendorApi.inspectVendor}
         onClick={() => void inspect()}
       >
-        Inspect local vendor source and reader
+        Choose vendor image…
       </button>
       {!vendorApi.inspectVendor && (
         <p role="alert">This desktop build does not provide native vendor inspection.</p>
@@ -384,7 +371,7 @@ export function ResearchVendorPanel({
       {grant && series && dimensions && (
         <>
           <section className="research-vendor-card" aria-label="Exact vendor inspection">
-            <h3>Exact local identities</h3>
+            <h3>Source and reader</h3>
             <dl className="research-vendor-kv">
               <div><dt>Source</dt><dd>{grant.source_name}</dd></div>
               <div><dt>Format / size</dt><dd>{grant.inspection.format.toUpperCase()} · {bytes(grant.inspection.source_size_bytes)}</dd></div>
@@ -397,7 +384,7 @@ export function ResearchVendorPanel({
           </section>
 
           <section className="research-vendor-card" aria-label="Exact vendor plane selection">
-            <h3>Exact series and plane</h3>
+            <h3>Series and plane</h3>
             <label>
               Series
               <select aria-label="Vendor series" value={seriesIndex} disabled={disabled}
@@ -423,11 +410,11 @@ export function ResearchVendorPanel({
               <label>Z index<input aria-label="Vendor Z index" type="number" min="0" max={dimensions.z - 1} step="1" value={z} disabled={disabled} onChange={(event) => setZ(event.target.value)} /></label>
               <label>T index<input aria-label="Vendor T index" type="number" min="0" max={dimensions.t - 1} step="1" value={t} disabled={disabled} onChange={(event) => setT(event.target.value)} /></label>
             </div>
-            {!scalar && <p role="alert">The selected channel contains multiple RGB samples. Choose a scalar acquisition channel; RGB components are not biological channels.</p>}
+            {!scalar && <p role="alert">The selected channel contains multiple RGB samples. Choose a scalar acquisition channel.</p>}
             <label className="research-vendor-check">
               <input aria-label="Crop vendor plane" type="checkbox" checked={cropEnabled} disabled={disabled}
                 onChange={(event) => setCropEnabled(event.target.checked)} />
-              Convert an explicit half-open crop instead of the full plane
+              Crop plane
             </label>
             {cropEnabled && (
               <div className="research-vendor-grid">
@@ -437,29 +424,33 @@ export function ResearchVendorPanel({
                 <label>Height<input aria-label="Vendor crop height" type="number" min="1" max={dimensions.y} step="1" value={cropHeight} disabled={disabled} onChange={(event) => setCropHeight(event.target.value)} /></label>
               </div>
             )}
-            {!cropValid && <p role="alert">The crop must be an integer rectangle contained within this exact series.</p>}
+            {!cropValid && <p role="alert">Use an integer crop within the selected series.</p>}
           </section>
 
           <section className="research-vendor-card" aria-label="Vendor conversion limits">
-            <h3>Bounded local conversion</h3>
+            <h3>Conversion limits</h3>
             <div className="research-vendor-grid">
               <label>Java heap MiB<input aria-label="Vendor heap MiB" type="number" min="256" max="4096" step="1" value={heapMiB} disabled={disabled} onChange={(event) => setHeapMiB(event.target.value)} /></label>
               <label>Timeout seconds<input aria-label="Vendor timeout seconds" type="number" min="1" max="1800" step="1" value={timeoutSeconds} disabled={disabled} onChange={(event) => setTimeoutSeconds(event.target.value)} /></label>
               <label>Maximum output MiB<input aria-label="Vendor maximum output MiB" type="number" min="1" max="1024" step="1" value={maxOutputMiB} disabled={disabled} onChange={(event) => setMaxOutputMiB(event.target.value)} /></label>
             </div>
             <p>
-              Requested output: {outputWidth ?? "—"} × {outputHeight ?? "—"} {series.dtype};
-              decoded plane {estimatedBytes === null ? "—" : bytes(estimatedBytes)}. No scale,
-              projection, channel merge, or intensity normalization is applied.
+              Output: {outputWidth ?? "—"} × {outputHeight ?? "—"} · {series.dtype} · {estimatedBytes === null ? "—" : bytes(estimatedBytes)} decoded
             </p>
             {!limitsValid && <p role="alert">Use integer limits within 256–4,096 MiB heap, 1–1,800 seconds, and 1–1,024 MiB output; the decoded plane must fit both the output limit and 512 MiB decode bound.</p>}
             <button className="research-primary" disabled={disabled || !vendorApi.convertVendor || !request}
               onClick={() => void convert()}>
-              Convert exact plane and import derived source
+              Convert and import plane
             </button>
           </section>
         </>
       )}
+      <details><summary>Reader and conversion details</summary>
+        <p>Choose a local Bio-Formats 8.5.0 package and Java executable in the next dialogs.
+          Bio-Formats offers GPL and commercial licences; check the terms for your use.</p>
+        <p>Conversion preserves scalar values without resizing, projection or channel merging.
+          Source identity, reader identity and crop coordinates are recorded with the derived image.</p>
+      </details>
 
       {conversion && artifact && (
         <section className="research-vendor-card research-vendor-receipt" aria-label="Vendor conversion receipt">

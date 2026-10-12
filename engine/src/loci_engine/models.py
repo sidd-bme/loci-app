@@ -6,7 +6,7 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Literal, TypeAlias
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.2.0"
 
 ImageMode = Literal["auto", "brightfield", "fluorescence"]
 Polarity = Literal["auto", "dark", "bright"]

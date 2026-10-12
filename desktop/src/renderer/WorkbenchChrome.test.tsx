@@ -9,18 +9,26 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function welcome(recent: Array<Record<string, unknown>> = [],
   presentation: { dragActive?: boolean; busy?: boolean } = {}) {
-  const onOpen = vi.fn(), onStudy = vi.fn(), onLegacy = vi.fn(), onEmptyStudy = vi.fn(), onRecovery = vi.fn();
+  const onExample = vi.fn(), onOpen = vi.fn(), onStudy = vi.fn(), onLegacy = vi.fn(), onEmptyStudy = vi.fn(), onRecovery = vi.fn();
   const api = {
     recoveryList: vi.fn(async () => recent),
     recoveryKeep: vi.fn(),
   } as unknown as ResearchDesktopApi;
   const view = render(<ImageWelcome api={api} state={{ status: "empty" } as ManagedSessionState}
     onOpen={onOpen} onStudy={onStudy} onLegacy={onLegacy} onEmptyStudy={onEmptyStudy}
-    onError={vi.fn()} onRecovery={onRecovery} {...presentation} />);
-  return { ...view, onOpen, onStudy, onLegacy, onEmptyStudy, onRecovery, api };
+    onError={vi.fn()} onRecovery={onRecovery} onExample={onExample} {...presentation} />);
+  return { ...view, onOpen, onStudy, onLegacy, onEmptyStudy, onRecovery, onExample, api };
 }
 
 describe("image-first welcome", () => {
+  it("offers an optional offline example without blocking normal opening", () => {
+    const { onExample, onOpen } = welcome();
+    fireEvent.click(screen.getByRole("button", { name: "Try an example" }));
+    expect(onExample).toHaveBeenCalledOnce();
+    expect(screen.getByText(/Offline synthetic shapes/)).toBeVisible();
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
   it("keeps the main entry and reveals optional formats without remounting it", async () => {
     const { onOpen, onStudy, onLegacy, onEmptyStudy, api } = welcome();
     await waitFor(() => expect(api.recoveryList).toHaveBeenCalled());
@@ -106,6 +114,7 @@ describe("image-first welcome", () => {
     expect(screen.getByText(/let Loci validate/)).toBeVisible();
     const primary = screen.getByRole("button", { name: "Open images" });
     expect(primary).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Try an example" })).toBeDisabled();
     fireEvent.click(primary);
     expect(onOpen).not.toHaveBeenCalled();
   });
@@ -206,5 +215,171 @@ describe("workbench tool selector", () => {
     fireEvent.click(trigger);
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("listbox", { name: "Results tool" })).not.toBeInTheDocument();
+  });
+
+  it("closes tool search with Escape and returns focus to the search button", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
+    const searchButton = screen.getByRole("button", { name: "Search all tools" });
+    fireEvent.click(searchButton);
+
+    const searchInput = screen.getByRole("combobox", { name: "Search all tools" });
+    expect(searchInput).toHaveFocus();
+    fireEvent.change(searchInput, { target: { value: "cell" } });
+    expect(screen.getByRole("listbox", { name: "All tools" })).toBeInTheDocument();
+
+    fireEvent.keyDown(searchInput, { key: "Escape" });
+    expect(screen.queryByRole("combobox", { name: "Search all tools" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "All tools" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search all tools" })).toHaveFocus();
+  });
+
+  it("constrains tool selector popup within viewport boundaries", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    window.innerWidth = 1024;
+    window.innerHeight = 720;
+    render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
+    const trigger = screen.getByRole("combobox", { name: "Analyze tool" });
+
+    // Place near bottom-right edge of a 1024x720 viewport
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+      x: 800, y: 650, top: 650, right: 1020, bottom: 690, left: 800, width: 220, height: 40,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.click(trigger);
+    const listbox = screen.getByRole("listbox", { name: "Analyze tool" });
+    expect(listbox.className).toContain("is-above");
+    const left = parseInt(listbox.style.left, 10);
+    const width = parseInt(listbox.style.width, 10);
+    expect(left + width).toBeLessThanOrEqual(1024 - 8);
+    expect(left).toBeGreaterThanOrEqual(8);
+  });
+
+  it("remembers a chosen tool when returning to its group", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    const view = render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Analyze tool" }));
+    fireEvent.click(screen.getByRole("option", { name: "Preprocess" }));
+    expect(onTab).toHaveBeenLastCalledWith("Process");
+    view.rerender(<WorkbenchTools tab="Process" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Results" }));
+    view.rerender(<WorkbenchTools tab="Info" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onTab).toHaveBeenLastCalledWith("Process");
+  });
+
+  it("remembers externally selected tools and falls back when their requirements change", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 3 } } } as unknown as ResearchSource;
+    const view = render(<WorkbenchTools tab="Display" onTab={onTab} source={source} hasResult={false} />);
+    view.rerender(<WorkbenchTools tab="Temporal" onTab={onTab} source={source} hasResult={false} />);
+    view.rerender(<WorkbenchTools tab="Study" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onTab).toHaveBeenLastCalledWith("Temporal");
+    const stillSource = { ...source, metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    view.rerender(<WorkbenchTools tab="Study" onTab={onTab} source={stillSource} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onTab).toHaveBeenLastCalledWith("Analyze");
+  });
+
+  it.each([
+    ["Display", "View", "Import & conversion", "Convert vendor images", "Vendor import"],
+    ["Analyze", "Analyze", "Connections", "Remote compute", "Remote"],
+    ["Study", "Results", "Portable results", "Import & share results", "Portability"],
+  ] as const)("exposes secondary tools from the %s selector", (tab, group, section, label, selected) => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    render(<WorkbenchTools tab={tab} onTab={onTab} source={source} hasResult={false} />);
+    const trigger = screen.getByRole("combobox", { name: `${group} tool` });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("group", { name: section })).toBeVisible();
+    fireEvent.click(screen.getByRole("option", { name: label }));
+    expect(onTab).toHaveBeenLastCalledWith(selected);
+    expect(trigger).toHaveFocus();
+  });
+
+  it("selects filtered search results with the keyboard and restores focus", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    render(<WorkbenchTools tab="Display" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    const input = screen.getByRole("combobox", { name: "Search all tools" });
+    fireEvent.change(input, { target: { value: " remote " } });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    const option = screen.getByRole("option", { name: /Remote compute/ });
+    expect(input).toHaveAttribute("aria-activedescendant", option.id);
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).toHaveBeenLastCalledWith("Remote");
+    expect(screen.queryByRole("listbox", { name: "All tools" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Search all tools" })).toHaveFocus();
+  });
+
+  it("skips unavailable search results and supports wraparound and endpoints", () => {
+    const onTab = vi.fn();
+    render(<WorkbenchTools tab="Display" onTab={onTab} source={null} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    const input = screen.getByRole("combobox", { name: "Search all tools" });
+    const first = screen.getByRole("option", { name: /Import & share results/ });
+    const last = screen.getByRole("option", { name: /Convert vendor images/ });
+    expect(last.id).not.toMatch(/\s/); // aria-activedescendant requires one valid IDREF.
+    expect(screen.getByRole("option", { name: /Segment & measure/ })).toBeDisabled();
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(input).toHaveAttribute("aria-activedescendant", last.id);
+    fireEvent.keyDown(input, { key: "Home" });
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
+    fireEvent.keyDown(input, { key: "End" });
+    expect(input).toHaveAttribute("aria-activedescendant", last.id);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).toHaveBeenCalledWith("Vendor import");
+  });
+
+  it("shows no-match recovery and never activates an unavailable result", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
+    render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    const input = screen.getByRole("combobox", { name: "Search all tools" });
+    fireEvent.change(input, { target: { value: "track" } });
+    const unavailable = screen.getByRole("option", { name: /Track over time/ });
+    expect(unavailable).toBeDisabled();
+    expect(unavailable).toHaveTextContent("Tracking needs a time series or timed result set");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "no-such-tool" } });
+    expect(screen.getByRole("status")).toHaveTextContent("No tools match “no-such-tool”.");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect(input).toHaveValue("");
+    expect(input).toHaveFocus();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option")).toHaveLength(18);
+    expect(screen.getByRole("option", { name: /Workflow builder/ })).toBeEnabled();
+  });
+
+  it("keeps scalar-channel and correction requirements visible in selectors", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: { dimensions: { t: 1 }, sample_semantics: "RGB" } } as unknown as ResearchSource;
+    const view = render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Analyze tool" }));
+    const fluorescence = screen.getByRole("option", { name: /Fluorescence & field assay/ });
+    expect(fluorescence).toBeDisabled();
+    expect(fluorescence).toHaveTextContent("These methods need declared scalar channels");
+    fireEvent.click(fluorescence);
+    expect(onTab).not.toHaveBeenCalled();
+    view.rerender(<WorkbenchTools tab="Annotate" onTab={onTab} source={source} hasResult={false} />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Annotate tool" }));
+    const correction = screen.getByRole("option", { name: /Edit labels & ROIs/ });
+    expect(correction).toBeDisabled();
+    expect(correction).toHaveTextContent("Select a segmentation result to edit labels");
   });
 });

@@ -177,7 +177,6 @@ export function ResearchTemporalPanel({
   const [declaration, setDeclaration] = useState(
     "Elapsed times are actual seconds; manual entries replace unavailable verified metadata.",
   );
-  const [secondsConfirmed, setSecondsConfirmed] = useState(false);
   const [maxDistance, setMaxDistance] = useState("10");
   const [maxGap, setMaxGap] = useState("0");
   const [ambiguityDistance, setAmbiguityDistance] = useState("0.000000001");
@@ -214,6 +213,8 @@ export function ResearchTemporalPanel({
     (frame) =>
       frame.kind === "observed" || Boolean(frame.frameId.trim() && frame.reason.trim()),
   );
+  const framesCurrent = frames.every((frame) => frame.kind === "missing" ||
+    candidates.some((result) => result.id === frame.resultId));
   const timesValid =
     parsedTimes.every((time) => time !== null) &&
     parsedTimes.every((time, index) => index === 0 || time! > parsedTimes[index - 1]!);
@@ -238,7 +239,7 @@ export function ResearchTemporalPanel({
     frames.length >= 2 &&
     timesValid &&
     missingComplete &&
-    secondsConfirmed &&
+    framesCurrent &&
     Boolean(declaration.trim()) &&
     settingsValid;
 
@@ -521,6 +522,7 @@ export function ResearchTemporalPanel({
       {!missingComplete && (
         <p role="alert">Every missing observation needs a unique ID and explicit reason.</p>
       )}
+      {!framesCurrent && <p role="alert">A selected frame is unavailable. Remove it or choose its current result revision.</p>}
       <label>
         Time calibration declaration
         <textarea
@@ -528,15 +530,6 @@ export function ResearchTemporalPanel({
           value={declaration}
           onChange={(event) => setDeclaration(event.target.value)}
         />
-      </label>
-      <label className="research-check">
-        <input
-          type="checkbox"
-          aria-label="Confirm actual elapsed seconds"
-          checked={secondsConfirmed}
-          onChange={(event) => setSecondsConfirmed(event.target.checked)}
-        />
-        I confirm each time_s value is an actual elapsed time in seconds.
       </label>
       <div className="research-grid">
         <label>
@@ -613,7 +606,7 @@ export function ResearchTemporalPanel({
         )}
       </div>
       <button className="research-primary" disabled={!canTrack} onClick={() => void track()}>
-        Create temporal graph
+        Track using elapsed seconds
       </button>
 
       <h3>Inspect exact temporal revision</h3>

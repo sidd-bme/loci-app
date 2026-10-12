@@ -14,15 +14,19 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { ManagedSessionState, ManagedSessionSummary, ResearchDesktopApi, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
 import BrandMark from "./BrandMark";
 import "./WorkbenchChrome.css";
 
-export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Quantify" | "Correction" |
+export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Workflow" | "Quantify" | "Population" | "Correction" |
   "Temporal" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
 type Group = "View" | "Annotate" | "Analyze" | "Results";
+const tabId = (tab: WorkbenchTab) => tab.replaceAll(" ", "-");
+const ADVANCED_LABELS: Partial<Record<Group, string>> = {
+  View: "Import & conversion", Analyze: "Connections", Results: "Portable results",
+};
 const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: boolean; keywords?: string }> = [
   { tab: "Display", label: "Image & channels", group: "View" },
   { tab: "Annotate", label: "Draw & measure", group: "Annotate" },
@@ -30,11 +34,13 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Correction", label: "Edit labels & ROIs", group: "Annotate" },
   { tab: "Analyze", label: "Segment & measure", group: "Analyze" },
   { tab: "Process", label: "Preprocess", group: "Analyze" },
+  { tab: "Workflow", label: "Workflow builder", group: "Analyze", keywords: "pipeline automation nodes batch recipe" },
   { tab: "Model", label: "Use a model", group: "Analyze" },
-  { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "IL4R siRNA puncta association knockdown" },
+  { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "fluorescence signal nuclei background intensity puncta association" },
   { tab: "Temporal", label: "Track over time", group: "Analyze" },
   { tab: "Registration", label: "Register & resample", group: "Analyze" },
   { tab: "Info", label: "Review & export", group: "Results" },
+  { tab: "Population", label: "Statistics & objects", group: "Results", keywords: "explore objects population scatter histogram filter area intensity measurements" },
   { tab: "Study", label: "Study & batch", group: "Results" },
   { tab: "Portability", label: "Import & share results", group: "Results", advanced: true },
   { tab: "Agent", label: "Connect an assistant", group: "Analyze", advanced: true },
@@ -42,6 +48,7 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Vendor import", label: "Convert vendor images", group: "View", advanced: true },
 ];
 const TOOL_HELP: Record<WorkbenchTab, string> = {
+  Workflow: "Build, preview and run a saved analysis workflow with exact review checkpoints.",
   Display: "Adjust display ranges, colour and channel visibility without changing source values.",
   Annotate: "Draw points, lines and regions on the source image; calibrated lengths use recorded geometry.",
   Epidermis: "Measure manual histology transects with explicit boundaries, calibration and reviewer records.",
@@ -52,6 +59,7 @@ const TOOL_HELP: Record<WorkbenchTab, string> = {
   Quantify: "Measure regional fluorescence, puncta and channel association in declared scalar channels.",
   Temporal: "Associate reviewed objects across time and inspect ambiguous links before export.",
   Registration: "Estimate a transform or resample onto a declared grid while preserving source geometry.",
+  Population: "Explore all objects in one exact result with linked measurements, distributions and image selection.",
   Info: "Inspect provenance, record a review decision and export the selected result revision.",
   Study: "Organise sources and replicate metadata, reuse recipes and run recoverable batches.",
   Portability: "Import or export portable result bundles with source and revision bindings.",
@@ -64,7 +72,13 @@ export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults 
   tab: WorkbenchTab; onTab: (tab: WorkbenchTab) => void; source: ResearchSource | null; hasResult: boolean; hasStudyResults?: boolean;
 }) {
   const [search, setSearch] = useState<string | null>(null);
+  const [activeSearchTab, setActiveSearchTab] = useState<WorkbenchTab | null>(null);
+  const searchToggleRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchId = useId();
+  const lastTools = useRef<Partial<Record<Group, WorkbenchTab>>>({});
   const group = TOOLS.find((tool) => tool.tab === tab)?.group ?? "View";
+  useEffect(() => { lastTools.current[group] = tab; }, [group, tab]);
   const reason = (target: WorkbenchTab) => {
     if (target === "Vendor import" || target === "Portability" || target === "Remote") return null;
     if (!source) return "Open an image first";
@@ -73,36 +87,100 @@ export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults 
     if (target === "Quantify" && ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "")) return "These methods need declared scalar channels";
     return null;
   };
-  const visible = TOOLS.filter((tool) => search !== null ? `${tool.label} ${tool.tab} ${tool.keywords ?? ""}`.toLowerCase().includes(search.toLowerCase()) : tool.group === group && !tool.advanced);
-  const groupTools = TOOLS.filter((tool) => tool.group === group && (!tool.advanced || tool.tab === tab));
+  const visible = TOOLS.filter((tool) => `${tool.label} ${tool.tab} ${tool.keywords ?? ""}`.toLowerCase().includes((search ?? "").trim().toLowerCase()));
+  const enabledSearchTools = visible.filter((tool) => !reason(tool.tab));
+  const activeSearchTool = enabledSearchTools.find((tool) => tool.tab === activeSearchTab);
+  const groupTools = TOOLS.filter((tool) => tool.group === group);
+  useEffect(() => {
+    if (search !== null && activeSearchTool) document.getElementById(`${searchId}-${tabId(activeSearchTool.tab)}`)?.scrollIntoView?.({ block: "nearest" });
+  }, [search, searchId, activeSearchTool]);
+  const closeSearch = () => {
+    setSearch(null);
+    setActiveSearchTab(null);
+    searchToggleRef.current?.focus();
+  };
+  const selectTool = (next: WorkbenchTab) => {
+    if (reason(next)) return;
+    const selectedGroup = TOOLS.find((tool) => tool.tab === next)!.group;
+    lastTools.current[selectedGroup] = next;
+    onTab(next);
+  };
+  const onSearchKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearch();
+    } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      if (!enabledSearchTools.length) return;
+      const current = enabledSearchTools.findIndex((tool) => tool.tab === activeSearchTool?.tab);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? enabledSearchTools.length - 1
+        : current < 0 ? (event.key === "ArrowDown" ? 0 : enabledSearchTools.length - 1)
+        : (current + (event.key === "ArrowDown" ? 1 : -1) + enabledSearchTools.length) % enabledSearchTools.length;
+      setActiveSearchTab(enabledSearchTools[next].tab);
+      searchInputRef.current?.focus();
+    } else if (event.key === "Enter") {
+      const selected = activeSearchTool ?? enabledSearchTools[0];
+      if (!selected) return;
+      event.preventDefault();
+      selectTool(selected.tab);
+      closeSearch();
+    }
+  };
   return <div className="workbench-tools">
     <nav className="task-groups" aria-label="Task groups">
       {(["View", "Annotate", "Analyze", "Results"] as Group[]).map((item) => <button key={item}
         aria-pressed={group === item} className={group === item ? "active" : ""}
-        onClick={() => { onTab(TOOLS.find((tool) => tool.group === item)!.tab); setSearch(null); }}>{item}</button>)}
+        onClick={() => {
+          const remembered = lastTools.current[item];
+          const next = remembered && !reason(remembered) ? remembered
+            : TOOLS.find((tool) => tool.group === item && !tool.advanced)!.tab;
+          onTab(next);
+          setSearch(null);
+          setActiveSearchTab(null);
+        }}>{item}</button>)}
     </nav>
     <div className="task-tool-row">
       {search === null ? <ToolSelect
         label={`${group} tool`}
         value={tab}
         tools={groupTools.map((tool) => ({ ...tool, reason: reason(tool.tab) }))}
-        onChange={onTab}
-      /> : <input autoFocus aria-label="Search all tools" placeholder="Find a tool…" value={search} onChange={(event) => setSearch(event.target.value)} />}
-      <button aria-label={search === null ? "Search all tools" : "Close tool search"} title="Find advanced tools, models, remote compute and assistant connections" onClick={() => setSearch(search === null ? "" : null)}>{search === null ? <Search /> : <X />}</button>
+        secondaryLabel={ADVANCED_LABELS[group]}
+        onChange={selectTool}
+      /> : <input ref={searchInputRef} autoFocus role="combobox" aria-label="Search all tools" aria-autocomplete="list"
+        aria-expanded="true" aria-controls={searchId}
+        aria-activedescendant={activeSearchTool ? `${searchId}-${tabId(activeSearchTool.tab)}` : undefined}
+        placeholder="Find a tool…" value={search}
+        onChange={(event) => { setSearch(event.target.value); setActiveSearchTab(null); }}
+        onKeyDown={onSearchKeyDown}
+      />}
+      <button ref={searchToggleRef} aria-label={search === null ? "Search all tools" : "Close tool search"} title="Find tools across all task groups" onClick={() => {
+        if (search === null) { setSearch(""); setActiveSearchTab(null); } else closeSearch();
+      }}>{search === null ? <Search /> : <X />}</button>
     </div>
-    {search !== null && <div className="tool-search-results" role="list" aria-label="All tools">
-      {visible.map((tool) => <div key={tool.tab} role="listitem"><button disabled={Boolean(reason(tool.tab))}
-        title={reason(tool.tab) ?? TOOL_HELP[tool.tab]} onClick={() => { onTab(tool.tab); setSearch(null); }}>{tool.label}</button>
-        {reason(tool.tab) && <small>{reason(tool.tab)}</small>}</div>)}
-    </div>}
+    {search !== null && <>
+      <div id={searchId} className="tool-search-results" role="listbox" aria-label="All tools" onKeyDown={onSearchKeyDown}>
+        {visible.map((tool) => <button key={tool.tab} id={`${searchId}-${tabId(tool.tab)}`} type="button" role="option" tabIndex={-1} aria-label={tool.label}
+          aria-selected={tool.tab === tab} aria-disabled={Boolean(reason(tool.tab))} disabled={Boolean(reason(tool.tab))}
+          className={tool.tab === activeSearchTool?.tab ? "is-active" : ""}
+          title={reason(tool.tab) ?? TOOL_HELP[tool.tab]} onMouseDown={(event) => event.preventDefault()}
+          onMouseEnter={() => !reason(tool.tab) && setActiveSearchTab(tool.tab)}
+          onClick={() => { selectTool(tool.tab); closeSearch(); }}>
+          <span>{tool.label}</span><small>{reason(tool.tab) ?? tool.group}</small>
+        </button>)}
+      </div>
+      {!visible.length && <div className="tool-search-empty" role="status">
+        <p>No tools match “{search.trim()}”.</p>
+        <button type="button" onClick={() => { setSearch(""); setActiveSearchTab(null); searchInputRef.current?.focus(); }}>Clear search</button>
+      </div>}
+    </>}
   </div>;
 }
 
-type ToolSelectItem = { tab: WorkbenchTab; label: string; reason: string | null };
+type ToolSelectItem = { tab: WorkbenchTab; label: string; reason: string | null; advanced?: boolean };
 type PopupPosition = { left: number; top: number; width: number; maxHeight: number; placement: "above" | "below" };
 
-function ToolSelect({ label, value, tools, onChange }: {
-  label: string; value: WorkbenchTab; tools: ToolSelectItem[]; onChange: (tab: WorkbenchTab) => void;
+function ToolSelect({ label, value, tools, secondaryLabel, onChange }: {
+  label: string; value: WorkbenchTab; tools: ToolSelectItem[]; secondaryLabel?: string; onChange: (tab: WorkbenchTab) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState(value);
@@ -113,9 +191,9 @@ function ToolSelect({ label, value, tools, onChange }: {
   const selected = tools.find((tool) => tool.tab === value) ?? tools[0];
   const enabledTools = tools.filter((tool) => !tool.reason);
 
-  useEffect(() => setActiveTab(value), [value]);
+  useEffect(() => { setActiveTab(value); setOpen(false); }, [value]);
   useEffect(() => {
-    if (open) document.getElementById(`${selectId}-${activeTab}`)?.scrollIntoView?.({ block: "nearest" });
+    if (open) document.getElementById(`${selectId}-${tabId(activeTab)}`)?.scrollIntoView?.({ block: "nearest" });
   }, [activeTab, open, selectId]);
   useEffect(() => {
     if (!open) return;
@@ -126,7 +204,8 @@ function ToolSelect({ label, value, tools, onChange }: {
     document.addEventListener("pointerdown", closeFromOutside, true);
     return () => document.removeEventListener("pointerdown", closeFromOutside, true);
   }, [open]);
-  useEffect(() => {
+  // Reopening after a resize must never paint with the previous anchor position.
+  useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
       const rect = triggerRef.current?.getBoundingClientRect();
@@ -138,13 +217,15 @@ function ToolSelect({ label, value, tools, onChange }: {
       const above = rect.top - gutter;
       const placement = below >= 152 || below >= above ? "below" : "above";
       const available = Math.max(0, placement === "below" ? below : above);
-      const width = Math.min(320, Math.max(rect.width, 176));
+      const maxWidth = Math.max(120, viewportWidth - 2 * gutter);
+      const width = Math.min(maxWidth, Math.min(320, Math.max(rect.width, 176)));
       const left = Math.max(gutter, Math.min(rect.left, viewportWidth - width - gutter));
+      const maxHeight = Math.min(280, Math.max(60, available));
       setPosition({
-        left,
-        top: placement === "below" ? rect.bottom + 4 : rect.top - 4,
-        width,
-        maxHeight: Math.min(280, available),
+        left: Math.round(left),
+        top: Math.round(placement === "below" ? rect.bottom + 4 : rect.top - 4),
+        width: Math.round(width),
+        maxHeight: Math.round(maxHeight),
         placement,
       });
     };
@@ -170,14 +251,17 @@ function ToolSelect({ label, value, tools, onChange }: {
   };
   const move = (direction: 1 | -1) => {
     if (!enabledTools.length) return;
-    const current = Math.max(0, enabledTools.findIndex((tool) => tool.tab === activeTab));
-    setActiveTab(enabledTools[(current + direction + enabledTools.length) % enabledTools.length].tab);
+    const current = enabledTools.findIndex((tool) => tool.tab === activeTab);
+    const next = current < 0 ? (direction === 1 ? 0 : enabledTools.length - 1)
+      : (current + direction + enabledTools.length) % enabledTools.length;
+    setActiveTab(enabledTools[next].tab);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Tab") { setOpen(false); return; }
     if (event.key === "Escape" && open) {
       event.preventDefault();
       setOpen(false);
+      triggerRef.current?.focus();
       return;
     }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -198,6 +282,13 @@ function ToolSelect({ label, value, tools, onChange }: {
       select(activeTab);
     }
   };
+  const renderOption = (tool: ToolSelectItem) => <button
+    key={tool.tab} id={`${selectId}-${tabId(tool.tab)}`} type="button" role="option" tabIndex={-1}
+    aria-selected={tool.tab === value} aria-disabled={Boolean(tool.reason)}
+    className={tool.tab === activeTab ? "is-active" : ""} disabled={Boolean(tool.reason)}
+    title={tool.reason ?? TOOL_HELP[tool.tab]} onMouseDown={(event) => event.preventDefault()}
+    onMouseEnter={() => !tool.reason && setActiveTab(tool.tab)} onClick={() => select(tool.tab)}
+  ><span>{tool.label}</span>{tool.reason && <small>{tool.reason}</small>}</button>;
   return <div className="workbench-tool-select">
     <button
       ref={triggerRef}
@@ -207,7 +298,7 @@ function ToolSelect({ label, value, tools, onChange }: {
       aria-label={label}
       aria-haspopup="listbox"
       aria-controls={open ? selectId : undefined}
-      aria-activedescendant={open ? `${selectId}-${activeTab}` : undefined}
+      aria-activedescendant={open ? `${selectId}-${tabId(activeTab)}` : undefined}
       aria-expanded={open}
       onClick={() => setOpen((shown) => !shown)}
       onKeyDown={onKeyDown}
@@ -222,21 +313,19 @@ function ToolSelect({ label, value, tools, onChange }: {
       role="listbox"
       aria-label={label}
       style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }}
-    >{tools.map((tool) => <button
-      key={tool.tab}
-      id={`${selectId}-${tool.tab}`}
-      type="button"
-      role="option"
-      tabIndex={-1}
-      aria-selected={tool.tab === value}
-      aria-disabled={Boolean(tool.reason)}
-      className={tool.tab === activeTab ? "is-active" : ""}
-      disabled={Boolean(tool.reason)}
-      title={tool.reason ?? TOOL_HELP[tool.tab]}
-      onMouseDown={(event) => event.preventDefault()}
-      onMouseEnter={() => !tool.reason && setActiveTab(tool.tab)}
-      onClick={() => select(tool.tab)}
-    ><span>{tool.label}</span>{tool.reason && <small>{tool.reason}</small>}</button>)}</div>}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setOpen(false);
+          triggerRef.current?.focus();
+        }
+      }}
+    >{tools.filter((tool) => !tool.advanced).map(renderOption)}
+      {tools.some((tool) => tool.advanced) && <div role="group" aria-label={secondaryLabel ?? "More tools"}>
+        <div className="workbench-tool-select__section" aria-hidden="true">{secondaryLabel ?? "More tools"}</div>
+        {tools.filter((tool) => tool.advanced).map(renderOption)}
+      </div>}
+    </div>}
   </div>;
 }
 
@@ -305,11 +394,12 @@ function updatedLabel(value?: string) {
   }).format(date)}`;
 }
 
-export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onConvert, state, onRecovery, onError,
+export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onConvert, onExample, state, onRecovery, onError,
   dragActive = false, busy = false }: {
   api: ResearchDesktopApi; onOpen: (kind?: "files" | "folder" | "dicom" | "ome_zarr") => void;
   onStudy: () => void; onLegacy: () => void; state: ManagedSessionState;
   onEmptyStudy?: () => void;
+  onExample?: () => void;
   onConvert?: () => void;
   onRecovery: (snapshot: ResearchSnapshot | null) => void; onError: (message: string) => void;
   dragActive?: boolean; busy?: boolean;
@@ -371,6 +461,7 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
       <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span><strong>Open study</strong><small>Resume a .loci-study</small></span></button>
     </div>
     <span className="welcome-drop">or drop images, a folder, or a saved study here</span>
+    {onExample && <div className="welcome-example"><button disabled={busy} onClick={onExample}>Try an example</button><span>Offline synthetic shapes · practise analysis, review and export</span></div>}
     <div className="welcome-formats">
       <div className="welcome-options-heading"><span aria-hidden="true" /><button aria-label="More opening options" className="welcome-options-toggle" disabled={busy} aria-expanded={optionsOpen} aria-controls="welcome-opening-options" onClick={() => setOptionsOpen((open) => !open)}>More sources <ChevronDown /></button><span aria-hidden="true" /></div>
       <div className={`welcome-options-reveal${optionsOpen ? " is-open" : ""}`} id="welcome-opening-options" inert={!optionsOpen}>

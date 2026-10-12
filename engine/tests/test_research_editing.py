@@ -307,3 +307,142 @@ def test_roi_on_image_only_and_declared_stain_results_has_explicit_intensity_bas
         separate_stains(rgb, hdx_from_rgb)[0, 0, 1]
     )
     assert measurement["sampled_voxel_count"] == 25
+
+
+def test_correction_inherits_parent_working_bytes_and_validates_explicit_budgets(tmp_path):
+    from PIL import Image
+
+    from loci_engine.models import SegmentationSettings
+    from loci_engine.workbench import result_working_bytes
+
+    # Synthetic 3088x2076 uint8 image matching lead reproduction
+    image = np.full((2076, 3088), 225, dtype=np.uint8)
+    image[100:200, 100:200] = 55
+    image[500:600, 500:600] = 55
+    file = tmp_path / "large_source.png"
+    Image.fromarray(image).save(file)
+
+    wb = Workbench(ResearchProject.create(tmp_path / "large_study.loci-study", "M5 Repair"))
+    try:
+        source = wb.import_native(str(file))
+        output = wb.execute(
+            "classical_run",
+            {
+                "source_id": source["id"],
+                "selection": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 3088,
+                    "height": 2076,
+                    "z": 0,
+                    "t": 0,
+                    "c": 0,
+                    "level": 0,
+                },
+                "profile_id": "loci-classical",
+                "settings": SegmentationSettings().to_dict(),
+                "measurement_channels": [0],
+                "working_bytes": 2 * 1024**3,
+            },
+        )
+        parent = wb.project.result(output["result"]["id"])
+        assert len(parent["provenance"]["measurements"]) == 2
+        assert result_working_bytes(parent) == 2 * 1024**3
+        assert (
+            parent["provenance"]["resource_guard"]["working_memory_limit_bytes"] == 2 * 1024**3
+        )
+        assert parent["provenance"]["accepted_request"]["working_bytes"] == 2 * 1024**3
+
+        binding = {"result_id": parent["id"], "revision_hash": parent["revision_hash"]}
+        info = wb.execute("correction_info", binding)
+        assert info["label_ids"] == [1, 2]
+
+        # 1. UI-shaped correction request (omits working_bytes):
+        # Resolves parent's 2 GiB budget, succeeds, deletes label 1, and remeasures raw channel 0.
+        request_omitted = {
+            **binding,
+            "operations": [
+                {"op": "delete", "label": 1, "expected_input_sha256": info["label_sha256"]}
+            ],
+        }
+        child_res = wb.execute("correct_result", request_omitted)
+        child = wb.project.result(child_res["result"]["id"])
+        assert child["parent_id"] == parent["id"]
+        assert len(child["provenance"]["measurements"]) == 1
+        assert child["provenance"]["measurements"][0]["label"] == 2
+        channel_stats = child["provenance"]["measurements"][0]["intensity"]["source_channel_0"]
+        assert channel_stats["mean"] == 55.0
+        # Parent inference provenance unchanged
+        assert (
+            child["provenance"]["resource_guard"]["working_memory_limit_bytes"] == 2 * 1024**3
+        )
+        assert child["provenance"]["accepted_request"]["working_bytes"] == 2 * 1024**3
+        # Correction audit records its execution budget
+        assert (
+            child["provenance"]["correction"]["working_memory_limit_bytes"] == 2 * 1024**3
+        )
+        # Result view resolves image inference allowance (2 GiB)
+        assert result_working_bytes(child) == 2 * 1024**3
+
+        # 2. Explicit low correction budget (e.g. 512 MiB) refuses atomically
+        request_low = {
+            **binding,
+            "operations": [
+                {"op": "delete", "label": 1, "expected_input_sha256": info["label_sha256"]}
+            ],
+            "working_bytes": 512 * 1024**2,
+        }
+        with pytest.raises(ValueError, match="exceeds"):
+            wb.execute("correct_result", request_low)
+
+        # 3. Explicit invalid budget fails closed
+        for bad_budget in [False, "2GiB", -1, 0, 9 * 1024**3]:
+            request_bad = {
+                **binding,
+                "operations": [
+                    {
+                        "op": "delete",
+                        "label": 1,
+                        "expected_input_sha256": info["label_sha256"],
+                    }
+                ],
+                "working_bytes": bad_budget,
+            }
+            with pytest.raises(ValueError, match="working-memory budget must be an integer"):
+                wb.execute("correct_result", request_bad)
+
+        # 4. ROI addition with omitted working_bytes also inherits parent budget
+        roi = {
+            "annotation_id": "large-roi-1",
+            "plane": "XY",
+            "index": 0,
+            "points": [
+                {"u": 100, "v": 100},
+                {"u": 200, "v": 100},
+                {"u": 200, "v": 200},
+                {"u": 100, "v": 200},
+            ],
+        }
+        annotated = wb.execute(
+            "roi_add",
+            {**binding, "roi": roi, "measurement_channels": [0]},
+        )
+        assert len(annotated["annotations"]) == 1
+        assert annotated["annotations"][0]["id"] == "large-roi-1"
+    finally:
+        wb.close()
+
+
+@pytest.mark.parametrize("budget", [None, True, 1.5, "2147483648"])
+def test_correction_rejects_explicit_invalid_budget(scene, budget):
+    wb, _, parent = scene
+    binding = {"result_id": parent["id"], "revision_hash": parent["revision_hash"]}
+    info = wb.execute("correction_info", binding)
+    before = len(wb.project.list_results())
+    with pytest.raises(ValueError, match="working-memory budget"):
+        wb.execute("correct_result", {
+            **binding, "working_bytes": budget,
+            "operations": [{"op": "delete", "label": 1,
+                            "expected_input_sha256": info["label_sha256"]}],
+        })
+    assert len(wb.project.list_results()) == before

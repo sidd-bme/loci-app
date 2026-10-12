@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
   ResearchRecipe,
@@ -72,7 +73,7 @@ function nullable(value: string): string | null {
 
 function safeError(error: unknown): string {
   const message = error instanceof Error ? error.message : "The remote operation failed.";
-  return message.replace(/\/(?:Users|Volumes|home|scratch|opt)\/[^\s]+/g, "[private path]");
+  return sanitizeRendererError(message);
 }
 
 function readProfiles(value: unknown): RemoteProfile[] {
@@ -174,7 +175,6 @@ export function ResearchRemotePanel({
   const [queue, setQueue] = useState("");
   const [account, setAccount] = useState("");
   const [pbsGpuResource, setPbsGpuResource] = useState("");
-  const [allowDirect, setAllowDirect] = useState(false);
   const [connectTimeout, setConnectTimeout] = useState("10");
   const [cpus, setCpus] = useState("2");
   const [memory, setMemory] = useState("4096");
@@ -193,9 +193,6 @@ export function ResearchRemotePanel({
   const [batchSize, setBatchSize] = useState("8");
   const [selected, setSelected] = useState<string[]>(sources[0] ? [sources[0].id] : []);
   const [mappings, setMappings] = useState<Record<string, RemoteMapping>>({});
-  const [transferApproved, setTransferApproved] = useState(false);
-  const [retrievalApproved, setRetrievalApproved] = useState(false);
-  const [cleanupApproved, setCleanupApproved] = useState(false);
   const [requestKey, setRequestKey] = useState(randomKey);
   const [activeKey, setActiveKey] = useState("");
   const [stderr, setStderr] = useState(false);
@@ -277,6 +274,18 @@ export function ResearchRemotePanel({
     () => selected.map((id) => sources.find((source) => source.id === id)).filter(Boolean) as PublicSource[],
     [selected, sources],
   );
+  const stageScope = JSON.stringify([
+    alias, requestKey, selectedSources.map((source) => [source.id, source.sha256, source.size_bytes]),
+    mappings, selection, recipe, taskMode, cellposeProfile, cellposeDevice, allowCpuFallback,
+    rightsBasis, maxEdge, diameter, flowThreshold, cellprobThreshold, minSize, batchSize,
+  ]);
+  const currentStageScope = useRef(stageScope);
+  currentStageScope.current = stageScope;
+  const runIdentity = activeRun ? JSON.stringify([
+    activeRun.alias, activeRun.request_key, activeRun.request_sha256,
+  ]) : null;
+  const currentRunIdentity = useRef(runIdentity);
+  currentRunIdentity.current = runIdentity;
 
   async function perform<T>(work: () => Promise<T>, success: string): Promise<T | undefined> {
     setLocalBusy(true);
@@ -293,11 +302,11 @@ export function ResearchRemotePanel({
     }
   }
 
-  function mergeRun(value: unknown): RemoteRun {
+  function mergeRun(value: unknown, activate = true): RemoteRun {
     const run = (value as { run?: RemoteRun })?.run;
     if (!run?.request_key || !run.request_sha256) throw new Error("Remote run receipt was invalid.");
     setRuns((current) => [run, ...current.filter((item) => item.request_key !== run.request_key)]);
-    setActiveKey(run.request_key);
+    if (activate) setActiveKey(run.request_key);
     return run;
   }
 
@@ -320,7 +329,8 @@ export function ResearchRemotePanel({
         queue: direct ? null : nullable(queue),
         account: direct ? null : nullable(account),
         pbs_gpu_resource: direct ? null : nullable(pbsGpuResource),
-        allow_direct_compute: direct && allowDirect,
+        // Selecting the standalone compute-host route declares direct execution.
+        allow_direct_compute: direct,
         connect_timeout_seconds: Number(connectTimeout),
         resources: { cpus: Number(cpus), memory_mb: Number(memory), wall_minutes: Number(wallMinutes), gpus: Number(gpus) },
         expected_revision: revision,
@@ -356,10 +366,9 @@ export function ResearchRemotePanel({
   }
 
   async function stage(): Promise<void> {
-    if (!transferApproved) {
-      setError("Approve the exact selected-source scope before staging.");
-      return;
-    }
+    if (disabled || !activeProfile?.runtime_ready || !selectedSources.length) return;
+    // The transfer action authorizes only the source scope displayed at this click.
+    const authorizedScope = stageScope;
     if (taskMode === "cellpose" && activeProfile && (
       (cellposeDevice === "cuda" && activeProfile.resources.gpus < 1)
       || (cellposeDevice === "cpu" && activeProfile.resources.gpus !== 0)
@@ -417,31 +426,30 @@ export function ResearchRemotePanel({
       }),
       "Exact sources and request staged.",
     );
-    if (value) mergeRun(value);
+    if (value) mergeRun(value, currentStageScope.current === authorizedScope);
   }
 
   async function runOperation(operation: "submit" | "status" | "cancel" | "attach"): Promise<void> {
-    if (!activeRun) return;
+    if (!activeRun || disabled) return;
+    const targetIdentity = runIdentity;
     const value = await perform(
       () => api.execute(`remote_${operation}`, { alias: activeRun.alias, request_key: activeRun.request_key }),
       `Remote ${operation} completed.`,
     );
     if (value) {
-      mergeRun(value);
+      mergeRun(value, currentRunIdentity.current === targetIdentity);
       if (operation === "attach") await onResults(value);
     }
   }
 
   async function retrieve(): Promise<void> {
-    if (!activeRun || !retrievalApproved) {
-      setError("Approve retrieval of this exact run before transfer.");
-      return;
-    }
+    if (!activeRun || disabled || activeRun.state !== "finished") return;
+    const targetIdentity = runIdentity;
     const value = await perform(
       () => api.execute("remote_retrieve", { alias: activeRun.alias, request_key: activeRun.request_key, transfer_authorized: true }),
       "Verified outputs retrieved.",
     );
-    if (value) mergeRun(value);
+    if (value) mergeRun(value, currentRunIdentity.current === targetIdentity);
   }
 
   async function readLog(): Promise<void> {
@@ -455,10 +463,8 @@ export function ResearchRemotePanel({
   }
 
   async function removeOwned(): Promise<void> {
-    if (!activeRun || !cleanupApproved) {
-      setError("Approve removal of this exact attached run before cleanup.");
-      return;
-    }
+    if (!activeRun || disabled || activeRun.state !== "attached") return;
+    const targetIdentity = runIdentity;
     const value = await perform(
       () => api.execute("remote_remove_owned", {
         alias: activeRun.alias,
@@ -468,7 +474,7 @@ export function ResearchRemotePanel({
       }),
       "Two identity-bound owned run roots removed.",
     );
-    if (value) mergeRun(value);
+    if (value) mergeRun(value, currentRunIdentity.current === targetIdentity);
   }
 
   function mappingFor(id: string): RemoteMapping {
@@ -481,7 +487,7 @@ export function ResearchRemotePanel({
 
   return (
     <section className="research-remote" aria-label="Remote compute">
-      <header><div><p className="eyebrow">Declared infrastructure</p><h3>Remote compute</h3></div><span className="research-remote-state">{message}</span></header>
+      <header><h3>Remote compute</h3><span className="research-remote-state">{message}</span></header>
       {error && <div className="research-remote-error" role="alert">{error}</div>}
       <details open>
         <summary>Connection profile and fixed resources</summary>
@@ -494,7 +500,7 @@ export function ResearchRemotePanel({
           <label>Project root<input aria-label="Remote project root" value={projectRoot} onChange={(event) => setProjectRoot(event.target.value)} /></label>
           <label>Output root<input aria-label="Remote output root" value={outputRoot} onChange={(event) => setOutputRoot(event.target.value)} /></label>
           <label className="wide">Permitted input roots, one per line<textarea aria-label="Permitted remote input roots" value={inputRoots} onChange={(event) => setInputRoots(event.target.value)} /></label>
-          <label>Scheduler<select aria-label="Remote scheduler" value={scheduler} onChange={(event) => setScheduler(event.target.value as RemoteProfile["scheduler"])}><option value="pbspro">PBS Pro</option><option value="pbs">PBS</option><option value="slurm">Slurm</option><option value="direct">Standalone direct</option></select></label>
+          <label>Execution host<select aria-label="Remote scheduler" value={scheduler} onChange={(event) => setScheduler(event.target.value as RemoteProfile["scheduler"])}><option value="pbspro">PBS Pro cluster</option><option value="pbs">PBS cluster</option><option value="slurm">Slurm cluster</option><option value="direct">Standalone compute host · direct</option></select></label>
           <label>Scheduler bin directory<input aria-label="Scheduler bin directory" disabled={scheduler === "direct"} value={schedulerBin} onChange={(event) => setSchedulerBin(event.target.value)} /></label>
           <label>Identity file<input aria-label="SSH identity file" value={identityFile} onChange={(event) => setIdentityFile(event.target.value)} /></label>
           <label>Queue<input aria-label="Scheduler queue" disabled={scheduler === "direct"} value={queue} onChange={(event) => setQueue(event.target.value)} /></label>
@@ -512,8 +518,7 @@ export function ResearchRemotePanel({
           <span className="wide">Saved requested resources: {activeProfile.resources.cpus} CPU · {activeProfile.resources.memory_mb} MiB · {activeProfile.resources.gpus} GPU · {activeProfile.resources.wall_minutes} min</span>
           <span className="wide">Pinned connection: {activeProfile.connection ? `${activeProfile.connection.runtime_version} · ${activeProfile.connection.host_key_sha256}` : "unknown"}</span>
         </div>}
-        {scheduler === "direct" && <label className="research-remote-check"><input aria-label="Approve standalone direct compute host" type="checkbox" checked={allowDirect} onChange={(event) => setAllowDirect(event.target.checked)} />I confirm this alias is a standalone compute host approved for direct execution.</label>}
-        <div className="research-remote-actions"><button disabled={disabled} onClick={() => void saveProfile()}>Save exact profile</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("profile_test")}>Test pinned connection</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("readiness")}>Check worker readiness</button></div>
+        <div className="research-remote-actions"><button disabled={disabled} onClick={() => void saveProfile()}>{scheduler === "direct" ? "Save standalone compute profile" : "Save cluster profile"}</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("profile_test")}>Test pinned connection</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("readiness")}>Check worker readiness</button></div>
       </details>
 
       <details open>
@@ -538,8 +543,8 @@ export function ResearchRemotePanel({
         <div className="research-remote-sources">
           {sources.map((source) => { const mapping = mappingFor(source.id); return <fieldset key={source.id}><legend><label><input aria-label={`Select ${source.name}`} type="checkbox" checked={selected.includes(source.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, source.id] : current.filter((id) => id !== source.id))} />{source.name}</label></legend><label className="research-remote-check"><input aria-label={`Use remote copy for ${source.name}`} type="checkbox" checked={mapping.enabled} onChange={(event) => updateMapping(source.id, { enabled: event.target.checked })} />Use an exact existing file under a permitted input root</label>{mapping.enabled && <div className="research-remote-map"><label>Root index<input aria-label={`Remote root index for ${source.name}`} type="number" min="0" value={mapping.rootIndex} onChange={(event) => updateMapping(source.id, { rootIndex: event.target.value })} /></label><label>Relative path<input aria-label={`Remote relative path for ${source.name}`} value={mapping.relativePath} onChange={(event) => updateMapping(source.id, { relativePath: event.target.value })} /></label><code>{source.sha256}</code></div>}</fieldset>; })}
         </div>
-        <label className="research-remote-check"><input aria-label="Approve exact source scope" type="checkbox" checked={transferApproved} onChange={(event) => setTransferApproved(event.target.checked)} />Authorize this exact ordered source scope and current {taskMode === "recipe" ? "selection/recipe" : "selection, model identity, settings, device, and rights declaration"} for {alias}.</label>
-        <div className="research-remote-actions"><button disabled={disabled || !activeProfile?.runtime_ready || !selectedSources.length} onClick={() => void stage()}>Stage exact request</button><button disabled={disabled} onClick={() => setRequestKey(randomKey())}>New request key</button></div>
+        <p className="research-remote-scope">C {selection.c + 1} · Z {selection.z + 1}{selection.z_stop === undefined ? "" : `–${selection.z_stop}`} · T {selection.t + 1} · {selection.width} × {selection.height} px at ({selection.x}, {selection.y})</p>
+        <div className="research-remote-actions"><button disabled={disabled || !activeProfile?.runtime_ready || !selectedSources.length} onClick={() => void stage()}>Stage &amp; transfer {selectedSources.length} {selectedSources.length === 1 ? "image" : "images"} to {alias}</button><button disabled={disabled} onClick={() => setRequestKey(randomKey())}>New request key</button></div>
       </details>
 
       <details open>
@@ -564,10 +569,9 @@ export function ResearchRemotePanel({
         </div>}
         <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "staged"} onClick={() => void runOperation("submit")}>Submit or recover</button><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void runOperation("status")}>Refresh status</button><button disabled={disabled || !activeRun?.remote_job_id || ["retrieved", "attached", "cleaned"].includes(activeRun.state)} onClick={() => void runOperation("cancel")}>Cancel exact job</button></div>
         <div className="research-remote-log"><label><input aria-label="Read stderr" type="checkbox" checked={stderr} onChange={(event) => setStderr(event.target.checked)} />stderr</label><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void readLog()}>Read bounded log</button><pre aria-label="Remote bounded log">{logText || "No log loaded."}</pre></div>
-        <label className="research-remote-check"><input aria-label="Approve result retrieval" type="checkbox" checked={retrievalApproved} onChange={(event) => setRetrievalApproved(event.target.checked)} />Authorize retrieval into this study’s private result cache.</label>
-        <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "finished"} onClick={() => void retrieve()}>Retrieve verified outputs</button><button disabled={disabled || activeRun?.state !== "retrieved"} onClick={() => void runOperation("attach")}>Attach unreviewed results</button></div>
-        <label className="research-remote-check danger"><input aria-label="Approve owned remote cleanup" type="checkbox" checked={cleanupApproved} onChange={(event) => setCleanupApproved(event.target.checked)} />After verified attachment, remove only the two run roots bound to this request hash and server job.</label>
-        <button className="research-remote-remove" disabled={disabled || activeRun?.state !== "attached"} onClick={() => void removeOwned()}>Remove identity-bound owned data</button>
+        <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "finished"} onClick={() => void retrieve()}>Retrieve {activeRun?.request_key.slice(0, 8) ?? "run"} into study</button><button disabled={disabled || activeRun?.state !== "retrieved"} onClick={() => void runOperation("attach")}>Attach unreviewed results</button></div>
+        {activeRun?.state === "attached" && <p className="research-remote-scope">Removes this run’s two owned folders after verified attachment.</p>}
+        <button className="research-remote-remove" disabled={disabled || activeRun?.state !== "attached"} onClick={() => void removeOwned()}>Remove {activeRun?.request_key.slice(0, 8) ?? "run"} data from {activeRun?.alias ?? "host"}</button>
       </details>
     </section>
   );

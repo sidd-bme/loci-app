@@ -13,7 +13,7 @@ afterEach(cleanup);
 
 const mockSource1: ResearchSource = {
   id: "a".repeat(32),
-  name: "siIL4RA_Untreated_5.ims",
+  name: "control_5.ims",
   sha256: "1".repeat(64),
   metadata: {
     dimensions: { x: 512, y: 512, z: 10, c: 3, t: 1 },
@@ -24,7 +24,7 @@ const mockSource1: ResearchSource = {
 
 const mockSource2: ResearchSource = {
   id: "b".repeat(32),
-  name: "siIL4RA_Treated_2.ims",
+  name: "treated_2.ims",
   sha256: "2".repeat(64),
   metadata: {
     dimensions: { x: 512, y: 512, z: 10, c: 3, t: 1 },
@@ -48,7 +48,7 @@ describe("BatchChannelColorsDialog", () => {
       affected_sources: [
         {
           source_id: mockSource1.id,
-          source_name: "siIL4RA_Untreated_5.ims",
+          source_name: "control_5.ims",
           revision: 1,
           status: "applied",
           reason: null,
@@ -56,7 +56,7 @@ describe("BatchChannelColorsDialog", () => {
         },
         {
           source_id: mockSource2.id,
-          source_name: "siIL4RA_Treated_2.ims",
+          source_name: "treated_2.ims",
           revision: 1,
           status: "applied",
           reason: null,

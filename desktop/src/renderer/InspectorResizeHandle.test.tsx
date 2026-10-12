@@ -14,11 +14,11 @@ it("resizes accessibly within viewport bounds and restores the saved width", () 
   expect(onChange.mock.lastCall![0]).toBeLessThanOrEqual(window.innerWidth * .45);
   fireEvent.keyDown(handle, { key: "Home" });
   expect(onChange).toHaveBeenLastCalledWith(280);
-  fireEvent.doubleClick(handle); expect(loadInspectorWidth()).toBe(304);
+  fireEvent.doubleClick(handle); expect(loadInspectorWidth()).toBe(330);
 });
 it("ignores invalid stored widths", () => {
-  localStorage.setItem("loci.inspector-width.v1", "99999"); expect(loadInspectorWidth()).toBe(304);
-  localStorage.setItem("loci.inspector-width.v1", "NaN"); expect(loadInspectorWidth()).toBe(304);
+  localStorage.setItem("loci.inspector-width.v1", "99999"); expect(loadInspectorWidth()).toBe(330);
+  localStorage.setItem("loci.inspector-width.v1", "NaN"); expect(loadInspectorWidth()).toBe(330);
 });
 it("applies is-dragging class while dragging with pointer", () => {
   const onChange = vi.fn();

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
   ResearchResult,
@@ -6,6 +7,7 @@ import type {
 
 export type Plane = "XY" | "XZ" | "YZ";
 export type Point = { u: number; v: number };
+export type CorrectionObjectTarget = { result_id: string; revision_hash: string; label: number };
 type Seed3D = { x: number; y: number; z: number };
 export type CorrectionPreview =
   | {
@@ -87,7 +89,7 @@ function seedOnPlane(seed: Seed3D, plane: Plane, index: number): Point | null {
 
 function safeMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message
-    ? error.message.replace(/\/?(?:Users|Volumes)\/[^\s]+/g, "selected source")
+    ? sanitizeRendererError(error.message)
     : fallback;
 }
 
@@ -133,6 +135,7 @@ export function ResearchCorrectionPanel({
   busy,
   canUndo,
   canRedo,
+  selectedObject,
 }: {
   api: ResearchDesktopApi;
   result: ResearchResult | null;
@@ -156,6 +159,7 @@ export function ResearchCorrectionPanel({
   busy: boolean;
   canUndo: boolean;
   canRedo: boolean;
+  selectedObject?: CorrectionObjectTarget | null;
 }): React.JSX.Element {
   const [info, setInfo] = useState<Info | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
@@ -183,7 +187,10 @@ export function ResearchCorrectionPanel({
   const [slabStop, setSlabStop] = useState(1);
   const [roiChannels, setRoiChannels] = useState<number[]>([0]);
   const [mutationBusy, setMutationBusy] = useState(false);
-  const locked = busy || mutationBusy;
+  const [targetError, setTargetError] = useState<string | null>(null);
+  const requestedObject = useRef(selectedObject);
+  requestedObject.current = selectedObject;
+  const locked = busy || mutationBusy || Boolean(targetError);
 
   useEffect(() => {
     let active = true;
@@ -221,7 +228,10 @@ export function ResearchCorrectionPanel({
           throw new Error(
             "Correction information did not match the selected exact revision.",
           );
-        const existing = next.label_ids[0] ?? 1;
+        const requested = requestedObject.current;
+        const existing = requested
+          ? requested.result_id === next.result_id && requested.revision_hash === next.revision_hash && next.label_ids.includes(requested.label) ? requested.label : 0
+          : next.label_ids[0] ?? 1;
         setInfo(next);
         setTool(next.label_sha256 ? "paint" : "roi");
         setLabel(existing);
@@ -251,6 +261,19 @@ export function ResearchCorrectionPanel({
     onViewChange,
     setPoints,
   ]);
+
+  // A population selection is an explicit target, not a request to reinitialize
+  // correction drafts. Validate against the engine's complete exact-revision IDs.
+  useEffect(() => {
+    setTargetError(null);
+    if (!selectedObject || !info) return;
+    if (selectedObject.result_id !== info.result_id || selectedObject.revision_hash !== info.revision_hash ||
+        !Number.isSafeInteger(selectedObject.label) || !info.label_ids.includes(selectedObject.label)) {
+      setTargetError("The selected object is absent from this exact correction revision. Return to Statistics & objects and select it again.");
+      return;
+    }
+    setLabel(selectedObject.label);
+  }, [info, selectedObject?.result_id, selectedObject?.revision_hash, selectedObject?.label]);
 
   const savedSeeds = useMemo(() => {
     if (splitMode === "2D")
@@ -396,7 +419,7 @@ export function ResearchCorrectionPanel({
       </div>
     );
 
-  const selected = info.label_ids.includes(label);
+  const selected = !targetError && info.label_ids.includes(label);
   const hasLabels = typeof info.label_sha256 === "string";
   const polygon = points.length >= 3;
   const movedVertices = boundary
@@ -453,6 +476,9 @@ export function ResearchCorrectionPanel({
         operations: [
           { ...operation, expected_input_sha256: info.label_sha256 },
         ],
+        ...(typeof result.working_bytes === "number"
+          ? { working_bytes: result.working_bytes }
+          : {}),
       });
       return childFrom(output, result);
     }, "Correction could not be applied to this exact revision.");
@@ -490,6 +516,9 @@ export function ResearchCorrectionPanel({
           slab_stop_exclusive: slabStop,
         },
         measurement_channels: roiChannels,
+        ...(typeof result.working_bytes === "number"
+          ? { working_bytes: result.working_bytes }
+          : {}),
       });
       return childFrom(output, result);
     }, "ROI could not be added to this exact revision.");
@@ -532,6 +561,7 @@ export function ResearchCorrectionPanel({
   return (
     <div className="research-panel research-correction">
       <h2>Corrections & ROI</h2>
+      {targetError && <p role="alert">{targetError}</p>}
       <p>
         Edits create an unreviewed child revision. Canvas points are
         voxel-center coordinates on the displayed exact revision.
@@ -588,6 +618,7 @@ export function ResearchCorrectionPanel({
           {!info.label_ids.length && (
             <option value="">No existing labels</option>
           )}
+          {targetError && <option value="">Selected object unavailable</option>}
           {info.label_ids.map((value) => (
             <option key={value} value={value}>
               {value}

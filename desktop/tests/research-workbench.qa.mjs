@@ -289,6 +289,30 @@ let app = await launch();
 let page = await app.firstWindow();
 try {
   await visible(page, page.locator("main.image-first-empty"), "image-first welcome");
+  await screenshot(page, "empty-workspace");
+  // Hold the native picker open to exercise the real busy state, then cancel.
+  await app.evaluate(({ dialog }) => {
+    dialog.showOpenDialog = () => new Promise((resolve) => {
+      globalThis.lociQaCancelPicker = () => resolve({ canceled: true, filePaths: [] });
+    });
+  });
+  await page.getByRole("button", { name: "Open images", exact: true }).click();
+  await page.locator(".welcome-progress").waitFor({ state: "visible" });
+  await screenshot(page, "opening-cancellable");
+  await app.evaluate(() => { globalThis.lociQaCancelPicker(); delete globalThis.lociQaCancelPicker; });
+  await page.locator(".welcome-progress").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("main.image-first-empty").isVisible(), true);
+
+  const corruptFixture = path.join(runRoot, "synthetic-corrupt.tiff");
+  await fs.writeFile(corruptFixture, "Intentionally invalid synthetic TIFF for recovery QA.");
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
+  }, corruptFixture);
+  await page.getByRole("button", { name: "Open images", exact: true }).click();
+  await page.getByRole("alert").waitFor({ state: "visible" });
+  await screenshot(page, "invalid-image-error");
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.getByRole("alert").waitFor({ state: "hidden" });
   await installDialogs(app);
   await page.getByRole("button", { name: "Open images", exact: true }).click();
   await visible(
@@ -363,6 +387,31 @@ try {
   await rows(page, 2, "um^2");
   await assertRowValues(page, [10, 18]);
   await screenshot(page, "two-dimensional-result");
+  await selectTool(page, "Info");
+  const summary = page.locator(".research-result-summary-card");
+  await summary.waitFor({ state: "visible" });
+  // Fixture rectangles are 4*5 and 6*6 pixels at 0.5*1 µm²/pixel.
+  assert.equal(await summary.locator(".research-stat-value").nth(0).innerText(), "2");
+  assert.match(await summary.innerText(), /Mean Area\s+14\s+um\^2/);
+  assert.match(await summary.innerText(), /Range\s+10 – 18\s+um\^2/);
+  const measurementTable = page.getByRole("region", { name: "Result measurements", exact: true });
+  await measurementTable.focus();
+  await measurementTable.press("ArrowUp");
+  await measurementTable.press("ArrowUp");
+  await measurementTable.press("ArrowDown");
+  assert.equal(await measurementTable.locator("tbody tr").nth(1).getAttribute("aria-selected"), "true");
+  assert.equal(await measurementTable.evaluate((element) => element === document.activeElement), true);
+  for (const width of [1024, 1440]) {
+    await app.evaluate(({ BrowserWindow }, width) => {
+      BrowserWindow.getAllWindows()[0].setBounds({ width, height: 900 });
+    }, width);
+    await summary.scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth);
+    await screenshot(page, `quantitative-summary-${width}`);
+  }
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 720 });
+  });
   await selectTool(page, "Display");
   await openAnalysisRegion(page);
   await page.getByLabel("Z", { exact: true }).fill("0");

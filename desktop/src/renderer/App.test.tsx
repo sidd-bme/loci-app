@@ -22,6 +22,23 @@ import App, {
   viewerFilterParameters,
 } from "./App";
 import { createProjectManifest } from "./project-manifest";
+import type { ResearchDesktopApi } from "../shared/research-contracts";
+import type { ImageWindowApi, ImageWindowState } from "../shared/image-window-api";
+
+const nativeCommandMocks = vi.hoisted(() => ({ received: vi.fn() }));
+
+vi.mock("./ResearchWorkbench", async () => {
+  const { useEffect } = await import("react");
+  const { subscribeWorkbenchCommands } = await import("./workbench-commands");
+  return { default: function Workbench({ onBack }: { onBack: () => void }) {
+    useEffect(() => subscribeWorkbenchCommands(nativeCommandMocks.received), []);
+    return <main aria-label="Research workspace"><button onClick={onBack}>Legacy workspace</button></main>;
+  } };
+});
+
+vi.mock("./DetachedControlPanel", () => ({
+  DetachedControlPanel: () => <main aria-label="Detached controls" />,
+}));
 
 const previewDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -631,6 +648,9 @@ describe("Loci renderer", () => {
 
   beforeEach(() => {
     window.localStorage.clear();
+    delete window.lociResearch;
+    delete window.lociImageWindows;
+    nativeCommandMocks.received.mockReset();
     globalThis.ResizeObserver = class {
       observe(): void {}
       disconnect(): void {}
@@ -641,6 +661,108 @@ describe("Loci renderer", () => {
     HTMLElement.prototype.releasePointerCapture = vi.fn();
     HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(true);
     window.loci = mockApi();
+  });
+
+  it.each([
+    ["onImportRequested", "open-images"],
+    ["onFolderImportRequested", "open-folder"],
+    ["onOpenProjectRequested", "open-study"],
+    ["onSaveProjectRequested", "save-study"],
+  ] as const)("routes %s to the active research workspace", async (method, command) => {
+    window.lociResearch = {} as ResearchDesktopApi;
+    render(<App />);
+    await screen.findByRole("main", { name: "Research workspace" });
+    const api = window.loci!;
+    const callback = vi.mocked(api[method]).mock.calls.at(-1)![0];
+    act(() => callback());
+    expect(nativeCommandMocks.received).toHaveBeenCalledExactlyOnceWith(command);
+    expect(api.pickImages).not.toHaveBeenCalled();
+    expect(api.pickFolder).not.toHaveBeenCalled();
+    expect(api.openProject).not.toHaveBeenCalled();
+    expect(api.saveProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy native import behavior after leaving the research workspace", async () => {
+    window.lociResearch = {} as ResearchDesktopApi;
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Legacy workspace" }));
+    const callback = vi.mocked(window.loci!.onImportRequested).mock.calls.at(-1)![0];
+    act(() => callback());
+    await waitFor(() => expect(window.loci!.pickImages).toHaveBeenCalledOnce());
+    expect(nativeCommandMocks.received).not.toHaveBeenCalled();
+  });
+
+  it("opens the manual through the native guide event and removes its subscription", async () => {
+    const stop = vi.fn();
+    window.loci = mockApi({ onGuideRequested: vi.fn().mockReturnValue(stop) });
+    const view = render(<App />);
+    const callback = vi.mocked(window.loci.onGuideRequested!).mock.calls.at(-1)![0];
+    act(() => callback());
+    expect(await screen.findByRole("dialog", { name: /manual/i })).toBeVisible();
+    view.unmount();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["onImportRequested", "open-images"],
+    ["onFolderImportRequested", "open-folder"],
+    ["onOpenProjectRequested", "open-study"],
+    ["onSaveProjectRequested", "save-study"],
+  ] as const)("returns detached controls before delivering %s", async (method, command) => {
+    window.lociResearch = {} as ResearchDesktopApi;
+    const target = { sourceId: "source-a" } as ImageWindowState["target"];
+    const state = { role: "control", target, views: [{ target }], pinned: false } as ImageWindowState;
+    let finishReturn!: () => void;
+    const closeAll = vi.fn(() => new Promise<void>((resolve) => { finishReturn = resolve; }));
+    window.lociImageWindows = { state: vi.fn().mockResolvedValue(state),
+      onState: vi.fn().mockReturnValue(() => undefined), closeAll } as unknown as ImageWindowApi;
+    render(<App />);
+    await screen.findByRole("main", { name: "Detached controls" });
+    const callback = vi.mocked(window.loci![method]).mock.calls.at(-1)![0];
+    act(() => callback());
+    expect(closeAll).toHaveBeenCalledOnce();
+    expect(nativeCommandMocks.received).not.toHaveBeenCalled();
+    await act(async () => finishReturn());
+    await screen.findByRole("main", { name: "Research workspace" });
+    expect(nativeCommandMocks.received).toHaveBeenCalledExactlyOnceWith(command);
+    expect(window.loci!.openProject).not.toHaveBeenCalled();
+    expect(window.loci!.saveProject).not.toHaveBeenCalled();
+  });
+
+  it("returns detached controls through the native Window action without issuing a File command", async () => {
+    const stop = vi.fn();
+    window.loci = mockApi({ onWorkspaceRequested: vi.fn().mockReturnValue(stop) });
+    window.lociResearch = {} as ResearchDesktopApi;
+    const target = { sourceId: "source-a" } as ImageWindowState["target"];
+    const state = { role: "control", target, views: [{ target }], pinned: false } as ImageWindowState;
+    const closeAll = vi.fn().mockResolvedValue(undefined);
+    window.lociImageWindows = { state: vi.fn().mockResolvedValue(state),
+      onState: vi.fn().mockReturnValue(() => undefined), closeAll } as unknown as ImageWindowApi;
+    const view = render(<App />);
+    await screen.findByRole("main", { name: "Detached controls" });
+    await act(async () => vi.mocked(window.loci!.onWorkspaceRequested!).mock.calls.at(-1)![0]());
+    await screen.findByRole("main", { name: "Research workspace" });
+    expect(closeAll).toHaveBeenCalledOnce();
+    expect(nativeCommandMocks.received).not.toHaveBeenCalled();
+    view.unmount();
+    expect(stop).toHaveBeenCalled();
+  });
+
+  it("keeps detached ownership and a visible error when returning fails", async () => {
+    window.lociResearch = {} as ResearchDesktopApi;
+    const target = { sourceId: "source-a" } as ImageWindowState["target"];
+    const state = { role: "control", target, views: [{ target }], pinned: false } as ImageWindowState;
+    window.lociImageWindows = { state: vi.fn().mockResolvedValue(state),
+      onState: vi.fn().mockReturnValue(() => undefined),
+      closeAll: vi.fn().mockRejectedValue(new Error("layout unavailable")),
+    } as unknown as ImageWindowApi;
+    render(<App />);
+    await screen.findByRole("main", { name: "Detached controls" });
+    act(() => vi.mocked(window.loci!.onSaveProjectRequested).mock.calls.at(-1)![0]());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not return to the workspace");
+    expect(screen.getByRole("main", { name: "Detached controls" })).toBeVisible();
+    expect(nativeCommandMocks.received).not.toHaveBeenCalled();
+    expect(window.loci!.saveProject).not.toHaveBeenCalled();
   });
 
   it("caps freehand correction strokes while preserving their endpoints", () => {
@@ -1640,8 +1762,8 @@ describe("Loci renderer", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: "midnight" } });
     fireEvent.click(screen.getByRole("radio", { name: /Large/i }));
     fireEvent.click(screen.getByRole("tab", { name: "Saving & export" }));
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Default figure DPI" }), { target: { value: "600" } });
-    fireEvent.blur(screen.getByRole("spinbutton", { name: "Default figure DPI" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Default figure DPI" }), { target: { value: "600" } });
+    fireEvent.blur(screen.getByRole("textbox", { name: "Default figure DPI" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "midnight");
     expect(document.documentElement).toHaveAttribute("data-text-size", "large");
@@ -1784,7 +1906,7 @@ describe("Loci renderer", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from Loci" }));
 
     await waitFor(() => expect(window.loci.removeSource).toHaveBeenCalledWith("source-2"));
-    expect(screen.queryByText("plate-b.tif")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("plate-b.tif")).not.toBeInTheDocument());
     expect(await screen.findByText(/source file was not deleted/i)).toBeVisible();
   });
 
@@ -2223,7 +2345,9 @@ describe("Loci renderer", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Edit boundary vertices" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Edit boundary vertices" }));
-    fireEvent.pointerDown(viewport!, { button: 0, pointerId: 22, clientX: 300, clientY: 230 });
+    await act(async () => {
+      fireEvent.pointerDown(viewport!, { button: 0, pointerId: 22, clientX: 300, clientY: 230 });
+    });
     await waitFor(() => expect(api.getInstanceBoundary).toHaveBeenCalledWith(
       "source-1",
       "result-1",
@@ -2237,7 +2361,9 @@ describe("Loci renderer", () => {
     expect(api.moveBoundaryVertex).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument();
 
-    fireEvent.pointerDown(viewport!, { button: 0, pointerId: 23, clientX: 300, clientY: 230 });
+    await act(async () => {
+      fireEvent.pointerDown(viewport!, { button: 0, pointerId: 23, clientX: 300, clientY: 230 });
+    });
     const commitAfterCancel = await screen.findByRole("button", { name: "Commit" });
     expect(api.getInstanceBoundary).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(window, { key: "ArrowRight" });

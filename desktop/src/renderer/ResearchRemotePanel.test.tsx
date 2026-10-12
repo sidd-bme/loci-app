@@ -51,6 +51,86 @@ function renderPanel(execute: ResearchDesktopApi["execute"], onResults = vi.fn()
 }
 
 describe("ResearchRemotePanel", () => {
+  it("redacts scratch paths when loading remote state fails", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("Cannot load /scratch/team/private run/state.json: denied"));
+    renderPanel(execute);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot load [local path redacted]: denied");
+    expect(document.body.textContent).not.toContain("/scratch/team/private run/state.json");
+  });
+
+  it("requires a fresh transfer click for a changed scope and ignores late activation of the old request", async () => {
+    const firstRun = { request_key: "1".repeat(32), request_sha256: "2".repeat(64), alias: "vanda", state: "staged", remote_state: "reserved", remote_job_id: null, status_detail: null, outputs: null, attachment: null, remote_cleanup: null };
+    const secondRun = { ...firstRun, request_key: "3".repeat(32), request_sha256: "4".repeat(64) };
+    let finishStage!: (value: unknown) => void;
+    let stages = 0;
+    const execute = vi.fn((operation: string) => {
+      if (operation === "remote_profile_list") return Promise.resolve({ profiles: [profile] });
+      if (operation === "remote_run_list") return Promise.resolve({ runs: [] });
+      if (operation === "remote_stage") {
+        stages += 1;
+        return stages === 1 ? new Promise((resolve) => { finishStage = resolve; }) : Promise.resolve({ run: secondRun });
+      }
+      return Promise.resolve({});
+    });
+    const props = { api: api(execute), sources: [source], selection, recipe, onResults: vi.fn() };
+    const { rerender } = render(<ResearchRemotePanel {...props} />);
+    await screen.findByText("Saved remote state loaded.");
+    fireEvent.change(screen.getByLabelText("Remote request key"), { target: { value: firstRun.request_key } });
+    fireEvent.click(screen.getByRole("button", { name: "Stage & transfer 1 image to vanda" }));
+    const nextSelection = { ...selection, x: 9 };
+    rerender(<ResearchRemotePanel {...props} selection={nextSelection} />);
+    fireEvent.change(screen.getByLabelText("Remote request key"), { target: { value: secondRun.request_key } });
+    finishStage({ run: firstRun });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Stage & transfer/ })).toBeEnabled());
+    expect(screen.getByLabelText("Saved remote run")).toHaveValue("");
+    expect(stages).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: /Stage & transfer/ }));
+    await waitFor(() => expect(stages).toBe(2));
+    expect(execute).toHaveBeenLastCalledWith("remote_stage", expect.objectContaining({
+      request_key: secondRun.request_key,
+      tasks: [expect.objectContaining({ selection: nextSelection })],
+      transfer_authority: { approved: true, scope: "remote-run-recipe", destination_alias: "vanda", source_ids: [source.id] },
+    }));
+    expect(screen.queryByLabelText("Approve exact source scope")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { operation: "remote_retrieve", state: "finished", nextState: "retrieved", action: /Retrieve .* into study/, authority: { transfer_authorized: true } },
+    { operation: "remote_remove_owned", state: "attached", nextState: "cleaned", action: /Remove .* data from/, authority: { cleanup_authorized: true } },
+  ])("binds $operation to each deliberate click on the selected run", async ({ operation, state, nextState, action, authority }) => {
+    const firstRun = { request_key: "5".repeat(32), request_sha256: "6".repeat(64), alias: "vanda", state, remote_state: "finished", remote_job_id: "123.server", status_detail: null, outputs: [], attachment: null, remote_cleanup: null };
+    const secondRun = { ...firstRun, request_key: "7".repeat(32), request_sha256: "8".repeat(64), alias: "atlas" };
+    let finishOperation!: (value: unknown) => void;
+    let mutations = 0;
+    const execute = vi.fn((currentOperation: string) => {
+      if (currentOperation === "remote_profile_list") return Promise.resolve({ profiles: [profile] });
+      if (currentOperation === "remote_run_list") return Promise.resolve({ runs: [firstRun, secondRun] });
+      if (currentOperation === operation) {
+        mutations += 1;
+        return mutations === 1 ? new Promise((resolve) => { finishOperation = resolve; }) : Promise.resolve({ run: { ...secondRun, state: nextState } });
+      }
+      return Promise.resolve({});
+    });
+    renderPanel(execute);
+    await screen.findByText("Saved remote state loaded.");
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    expect(execute).toHaveBeenCalledWith(operation, {
+      alias: firstRun.alias, request_key: firstRun.request_key, ...authority,
+      ...(operation === "remote_remove_owned" ? { request_sha256: firstRun.request_sha256 } : {}),
+    });
+    fireEvent.change(screen.getByLabelText("Saved remote run"), { target: { value: secondRun.request_key } });
+    finishOperation({ run: { ...firstRun, state: nextState } });
+    await waitFor(() => expect(screen.getByRole("button", { name: action })).toBeEnabled());
+    expect(screen.getByLabelText("Saved remote run")).toHaveValue(secondRun.request_key);
+    expect(mutations).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    await waitFor(() => expect(mutations).toBe(2));
+    expect(execute).toHaveBeenLastCalledWith(operation, {
+      alias: secondRun.alias, request_key: secondRun.request_key, ...authority,
+      ...(operation === "remote_remove_owned" ? { request_sha256: secondRun.request_sha256 } : {}),
+    });
+  });
+
   it("saves an exact direct profile only with the standalone compute declaration", async () => {
     const execute = vi.fn((operation: string) => {
       if (operation === "remote_profile_list") return Promise.resolve({ profiles: [] });
@@ -67,8 +147,7 @@ describe("ResearchRemotePanel", () => {
     fireEvent.change(screen.getByLabelText("Remote output root"), { target: { value: "/scratch/me/loci-output" } });
     fireEvent.change(screen.getByLabelText("Permitted remote input roots"), { target: { value: "/data/lab/images\n/data/lab/archive" } });
     fireEvent.change(screen.getByLabelText("Remote scheduler"), { target: { value: "direct" } });
-    fireEvent.click(screen.getByLabelText("Approve standalone direct compute host"));
-    fireEvent.click(screen.getByText("Save exact profile"));
+    fireEvent.click(screen.getByText("Save standalone compute profile"));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_profile_save", expect.objectContaining({
       scheduler: "direct", allow_direct_compute: true, scheduler_bin_dir: null, queue: null,
       remote_input_roots: ["/data/lab/images", "/data/lab/archive"], expected_revision: 0,
@@ -87,8 +166,7 @@ describe("ResearchRemotePanel", () => {
     fireEvent.change(screen.getByLabelText("Remote request key"), { target: { value: run.request_key } });
     fireEvent.click(screen.getByLabelText("Use remote copy for Exact image"));
     fireEvent.change(screen.getByLabelText("Remote relative path for Exact image"), { target: { value: "cohort/image.ome.tif" } });
-    fireEvent.click(screen.getByLabelText("Approve exact source scope"));
-    fireEvent.click(screen.getByText("Stage exact request"));
+    fireEvent.click(screen.getByRole("button", { name: /Stage & transfer/ }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_stage", {
       alias: "vanda",
       request_key: run.request_key,
@@ -110,8 +188,7 @@ describe("ResearchRemotePanel", () => {
     await screen.findByText("Saved remote state loaded.");
     fireEvent.change(screen.getByLabelText("Remote request key"), { target: { value: run.request_key } });
     fireEvent.change(screen.getByLabelText("Remote task type"), { target: { value: "cellpose" } });
-    fireEvent.click(screen.getByLabelText("Approve exact source scope"));
-    fireEvent.click(screen.getByText("Stage exact request"));
+    fireEvent.click(screen.getByRole("button", { name: /Stage & transfer/ }));
 
     await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_stage", expect.objectContaining({
       request_key: run.request_key,
@@ -152,8 +229,7 @@ describe("ResearchRemotePanel", () => {
     await screen.findByText("Saved remote state loaded.");
     fireEvent.click(screen.getByText("Attach unreviewed results"));
     await waitFor(() => expect(onResults).toHaveBeenCalled());
-    fireEvent.click(screen.getByLabelText("Approve owned remote cleanup"));
-    fireEvent.click(screen.getByText("Remove identity-bound owned data"));
+    fireEvent.click(screen.getByRole("button", { name: /Remove .* data from/ }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_remove_owned", {
       alias: "vanda", request_key: attached.request_key, request_sha256: attached.request_sha256, cleanup_authorized: true,
     }));

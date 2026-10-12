@@ -5,6 +5,13 @@ import { boundedCamera, fitCamera, imageExtent, screenToSource, sourceLevels,
   sourceToScreen, visibleTiles, zoomCamera, type Camera, type Tile } from "./viewer-camera";
 import { sourcePointToResultPixel, type ResolvedResultPlaneOverlay } from "./result-plane-overlay";
 import type { CorrectionPreview } from "./ResearchCorrectionPanel";
+import {
+  createPlaneNavigationState,
+  formatPlaneNavigationStatus,
+  recordLatencySample,
+  DEFAULT_PLANE_POLICY_CONFIG,
+  type PlaneNavigationState,
+} from "./plane-navigation";
 import "./ImageViewport.css";
 
 export type ViewerChannel = {
@@ -30,7 +37,18 @@ export type ImageAnnotation = {
   points: ImagePoint[]; label: string; color: string; z: number; t: number;
   transect?: EpidermalTransectMetadata;
 };
-type CachedTile = { tile: Tile; image: HTMLImageElement; bytes: number };
+
+/** Presentation only: legacy class markers remain in saved labels. */
+export function annotationDisplayLabel(annotation: Pick<ImageAnnotation, "label" | "transect">) {
+  const prefix = annotation.label.match(/^\[transect:(suprapapillary|ridge-base|custom)\]\s*/u);
+  const transectClass = annotation.transect?.class ?? prefix?.[1];
+  const label = prefix ? annotation.label.slice(prefix[0].length) : annotation.label;
+  const fallback = transectClass === "suprapapillary" ? "Suprapapillary transect"
+    : transectClass === "ridge-base" ? "Ridge-base transect" : "Custom transect";
+  return { label: label || (transectClass ? fallback : ""), isTransect: Boolean(transectClass) };
+}
+
+type CachedTile = { tile: Tile; image: HTMLImageElement; bytes: number; maxEdge?: number };
 const CACHE_BYTES = 64 * 1024 ** 2;
 const OVERVIEW_KEY = "overview";
 
@@ -50,7 +68,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null,
   initialCamera = null, controlledCamera = null, onCamera, onViewReady, onRegion, paused = false,
   showScaleBar = true, showNavigator = true, requestLane, overlayRight = 0,
-  onObjectClick,
+  onObjectClick, onRelinkSource, relinkBusy = false,
 }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection;
   channels: ViewerChannel[]; projection?: "plane" | "max" | "mean";
@@ -74,6 +92,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   overlayRight?: number;
   /** Called on click when navigating to pick objects */
   onObjectClick?: (point: { x: number; y: number }) => void;
+  onRelinkSource?: () => void;
+  relinkBusy?: boolean;
 }) {
   const generatedLane = `image-viewport-${useId().replace(/[^a-z0-9_-]/giu, "").toLowerCase()}`;
   const viewerLane = requestLane ?? generatedLane;
@@ -84,6 +104,30 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const [fitted, setFitted] = useState(!initialCamera);
   const [loading, setLoading] = useState(false);
   const [prepared, setPrepared] = useState(false);
+  const [settled, setSettled] = useState(true);
+  const settledRef = useRef(true);
+  const [viewStopped, setViewStopped] = useState<string | null>(null);
+  const stoppedRef = useRef(false);
+  const latestDrain = useRef<() => Promise<void>>(async () => {});
+  const paintedScope = useRef("");
+  const reusablePaintGeometry = useRef("");
+  const [cacheLimited, setCacheLimited] = useState(false);
+  const settledTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevPlaneRef = useRef<{ sourceScope: string; projection: string; z: number; t: number } | null>(null);
+  const policyState = useRef<PlaneNavigationState>(createPlaneNavigationState(1024));
+  const scopePlanes = useRef<Map<string, { z: number; t: number }>>(new Map());
+  const [displayedPlane, setDisplayedPlane] = useState<{
+    z: number | null;
+    t: number | null;
+    isMatching: boolean;
+    isPreview: boolean;
+  } | null>(null);
+  const displayedPlaneRef = useRef<{
+    z: number | null;
+    t: number | null;
+    isMatching: boolean;
+    isPreview: boolean;
+  } | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [toolsPosition, setToolsPosition] = useState<{ x: number; y: number } | null>(null);
   const [navPosition, setNavPosition] = useState<{ x: number; y: number } | null>(null);
@@ -95,7 +139,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const [draftLimitReached, setDraftLimitReached] = useState(false);
   const toolsDrag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const frame = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
-  const sourceScope = JSON.stringify([source.id, source.sha256, source.locator_state, channels]);
+  const sourceScope = JSON.stringify([source.id, source.sha256, source.locator_state, selection.c, projection, channels]);
   const cache = useRef<{
     scope: string;
     sourceScope: string;
@@ -111,10 +155,48 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     bytes: 0,
     lastRenderedScope: "",
   });
+  const removeTile = (key: string) => {
+    const item = cache.current.tiles.get(key);
+    if (!item) return;
+    cache.current.bytes -= item.bytes;
+    cache.current.tiles.delete(key);
+    cache.current.recentScopes.get(cache.current.scope)?.delete(key);
+  };
+  const admitTile = (targetScope: string, key: string, item: CachedTile, visible: Set<string>) => {
+    const state = cache.current;
+    const oldBytes = state.tiles.get(key)?.bytes ?? 0;
+    const fits = () => state.bytes - oldBytes + item.bytes <= CACHE_BYTES;
+    for (const [otherScope, tiles] of state.recentScopes) {
+      if (fits()) break;
+      if (otherScope === targetScope) continue;
+      for (const tile of tiles.values()) state.bytes -= tile.bytes;
+      state.recentScopes.delete(otherScope);
+      scopePlanes.current.delete(otherScope);
+    }
+    for (const candidate of [...state.tiles.keys()]) {
+      if (fits()) break;
+      if (candidate !== key && candidate !== OVERVIEW_KEY && candidate !== "preview" && !visible.has(candidate)) removeTile(candidate);
+    }
+    // Overview/explicit analysis previews take priority over detail, including visible detail.
+    if (key === OVERVIEW_KEY || key === "preview") {
+      for (const candidate of [...state.tiles.keys()]) {
+        if (fits()) break;
+        if (candidate !== key && candidate !== OVERVIEW_KEY && candidate !== "preview") removeTile(candidate);
+      }
+    }
+    if (!fits()) { setCacheLimited(true); return false; }
+    removeTile(key);
+    state.tiles.set(key, item);
+    if (!state.recentScopes.has(targetScope)) state.recentScopes.set(targetScope, new Map());
+    state.recentScopes.get(targetScope)!.set(key, item);
+    state.bytes += item.bytes;
+    if (frame.current) frame.current.dataset.cacheBytes = String(state.bytes);
+    return true;
+  };
   const resultOverlayImage = useRef<{ key: string; image: HTMLImageElement } | null>(null);
   const request = useRef<{ scope: string; queue: Tile[]; overview: boolean; running: boolean; generation: number }>({ scope: "", queue: [], overview: true, running: false, generation: 0 });
   const drag = useRef<{ pointerId: number; x: number; y: number; camera: Camera; moved: boolean;
-    button: number; vertex?: number; annotation?: { mode: "rectangle" | "freehand";
+    button: number; scientificScope?: string; vertex?: number; annotation?: { mode: "rectangle" | "freehand";
       start: ImagePoint; points: ImagePoint[]; previous: ImagePoint[]; lastClientX: number; lastClientY: number } } | null>(null);
   const drawFrame = useRef(0);
   const alive = useRef(true);
@@ -135,6 +217,22 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (!surface) return;
       const state = current.current;
       const ratio = window.devicePixelRatio || 1;
+      const paintGeometry = JSON.stringify([state.camera, state.size, state.extent, ratio]);
+      // Retain already painted source pixels during a plane replacement. Re-uploading
+      // the unchanged fallback canvas competes with input at exactly the wrong time.
+      // Any camera, size, source/display or overlay change takes the normal draw path.
+      if (cache.current.scope === state.scope && cache.current.tiles.size === 0 &&
+          cache.current.sourceScope === sourceScope && cache.current.lastRenderedScope &&
+          reusablePaintGeometry.current === paintGeometry && displayedPlaneRef.current &&
+          !state.annotations.length && !state.draft.length && !state.regionDraft.length &&
+          !state.resultOverlay && !state.showRegion && state.drawingMode === "navigate") {
+        paintedScope.current = "";
+        displayedPlaneRef.current = { ...displayedPlaneRef.current, isMatching: false };
+        setDisplayedPlane(previous => previous?.isMatching ? { ...previous, isMatching: false } : previous);
+        setPrepared(false);
+        onViewReady?.("");
+        return;
+      }
       const width = Math.max(1, Math.round(state.size.width * ratio));
       const height = Math.max(1, Math.round(state.size.height * ratio));
       if (surface.width !== width || surface.height !== height) { surface.width = width; surface.height = height; }
@@ -145,16 +243,69 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       context.fillRect(0, 0, state.size.width, state.size.height);
 
       let tilesToDraw = cache.current.scope === state.scope ? [...cache.current.tiles.values()] : [];
+      let isFallback = false;
+      let fallbackScope = "";
+
       if (tilesToDraw.length === 0 && cache.current.sourceScope === sourceScope && cache.current.lastRenderedScope) {
         const fallback = cache.current.recentScopes.get(cache.current.lastRenderedScope);
-        if (fallback) {
+        if (fallback && fallback.size > 0) {
           tilesToDraw = [...fallback.values()];
+          isFallback = true;
+          fallbackScope = cache.current.lastRenderedScope;
         }
       }
-      if (tilesToDraw.length === 0) return;
-      if (cache.current.scope === state.scope && cache.current.tiles.size > 0) {
+
+      if (tilesToDraw.length === 0) {
+        paintedScope.current = "";
+        displayedPlaneRef.current = null;
+        setDisplayedPlane(null);
+        setPrepared(false);
+        onViewReady?.("");
+        return;
+      }
+
+      if (!isFallback && cache.current.tiles.size > 0) {
         cache.current.lastRenderedScope = state.scope;
       }
+
+      let dispZ: number | null = null;
+      let dispT: number | null = null;
+      if (isFallback) {
+        const fallbackPlane = scopePlanes.current.get(fallbackScope);
+        dispZ = fallbackPlane ? fallbackPlane.z : null;
+        dispT = fallbackPlane ? fallbackPlane.t : null;
+      } else {
+        dispZ = state.selection.z;
+        dispT = state.selection.t;
+      }
+
+      const isMatchingPlane = !isFallback && dispZ === state.selection.z && (state.selection.t === undefined || dispT === state.selection.t);
+      const currentOverview = isMatchingPlane ? cache.current.tiles.get(OVERVIEW_KEY) : null;
+      const isCoarsePreview = Boolean(
+        currentOverview?.maxEdge &&
+        currentOverview.maxEdge < 1024 &&
+        currentOverview.maxEdge < Math.max(state.extent.width, state.extent.height)
+      );
+
+      const nextPlaneInfo = {
+        z: dispZ,
+        t: dispT,
+        isMatching: isMatchingPlane,
+        isPreview: isCoarsePreview,
+      };
+      displayedPlaneRef.current = nextPlaneInfo;
+      setDisplayedPlane((prev) => {
+        if (
+          prev &&
+          prev.z === nextPlaneInfo.z &&
+          prev.t === nextPlaneInfo.t &&
+          prev.isMatching === nextPlaneInfo.isMatching &&
+          prev.isPreview === nextPlaneInfo.isPreview
+        ) {
+          return prev;
+        }
+        return nextPlaneInfo;
+      });
 
       context.imageSmoothingEnabled = state.camera.scale * ratio < 1;
       const tiles = tilesToDraw.sort((a, b) =>
@@ -166,9 +317,15 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         if (point.x > state.size.width || point.y > state.size.height || point.x + w < 0 || point.y + h < 0) continue;
         context.drawImage(image, point.x, point.y, w, h);
       }
+      reusablePaintGeometry.current = isMatchingPlane && !state.annotations.length && !state.draft.length &&
+        !state.regionDraft.length && !state.resultOverlay && !state.showRegion &&
+        !tiles.some(item => item.tile.key === "preview") ? paintGeometry : "";
+      paintedScope.current = isMatchingPlane && currentOverview ? state.scope : "";
+      setPrepared(Boolean(paintedScope.current));
+      onViewReady?.(paintedScope.current ? `${source.id}:${source.sha256}:${state.selection.t}:${state.selection.z}` : "");
       const overlay = state.resultOverlay;
       const overlayImage = resultOverlayImage.current;
-      if (overlay && overlayImage?.key === overlay.key) {
+      if (isMatchingPlane && overlay && overlayImage?.key === overlay.key) {
         const origin = sourceToScreen(state.camera, state.size, state.extent, overlay.left, overlay.top);
         context.save();
         context.globalAlpha = overlay.opacity;
@@ -178,7 +335,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         context.restore();
       }
       const point = (p: ImagePoint) => sourceToScreen(state.camera, state.size, state.extent, p.x, p.y);
-      const outline = (points: ImagePoint[], color: string, closed: boolean, label?: string) => {
+      const outline = (points: ImagePoint[], color: string, closed: boolean, label?: string, labelHalo = false) => {
         if (!points.length) return;
         context.strokeStyle = color; context.fillStyle = color; context.lineWidth = 1.5;
         context.beginPath();
@@ -187,9 +344,19 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         context.stroke();
         const first = point(points[0]);
         if (points.length === 1) { context.beginPath(); context.arc(first.x, first.y, 4, 0, Math.PI * 2); context.stroke(); }
-        if (label) { context.font = "12px system-ui"; context.fillText(label, first.x + 7, first.y - 7); }
+        if (label) {
+          context.font = "12px system-ui";
+          if (labelHalo) {
+            context.save();
+            context.strokeStyle = "#151515"; context.lineWidth = 3; context.lineJoin = "round";
+            context.fillStyle = "#ffffff";
+            context.strokeText(label, first.x + 7, first.y - 7);
+            context.fillText(label, first.x + 7, first.y - 7);
+            context.restore();
+          } else context.fillText(label, first.x + 7, first.y - 7);
+        }
       };
-      if (state.showRegion) {
+      if (isMatchingPlane && state.showRegion) {
         const level = sourceLevels(source).find((item) => item.index === state.selection.level);
         const sx = level?.sx ?? 1, sy = level?.sy ?? 1;
         const { x, y, width: w, height: h } = state.selection;
@@ -198,20 +365,31 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           { x: (x + w) * sx, y: (y + h) * sy }, { x: x * sx, y: (y + h) * sy }], "#ffd36a", true, "Analysis region");
         context.setLineDash([]);
       }
-      for (const item of state.annotations) if (item.z === state.selection.z && item.t === state.selection.t)
-        outline(item.points, item.color, item.kind === "polygon" || item.kind === "rectangle", item.label);
-      const draftPoints = state.drawingMode === "rectangle" && state.draft.length === 2
-        ? [state.draft[0], { x: state.draft[1].x, y: state.draft[0].y },
-          state.draft[1], { x: state.draft[0].x, y: state.draft[1].y }]
-        : state.draft;
-      outline(draftPoints, "#ffd36a", (state.drawingMode === "rectangle" && draftPoints.length === 4) ||
-        (state.draftClosed && (state.drawingMode === "polygon" || state.drawingMode === "freehand")));
-      if (state.drawingMode === "polygon" && state.draft.length && !state.draftClosed) {
-        const start = point(state.draft[0]);
-        context.beginPath(); context.arc(start.x, start.y, 5, 0, Math.PI * 2); context.stroke();
+      const activeZ = isMatchingPlane ? state.selection.z : dispZ;
+      const activeT = isMatchingPlane ? state.selection.t : dispT;
+      if (activeZ !== null && activeZ !== undefined) {
+        for (const item of state.annotations) {
+          if (item.z === activeZ && (activeT === null || activeT === undefined || item.t === activeT)) {
+            const display = annotationDisplayLabel(item);
+            outline(item.points, item.color, item.kind === "polygon" || item.kind === "rectangle",
+              display.label, display.isTransect);
+          }
+        }
       }
-      outline(state.regionDraft, "#ffd36a", true);
-      if (overlay && overlayImage?.key === overlay.key) {
+      if (isMatchingPlane) {
+        const draftPoints = state.drawingMode === "rectangle" && state.draft.length === 2
+          ? [state.draft[0], { x: state.draft[1].x, y: state.draft[0].y },
+            state.draft[1], { x: state.draft[0].x, y: state.draft[1].y }]
+          : state.draft;
+        outline(draftPoints, "#ffd36a", (state.drawingMode === "rectangle" && draftPoints.length === 4) ||
+          (state.draftClosed && (state.drawingMode === "polygon" || state.drawingMode === "freehand")));
+        if (state.drawingMode === "polygon" && state.draft.length && !state.draftClosed) {
+          const start = point(state.draft[0]);
+          context.beginPath(); context.arc(start.x, start.y, 5, 0, Math.PI * 2); context.stroke();
+        }
+        outline(state.regionDraft, "#ffd36a", true);
+      }
+      if (isMatchingPlane && overlay && overlayImage?.key === overlay.key) {
         const resultPoint = (p: { u: number; v: number }) => ({
           x: overlay.left + (p.u + 0.5) / overlay.pixelWidth * overlay.width,
           y: overlay.top + (p.v + 0.5) / overlay.pixelHeight * overlay.height,
@@ -263,11 +441,13 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         }
       }
     });
-  }, [source]);
+  }, [onViewReady, source]);
 
   useEffect(() => {
     alive.current = true;
-    return () => { alive.current = false; request.current.generation++; cancelAnimationFrame(drawFrame.current); cache.current.tiles.clear(); };
+    return () => { alive.current = false; request.current.generation++; cancelAnimationFrame(drawFrame.current);
+      if (settledTimer.current) clearTimeout(settledTimer.current);
+      cache.current.tiles.clear(); };
   }, []);
   useEffect(() => {
     drag.current = null;
@@ -294,12 +474,81 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   useLayoutEffect(() => {
     if (cache.current.scope !== scope) {
       const isSameSource = cache.current.sourceScope === sourceScope && cache.current.sourceScope !== "";
+      removeTile("preview");
+      if (!cache.current.tiles.size) scopePlanes.current.delete(cache.current.scope);
       const existing = cache.current.recentScopes.get(scope);
       const newTiles = existing ? new Map(existing) : new Map();
+
+      // The committed selection cannot inherit readiness from earlier canvas pixels.
+      paintedScope.current = "";
+      stoppedRef.current = false;
+      setViewStopped(null);
+      setCacheLimited(false);
+      setPrepared(false);
+      onViewReady?.("");
+
+      // Mid-gesture plane change must abort active draft immediately and restore previous
+      if (drag.current) {
+        if (drag.current.annotation) {
+          onDraftChange?.(drag.current.annotation.previous);
+        }
+        drag.current = null;
+        setRegionDraft([]);
+        setDraftClosed(false);
+        setDraftLimitReached(false);
+      }
+
+      if (!isSameSource) {
+        cache.current.recentScopes.clear();
+        cache.current.bytes = 0;
+        cache.current.lastRenderedScope = "";
+        scopePlanes.current.clear();
+        policyState.current = createPlaneNavigationState(1024);
+        paintedScope.current = "";
+        displayedPlaneRef.current = null;
+        setDisplayedPlane(null);
+        // Clear synchronously before paint: another source or channel setting can
+        // never remain visible while its replacement is being decoded.
+        const context = canvas.current?.getContext("2d");
+        if (context && canvas.current) { context.fillStyle = "#151515"; context.fillRect(0, 0, canvas.current.width, canvas.current.height); }
+      }
 
       cache.current.scope = scope;
       cache.current.sourceScope = sourceScope;
       cache.current.tiles = newTiles;
+      scopePlanes.current.set(scope, { z: selection.z, t: selection.t });
+
+      const isPlaneMode = projection === "plane";
+      const isPlaneScrub = Boolean(
+        isPlaneMode &&
+        prevPlaneRef.current &&
+        prevPlaneRef.current.sourceScope === sourceScope &&
+        prevPlaneRef.current.projection === projection &&
+        (prevPlaneRef.current.z !== selection.z || prevPlaneRef.current.t !== selection.t)
+      );
+      prevPlaneRef.current = {
+        sourceScope,
+        projection,
+        z: selection.z,
+        t: selection.t,
+      };
+
+      if (settledTimer.current) {
+        clearTimeout(settledTimer.current);
+        settledTimer.current = null;
+      }
+      settledRef.current = !isPlaneScrub;
+      if (isPlaneScrub) {
+        setSettled(false);
+        settledTimer.current = setTimeout(() => {
+          if (alive.current) {
+            settledRef.current = true;
+            setSettled(true);
+          }
+        }, DEFAULT_PLANE_POLICY_CONFIG.settleDelayMs);
+      } else {
+        setSettled(true);
+      }
 
       request.current = {
         scope,
@@ -308,24 +557,9 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         running: false,
         generation: request.current.generation + 1,
       };
-
-      if (!isSameSource) {
-        cache.current.recentScopes.clear();
-        cache.current.bytes = 0;
-        cache.current.lastRenderedScope = "";
-        setPrepared(false);
-        // Clear synchronously before paint: another source or channel setting can
-        // never remain visible while its replacement is being decoded.
-        const context = canvas.current?.getContext("2d");
-        if (context && canvas.current) { context.fillStyle = "#151515"; context.fillRect(0, 0, canvas.current.width, canvas.current.height); }
-      } else {
-        if (newTiles.has(OVERVIEW_KEY)) {
-          setPrepared(true);
-        }
-      }
     }
     draw();
-  }, [scope, sourceScope, draw]);
+  }, [scope, sourceScope, draw, onViewReady, onDraftChange, selection.z, selection.t, projection, source.id, channels]);
   useEffect(() => { if (size.width > 0 && size.height > 0) onCamera?.(camera); }, [camera, size, onCamera]);
   useEffect(() => {
     const element = frame.current;
@@ -382,7 +616,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     };
   }, [resultOverlay, source.id, source.sha256, draw, onError]);
 
-  const plan = useMemo(() => visibleTiles(source, camera, size, dpr), [source, camera, size, dpr]);
+  const plan = useMemo(() => visibleTiles(source, camera, size, dpr, { projection }), [source, camera, size, dpr, projection]);
   useLayoutEffect(() => {
     if (!paused) return;
     const previous = request.current;
@@ -397,7 +631,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   }, [paused, plan.tiles, scope]);
   const drain = useCallback(async () => {
     const work = request.current;
-    if (paused || pausedRef.current || work.running || !size.width || !size.height ||
+    if (stoppedRef.current || work.scope !== scope || paused || pausedRef.current || work.running || !size.width || !size.height ||
       source.locator_state === "relink-required") return;
     work.running = true;
     const loadingTimer = setTimeout(() => {
@@ -406,11 +640,19 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     try {
       while (alive.current && !pausedRef.current && request.current === work) {
         const overview = work.overview;
-        const tile = overview ? { key: OVERVIEW_KEY, level: -1, x: 0, y: 0,
+        const currentOverviewTile = cache.current.tiles.get(OVERVIEW_KEY);
+        const needsOverviewUpgrade = Boolean(
+          settledRef.current &&
+          currentOverviewTile?.maxEdge &&
+          currentOverviewTile.maxEdge < 1024 &&
+          currentOverviewTile.maxEdge < Math.max(extent.width, extent.height)
+        );
+        const shouldFetchOverview = overview || needsOverviewUpgrade;
+        const tile = shouldFetchOverview ? { key: OVERVIEW_KEY, level: -1, x: 0, y: 0,
           width: 1024, height: 1024, left: 0, top: 0, sourceWidth: extent.width, sourceHeight: extent.height } :
-          work.queue.find((item) => !cache.current.tiles.has(item.key));
+          (settledRef.current ? work.queue.find((item) => !cache.current.tiles.has(item.key)) : undefined);
         if (!tile) break;
-        if (overview) work.overview = false;
+        if (shouldFetchOverview) work.overview = false;
         else work.queue = work.queue.filter((item) => item.key !== tile.key);
         const native = { ...selection, level: tile.level, x: tile.x, y: tile.y, width: tile.width, height: tile.height };
         // Z is a level-zero plane selection, mapped independently of XY camera.
@@ -421,76 +663,125 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           if (native.z_stop !== undefined) native.z_stop = Math.max(native.z + 1, Math.min(level.dimensions.z, Math.ceil(native.z_stop * zScale)));
         }
         if (projection === "plane") delete native.z_stop;
-        const output = await api.execute("viewer_tile", overview ? {
+
+        const maxEdgeTier = (settledRef.current || projection !== "plane") ? 1024 : policyState.current.currentTier;
+        const requestStart = performance.now();
+        const output = await api.execute("viewer_tile", shouldFetchOverview ? {
           source_id: source.id, overview: true, t: selection.t, z: selection.z, c: selection.c,
-          channels, max_edge: 1024, ...(projection === "plane" ? {} : { projection, z_stop: selection.z_stop }),
+          channels, max_edge: maxEdgeTier, ...(projection === "plane" ? {} : { projection, z_stop: selection.z_stop }),
         } : { source_id: source.id, selection: native, channels,
           ...(projection === "plane" ? {} : { projection }) }, { viewer_lane: viewerLane }) as {
             image: string; source_sha256: string; selection?: ResearchSelection;
-            source_extent?: number[]; width?: number; height?: number;
+            source_extent?: number[]; width?: number; height?: number; projection?: string;
           };
+
         if (!alive.current || pausedRef.current || request.current !== work || cache.current.scope !== scope) break;
+
         if (output.source_sha256 !== source.sha256) throw new Error("The source changed. Reopen it before continuing.");
-        if (!overview && (!output.selection || Object.entries(native).some(([key, value]) => output.selection?.[key as keyof ResearchSelection] !== value)))
-          throw new Error("The decoded tile does not match its requested coordinates.");
-        if (overview && (output.source_extent?.[0] !== extent.width || output.source_extent?.[1] !== extent.height))
-          throw new Error("The overview does not cover the source extent.");
+        if (shouldFetchOverview) {
+          if (!output.source_extent || output.source_extent[0] !== extent.width || output.source_extent[1] !== extent.height) {
+            throw new Error("The overview does not cover the source extent.");
+          }
+          if (!output.selection || output.selection.t !== selection.t || output.selection.z !== selection.z ||
+              output.selection.c !== selection.c) {
+            throw new Error("The overview does not match its requested coordinates.");
+          }
+          if (output.projection !== (projection === "plane" ? null : projection) ||
+              (output.selection.z_stop ?? null) !== (projection === "plane" ? null : selection.z_stop ?? null)) {
+            throw new Error("The overview does not match its requested projection.");
+          }
+        } else {
+          if (!output.selection || Object.entries(native).some(([key, value]) => output.selection?.[key as keyof ResearchSelection] !== value))
+            throw new Error("The decoded tile does not match its requested coordinates.");
+        }
+
         const image = await loadedImage(output.image);
         if (!alive.current || pausedRef.current || request.current !== work) break;
-        if (!overview && (image.naturalWidth !== tile.width || image.naturalHeight !== tile.height)) throw new Error("The decoded tile dimensions are inconsistent.");
+        if (!shouldFetchOverview && (image.naturalWidth !== tile.width || image.naturalHeight !== tile.height))
+          throw new Error("The decoded tile dimensions are inconsistent.");
         const bytes = image.naturalWidth * image.naturalHeight * 4;
         if (bytes > 8 * 1024 ** 2) throw new Error("The image response exceeds its display budget.");
+
+        // Record completed latency sample for non-obsolete overview reply
+        if (shouldFetchOverview) {
+          const { state: nextPolicy } = recordLatencySample(
+            policyState.current,
+            performance.now() - requestStart,
+            performance.now(),
+          );
+          policyState.current = nextPolicy;
+        }
+
         const stored = { ...tile, width: image.naturalWidth, height: image.naturalHeight };
-        cache.current.tiles.set(tile.key, { tile: stored, image, bytes });
-        if (!cache.current.recentScopes.has(scope)) {
-          cache.current.recentScopes.set(scope, new Map());
-        }
-        cache.current.recentScopes.get(scope)!.set(tile.key, { tile: stored, image, bytes });
-        cache.current.bytes += bytes;
-        while (cache.current.bytes > CACHE_BYTES && cache.current.recentScopes.size > 1) {
-          const oldestScope = [...cache.current.recentScopes.keys()].find((s) => s !== scope);
-          if (!oldestScope) break;
-          const oldestMap = cache.current.recentScopes.get(oldestScope)!;
-          for (const item of oldestMap.values()) {
-            cache.current.bytes -= item.bytes;
-          }
-          cache.current.recentScopes.delete(oldestScope);
-        }
-        if (frame.current) frame.current.dataset.cacheBytes = String(cache.current.bytes);
-        if (overview) {
-          setPrepared(true);
-          onViewReady?.(`${source.id}:${source.sha256}:${selection.t}:${selection.z}`);
-        }
+        const cachedItem: CachedTile = {
+          tile: stored,
+          image,
+          bytes,
+          maxEdge: shouldFetchOverview ? maxEdgeTier : undefined,
+        };
+
+        admitTile(scope, tile.key, cachedItem, new Set(plan.tiles.map((item) => item.key)));
         draw();
       }
     } catch (error) {
-      if (alive.current && !pausedRef.current && request.current === work)
-        onError(error instanceof Error ? error.message : "Could not load this view.");
+      const isSuperseded =
+        error instanceof Error &&
+        error.message.toLowerCase().includes("superseded") &&
+        (request.current !== work || cache.current.scope !== scope);
+      if (alive.current && !pausedRef.current && request.current === work && !isSuperseded) {
+        const message = error instanceof Error ? error.message : "Could not load this view.";
+        stoppedRef.current = true;
+        setViewStopped(message);
+        onError?.(message);
+      }
     } finally {
       clearTimeout(loadingTimer);
       work.running = false;
       if (alive.current && request.current === work) setLoading(false);
+      if (alive.current && !pausedRef.current && request.current !== work && !request.current.running) {
+        void latestDrain.current();
+      }
     }
-  }, [api, channels, draw, extent, onError, onViewReady, paused, projection, scope, selection, size, source, viewerLane]);
+  }, [api, channels, draw, extent, onError, paused, plan.tiles, projection, scope, selection, settled, size, source, viewerLane]);
   useEffect(() => {
-    request.current.queue = plan.tiles;
-    void drain();
-  }, [plan, drain]);
+    if (settledRef.current) {
+      const cachedOverview = cache.current.tiles.get(OVERVIEW_KEY);
+      const isCoarse = Boolean(
+        cachedOverview?.maxEdge &&
+        cachedOverview.maxEdge < 1024 &&
+        cachedOverview.maxEdge < Math.max(extent.width, extent.height)
+      );
+      if (isCoarse) {
+        request.current.overview = true;
+      }
+      const available = CACHE_BYTES - (cache.current.tiles.get(OVERVIEW_KEY)?.bytes ?? 4 * 1024 ** 2)
+        - (cache.current.tiles.get("preview")?.bytes ?? 0);
+      let plannedBytes = 0;
+      request.current.queue = plan.tiles.filter((tile) => {
+        plannedBytes += tile.width * tile.height * 4;
+        return plannedBytes <= available;
+      });
+      setCacheLimited(request.current.queue.length < plan.tiles.length);
+    }
+    const frameId = requestAnimationFrame(() => { void drain(); });
+    return () => cancelAnimationFrame(frameId);
+  }, [plan, settled, drain, extent.width, extent.height]);
+  latestDrain.current = drain;
   // A preview is an explicitly scoped derived overlay; its rectangle follows
   // the declared analysis region, while the camera and source tiles stay put.
   useEffect(() => {
-    if (!overrideImage) { cache.current.tiles.delete("preview"); draw(); return; }
+    if (!overrideImage) { removeTile("preview"); draw(); return; }
     let active = true;
     const level = sourceLevels(source).find((item) => item.index === selection.level);
     void loadedImage(overrideImage).then((image) => {
       if (!active || cache.current.scope !== scope) return;
-      cache.current.tiles.set("preview", { image, bytes: 0, tile: { key: "preview", level: selection.level,
+      if (!admitTile(scope, "preview", { image, bytes: image.naturalWidth * image.naturalHeight * 4, tile: { key: "preview", level: selection.level,
         x: selection.x, y: selection.y, width: selection.width, height: selection.height,
         left: selection.x * (level?.sx ?? 1), top: selection.y * (level?.sy ?? 1),
-        sourceWidth: selection.width * (level?.sx ?? 1), sourceHeight: selection.height * (level?.sy ?? 1) } });
+        sourceWidth: selection.width * (level?.sx ?? 1), sourceHeight: selection.height * (level?.sy ?? 1) } }, new Set())) throw new Error("Analysis preview exceeds the view cache.");
       draw();
     }).catch(() => { if (active) onError("Could not show the analysis preview."); });
-    return () => { active = false; cache.current.tiles.delete("preview"); };
+    return () => { active = false; removeTile("preview"); };
   }, [overrideImage, scope, selection, source, draw, onError]);
 
   const changeZoom = (factor: number, x?: number, y?: number) => {
@@ -536,11 +827,38 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     if (state.annotation) onDraftChange?.(state.annotation.previous);
   };
 
+  const isCurrentPlaneReady = prepared && paintedScope.current === scope;
+  const isStale = Boolean(
+    displayedPlane &&
+    (!displayedPlane.isMatching ||
+      displayedPlane.z !== selection.z ||
+      (selection.t !== undefined && displayedPlane.t !== selection.t))
+  );
+  const stoppedStatus = viewStopped && isStale && displayedPlane?.z != null
+    ? `Showing Z ${displayedPlane.z + 1}${(source.metadata.dimensions?.t ?? 1) > 1 && displayedPlane.t != null
+      ? `, T ${displayedPlane.t + 1}` : ""} · ${viewStopped}`
+    : viewStopped;
+  const isPlaneMode = projection === "plane";
+  const isRefining = (loading || !settled) && prepared;
+  const statusText = isPlaneMode
+    ? formatPlaneNavigationStatus({
+        displayedZ: displayedPlane?.z ?? null,
+        requestedZ: selection.z,
+        displayedT: displayedPlane?.t ?? null,
+        requestedT: selection.t,
+        hasTDimension: (source.metadata.dimensions?.t ?? 1) > 1,
+        isStale,
+        isPreview: Boolean(displayedPlane?.isPreview),
+        isRefining,
+        isLoading: loading && !prepared,
+      })
+    : (loading ? (prepared ? "Refining…" : "Preparing view…") : null);
+
   return <div className={`image-viewport ${fullscreen ? "is-fullscreen" : ""}`} ref={frame}
     tabIndex={0} aria-label={`Image viewer: ${source.name}`} data-viewer-source={source.id}
     data-result-overlay={resultOverlay?.key}
     data-camera={JSON.stringify(camera)} data-auto-level={plan.level} data-cache-bytes={cache.current.bytes}
-    data-prepared={prepared ? "true" : "false"}
+    data-prepared={isCurrentPlaneReady ? "true" : "false"}
     onContextMenu={(event) => event.preventDefault()}
     onPointerDown={(event) => {
       if (event.target !== canvas.current) return;
@@ -550,8 +868,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (event.button === 0 && draftClosed && (drawingMode === "polygon" || drawingMode === "freehand")) return;
       event.currentTarget.setPointerCapture?.(event.pointerId);
       drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-        camera, moved: false, button: event.button };
-      if (event.button === 0 && resultDrawing?.kind === "vertices" && resultOverlay) {
+        camera, moved: false, button: event.button, scientificScope: isCurrentPlaneReady ? scope : undefined };
+      if (isCurrentPlaneReady && event.button === 0 && resultDrawing?.kind === "vertices" && resultOverlay) {
         const bounds = event.currentTarget.getBoundingClientRect();
         const distances = resultDrawing.points.map((p) => {
           const q = sourceToScreen(camera, size, extent,
@@ -565,7 +883,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           resultDrawing.onSelectVertex(index);
         }
       }
-      if (event.button === 0 && prepared && cache.current.scope === scope && onDraftChange &&
+      if (isCurrentPlaneReady && event.button === 0 && onDraftChange &&
         (drawingMode === "rectangle" || drawingMode === "freehand")) {
         const point = pointerSourcePoint(event.currentTarget, camera, event.clientX, event.clientY);
         if (!pointInsideSource(point)) return;
@@ -581,7 +899,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       event.preventDefault();
       const dx = event.clientX - state.x, dy = event.clientY - state.y;
       state.moved ||= Math.hypot(dx, dy) > 3;
-      if (resultDrawing?.kind === "vertices" && resultOverlay && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && resultDrawing?.kind === "vertices" && resultOverlay && state.button === 0) {
         if (state.vertex !== undefined) {
           const bounds = event.currentTarget.getBoundingClientRect();
           const p = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
@@ -590,7 +908,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         }
         return;
       }
-      if (state.annotation?.mode === "rectangle" && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && state.annotation?.mode === "rectangle" && state.button === 0) {
         if (!state.moved) return;
         const point = pointerSourcePoint(event.currentTarget, state.camera, event.clientX, event.clientY);
         onDraftChange?.([state.annotation.start, {
@@ -599,7 +917,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         }]);
         return;
       }
-      if (state.annotation?.mode === "freehand" && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && state.annotation?.mode === "freehand" && state.button === 0) {
         if (Math.hypot(event.clientX - state.annotation.lastClientX,
           event.clientY - state.annotation.lastClientY) < 2.5) return;
         if (state.annotation.points.length >= freehandPointLimit) {
@@ -613,7 +931,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         onDraftChange?.(state.annotation.points);
         return;
       }
-      if (onRegion && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && onRegion && state.button === 0) {
         const bounds = event.currentTarget.getBoundingClientRect();
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
@@ -629,8 +947,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       event.preventDefault(); drag.current = null;
       if (event.currentTarget.hasPointerCapture?.(event.pointerId))
         event.currentTarget.releasePointerCapture?.(event.pointerId);
-      if (resultDrawing?.kind === "vertices" && state?.button === 0) return;
-      if (state && state.moved && state.button === 0 && onRegion) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && resultDrawing?.kind === "vertices" && state?.button === 0) return;
+      if (isCurrentPlaneReady && state.scientificScope === scope && state && state.moved && state.button === 0 && onRegion) {
         const bounds = event.currentTarget.getBoundingClientRect();
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
@@ -639,7 +957,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         if (right > x && bottom > y) onRegion({ x, y, width: right - x, height: bottom - y });
         setRegionDraft([]); return;
       }
-      if (state.annotation?.mode === "rectangle" && state.button === 0 && state.moved) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && state.annotation?.mode === "rectangle" && state.button === 0 && state.moved) {
         const point = pointerSourcePoint(event.currentTarget, state.camera, event.clientX, event.clientY);
         const end = { x: Math.max(0, Math.min(extent.width, point.x)),
           y: Math.max(0, Math.min(extent.height, point.y)) };
@@ -648,7 +966,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         else onDraftChange?.(state.annotation.previous);
         return;
       }
-      if (state.annotation?.mode === "freehand" && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && state.annotation?.mode === "freehand" && state.button === 0) {
         let points = state.annotation.points;
         if (points.length && Math.hypot(event.clientX - state.annotation.lastClientX,
           event.clientY - state.annotation.lastClientY) >= 2.5) {
@@ -665,16 +983,16 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       }
       if (!state || state.moved || state.button !== 0) return;
       const point = pointerSourcePoint(event.currentTarget, state.camera, event.clientX, event.clientY);
-      if (onResultPoint && resultOverlay) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && onResultPoint && resultOverlay) {
         const resultPoint = sourcePointToResultPixel(resultOverlay, point);
         if (resultPoint) onResultPoint(resultPoint);
         return;
       }
-      if (onObjectClick && drawingMode === "navigate") {
+      if (isCurrentPlaneReady && state.scientificScope === scope && onObjectClick && drawingMode === "navigate") {
         onObjectClick(point);
       }
       if (!onPoint && !onResultPoint) return;
-      if (drawingMode === "polygon" && draft.length >= 3) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && drawingMode === "polygon" && draft.length >= 3) {
         const start = sourceToScreen(state.camera, size, extent, draft[0].x, draft[0].y);
         const bounds = event.currentTarget.getBoundingClientRect();
         if (Math.hypot(start.x - event.clientX + bounds.left,
@@ -682,11 +1000,11 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           setDraftClosed(true); return;
         }
       }
-      if (onPoint && prepared && cache.current.scope === scope && point.x >= 0 && point.y >= 0 && point.x < extent.width && point.y < extent.height) onPoint(point);
+      if (isCurrentPlaneReady && state.scientificScope === scope && onPoint && point.x >= 0 && point.y >= 0 && point.x < extent.width && point.y < extent.height) onPoint(point);
     }} onPointerCancel={(event) => cancelPointerInteraction(event.pointerId)}
     onLostPointerCapture={(event) => cancelPointerInteraction(event.pointerId)}
     onDoubleClick={(event) => {
-      if (event.target !== canvas.current || drawingMode !== "polygon" || draft.length < 3) return;
+      if (!isCurrentPlaneReady || event.target !== canvas.current || drawingMode !== "polygon" || draft.length < 3) return;
       event.preventDefault(); event.stopPropagation();
       const a = sourceToScreen(camera, size, extent, draft.at(-2)!.x, draft.at(-2)!.y);
       const b = sourceToScreen(camera, size, extent, draft.at(-1)!.x, draft.at(-1)!.y);
@@ -706,7 +1024,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         onDraftChange?.([]); setDraftClosed(false);
         setDraftLimitReached(false); return;
       }
-      if (event.key === "Enter" && drawingMode === "polygon" && draft.length >= 3) {
+      if (isCurrentPlaneReady && event.key === "Enter" && drawingMode === "polygon" && draft.length >= 3) {
         event.preventDefault(); event.stopPropagation(); setDraftClosed(true); return;
       }
       if (["+", "=", "-", "f", "0", "1", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) event.preventDefault();
@@ -723,7 +1041,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     }}>
     <canvas ref={canvas} aria-label="Source image and bound annotations" />
     {source.locator_state === "relink-required" && <div className="image-view-unavailable" role="status">
-      This source needs an exact local copy. Open Portability from tool search to relink it.
+      <p>This source needs an exact local copy. Its existing results and review are preserved.</p>
+      {onRelinkSource && <button disabled={paused || relinkBusy} onClick={onRelinkSource}>Relink exact source</button>}
     </div>}
     <div className="image-view-tools" aria-label="Image navigation"
       style={toolsPosition ? { left: toolsPosition.x, top: toolsPosition.y, transform: "none" } : undefined}>
@@ -752,11 +1071,19 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       <button title="Zoom in (+)" aria-label="Zoom in" onClick={() => changeZoom(1.25)}><Plus /></button>
       <button title="Toggle fullscreen" aria-label="Toggle fullscreen" onClick={() => { void (document.fullscreenElement ? document.exitFullscreen() : frame.current?.requestFullscreen()); }}><Maximize /></button>
     </div>
-    {loading && <div className="image-view-loading" role="status">{prepared ? "Refining…" : "Preparing view…"}
-      {api.cancelView && <button onClick={() => {
-        request.current.generation++; request.current = { scope, queue: [], overview: false, running: false, generation: request.current.generation };
-        void api.cancelView!(); setLoading(false);
-      }}>Cancel</button>}
+    {(viewStopped || statusText || cacheLimited) && <div className="image-view-loading" role="status">
+      {stoppedStatus ?? statusText ?? "Overview retained · visible detail exceeds the view cache. Zoom in to refine."}
+      {viewStopped ? <button onClick={() => {
+        stoppedRef.current = false; setViewStopped(null);
+        request.current = { scope, queue: plan.tiles, overview: !cache.current.tiles.has(OVERVIEW_KEY),
+          running: false, generation: request.current.generation + 1 };
+        void latestDrain.current();
+      }}>Retry view</button> : statusText && <button onClick={() => {
+        // Detach only this viewport from queued/in-flight work. Never cancel another view's decoder.
+        stoppedRef.current = true; setViewStopped("View loading stopped.");
+        request.current = { scope, queue: [], overview: false, running: false, generation: request.current.generation + 1 };
+        setLoading(false);
+      }}>Stop loading</button>}
     </div>}
     {draftLimitReached && <div className="image-drawing-status" role="status">
       {freehandPointLimit < 3

@@ -10,6 +10,7 @@ from scipy import ndimage as ndi
 from skimage import color, exposure, feature, filters, measure, morphology, segmentation
 
 from .models import SegmentationSettings
+from .quantitative import MAX_WORKING_BYTES, integer
 
 MAX_ANALYSIS_SOURCE_PIXELS = 30_000_000
 MAX_ANALYSIS_WORKING_BYTES = 1024 * 1024 * 1024
@@ -36,6 +37,7 @@ def validate_analysis_budget(
     backend: Literal["classical", "cellpose"],
     *,
     cellpose_max_edge_px: int | None = None,
+    working_bytes: int | None = None,
 ) -> None:
     """Reject unsafe segmentation while leaving the independently guarded viewer usable."""
 
@@ -74,7 +76,21 @@ def validate_analysis_budget(
     else:
         raise ValueError(f"Unknown analysis backend: {backend}")
 
-    if source_pixels > MAX_ANALYSIS_SOURCE_PIXELS or estimated_bytes > MAX_ANALYSIS_WORKING_BYTES:
+    if working_bytes is not None:
+        validated_limit = integer(working_bytes, "working_bytes", 1024**2, MAX_WORKING_BYTES)
+        if estimated_bytes > validated_limit:
+            raise AnalysisResourceError(
+                f"Loci did not start {backend_name} segmentation for this "
+                f"{source_pixels:,}-pixel image. The analysis is estimated to require "
+                f"{estimated_bytes / (1024 * 1024):,.1f} MiB of working memory, exceeding the "
+                f"requested allowance of {validated_limit // (1024 * 1024)} MiB. The image "
+                "remains available in View. Increase the working memory allowance or "
+                "crop/downsample before segmentation; tiled segmentation is not implemented yet."
+            )
+    elif (
+        source_pixels > MAX_ANALYSIS_SOURCE_PIXELS
+        or estimated_bytes > MAX_ANALYSIS_WORKING_BYTES
+    ):
         raise AnalysisResourceError(
             f"Loci did not start {backend_name} segmentation for this "
             f"{source_pixels:,}-pixel image. The analysis is estimated to require "
@@ -217,11 +233,16 @@ def rebuild_output_from_labels(
     )
 
 
-def segment_image(image: np.ndarray, settings: SegmentationSettings) -> SegmentationOutput:
+def segment_image(
+    image: np.ndarray,
+    settings: SegmentationSettings,
+    *,
+    working_bytes: int | None = None,
+) -> SegmentationOutput:
     """Segment one still image using an interpretable morphology/watershed baseline."""
 
     settings.validate()
-    validate_analysis_budget(image, "classical")
+    validate_analysis_budget(image, "classical", working_bytes=working_bytes)
     normalized = _to_gray_float(image)
     smoothed = filters.gaussian(normalized, sigma=settings.smoothing_px, preserve_range=True)
     base_threshold = float(filters.threshold_otsu(smoothed))

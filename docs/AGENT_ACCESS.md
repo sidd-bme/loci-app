@@ -5,8 +5,8 @@ Model Context Protocol (MCP) stdio. The MCP process opens no HTTP or other
 network listener. It uses the same validated project, recipe, job, result, and
 export code as the desktop and CLI.
 
-Agent access is disabled until a person writes an explicit policy file and
-starts the server with that exact path:
+Agent access is disabled until a person creates an explicit access bundle in
+Loci or writes a policy file, then connects a client using that exact policy path:
 
 ```console
 cd engine
@@ -48,7 +48,7 @@ Editing, replacing, chmod-ing, unlinking, or redirecting the policy revokes the
 running process; restart it explicitly to accept a new policy. Replacing the
 export root also fails closed.
 
-The policy schema is `loci.agent-policy/v1` and has these exact fields:
+The original policy schema is `loci.agent-policy/v1` and has these exact fields:
 
 ```json
 {
@@ -80,7 +80,7 @@ The policy schema is `loci.agent-policy/v1` and has these exact fields:
   "model_packages": [],
   "runtimes": [
     {
-      "engine": "0.1.0",
+      "engine": "0.2.0",
       "numpy": "exact-version",
       "scipy": "exact-version",
       "scikit_image": "exact-version",
@@ -144,11 +144,11 @@ Every sensitive response category is denied unless separately named in
 | `previews` | rendered image content |
 | `measurements` | object counts and measurement rows |
 | `provenance` | recipe, processing, runtime, and execution provenance |
-| `agent_metadata` | policy hash, project ID, granted-operation summary, and extra record metadata |
+| `agent_metadata` | policy hash, project ID, granted-operation summary, source handles/fingerprints, recipe grants, resource limits, and extra record metadata |
 
-The `catalog` response is always limited to static tool names and descriptions.
-It contains no project or dataset content; policy and project metadata appear
-there only with `agent_metadata`.
+The `catalog` response lists static tool names and descriptions. It does not
+enumerate study content; its policy and project identity summary appears only
+with `agent_metadata`. Listing does not grant access to policy-restricted tools.
 
 `preview_recipe` and `result_view` require `previews`. Measurement and
 provenance fields in a preview or result are independently omitted unless their
@@ -162,19 +162,75 @@ and `provenance` as well as its destination grant.
 | Tool | Boundary |
 | --- | --- |
 | `catalog` | Static catalog only; no study enumeration |
+| `recipe_guide` | Static request schema, units and source-independent examples; no study content or execution |
+| `analysis_context` | Paginated pinned source/recipe grants and limits; requires both its operation grant and `agent_metadata` |
+| `inspect_source` | Verify one supplied permitted source ID; names and geometry require independent disclosures |
 | `validate_recipe` | Normalize and validate one policy-scoped proposal; no pixel execution |
 | `preview_recipe` | Execute one approved recipe without adopting a result |
 | `submit_recipe` | Idempotently submit and asynchronously start an approved durable run |
 | `job_status` | Read one supplied, policy-verifiable job ID |
 | `cancel_job` | Cancel one supplied, policy-verifiable job ID |
-| `result` | Read one supplied, policy-verifiable result ID through disclosure filters |
+| `result` | Read one supplied, policy-verifiable result ID through disclosure filters; `offset`/`limit` paginate measurements |
 | `result_view` | Render one supplied, policy-verifiable result revision |
 | `export_result` | Export one exact reviewed revision to one authorized filename |
 
 There is no tool for file browsing, import, relink, policy creation or editing,
 human review, arbitrary project listing, shell execution, dynamic sampling, or
-network egress. MCP cannot manufacture a `reviewed` receipt. A person must set
-review state through the local desktop or human CLI before export.
+unrestricted network egress. MCP cannot manufacture a `reviewed` receipt. A
+person must set review state through the local desktop or human CLI before export.
+
+### Recipe guidance and analysis context
+
+`recipe_guide()` takes no arguments. It returns `loci.recipe-guide/v1`, including
+a JSON Schema for the policy-bound recipe request, field/coordinate/unit
+guidance, and the `components-2d` and `watershed-3d` examples. These select an
+explicit 16 × 16 pixel crop, with Z=0 or the half-open Z=[0,4) range. Replace the
+placeholder source ID and choose settings appropriate to the actual source;
+the examples are not scientific recommendations. The production Workbench
+validator remains authoritative for source-dependent geometry, channels,
+resource estimates and recipe normalization. The guide does not authorize
+execution, model provisioning or reference-image access. Use `validate_recipe`
+to resolve defaults and inspect the normalized hash, memory estimate, and
+approved preview/run status before an authorized preview or submission.
+
+`analysis_context(offset=0, limit=50)` requires **both** `analysis_context` in
+the policy's `operations` and `agent_metadata` in `disclosures`. Existing
+policies lacking either remain denied. Newly created desktop access bundles
+include the operation only when the person explicitly selects the
+`agent_metadata` disclosure (shown as **Analysis context** in the UI).
+
+The `loci.agent-context/v1` response includes policy identity, permitted
+operations/disclosures and CPU/memory/concurrency limits. `source_grants` lists
+only pinned source IDs and fingerprints; `recipe_grants` lists only pinned
+normalized recipe hashes and their preview/run permissions. It does not
+enumerate study sources, results or jobs, reconstruct approved requests, or
+read adjacent request/configuration files. Source fingerprints are verified
+when their grants are returned, and policy identity is rechecked before and
+after reads.
+
+Each grant array contains at most `limit` entries, using the same `offset`;
+`offset` must be a nonnegative integer and `limit` an integer from 1 to 50.
+Booleans, fractional values and unknown arguments are rejected. `pagination`
+reports both grant counts and `next_offset`, based on the longer list. Continue
+with that offset until it is `null`; one array may become empty before the
+other. Names appear only with `source_names`; permitted crop/axis/channel
+scope appears only with `geometry`. Context access does not grant either
+disclosure, recipe execution or human review.
+
+Two fixed JSON resources expose the same boundaries:
+
+| Resource URI | Content and authorization |
+| --- | --- |
+| `loci://guides/recipes` | The same static document as `recipe_guide`; requires an unchanged active policy, with no additional operation grant |
+| `loci://context` | The first context page (`offset=0`, `limit=50`), with the same operation/disclosure requirements as `analysis_context` |
+
+Use the context tool for later pages. These URIs are exact resource identifiers,
+not filesystem paths or general URL readers; no resource templates, arbitrary
+file access or network listener are introduced. Resource failures are sanitized
+under the same rules as tool failures. Tool descriptions and behavior hints
+aid discovery; they never replace policy authorization.
+`preview_recipe` records a durable preview job, and `job_status` can reconcile
+job records; neither is described as an entirely read-only operation.
 
 Jobs persist in the study database. Reusing a request key with the same
 normalized request returns the same job; reusing it with different parameters
@@ -208,6 +264,15 @@ result, recipe, revision, and human review immediately before an atomic
 no-replace rename to the authorized filename.
 
 ## SDK clients
+
+The client contract is handshake-based MCP stdio. The source protocol tests
+exercise version `2025-11-25` with the locked Python MCP SDK `2.1.1`.
+The guide/context additions retain that client flow; they do not claim support
+for every newer specification revision. Packaging receipts record the actual
+negotiated protocol and tested worker identity. Use the generated access-bundle
+command for the packaged worker, or the source command below. The
+[researcher CLI guide](CLI.md) distinguishes the human command surface from
+this policy-bound server and the machine JSON-lines worker.
 
 The Python SDK connects over stdio without a listener:
 
@@ -248,6 +313,230 @@ const catalog = await client.callTool({ name: "catalog", arguments: {} });
 await client.close();
 ```
 
-Both contract exercises in development use generated synthetic TIFF data only.
-They verify real SDK initialization, tool discovery, static catalog access, and
-recipe validation over the subprocess stdio transport.
+Contract exercises use generated synthetic TIFF data only. The Python SDK
+tests cover initialization, tool/resource discovery, recipe guidance and
+validation, context pagination, independent disclosure filtering and
+revocation over subprocess stdio. The frozen-worker test route uses
+`LOCI_TEST_ENGINE_EXECUTABLE` to select the packaged executable explicitly.
+Source tests do not qualify an untested packaged worker or establish independent
+researcher usability or scientific accuracy.
+
+## Experimental v3: local vision, display and bounded recipe exploration
+
+An access request with the original exact fields still creates a v1 policy and
+the original five bundle files. The optional `interactive` object opts into v3
+and must contain exactly these fields:
+
+```json
+{
+  "allow_image": true,
+  "allow_display": true,
+  "allow_handoff": false,
+  "channels": [0],
+  "handoff_names": [],
+  "parameters": {"threshold": {"min": 40, "max": 80}}
+}
+```
+
+Every operation grant is a boolean. `channels` is a sorted, unique list of at
+most 16 valid source indices; it is empty when all three operation grants are
+false, and must be nonempty when one is enabled. Source access includes the
+union of these channels and the selected recipe channel. Measurement channels retain their separately validated scope.
+Crop, time, z range and pyramid level remain pinned to the approved selection.
+
+`allow_image` enables bounded `source_image` image content and requires
+`previews` disclosure. `allow_display` enables `source_display` and
+`set_source_display`, requiring `geometry`, `provenance` and `agent_metadata`.
+Display updates use the current revision for compare-and-swap; stale changes
+must be reread and reconsidered. Display settings apply to those channels across the source; the crop limit
+bounds image reads. Display settings change rendering, not source pixels or
+numerical analysis. Display permission alone does not disclose pixels.
+
+`allow_handoff` independently enables `export_vision_handoff`, requiring
+`previews`, `geometry`, `provenance`, `agent_metadata`, a chosen existing local
+export directory and explicit filenames ending in `.loci-vision`. When it is
+false, `handoff_names` is empty. Reviewed-result filenames and handoff filenames
+are combined without duplicates. Handoff access does not require run or
+reviewed-result export permission and does not certify human review or upload
+anything. Reviewed result exports retain their existing run, disclosure and
+human review requirements.
+
+`parameters` is empty or contains finite, ordered `min`/`max` ranges for
+`threshold` and/or nonnegative `min_size`. Each ranged parameter must already
+be explicit and numeric in the validated base segmentation recipe, and its
+value must lie within the range. Automatic `"otsu"` cannot be ranged. No default
+is silently added to the base recipe. Experimental ranges require `geometry`,
+`provenance`, `agent_metadata` and at least preview or run permission. Preview
+also requires its existing `previews` disclosure. Only these named parameter
+values may change; source selection, preprocessing, measurement channels,
+gates, working memory and CPU runtime remain fixed. Numerical validation and
+human review are still required before scientific claims or reviewed exports.
+
+The v3 document retains v2's `remote_grants` (empty for interactive setup), the
+original exact recipe hash grants, and adds `experimental_recipes`. The latter
+is empty or contains the normalized `interactive-recipe` template with its
+source, selection, base recipe, parameter ranges and preview/run permissions.
+It grants no remote transfer, model import, provisioning or human review.
+
+Interactive bundles also contain `plugin/plugin.json`, `plugin/mcp.json`,
+`plugin/skills/loci-analysis/SKILL.md` and
+a generated local marketplace manifest. Resources are embedded in the engine for
+frozen packaging. All bundle directories use `0700` and files `0600` on POSIX.
+The portable plugin's stdio command points to the exact worker command and the
+original bundle's policy; a cached plugin copy still depends on that policy.
+For source workers, the plugin uses the original engine import directory as
+`PYTHONPATH` and keeps its working directory inside the installed plugin.
+The marketplace identity includes the policy hash to distinguish grants.
+
+Register the bundle as a local marketplace with
+`codex plugin marketplace add /absolute/path/to/access-bundle`, then install
+Loci analysis with `codex plugin add loci-analysis@loci-local-POLICY_HASH_PREFIX`
+using the exact command in the generated README, or use the desktop plugin
+directory. Start a new session and verify the connected catalog and context.
+Creation of the bundle does not install or enable the plugin. Use either its
+MCP connection or the manual `codex-config.toml` configuration to avoid
+duplicate server sessions. Preserve other client configuration. Disconnect
+old access when replacing it; remove the original `agent-policy.json` to revoke
+access even when the plugin has been copied into a client cache.
+The format and installation surface follow
+[OpenAI's plugin packaging guide](https://developers.openai.com/plugins/build/plugins)
+and [MCP configuration guide](https://learn.chatgpt.com/docs/extend/mcp).
+
+Local Codex hosts can use stdio. ChatGPT web does not read this local policy or
+configuration. For a web vision discussion, explicitly upload only selected
+exported image/context artifacts and choose an available model in that client.
+Never upload the private access configuration as a dataset. This plugin does
+not grant a model entitlement or create a subscription-to-API bridge. Its
+workflow treats an MCP rejection as a boundary; unrestricted shell, CLI or UI
+tools must not bypass it. Broader human CLI work needs separate explicit
+authorization. Source and packaged regression evidence establish software
+behavior only; they do not establish biological accuracy or researcher usability.
+
+## Experimental v2: one human-prestaged classical remote run
+
+Existing `loci.agent-policy/v1` files and tool catalogs retain their local
+capabilities. An opt-in `loci.agent-policy/v2` adds the exact `remote_grants`
+field; an absent or empty grant confers no remote operation. This remains a narrow
+experimental capability. Qualification must identify the exact public source,
+packaged worker, client and scheduler environment tested. See
+[release status](RELEASE_STATUS.md) for published artifacts and remaining gates;
+source support does not qualify another site, scheduler or scientific method.
+
+A person first saves and tests a batch profile and stages one `run_recipe`
+task and one registered immutable source through the normal remote workflow.
+The policy writer accepts a new remote grant only while that run is `staged`.
+Profiles, source staging, runtime/model provisioning, logs, cleanup, arbitrary
+paths or commands, Cellpose, tiled M6 results and human review are unavailable
+through the remote MCP tools.
+
+The human CLI can read the exact grant identity without submitting or transferring:
+
+```console
+uv run python -m loci_engine.research_cli remote-grant \
+  --project /absolute/path/example.loci-study \
+  --request-key 0123456789abcdef0123456789abcdef --key approved-classical-run \
+  --operations submit status cancel retrieve attach \
+  --max-output-bytes 1048576 --cancel-on-revocation
+```
+
+Add the returned object as the single member of `remote_grants` in the existing
+human policy **specification**, then run the `policy` command above. The helper
+selects v2 when this field is present. Every existing source, normalized recipe,
+runtime, disclosure, export and local resource grant remains explicit. The grant
+has exactly these fields:
+
+```json
+{
+  "key": "approved-classical-run",
+  "request_key": "0123456789abcdef0123456789abcdef",
+  "request_sha256": "exact canonical request SHA-256",
+  "profile_sha256": "exact saved profile SHA-256",
+  "source_id": "exact registered source ID",
+  "source_sha256": "exact source SHA-256",
+  "source_size_bytes": 1464,
+  "task_id": "exact staged task ID",
+  "resources": {"cpus": 1, "memory_mb": 1024, "wall_minutes": 5, "gpus": 0},
+  "operations": ["submit", "status", "cancel", "retrieve", "attach"],
+  "max_output_bytes": 1048576,
+  "cancel_on_revocation": true
+}
+```
+
+The hashes/IDs above are illustrative placeholders; use the actual helper
+output. Operations are independent grants: `submit` never implies permission to
+retrieve. `submit` requires explicit `cancel_on_revocation`. Each action rechecks
+policy and filesystem identities, source bytes, crop/axes/channels, live channel
+declarations, exact normalized run recipe, approved current runtime, canonical
+request, saved profile and exact resource reservation. Resources require PBS,
+PBS Pro or Slurm, 1–8 CPUs, 256–8192 MiB RAM, 1–60 minutes and zero GPUs. Source
+and compressed-output bytes each cannot exceed the smaller of 512 MiB and one
+quarter of local policy RAM; decoded ZIP member bytes also fit that quarter.
+These bounds intentionally keep the initial bridge within the small-result path.
+
+All five MCP tools accept **only** `{"grant_key": "approved-classical-run"}`:
+`remote_submit`, `remote_status`, `remote_cancel`, `remote_retrieve`, and
+`remote_attach`. Submission resumes the exact scheduler retry identity.
+Retrieval and attachment start a fixed disposable CLI child and return a bounded
+work state immediately; poll `remote_status` until that operation succeeds.
+Calls share local concurrency capacity with recipe jobs and active scheduler
+reservations, including children that have spawned but have not claimed a durable
+job. A cancellation request retains the scheduler reservation and status polling
+until a confirmed terminal scheduler state. Repeated completed operations reverify through at most eight
+bounded child attempts, then require human reconciliation. A restart reconciles
+lost child processes and resumes using the same run and immutable policy.
+
+The child's independently loaded policy must match the original file hash,
+file inode, study directory and export directory identities. CPU limits apply
+in that disposable process. Linux/Windows also apply their existing process
+memory controls; macOS uses operation admission plus periodic observed child
+RSS enforcement, **not** an address-space limit or an instantaneous hard RAM
+bound. Fixed SSH descendants belong to the owned child session and are terminated
+with it on revocation or wall/memory excess. Output uses no child diagnostic
+stream on MCP. Scheduler reservation bounds remote resources separately from
+these local transfer/verification limits.
+
+Before transfer, the production client refetches and exactly matches the admitted
+manifest, whose aggregate artifact bytes must fit `max_output_bytes`. Each SCP
+runs through a fixed helper that applies POSIX `RLIMIT_FSIZE` at that entry's
+exact admitted size before any artifact write. A growing remote file fails within
+that artifact size bound, and hash verification still follows. This bounds bytes
+written to incoming artifacts; it does not count SSH protocol overhead or network
+buffers. Hosts without the required POSIX file-size limit refuse bounded transfer.
+The helper and SCP inherit the supervised child process group for revocation.
+
+Retrieval stages privately and publishes its durable receipt only inside guarded
+SQLite writes. Interrupted private staging is never adopted as a publication;
+a person must reconcile it before retry. Attachment checks guards during bounded
+verification, on idempotent return, and inside the result transaction before
+writes and immediately before commit. Policy/source/profile mutation stops owned
+local work and blocks further result disclosure/export. External file mutation
+has the same final-check/commit time-of-check limitation as existing publication
+guards; it is not a filesystem-wide atomic lock.
+
+For a job submitted by this service, revocation can request cancellation only
+against its captured original validated profile and exact submitted scheduler
+identity. It never reconnects a changed profile or cancels a human-owned job.
+The private snapshot records `cancel_requested` or `unconfirmed`; an SSH outage
+or lost submission response can prevent confirmation. This is a cancellation
+request, not proof of scheduler completion or deletion. No cleanup authority is
+introduced. Revocation while the service is stopped cannot actively contact a
+scheduler; local publication still requires an unchanged pinned policy.
+
+Default responses expose the opaque grant, state and local result handles needed
+for continuation. Raw scheduler text, remote IDs, paths and connection details
+are omitted. `agent_metadata` independently permits stable request/profile hashes
+and resources. Existing geometry, source-name, preview, measurement and provenance
+disclosures remain independent. Nested remote provenance uses an explicit schema
+allowlist; remote project/source/task/result IDs require `agent_metadata`.
+Scientific archive/request/revision hashes remain provenance. Data-derived object
+count requires `measurements`; resolved segmentation method and threshold
+(including Otsu's resolved threshold) remain method provenance.
+
+Attached results start unreviewed. A person reviews the exact local revision in
+Loci or the human CLI; the agent can then export that exact reviewed revision
+only to its existing authorized filename. Synthetic SDK/worker composition tests
+exercise the bounded contract. A scheduler qualification additionally needs an
+explicitly authorized run, returned native arrays/measurements and unreviewed
+export denial on the exact candidate worker. These checks do not establish
+biological accuracy, natural-language agent planning performance, independent
+researcher usability or publication readiness.

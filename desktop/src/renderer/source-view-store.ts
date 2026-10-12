@@ -28,6 +28,7 @@ export class SourceViewStore {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, 400);
   }
+  get currentRevision() { return this.revision; }
   pause() { this.paused = true; }
   resume() { this.paused = false; }
   discard() {
@@ -37,7 +38,7 @@ export class SourceViewStore {
   }
   /** Adopt a revision written by a separate, already-verified display operation. */
   adoptRevision(revision: number) {
-    if (!Number.isInteger(revision) || revision < 0)
+    if (!Number.isSafeInteger(revision) || revision < this.revision)
       throw new Error("The adopted display revision is invalid.");
     if (this.timer || this.pending || this.running)
       throw new Error("Flush pending display settings before adopting a revision.");

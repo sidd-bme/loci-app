@@ -8,7 +8,7 @@ import numpy as np
 
 from .models import SegmentationSettings
 from .profiles import DEFAULT_PROFILE_ID, resolve_profile
-from .quantitative import DEFAULT_WORKING_BYTES, integer, measure_objects
+from .quantitative import MAX_WORKING_BYTES, integer, measure_objects
 from .research_cellpose import _measurement_channels
 from .segment import segment_image
 from .workbench import result_summary, runtime_record
@@ -48,7 +48,7 @@ def execute_adaptive(
     if not isinstance(request["selection"], dict) or set(request["selection"]) != _SELECTION_KEYS:
         raise ValueError("Adaptive segmentation requires one fully resolved 2D source plane")
     working_bytes = integer(
-        request["working_bytes"], "working_bytes", 1024**2, DEFAULT_WORKING_BYTES
+        request["working_bytes"], "working_bytes", 1024**2, MAX_WORKING_BYTES
     )
     source_id = request["source_id"]
     declarations = workbench.channel_metadata(source_id)
@@ -67,12 +67,13 @@ def execute_adaptive(
     required = int(image.nbytes) + pixels * (160 + 8 * len(measurement_channels))
     if required > working_bytes:
         raise ValueError(
-            "Adaptive segmentation exceeds the aggregate working-memory budget; "
-            "choose a smaller analysis region"
+            f"Adaptive segmentation requires {required} bytes, exceeding the aggregate "
+            f"working-memory budget of {working_bytes} bytes; "
+            "choose a smaller analysis region or select a larger allowance"
         )
     # This is the existing algorithm, including its independent precision and
     # source-pixel resource guards. No image-first-specific fitting is introduced.
-    output = segment_image(image, settings)
+    output = segment_image(image, settings, working_bytes=working_bytes)
     labels = np.asarray(output.labels)
     normalized = np.asarray(output.normalized)
     if (

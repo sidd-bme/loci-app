@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import struct
+import tomllib
 import zlib
 from io import BytesIO
 from pathlib import Path
@@ -18,6 +19,15 @@ from loci_engine.io import SourceChangedError, UnsupportedImageError, load_image
 from loci_engine.models import ENGINE_VERSION, SegmentationSettings
 from loci_engine.segment import _to_gray_float, segment_image
 from loci_engine.worker import handle_request
+
+
+def test_engine_identity_matches_project_metadata() -> None:
+    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    metadata = tomllib.loads(project.read_text(encoding="utf-8"))
+    assert metadata["project"]["version"] == ENGINE_VERSION
+    assert handle_request({"id": "version-check", "method": "health", "params": {}})[
+        "result"
+    ]["engine_version"] == ENGINE_VERSION
 
 
 def synthetic_cells(*, bright: bool = True) -> np.ndarray:

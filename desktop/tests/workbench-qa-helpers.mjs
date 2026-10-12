@@ -2,21 +2,21 @@ import assert from "node:assert/strict";
 
 const toolGroup = {
   Display: "View", Annotate: "Annotate", Epidermis: "Annotate", Correction: "Annotate", Analyze: "Analyze",
-  Process: "Analyze", Model: "Analyze", Quantify: "Analyze", Temporal: "Analyze",
-  Registration: "Analyze", Info: "Results", Study: "Results",
+  Process: "Analyze", Workflow: "Analyze", Model: "Analyze", Quantify: "Analyze", Temporal: "Analyze",
+  Registration: "Analyze", Population: "Results", Info: "Results", Study: "Results",
 };
 const advancedLabel = { Agent: "Connect an assistant", Remote: "Remote compute",
   Portability: "Import & share results", "Vendor import": "Convert vendor images" };
 const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
-  Analyze: "Segment & measure", Process: "Preprocess", Model: "Use a model", Quantify: "Fluorescence & field assay",
-  Temporal: "Track over time", Registration: "Register & resample", Info: "Review & export", Study: "Study & batch" };
+  Analyze: "Segment & measure", Process: "Preprocess", Workflow: "Workflow builder", Model: "Use a model", Quantify: "Fluorescence & field assay",
+  Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Info: "Review & export", Study: "Study & batch" };
 
 /** Exercise the same task-group and search controls available to a researcher. */
 export async function selectWorkbenchTool(page, tool) {
   if (advancedLabel[tool]) {
     await page.getByRole("button", { name: "Search all tools", exact: true }).click();
-    await page.getByRole("textbox", { name: "Search all tools", exact: true }).fill(advancedLabel[tool]);
-    await page.getByRole("button", { name: advancedLabel[tool], exact: true }).click();
+    await page.getByRole("combobox", { name: "Search all tools", exact: true }).fill(advancedLabel[tool]);
+    await page.getByRole("option", { name: advancedLabel[tool], exact: true }).click();
   } else {
     const group = toolGroup[tool];
     assert.ok(group, `Unknown workbench tool: ${tool}`);
@@ -63,4 +63,5 @@ export async function setSelectionField(page, label, value) {
     return;
   }
   await input.fill(String(value));
+  await input.press("Enter");
 }

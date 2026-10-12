@@ -90,6 +90,36 @@ function props(api: ResearchDesktopApi, points: Point[] = []) {
 }
 
 describe("ResearchCorrectionPanel", () => {
+  it("redacts paths and preserves the reason when correction metadata fails", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("Cannot read /home/alice/private lab/labels.npy: checksum mismatch"));
+    render(<ResearchCorrectionPanel {...props(bridge(execute))} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot read [local path redacted]: checksum mismatch");
+    expect(document.body.textContent).not.toContain("/home/alice/private lab/labels.npy");
+  });
+
+  it("transfers a sparse original label with its exact revision without resetting drafts on repeated population updates", async () => {
+    const sparse = 0xfffffffe;
+    const execute = vi.fn().mockResolvedValue({ ...info, label_ids: [1, sparse] });
+    const initial = props(bridge(execute));
+    const target = { result_id: parent.id, revision_hash: parent.revision_hash, label: sparse };
+    const view = render(<ResearchCorrectionPanel {...initial} selectedObject={target} />);
+    await waitFor(() => expect(screen.getByLabelText("Correction label")).toHaveValue(String(sparse)));
+    const resetCalls = initial.setPoints.mock.calls.length;
+    view.rerender(<ResearchCorrectionPanel {...initial} selectedObject={{ ...target }} points={[{ u: 2, v: 1 }]} />);
+    expect(initial.setPoints).toHaveBeenCalledTimes(resetCalls);
+    expect(execute).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Delete selected label"));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("correct_result", expect.objectContaining({ result_id: parent.id, revision_hash: parent.revision_hash,
+      operations: [expect.objectContaining({ op: "delete", label: sparse })] })));
+  });
+  it.each(["missing label", "wrong revision"])("blocks an explicit target with %s without falling back to the first label", async (fault) => {
+    const execute = vi.fn().mockResolvedValue(info);
+    render(<ResearchCorrectionPanel {...props(bridge(execute))} selectedObject={{ result_id: parent.id, revision_hash: fault === "wrong revision" ? "0".repeat(64) : parent.revision_hash, label: fault === "missing label" ? 99 : 3 }} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("selected object is absent");
+    expect(screen.getByLabelText("Correction label")).toHaveValue("");
+    expect(screen.getByText("Delete selected label")).toBeDisabled();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
   it("uses the smallest unused uint32 ID for polygon add and requires an unreviewed child", async () => {
     const execute = vi.fn((operation: string) =>
       operation === "correction_info"
@@ -392,6 +422,57 @@ describe("ResearchCorrectionPanel", () => {
       expect(execute).toHaveBeenCalledWith(
         "roi_add",
         expect.objectContaining({ measurement_channels: [0] }),
+      ),
+    );
+  });
+
+  it("forwards result.working_bytes to correct_result and roi_add when present", async () => {
+    const execute = vi.fn((operation: string) =>
+      operation === "correction_info"
+        ? Promise.resolve(info)
+        : operation === "correct_result"
+          ? Promise.resolve({ result: child, measurements: [] })
+          : operation === "roi_add"
+            ? Promise.resolve({ result: { ...child, kind: "annotated-result" } })
+            : Promise.resolve({}),
+    );
+    const resultWithBudget = {
+      ...parent,
+      working_bytes: 2 * 1024 ** 3,
+    };
+    render(
+      <ResearchCorrectionPanel
+        {...props(bridge(execute), [
+          { u: 1, v: 1 },
+          { u: 5, v: 1 },
+          { u: 3, v: 5 },
+        ])}
+        result={resultWithBudget}
+      />,
+    );
+    await screen.findByLabelText("Correction tool");
+    fireEvent.click(screen.getByText("Delete selected label"));
+    await waitFor(() =>
+      expect(execute).toHaveBeenCalledWith(
+        "correct_result",
+        expect.objectContaining({
+          result_id: parent.id,
+          working_bytes: 2 * 1024 ** 3,
+        }),
+      ),
+    );
+
+    fireEvent.change(screen.getByLabelText("Correction tool"), {
+      target: { value: "roi" },
+    });
+    fireEvent.click(screen.getByText("Add measured ROI"));
+    await waitFor(() =>
+      expect(execute).toHaveBeenCalledWith(
+        "roi_add",
+        expect.objectContaining({
+          result_id: parent.id,
+          working_bytes: 2 * 1024 ** 3,
+        }),
       ),
     );
   });

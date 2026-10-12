@@ -116,7 +116,7 @@ const twoSourceSnapshot: ResearchSnapshot = {
         format: "TIFF",
         dimensions: { x: 2047, y: 2046, z: 1, t: 1, c: 2 },
         levels: [{ index: 0, dimensions: { x: 2047, y: 2046, z: 1, t: 1, c: 2 } }],
-        channel_names: ["DAPI", "IL4R-Alexa555"],
+        channel_names: ["DAPI", "Signal-Alexa555"],
       },
     },
     {
@@ -127,7 +127,7 @@ const twoSourceSnapshot: ResearchSnapshot = {
         format: "TIFF",
         dimensions: { x: 2047, y: 2046, z: 1, t: 1, c: 2 },
         levels: [{ index: 0, dimensions: { x: 2047, y: 2046, z: 1, t: 1, c: 2 } }],
-        channel_names: ["DAPI", "IL4R-Alexa555"],
+        channel_names: ["DAPI", "Signal-Alexa555"],
       },
     },
   ],
@@ -209,6 +209,8 @@ function viewerContractResponse(
       ...(request.overview
         ? {
             source_extent: [dimensions.x, dimensions.y],
+            selection: { t: request.t ?? 0, z: request.z ?? 0, c: request.c ?? 0, z_stop: request.z_stop ?? null },
+            projection: request.projection ?? null,
             width,
             height,
           }
@@ -377,7 +379,9 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     expect(screen.getByRole("button", { name: /Match display/ })).toBeDisabled();
 
     fireEvent.change(timeA, { target: { value: "2" } });
+    fireEvent.blur(timeA);
     fireEvent.change(zA, { target: { value: "3" } });
+    fireEvent.blur(zA);
     fireEvent.change(channelA, { target: { value: "1" } });
 
     await waitFor(() => {
@@ -437,11 +441,11 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Compare A/B" }));
     await waitFor(() => expect(screen.getAllByLabelText(/^Image viewer:/)).toHaveLength(2));
-    expect(screen.getByLabelText("Pane A time")).toHaveValue(2);
-    expect(screen.getByLabelText("Pane A Z")).toHaveValue(3);
+    await waitFor(() => expect(screen.getByLabelText("Pane A time")).toHaveValue("2"));
+    expect(screen.getByLabelText("Pane A Z")).toHaveValue("3");
     expect(screen.getByLabelText("Pane A channel view")).toHaveValue("1");
-    expect(screen.getByLabelText("Pane B time")).toHaveValue(1);
-    expect(screen.getByLabelText("Pane B Z")).toHaveValue(1);
+    expect(screen.getByLabelText("Pane B time")).toHaveValue("1");
+    expect(screen.getByLabelText("Pane B Z")).toHaveValue("1");
     expect(screen.getByLabelText("Pane B channel view")).toHaveValue("0");
     await waitFor(() => {
       const calls = execute.mock.calls.filter(([operation]) => operation === "viewer_tile");

@@ -142,7 +142,7 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cellpose_backend,
         "segment_cellpose",
-        lambda image, settings, model: _inference(image),
+        lambda image, settings, model, *, working_bytes=None: _inference(image),
     )
 
 
@@ -241,7 +241,7 @@ def test_rgb_samples_are_passed_interleaved_and_never_measured_as_channels(
     _patch_runtime(monkeypatch)
     observed: list[tuple[int, ...]] = []
 
-    def segment(image, settings, model):
+    def segment(image, settings, model, *, working_bytes=None):
         observed.append(image.shape)
         return _inference(image)
 
@@ -272,7 +272,7 @@ def test_cellpose_request_is_exact_and_invalid_output_is_not_published(
     with pytest.raises(ValueError, match="every declared profile setting"):
         workbench.execute("cellpose_run", incomplete)
 
-    def invalid(image, settings, model):
+    def invalid(image, settings, model, *, working_bytes=None):
         inference = _inference(image)
         inference.output.normalized = np.asarray(inference.output.normalized, dtype=np.float64)
         inference.output.normalized[0, 0] = np.nan
@@ -354,3 +354,46 @@ def test_cellpose_durable_job_publishes_only_while_its_job_is_running(
     assert response["job"]["state"] == "succeeded"
     assert response["job"]["result_ids"] == [record["id"]]
     assert record["provenance"]["job_id"] == job["id"]
+
+
+def test_cellpose_honors_working_memory_allowance_and_rejects_insufficient_budget(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from loci_engine.workbench import result_summary
+
+    workbench = _workbench(tmp_path)
+    path = tmp_path / "plane.tif"
+    tifffile.imwrite(path, np.arange(12 * 14, dtype=np.uint16).reshape(12, 14))
+    source = workbench.import_native(str(path))
+    _patch_runtime(monkeypatch)
+
+    observed_working_bytes: list[int | None] = []
+
+    def mock_segment(image, settings, model, *, working_bytes=None):
+        observed_working_bytes.append(working_bytes)
+        return _inference(image)
+
+    monkeypatch.setattr(cellpose_backend, "segment_cellpose", mock_segment)
+
+    # 1. Budget smaller than aggregate required bytes rejects before inference and publishes nothing
+    # (12*14 = 168 pixels; aggregate_required = 336 + 168*(160+8) = 28,560 bytes).
+    # Requesting working_bytes below 1024**2 is rejected by integer range
+    with pytest.raises(ValueError, match="working_bytes"):
+        workbench.execute(
+            "cellpose_run",
+            {**_request(source["id"], measurement_channels=[0]), "working_bytes": 1000},
+        )
+    assert workbench.project.list_results() == []
+    assert observed_working_bytes == []
+
+    # 2. 2 GiB allowance passes, calls backend with exact bytes, records exact allowance
+    req = _request(source["id"], measurement_channels=[0])
+    req["working_bytes"] = 2 * 1024**3
+    response = workbench.execute("cellpose_run", req)
+
+    assert observed_working_bytes == [2 * 1024**3]
+    result = workbench.project.result(response["result"]["id"])
+    assert result["provenance"]["resource_guard"]["working_memory_limit_bytes"] == 2 * 1024**3
+    assert result["provenance"]["accepted_request"]["working_bytes"] == 2 * 1024**3
+    summary = result_summary(result)
+    assert summary["working_bytes"] == 2 * 1024**3

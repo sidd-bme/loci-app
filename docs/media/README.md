@@ -1,10 +1,32 @@
 # Product media and image credits
 
-The homepage combines public-sample fluorescence and histology screenshots with
+## October 2026 showcase
+
+The homepage features the [74-second Loci film and its credits](launch-credits.md),
+plus real application captures. The film is an edited tour, combining native
+views with arranged analysis graphics and recorded command-line output.
+
+- `histology-current.png`: native CMU-1 view; OpenSlide test data, CC0.
+- `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
+- `linked-mri-current.png`: native linked views of the MNI ICBM152 nonlinear asymmetric 2009b template; full notice in the film credits.
+- `launch-poster.png`: title card from the finished film.
+- `cellpose-population-current.png`: native 0.2.0 candidate showing the maintainer-authorized image and retained Cellpose labels, with the full 4,837-object population. The screenshot uses encoded RGB components and uncalibrated pixel units; no new model run.
+- `cli-workflow.gif`: genuine PTY output replay from the film, resized to 1200 pixels wide at 12 fps; waiting and typing cadence are editorially conformed.
+- `medical-volume.gif`: native MNI template volume captures, resized to 1200 pixels wide at 12 fps; full source notice is in the film credits.
+- `mcp-overview.svg`: capability overview drawn from the agent-access guide; an explanatory diagram, not an application screenshot.
+
+The histology, fluorescence and MRI views were captured during development for the film.
+The Cellpose population view was captured from public candidate `c041ff2`. File hashes and
+its exact application identity are recorded in the
+[showcase manifest](showcase.json).
+
+## Earlier media collections
+
+
+The earlier homepage combined public-sample fluorescence and histology screenshots with
 maintainer-provided captures of 3D microscopy, linked volume slices and channel
 controls. Captures show the real application, including development builds; they
-are not a version-specific feature guarantee for the downloadable beta. Existing
-recordings are retained as archive material and are not featured on the homepage.
+are not a version-specific feature guarantee for the downloadable beta. Earlier recordings are retained as archive material.
 
 ### Maintainer-provided presentation captures
 

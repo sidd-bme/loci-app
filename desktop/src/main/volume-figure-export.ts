@@ -311,7 +311,10 @@ export function checkedVolumeFigureRequest(
     "schema_version", "figure", "source", "payloads", "representation", "camera", "transfers",
     "clipping", "mpr", "background", "software", "provenance",
   ], "Volume figure manifest");
-  if (manifest.schema_version !== "loci.volume-figure/v1") throw new Error("The volume figure manifest schema is unsupported.");
+  if (manifest.schema_version !== "loci.volume-figure/v1" &&
+      manifest.schema_version !== "loci.volume-figure/v2")
+    throw new Error("The volume figure manifest schema is unsupported.");
+  const isV2 = manifest.schema_version === "loci.volume-figure/v2";
   const figure = record(manifest.figure, "Volume figure description");
   exactKeys(figure, ["kind", "format", "width_px", "height_px", "device_pixel_ratio", "capture_scale"], "Volume figure description");
   if (figure.kind !== "screen-resolution-rendered-figure" || figure.format !== "png" ||
@@ -336,20 +339,74 @@ export function checkedVolumeFigureRequest(
   )) throw new Error("The volume focus payload is not bound to the context geometry and components.");
 
   const representation = record(manifest.representation, "Volume representation");
-  exactKeys(representation, ["mode", "extent", "interpolation", "shading", "orientation_axes",
-    ...(Object.hasOwn(representation, "lighting") ? ["lighting"] : [])], "Volume representation");
-  if (!["volume", "mpr"].includes(String(representation.mode)) ||
-      !["context", "focus"].includes(String(representation.extent)) ||
-      representation.interpolation !== "linear" || typeof representation.shading !== "boolean" ||
-      representation.orientation_axes !== true)
-    throw new Error("The volume representation is invalid.");
-  if (representation.shading) {
-    const lighting = record(representation.lighting, "Volume lighting");
-    exactKeys(lighting, ["ambient", "diffuse", "specular", "specular_power", "gradient_opacity"], "Volume lighting");
-    if (representation.mode !== "volume" || lighting.ambient !== 0.22 || lighting.diffuse !== 0.68 ||
-        lighting.specular !== 0.25 || lighting.specular_power !== 20 || lighting.gradient_opacity !== false)
-      throw new Error("The shaded volume lighting configuration is unsupported.");
-  } else if (representation.lighting != null) throw new Error("Unshaded figures cannot declare lighting.");
+  if (!isV2) {
+    exactKeys(representation, ["mode", "extent", "interpolation", "shading", "orientation_axes",
+      ...(Object.hasOwn(representation, "lighting") ? ["lighting"] : [])], "Volume representation");
+    if (typeof representation.mode !== "string" || !["volume", "mpr"].includes(representation.mode) ||
+        typeof representation.extent !== "string" || !["context", "focus"].includes(representation.extent) ||
+        representation.interpolation !== "linear" || typeof representation.shading !== "boolean" ||
+        representation.orientation_axes !== true)
+      throw new Error("The volume representation is invalid.");
+    if (representation.shading) {
+      const lighting = record(representation.lighting, "Volume lighting");
+      exactKeys(lighting, ["ambient", "diffuse", "specular", "specular_power", "gradient_opacity"], "Volume lighting");
+      if (representation.mode !== "volume" || lighting.ambient !== 0.22 || lighting.diffuse !== 0.68 ||
+          lighting.specular !== 0.25 || lighting.specular_power !== 20 || lighting.gradient_opacity !== false)
+        throw new Error("The shaded volume lighting configuration is unsupported.");
+    } else if (representation.lighting != null) throw new Error("Unshaded figures cannot declare lighting.");
+  } else {
+    exactKeys(representation, [
+      "mode", "extent", "interpolation", "channel_compositing", "shading",
+      "blend_mode", "projection_reducer", "quality", "lighting", "orientation_axes",
+    ], "Volume representation");
+    if (typeof representation.mode !== "string" || !["volume", "mpr"].includes(representation.mode) ||
+        typeof representation.extent !== "string" || !["context", "focus"].includes(representation.extent) ||
+        representation.interpolation !== "linear" || typeof representation.shading !== "boolean" ||
+        representation.orientation_axes !== true)
+      throw new Error("The volume representation is invalid.");
+
+    if (representation.mode === "volume") {
+      if (representation.channel_compositing !== "opacity-weighted-channels/v1")
+        throw new Error("The volume channel compositing algorithm is unsupported.");
+      if (typeof representation.blend_mode !== "string" ||
+          !["blend", "normal_shading", "mip", "average", "minip"].includes(representation.blend_mode))
+        throw new Error("The volume blend mode is unsupported.");
+      if (representation.blend_mode === "average") {
+        if (representation.projection_reducer !== "sample-distance-weighted-mean/v1")
+          throw new Error("The average volume projection reducer is unsupported.");
+      } else if (representation.projection_reducer !== null) {
+        throw new Error("Non-average volume modes must not declare a projection reducer.");
+      }
+      finiteNumber(representation.quality, "Volume quality", 10, 100);
+      if (representation.blend_mode === "normal_shading") {
+        if (representation.shading !== true)
+          throw new Error("Normal shading requires shading enabled.");
+        const lighting = record(representation.lighting, "Volume lighting");
+        exactKeys(lighting, ["ambient", "diffuse", "specular", "specular_power", "gradient_opacity"], "Volume lighting");
+        if (lighting.ambient !== 0.22 || lighting.diffuse !== 0.68 ||
+            lighting.specular !== 0.25 || lighting.specular_power !== 20 || lighting.gradient_opacity !== false)
+          throw new Error("The shaded volume lighting configuration is unsupported.");
+      } else {
+        if (representation.shading !== false)
+          throw new Error("Unshaded volume modes cannot enable shading.");
+        if (representation.lighting !== null)
+          throw new Error("Unshaded figures cannot declare lighting.");
+      }
+    } else {
+      if (representation.channel_compositing !== null)
+        throw new Error("MPR figures must not declare channel compositing.");
+      if (representation.blend_mode !== null)
+        throw new Error("MPR figures must not declare a blend mode.");
+      if (representation.projection_reducer !== null)
+        throw new Error("MPR figures must not declare a projection reducer.");
+      if (representation.quality !== null)
+        throw new Error("MPR figures must not declare volume quality.");
+      if (representation.shading !== false)
+        throw new Error("MPR figures cannot enable shading.");
+      if (representation.lighting !== null)
+        throw new Error("Unshaded figures cannot declare lighting.");
+    }
+  }
   if (representation.extent === "focus" && payloads.focus === null)
     throw new Error("A focus figure requires a verified focus payload.");
   const activePayload = representation.extent === "focus" ? focusPayload! : contextPayload;

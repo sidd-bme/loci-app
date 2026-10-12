@@ -1,0 +1,122 @@
+.population-explorer { min-width: 0; border-bottom: 1px solid var(--line); }
+.population-explorer .population-binding { margin-top: -4px; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.population-explorer .population-metrics, .population-explorer .population-sort { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.population-explorer label { min-width: 0; }
+.population-explorer select { width: 100%; }
+.population-explorer .population-section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; }
+.population-explorer .population-section-heading h3 { margin: 0; color: var(--ink); }
+.population-explorer .population-section-heading span { color: var(--ink-secondary); font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.population-explorer .population-filter { border-top: 1px solid var(--line); padding: 4px 0 8px; }
+.population-explorer .population-range-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 8px; }
+.population-explorer .population-range-inputs input { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; }
+.population-explorer .population-range-inputs button { margin-bottom: 7px; }
+.population-explorer .population-note, .population-explorer .population-axis-label { font-size: var(--type-sm); line-height: 1.5; color: var(--ink-secondary); }
+.population-explorer .population-axis-label { margin: 3px 0; overflow-wrap: anywhere; }
+.population-explorer .population-counts { font-variant-numeric: tabular-nums; }
+.population-explorer .population-chart { display: block; width: 100%; height: auto; color: var(--ink-secondary); overflow: visible; }
+.population-explorer .population-chart text { fill: currentColor; font-size: 11px; font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
+.population-explorer .population-axis { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+.population-explorer .population-bin { fill: var(--mineral); }
+.population-explorer .population-bin-hit { fill: transparent; }
+.population-explorer .population-histogram g[role=button] { cursor: pointer; }
+.population-explorer .population-histogram g[aria-disabled=true] { cursor: default; }
+.population-explorer .population-histogram g:hover .population-bin { fill: var(--mineral-bright); }
+.population-explorer .population-histogram g:focus-visible { outline: none; }
+.population-explorer .population-histogram g:focus-visible .population-bin-hit { stroke: var(--processing); stroke-width: 2; }
+.population-explorer .population-point { fill: var(--mineral); stroke: var(--graphite-850); stroke-width: 0.7; cursor: pointer; }
+.population-explorer .population-point:hover { fill: var(--mineral-bright); stroke: var(--ink); stroke-width: 1; }
+.population-explorer .population-point.selected { fill: var(--warning); stroke: var(--ink); stroke-width: 1.5; }
+.population-explorer .population-point:focus-visible { outline: none; stroke: var(--processing); stroke-width: 3; }
+.population-explorer .population-table { overflow: auto; max-height: 330px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-color: var(--line-strong) transparent; }
+.population-explorer .population-table:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }
+.population-explorer .population-table table { width: 100%; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.population-explorer .population-table th, .population-explorer .population-table td { padding: 7px 6px; text-align: right; overflow-wrap: anywhere; }
+.population-explorer .population-table th:first-child { text-align: left; white-space: nowrap; min-width: 4ch; }
+.population-explorer .population-table thead th { position: sticky; top: 0; z-index: 1; background: var(--graphite-850); color: var(--ink-secondary); font-weight: 500; }
+.population-explorer .population-table tbody tr { border-top: 1px solid var(--line); }
+.population-explorer .population-table tbody tr[aria-selected=true] { background: var(--mineral-wash); }
+.population-explorer .population-table tbody th { font-weight: 500; }
+.population-explorer .population-table button { white-space: nowrap; min-height: 28px; padding: 3px 6px; background: transparent; border-color: transparent; }
+.population-explorer .population-pagination, .population-explorer .population-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 10px; }
+.population-explorer .population-selected { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.population-explorer .population-selected h3 { margin: 0; color: var(--ink); }
+.population-explorer .population-receipt { margin-top: 16px; font-size: var(--type-sm); }
+.population-explorer .population-receipt dl { margin-bottom: 0; }
+.population-explorer .population-receipt dt { margin-top: 8px; color: var(--ink-secondary); }
+.population-explorer .population-receipt dd { margin: 4px 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.population-explorer input::selection, .population-explorer ::selection { background: var(--mineral-wash); color: var(--ink); }
+.population-explorer input { caret-color: var(--mineral); }
+@media (max-width: 760px) { .population-explorer .population-metrics { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+
+.population-explorer { padding: 18px; border-bottom: 0; }
+.population-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.population-heading h2 { margin: 0; font-size: 18px; letter-spacing: -0.025em; }
+.population-heading > button { flex-shrink: 0; }
+.population-scope { margin: 5px 0 0; color: var(--ink-secondary); font-size: var(--type-sm); }
+.population-explorer button, .population-chart-dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.population-filter-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
+.population-filters { padding: 2px 10px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.population-explorer .population-counts { font-size: 17px; font-weight: 550; letter-spacing: -0.015em; margin: 16px 0 3px; color: var(--ink); }
+.population-unit-note { margin: 0 0 12px; }
+.population-summary { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 10px; margin: 12px 0 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.population-summary dt { color: var(--ink-secondary); font-size: var(--type-sm); }
+.population-summary dd { margin: 5px 0 0; font-size: 15px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.population-explorer .population-selected { margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--mineral); border-radius: 4px; background: var(--mineral-wash); }
+.population-selected-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.population-selected p:last-child { margin-bottom: 0; }
+.population-bin-setting { display: flex; justify-content: flex-end; margin-bottom: -6px; }
+.population-bin-setting label { display: flex; align-items: center; gap: 8px; margin: 0; }
+.population-bin-setting select { width: 65px; }
+.population-charts { display: grid; gap: 8px 24px; }
+.population-plot-section { min-width: 0; }
+.population-explorer .population-section-heading, .population-chart-dialog .population-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0 8px; }
+.population-chart-dialog h3 { margin: 0; }
+.population-chart-controls { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.population-control-group { display: flex; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 3px; align-items: center; }
+.population-chart-controls button { min-height: 30px; min-width: 30px; padding: 4px 6px; font-size: var(--type-sm); }
+.population-chart-controls button svg { width: 14px; height: 14px; }
+.population-chart-controls button[aria-pressed=true] { color: var(--ink); background: var(--mineral-wash); border-color: var(--mineral); }
+.population-chart-host { width: 100%; min-width: 0; }
+.population-chart-host .population-chart { display: block; width: 100%; height: auto; color: var(--ink-secondary); overflow: visible; }
+.population-chart-host .population-chart:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; border-radius: 3px; }
+.population-chart-host .population-chart text { fill: currentColor; font-size: 11px; font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
+.population-chart-host .population-chart .population-axis-title { fill: var(--ink); font-size: 12px; }
+.population-chart-host .population-axis { fill: none; stroke: var(--line-strong); stroke-width: 1; }
+.population-grid-line { stroke: var(--line); stroke-width: 1; }
+.population-chart-host .population-bin { fill: var(--mineral); }
+.population-chart-host .population-bin-hit { fill: transparent; }
+.population-chart-host .population-point { fill: var(--mineral); stroke: var(--graphite-900); stroke-width: 0.7; cursor: pointer; }
+.population-chart-host .population-point.selected { fill: var(--warning); stroke: var(--ink); stroke-width: 1.5; }
+.population-chart-host .population-point:focus-visible { outline: none; stroke: var(--processing); stroke-width: 3; }
+.population-chart-host g[role=button]:focus-visible { outline: none; }
+.population-chart-host g[role=button]:focus-visible .population-bin-hit { stroke: var(--processing); stroke-width: 2; }
+.population-chart.is-panning { cursor: grab; touch-action: none; }
+.population-chart.is-panning:active { cursor: grabbing; }
+.population-chart.is-panning .population-point { cursor: inherit; }
+.population-chart-readout { min-height: 1.5em; margin: 3px 0; color: var(--ink); font-size: var(--type-sm); overflow-wrap: anywhere; }
+.population-plot-section .population-note { margin: 5px 0; font-size: var(--type-sm); line-height: 1.5; color: var(--ink-secondary); }
+.population-chart-keyboard { display: block; }
+.population-chart-accounting { padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.population-chart-empty { min-height: 100px; display: flex; align-items: center; justify-content: center; color: var(--ink-secondary); }
+.population-figure-export { margin: 10px 0 20px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.population-figure-export summary { cursor: pointer; color: var(--ink); font-weight: 500; }
+.population-figure-export summary svg { vertical-align: -3px; margin-right: 6px; }
+.population-export-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+.population-export-size { grid-column: 1 / -1; }
+.population-export-fields input { width: 100%; box-sizing: border-box; }
+.population-loading { color: var(--ink-secondary); }
+.population-skeleton { height: 150px; border-radius: 4px; background: var(--graphite-850); }
+.population-chart-dialog { width: min(1100px, calc(100vw - 64px)); max-width: none; max-height: calc(100vh - 64px); box-sizing: border-box; padding: 0; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--ink); background: var(--graphite-900); box-shadow: 0 20px 80px #0005; }
+.population-chart-dialog::backdrop { background: #0008; }
+.population-dialog-heading { position: sticky; top: 0; z-index: 2; background: var(--graphite-900); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 22px; border-bottom: 1px solid var(--line); }
+.population-dialog-heading h2 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
+.population-dialog-body { padding: 6px 24px 20px; }
+.population-dialog-selection { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+@container (min-width: 780px) { .population-charts { grid-template-columns: 1fr 1fr; } }
+@container (max-width: 450px) {
+  .population-heading { flex-wrap: wrap; }
+  .population-explorer { padding: 14px; }
+  .population-summary { gap: 8px; }
+}
+
+.population-empty-workspace button { margin: 6px 8px 0 0; }
