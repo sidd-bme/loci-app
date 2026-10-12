@@ -15,11 +15,11 @@ agent setup. See the [changelog](../CHANGELOG.md) and [user guide](USING_LOCI.md
 ## Build and checks
 
 The app was built from clean public source
-[`c041ff2`](https://github.com/sidd-bme/loci-app/commit/c041ff2c0c12176d492d46fc7c4c3e338e160861).
+[`cc24ebc`](https://github.com/sidd-bme/loci-app/commit/cc24ebcbf69e3ce4bdf7bde7edf8ea198731ad48).
 Later commits update tests, documentation and media; application runtime files are unchanged.
 
-- [Hosted source checks](https://github.com/sidd-bme/loci-app/actions/runs/38200055593)
-  at `9972d69`: typecheck, 1,319 desktop tests, 16 packaging tests, 1,671 engine tests
+- [Hosted source checks](https://github.com/sidd-bme/loci-app/actions/runs/38202925977)
+  at `90a7dc8`: typecheck, 1,321 desktop tests, 16 packaging tests, 1,672 engine tests
   (12 skips), 72 Python harness tests and 60 modeling tests pass.
 - The exact app passes deep strict signature verification and all five packaged
   core journeys: analysis/export/reopen, shared workspace controls, field assays,
@@ -28,20 +28,29 @@ Later commits update tests, documentation and media; application runtime files a
   range checks, graphics-context recovery, histogram controls and figure export.
   Measured orbit/pan/zoom p95 and p99 frame intervals remain below the defined
   50/100 ms budgets on the tested M1 Mac.
+- The full segmentation, manual-correction, error-recovery, recursive-batch and
+  export journey passes, including pixel-exact label comparisons and ordinary
+  pointer interactions. Folder import also passes.
 - The ZIP reproduces the app tree exactly. Both CycloneDX inventories and the
   complete dependency-licence archive pass validation against that same app.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| macOS ZIP | `dc1e8dd9ee265d9ff1b5ae41e55ebea1d04027b57c1bb6641aad7c4005d8151f` |
-| Application archive (`app.asar`) | `056f65701b9a83594419cd58da8b92c398c06bb88d3faf8b4fc90b13f4e971c5` |
+| macOS ZIP | `ae6e32327e64ebaecb7c78cff6e4aae5edc52f83794c74b764af4d457fc63e1d` |
+| Application archive (`app.asar`) | `e7debc692d298a6a97b6fa0217a8721997b9ca3266af48082b710e7006ff6086` |
 | Frozen engine | `4d85857bf74c18cc1f8f8e237054fe70049769d9a80dbc49e8355b311fb4273d` |
 
 The release assets include [checksums](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/SHA256SUMS.txt),
 [app and archive evidence](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/macos-release-evidence.json)
 and a [development verification record](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/development-verification.json).
-The updated volume harness is recorded at `83718de`. These records distinguish
-source-suite checks from checks of the actual downloadable binary.
+The correction-input harness is recorded at `932256e`; the volume harness retains
+the shared-display checks from `83718de`. These records distinguish source-suite
+checks from checks of the actual downloadable binary.
+
+The passing local run opened in 1.92 seconds and displayed the first fixture in
+2.79 seconds. An earlier launch took 11.63 seconds and exceeded the 8-second
+budget; the retained verification record includes that failure. First-launch
+performance is not guaranteed by the later passing run.
 
 ## Platform and model notes
 
