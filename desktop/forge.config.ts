@@ -5,10 +5,13 @@ import {
   copyFileSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readlinkSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -151,11 +154,76 @@ if (packagingRequested) {
 
 let temporaryEngineResourceRoot: string | undefined;
 
+function containedPath(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  return !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(`..${path.sep}`);
+}
+
+function engineResourceLinks(root: string): Map<string, string> {
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("The engine resource must be a plain directory.");
+  }
+  const canonicalRoot = realpathSync(root);
+  const links = new Map<string, string>();
+  const directoryEdges = new Map<string, string[]>();
+  const visit = (directory: string) => {
+    const edges: string[] = [];
+    directoryEdges.set(realpathSync(directory), edges);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = readlinkSync(entryPath);
+        if (path.isAbsolute(target)) throw new Error(`Engine resource link must be relative: ${entryPath}`);
+        let resolved: string;
+        try { resolved = realpathSync(entryPath); }
+        catch { throw new Error(`Engine resource link is dangling or cyclic: ${entryPath}`); }
+        if (!containedPath(canonicalRoot, resolved)) {
+          throw new Error(`Engine resource link escapes its resource directory: ${entryPath}`);
+        }
+        if (statSync(resolved).isDirectory()) edges.push(resolved);
+        links.set(path.relative(root, entryPath), target);
+      } else if (entry.isDirectory()) { edges.push(realpathSync(entryPath)); visit(entryPath); }
+      else if (!entry.isFile()) throw new Error(`Unsupported engine resource entry: ${entryPath}`);
+    }
+  };
+  visit(root);
+  const visited = new Set<string>(), active = new Set<string>();
+  const checkCycles = (directory: string) => {
+    if (active.has(directory)) throw new Error(`Engine resource directory links are cyclic: ${directory}`);
+    if (visited.has(directory)) return;
+    active.add(directory);
+    for (const target of directoryEdges.get(directory) ?? []) checkCycles(target);
+    active.delete(directory); visited.add(directory);
+  };
+  checkCycles(canonicalRoot);
+  return links;
+}
+
+/** Copy the frozen worker without converting relative links into source-machine paths. */
+export function copyEngineResource(source: string, destination: string): void {
+  const sourceLinks = engineResourceLinks(source);
+  const parent = lstatSync(path.dirname(destination));
+  if (!parent.isDirectory() || parent.isSymbolicLink()) {
+    throw new Error("The engine resource destination parent must be a plain directory.");
+  }
+  // Exclusive creation rejects existing directories, files and dangling links.
+  // Retain any partial copy on failure for inspection by the packaging owner.
+  mkdirSync(destination);
+  cpSync(source, destination, { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true });
+  const copiedLinks = engineResourceLinks(destination);
+  if (sourceLinks.size !== copiedLinks.size ||
+      [...sourceLinks].some(([name, target]) => copiedLinks.get(name) !== target)) {
+    throw new Error("The copied engine resource does not preserve its exact relative links.");
+  }
+}
+
 function canonicalEngineResource(): string {
+  engineResourceLinks(sourceEngineResource);
   if (path.basename(sourceEngineResource) === "loci-engine") return sourceEngineResource;
   temporaryEngineResourceRoot = mkdtempSync(path.join(os.tmpdir(), "loci-engine-resource-"));
   const destination = path.join(temporaryEngineResourceRoot, "loci-engine");
-  cpSync(sourceEngineResource, destination, { recursive: true, dereference: true });
+  copyEngineResource(sourceEngineResource, destination);
   return destination;
 }
 
@@ -168,6 +236,16 @@ process.once("exit", () => {
     rmSync(temporaryEngineResourceRoot, { recursive: true, force: true });
   }
 });
+
+function copyPackagedEngineResource({ buildPath, platform }: HookFunctionArgs): void {
+  const resources = platform === "darwin" || platform === "mas"
+    ? path.join(buildPath, `${productName}.app`, "Contents", "Resources")
+    : path.join(buildPath, "resources");
+  if (!containedPath(realpathSync(buildPath), realpathSync(resources))) {
+    throw new Error("The engine resource destination escapes the packaging directory.");
+  }
+  copyEngineResource(packagedEngineResource, path.join(resources, "loci-engine"));
+}
 
 const localAdHocSign: FailClosedOsxSignOptions = {
   continueOnError: false,
@@ -334,7 +412,10 @@ const config: ForgeConfig = {
     icon: packagingPlatform === "win32" ? undefined : path.resolve(configDirectory, "assets", "Loci"),
     name: productName,
     osxSign: macSignMode === "adhoc-local" ? localAdHocSign : undefined,
-    extraResource: [packagedEngineResource],
+    // Packager 20's native copy resolves relative symlinks to source paths.
+    // An empty list still executes its resource hooks; own this exact copy.
+    extraResource: [],
+    beforeCopyExtraResources: [copyPackagedEngineResource],
     afterCopyExtraResources: [hardenPackagedResources],
   },
   rebuildConfig: {},

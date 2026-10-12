@@ -67,11 +67,27 @@ it("hands a sparse object beyond the first page to correction with the exact res
   const desktopApi = api((request) => Promise.resolve(response(request, [...objects.slice(0, 999), sparse])));
   const onEdit = vi.fn();
   render(<ResearchPopulationExplorer api={desktopApi} result={result} selectedLabel={sparse.label} onSelect={vi.fn()} onLocate={vi.fn()} onEdit={onEdit} />);
-  fireEvent.click(await screen.findByRole("button", { name: "Edit selected object" }));
+  await screen.findByLabelText("Selected population object");
+  fireEvent.click(controls(".population-selected").getByRole("button", { name: "Edit selected object" }));
   expect(onEdit).toHaveBeenCalledWith({ result_id: result.id, revision_hash: result.revision_hash, label: sparse.label });
   expect(desktopApi.execute).toHaveBeenCalledWith("population_query", expect.objectContaining({ selected_label: sparse.label, offset: 0 }));
 });
-async function ready() { await screen.findByRole("button", { name: "Next page" }); }
+// The scatter keeps 500 accessible object buttons. Query the actual control
+// region so an unrelated button lookup does not inspect every plotted point.
+function controls(selector: string, root: ParentNode = document) {
+  const region = root.querySelector<HTMLElement>(selector);
+  if (!region) throw new Error(`Missing population control region: ${selector}`);
+  return within(region);
+}
+function scatterPoint(label: string) {
+  const point = screen.getByLabelText(label, { selector: "circle[role=button]" });
+  expect(point).toBeVisible();
+  return point;
+}
+async function ready() {
+  await screen.findByRole("table", { name: "Population object table" });
+  return controls(".population-pagination").getByRole("button", { name: "Next page" });
+}
 beforeEach(() => { HTMLElement.prototype.scrollIntoView = vi.fn(); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -82,7 +98,7 @@ describe("Revision-bound object population exploration", () => {
     expect(screen.getByText(/Display sample: 500 of 1000 valid pairs/)).toBeInTheDocument();
     expect(screen.getByText(/T 4 · Z 3/)).toBeInTheDocument();
     expect(screen.getByRole("table").querySelectorAll("tbody tr")).toHaveLength(25);
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(controls(".population-pagination").getByRole("button", { name: "Next page" }));
     await waitFor(() => expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "26"));
     expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ offset: 25, limit: 25, plot_limit: 500 }));
     fireEvent.change(screen.getByLabelText("Population sort direction"), { target: { value: "desc" } });
@@ -91,34 +107,36 @@ describe("Revision-bound object population exploration", () => {
 
   it("applies inclusive finite ranges, preserves invalid drafts and restores them with Escape", async () => {
     const { desktopApi } = mount(); await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Add range" }));
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
     fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "3" } });
     fireEvent.change(screen.getByLabelText("Population maximum"), { target: { value: "5" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
     await screen.findByText(/3 of 1,000 objects match/);
     expect(screen.getByRole("table").querySelectorAll("tbody tr")).toHaveLength(3);
     expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ filters: [{ metric: "measure", min: 3, max: 5 }] }));
     const calls = vi.mocked(desktopApi.execute).mock.calls.length;
     fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "Infinity" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
     expect(screen.getByRole("alert")).toHaveTextContent("finite bound");
     expect(screen.getByLabelText("Population minimum")).toHaveValue("Infinity");
     expect(vi.mocked(desktopApi.execute).mock.calls).toHaveLength(calls);
     fireEvent.keyDown(screen.getByLabelText("Population minimum"), { key: "Escape" });
     expect(screen.getByLabelText("Population minimum")).toHaveValue("3");
-    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Clear filters" }));
     await screen.findByText("1,000 of 1,000 objects match.");
   });
 
   it("keeps other ranges and narrows histogram bins using the exact right-open boundary", async () => {
     const { desktopApi } = mount(); await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Add range" }));
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
     fireEvent.change(screen.getByLabelText("Range 1 metric"), { target: { value: "voxel_count" } });
     fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "201" } });
     fireEvent.change(screen.getByLabelText("Population maximum"), { target: { value: "301" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
     await screen.findByText(/101 of 1,000 objects match/);
-    fireEvent.click(screen.getByRole("button", { name: "200 to 250: 50 objects. Filter to this bin" }));
+    const bin = screen.getByLabelText("200 to 250: 50 objects. Filter to this bin", { selector: "g[role=button]" });
+    expect(bin).toBeVisible();
+    fireEvent.click(bin);
     await screen.findByText(/50 of 1,000 objects match/);
     expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ filters: [
       { metric: "voxel_count", min: 201, max: 301 }, { metric: "measure", min: 200, max: previousFloat(250) },
@@ -128,14 +146,14 @@ describe("Revision-bound object population exploration", () => {
 
   it("resolves a scatter object beyond the visible page by exact label, then locates its supplied row", async () => {
     const { desktopApi, onSelect, onLocate, rerender } = mount(); await ready();
-    fireEvent.keyDown(screen.getByRole("button", { name: "Object 1000: 1,000, 1,001" }), { key: "Enter" });
+    fireEvent.keyDown(scatterPoint("Object 1000: 1,000, 1,001"), { key: "Enter" });
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith(objects[999]));
     expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ selected_label: 1000 }));
     rerender(<ResearchPopulationExplorer api={desktopApi} result={result} selectedLabel={1000} onSelect={onSelect} onLocate={onLocate} />);
-    await screen.findByRole("button", { name: "Locate selected object" });
-    fireEvent.click(screen.getByRole("button", { name: "Locate selected object" }));
+    await screen.findByLabelText("Selected population object");
+    fireEvent.click(controls(".population-selected").getByRole("button", { name: "Locate selected object" }));
     expect(onLocate).toHaveBeenCalledWith(objects[999]);
-    fireEvent.click(screen.getByRole("button", { name: "Show selected object's page" }));
+    fireEvent.click(controls(".population-selected").getByRole("button", { name: "Show selected object's page" }));
     await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="1000"]')).toHaveAttribute("aria-selected", "true"));
   });
 
@@ -145,11 +163,11 @@ describe("Revision-bound object population exploration", () => {
     expect(onSelect).toHaveBeenCalledWith(objects[1]);
     fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "End" });
     expect(onSelect).toHaveBeenCalledWith(objects[24]);
-    fireEvent.click(screen.getByRole("button", { name: "Add range" }));
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
     fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "100" } });
-    fireEvent.click(screen.getByRole("button", { name: "Apply filter" }));
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
     await screen.findByText("This selected object is outside the current ranges.");
-    fireEvent.click(screen.getByRole("button", { name: "Locate selected object" }));
+    fireEvent.click(controls(".population-selected").getByRole("button", { name: "Locate selected object" }));
     expect(onLocate).toHaveBeenCalledWith(objects[0]);
   });
 
@@ -211,8 +229,8 @@ describe("Revision-bound object population exploration", () => {
     mount(api(async (request) => response(request, sampled))); await ready();
     const plot = screen.getByRole("group", { name: /versus/ });
     expect(plot).toHaveTextContent("5,000");
-    expect(screen.queryByRole("button", { name: "Object 2: 5,000, 3" })).not.toBeInTheDocument();
-    const finalPoint = screen.getByRole("button", { name: "Object 1000: 1,000, 1,001" });
+    expect(screen.queryByLabelText("Object 2: 5,000, 3", { selector: "circle[role=button]" })).not.toBeInTheDocument();
+    const finalPoint = scatterPoint("Object 1000: 1,000, 1,001");
     expect(Number(finalPoint.getAttribute("cx"))).toBeCloseTo(76 + (1000 - 1) / (5000 - 1) * 404);
   });
 });
@@ -223,7 +241,7 @@ describe("Statistics workspace interactions", () => {
     const calls = vi.mocked(desktopApi.execute).mock.calls.length;
     const chart = screen.getByRole("group", { name: /versus/ });
     expect(chart).toHaveAttribute("data-view-x", "1,1000");
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in relationship" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Relationship view controls" })).getByRole("button", { name: "Zoom in relationship" }));
     const domain = chart.getAttribute("data-view-x")!.split(",").map(Number);
     expect(domain[0]).toBeCloseTo(150.85); expect(domain[1]).toBeCloseTo(850.15);
     fireEvent.keyDown(chart, { key: "ArrowRight" });
@@ -237,13 +255,14 @@ describe("Statistics workspace interactions", () => {
   it("enlarges the same view, restores focus on Escape, and uses one tab stop for scatter objects", async () => {
     mount(); await ready();
     expect(document.querySelectorAll('.population-scatter circle[tabindex="0"]')).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in relationship" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Relationship view controls" })).getByRole("button", { name: "Zoom in relationship" }));
     const domain = screen.getByRole("group", { name: /versus/ }).getAttribute("data-view-x");
-    const enlarge = screen.getByRole("button", { name: "Enlarge relationship chart" });
+    const enlarge = controls(".population-section-heading", screen.getByRole("region", { name: "Relationship chart" }))
+      .getByRole("button", { name: "Enlarge relationship chart" });
     enlarge.focus(); fireEvent.click(enlarge);
     const dialog = screen.getByRole("dialog");
     expect(dialog.querySelector(".population-scatter")).toHaveAttribute("data-view-x", domain);
-    expect(screen.getByRole("button", { name: "Close enlarged chart" })).toHaveFocus();
+    expect(controls(".population-dialog-heading", dialog).getByRole("button", { name: "Close enlarged chart" })).toHaveFocus();
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(enlarge).toHaveFocus();
@@ -253,12 +272,12 @@ describe("Statistics workspace interactions", () => {
   it("retains filters, page and chart domain when inactive, and resets the domain on metric changes", async () => {
     const { desktopApi, onSelect, onLocate, rerender } = mount(); await ready();
     const relationshipControls = screen.getByRole("group", { name: "Relationship view controls" });
-    fireEvent.click(screen.getByRole("button", { name: "Add range" }));
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
     const filters = screen.getByRole("form", { name: "Population numeric filters" });
     fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "100" } });
     fireEvent.click(within(filters).getByRole("button", { name: "Apply filter" }));
     await screen.findByText(/901 of 1,000 objects match/);
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(controls(".population-pagination").getByRole("button", { name: "Next page" }));
     await waitFor(() => expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "125"));
     fireEvent.click(within(relationshipControls).getByRole("button", { name: "Zoom in relationship" }));
     const domain = screen.getByRole("group", { name: /versus/ }).getAttribute("data-view-x");
@@ -276,11 +295,11 @@ describe("Statistics workspace interactions", () => {
     const desktopApi = api();
     desktopApi.exportStatisticsFigure = vi.fn(async () => null);
     mount(desktopApi); await ready();
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in relationship" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Relationship view controls" })).getByRole("button", { name: "Zoom in relationship" }));
     fireEvent.click(screen.getByText("Export a publication figure"));
     fireEvent.change(screen.getByLabelText("Figure chart"), { target: { value: "scatter" } });
     fireEvent.change(screen.getByLabelText("Figure display domain"), { target: { value: "current" } });
-    fireEvent.click(screen.getByRole("button", { name: "Export SVG + PNG…" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Statistics figure export" })).getByRole("button", { name: "Export SVG + PNG…" }));
     await screen.findByText("Export cancelled.");
     const request = vi.mocked(desktopApi.exportStatisticsFigure).mock.calls[0][0];
     expect(request).toEqual({ schema_version: "loci.statistics-figure-request/v1", source_id: result.source_id, source_sha256: result.source_sha256,
@@ -289,12 +308,12 @@ describe("Statistics workspace interactions", () => {
       width_mm: 85, height_mm: 65, preset: "publication-monochrome" });
     if (request.domain.mode === "current") { expect(request.domain.x[0]).toBeCloseTo(150.85); expect(request.domain.x[1]).toBeCloseTo(850.15); }
     fireEvent.change(screen.getByLabelText("Figure width in millimetres"), { target: { value: "99999" } });
-    fireEvent.click(screen.getByRole("button", { name: "Export SVG + PNG…" }));
+    fireEvent.click(within(screen.getByRole("form", { name: "Statistics figure export" })).getByRole("button", { name: "Export SVG + PNG…" }));
     expect(screen.getByRole("alert")).toBeInTheDocument();
     expect(desktopApi.exportStatisticsFigure).toHaveBeenCalledTimes(1);
     // Export options survive the query refresh needed for pagination.
     fireEvent.change(screen.getByLabelText("Figure width in millimetres"), { target: { value: "90" } });
-    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    fireEvent.click(controls(".population-pagination").getByRole("button", { name: "Next page" }));
     await waitFor(() => expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "26"));
     expect(screen.getByLabelText("Figure width in millimetres")).toHaveValue("90");
     expect(screen.getByLabelText("Figure chart")).toHaveValue("scatter");
