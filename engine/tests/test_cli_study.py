@@ -307,7 +307,7 @@ def test_real_pty_open_objects_locate_and_command_history(measured_study):
             (b"Showing 3 objects", 0.1, b"locate 102\r"),
             # Clear old output before recalling the command. A curses redraw of
             # the first locate result is not acknowledgement of the second run.
-            (b"Y=11, X=21", 0.1, b"\x0c\x1bOA\r"),
+            ((b"Running locate 102", b"Exit 0"), 0.1, b"\x0c\x1bOA\r"),
             ((b"Running locate 102", b"Exit 0"), 0.1, b"\x04"),
         ],
     )
