@@ -13,9 +13,9 @@
   <a href="https://ko-fi.com/lociimaging">Support on Ko-fi</a>
 </p>
 
-[![Watch the Loci film — Bring your next image](docs/media/launch-poster.png)](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/Loci-film-1080p60.mp4)
+## See Loci in action
 
-<p align="center"><a href="https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/Loci-film-1080p60.mp4">▶ Watch the 74-second tour</a></p>
+https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3
 
 Loci brings your images, measurements and analysis tools into one desktop workspace. Move from a tissue overview to individual cells, explore a volume, refine a segmentation, and keep the results connected to the image they came from.
 
@@ -89,7 +89,7 @@ These are directions for future work.
 
 ## Made for everyday research
 
-Loci started with a practical cell-counting workflow. It is growing into the imaging workspace I wanted to use: approachable enough for a quick look, with room to follow an analysis further.
+Loci started with a practical cell-counting workflow. It is growing into the imaging workspace I wanted to use: approachable enough for a quick look with room to follow an analysis further.
 
 Found a rough edge, have a workflow in mind, or want to help? [Open an issue](https://github.com/sidd-bme/loci-app/issues). If Loci is useful to you, [supporting it on Ko-fi](https://ko-fi.com/lociimaging) helps keep the project moving.
 
