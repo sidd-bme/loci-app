@@ -146,7 +146,7 @@ async function until(read, accept, label, timeout = 60_000, allowAlert = false) 
   throw new Error(`${label}: timed out: ${JSON.stringify(value)}`);
 }
 async function viewerReady() {
-  await page.waitForFunction(() => Number(document.querySelector('.image-viewport')?.getAttribute('data-cache-bytes')) > 0 && !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
+  await page.waitForFunction(() => document.querySelector('.image-viewport')?.getAttribute('data-prepared') === 'true' && Number(document.querySelector('.image-viewport')?.getAttribute('data-cache-bytes')) > 0 && !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
 }
 async function selectResult(id) {
   const current = await snapshot(), result = current.results.find((item) => item.id === id);
@@ -187,14 +187,29 @@ async function reviewAndExport(result, destination) {
   for (const item of manifest.files) { assert.equal(path.basename(item.name), item.name); assert.equal(await sha(path.join(destination, item.name)), item.sha256); }
   return exported;
 }
+async function correctionInputReady() {
+  await page.locator('.image-viewport[data-prepared="true"][data-result-overlay]').waitFor();
+  await page.getByRole('status').filter({ hasText: 'Loading the selected exact plane…' }).waitFor({ state: 'detached' });
+}
 async function imagePoint(u, v, click = true) {
+  let priorPoints;
+  if (click) {
+    await correctionInputReady();
+    const pointStatus = await page.getByText(/·\s*\d+\s+drawn points$/).textContent();
+    priorPoints = Number(pointStatus?.match(/·\s*(\d+)\s+drawn points$/)?.[1]);
+    assert.ok(Number.isSafeInteger(priorPoints), "The exact correction draft must report its point count");
+  }
   const viewport = page.locator('.image-viewport'), b = await viewport.boundingBox();
   const c = JSON.parse(await viewport.getAttribute('data-camera'));
   assert.ok(b); const point = { x: b.x + b.width / 2 + (u + 0.5 - c.x) * c.scale, y: b.y + b.height / 2 + (v + 0.5 - c.y) * c.scale };
   assert.ok(point.x >= b.x && point.y >= b.y && point.x < b.x + b.width && point.y < b.y + b.height, "Correction point is outside the visible source");
   const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.tagName, point);
   assert.equal(hit, "CANVAS", "Correction point is obscured by UI");
-  if (click) await page.mouse.click(point.x, point.y);
+  if (click) {
+    await page.mouse.click(point.x, point.y);
+    // Observe the accepted draft before sending another point; never replay a rejected click.
+    await page.getByText(new RegExp(`·\\s*${priorPoints + 1}\\s+drawn points$`)).waitFor();
+  }
   return point;
 }
 async function moveNavigationAway() {
@@ -211,6 +226,7 @@ async function correctionReady() {
   await until(() => page.getByLabel("Correction tool", { exact: true }).isEnabled(), Boolean, "exact correction tools");
   await page.locator('.image-viewport').waitFor();
   await viewerReady();
+  await correctionInputReady();
   await moveNavigationAway();
 }
 try {
