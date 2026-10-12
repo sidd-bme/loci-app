@@ -1,9 +1,9 @@
 # Loci development beta
 
-The 0.2 development candidate is being prepared for **macOS Apple Silicon**.
+The current development beta is **0.2.0 for macOS Apple Silicon**.
 The release tag is `v0.2.0-beta.1`; the internal desktop and engine version is `0.2.0`.
 Its [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)
-will contain the application archive, checksums, software inventories and dependency licences.
+contains the application archive, checksums, software inventories and dependency licences.
 
 ## What's new
 
@@ -14,9 +14,34 @@ agent setup. See the [changelog](../CHANGELOG.md) and [user guide](USING_LOCI.md
 
 ## Build and checks
 
-Candidate source and package checks are in progress. The final release record
-will identify the exact source, application and worker, with results from the
-packaged journeys. A source test result does not qualify an application binary.
+The app was built from clean public source
+[`c041ff2`](https://github.com/sidd-bme/loci-app/commit/c041ff2c0c12176d492d46fc7c4c3e338e160861).
+Later commits update tests, documentation and media; application runtime files are unchanged.
+
+- [Hosted source checks](https://github.com/sidd-bme/loci-app/actions/runs/38200055593)
+  at `9972d69`: typecheck, 1,319 desktop tests, 16 packaging tests, 1,671 engine tests
+  (12 skips), 72 Python harness tests and 60 modeling tests pass.
+- The exact app passes deep strict signature verification and all five packaged
+  core journeys: analysis/export/reopen, shared workspace controls, field assays,
+  external labels and correction effects.
+- The additional volume journey passes shared-display checks, independent engine
+  range checks, graphics-context recovery, histogram controls and figure export.
+  Measured orbit/pan/zoom p95 and p99 frame intervals remain below the defined
+  50/100 ms budgets on the tested M1 Mac.
+- The ZIP reproduces the app tree exactly. Both CycloneDX inventories and the
+  complete dependency-licence archive pass validation against that same app.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| macOS ZIP | `dc1e8dd9ee265d9ff1b5ae41e55ebea1d04027b57c1bb6641aad7c4005d8151f` |
+| Application archive (`app.asar`) | `056f65701b9a83594419cd58da8b92c398c06bb88d3faf8b4fc90b13f4e971c5` |
+| Frozen engine | `4d85857bf74c18cc1f8f8e237054fe70049769d9a80dbc49e8355b311fb4273d` |
+
+The release assets include [checksums](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/SHA256SUMS.txt),
+[app and archive evidence](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/macos-release-evidence.json)
+and a [development verification record](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/development-verification.json).
+The updated volume harness is recorded at `83718de`. These records distinguish
+source-suite checks from checks of the actual downloadable binary.
 
 ## Platform and model notes
 
