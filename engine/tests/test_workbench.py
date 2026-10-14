@@ -7,7 +7,7 @@ import pytest
 import tifffile
 from PIL import Image
 
-from loci_engine.research_project import ResearchProject
+from loci_engine.research_project import ResearchProject, canonical_json
 from loci_engine.workbench import Workbench
 
 
@@ -40,6 +40,69 @@ def import_stack(workbench, tmp_path):
         },
     )
     return source, workbench.import_native(str(source))
+
+
+def test_print_dpi_uses_pixel_measurements_and_legacy_history_is_not_rescaled(workbench, tmp_path):
+    from loci_engine.research_export import export_research_result
+
+    file = tmp_path / "print-density.png"
+    pixels = np.zeros((12, 16), np.uint8)
+    pixels[2:5, 4:8] = 200
+    Image.fromarray(pixels).save(file, dpi=(300, 150))
+    original = file.read_bytes()
+    source = workbench.import_native(str(file))
+    request = {
+        "source_id": source["id"],
+        "selection": {"level": 0},
+        "recipe": {"segmentation": {"method": "components", "threshold": 100}},
+    }
+    measured = workbench.execute("run_recipe", request)
+    result = workbench.project.result(measured["result"]["id"])
+    assert source["metadata"]["physical_calibration"] is None
+    assert result["provenance"]["geometry"]["unit"] == "pixel"
+    assert measured["measurements"][0]["measure"] == 12
+    assert measured["measurements"][0]["measure_unit"] == "pixel^2"
+    workbench.project.review(result["id"], result["revision_hash"], "reviewed")
+    current_export = tmp_path / "pixel-export"
+    export_research_result(workbench.project, result["id"], result["revision_hash"], current_export)
+    assert (current_export / "manifest.json").is_file()
+
+    # Reproduce the persisted metadata emitted by the older ordinary-image reader.
+    legacy = workbench.project.source(source["id"])
+    calibration = {"axes": "YX", "spacing": [25400 / 150, 25400 / 300], "unit": "µm"}
+    legacy["metadata"]["physical_calibration"] = calibration
+    legacy["metadata"]["levels"][0]["calibration"] = calibration
+    with workbench.project.connection() as connection:
+        connection.execute(
+            "UPDATE sources SET record=? WHERE id=?", (canonical_json(legacy), source["id"])
+        )
+    saved_arrays = {item.name: item.read_bytes() for item in workbench.project.arrays.iterdir()}
+    for active in [workbench, Workbench(ResearchProject(workbench.project.root))]:
+        assert active.snapshot()["sources"][0]["metadata"] == legacy["metadata"]
+        assert active.project.result(result["id"]) == result
+        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+            active.execute("run_recipe", request)
+        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+            active.execute("view", {"source_id": source["id"]})
+        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+            active.import_native(str(file))
+        refused_export = tmp_path / "refused-legacy-export"
+        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+            export_research_result(
+                active.project, result["id"], result["revision_hash"], refused_export
+            )
+        assert not refused_export.exists()
+        assert active.project.source(source["id"]) == legacy
+        assert len(active.project.list_results()) == 1
+        assert {
+            item.name: item.read_bytes() for item in active.project.arrays.iterdir()
+        } == saved_arrays
+        active.close()
+    with_new_history = Workbench(ResearchProject.create(tmp_path / "new.loci-study", "Pixel units"))
+    fresh = with_new_history.import_native(str(file))
+    assert fresh["metadata"]["physical_calibration"] is None
+    with_new_history.close()
+    assert file.read_bytes() == original
 
 
 def test_native_channel_time_view_is_real_and_display_is_separate(workbench, tmp_path):

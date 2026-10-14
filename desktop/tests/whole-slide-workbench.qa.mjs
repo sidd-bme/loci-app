@@ -464,7 +464,7 @@ async function qualifyStainRule(page, report, sourceFixture, selection, destinat
     (state) => state.results.find((item) => item.id === result.id)?.review?.disposition === "reviewed",
     "the reviewed exact stain-rule revision",
   );
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitForValue(
     () => fs.readdir(destination).catch(() => []),
     (files) => ["labels.npy", "image.npy", "labels.ome.tif", "result.json", "objects.csv", "manifest.json"].every((name) => files.includes(name)),
@@ -504,6 +504,10 @@ print(json.dumps({'objects':len(positive),'positive_rules':sum(float(stain[compa
   assert.equal(reference.positive_rules, accepted);
   await selectAdvancedTool(page, "Import & share", "Import & share results");
   await page.getByRole("button", { name: "Open study", exact: true }).click();
+  await page.waitForFunction(() => {
+    const workspace = document.querySelector("main.image-first-workbench");
+    return workspace && workspace.getAttribute("aria-busy") !== "true" && !workspace.inert;
+  });
   await waitForValue(
     () => snapshot(page),
     (state) => state.results.find((item) => item.id === result.id)?.revision_hash === result.revision_hash,
@@ -769,7 +773,7 @@ try {
   );
   const reviewedResult = reviewedSnapshot.results.find((item) => item.id === roiResult.id);
   assert.ok(reviewedResult, "The reviewed WSI ROI revision is absent");
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   const exportFiles = await waitForValue(
     () => fs.readdir(roiExportPath).catch(() => []),
     (names) => [

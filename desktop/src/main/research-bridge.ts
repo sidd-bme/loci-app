@@ -562,6 +562,18 @@ export class ResearchBridge {
       viewerLane = lane;
     }
     assertResearchRequestBound(operation, request);
+    if (operation === "describe_result") {
+      const binding = request as Record<string, unknown>;
+      if (Object.keys(binding).sort().join(",") !== "result_id,revision_hash" ||
+          typeof binding.result_id !== "string" || !/^[a-f0-9]{32}$/u.test(binding.result_id) ||
+          typeof binding.revision_hash !== "string" || !/^[a-f0-9]{64}$/u.test(binding.revision_hash))
+        throw new Error("Result description needs an exact result and revision binding.");
+      const epoch = this.viewDocumentEpoch;
+      const output = await this.control.request("research_execute", { project, operation, request });
+      if (this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The result-description study changed during inspection.");
+      return output;
+    }
     if (operation === "viewer_defaults") {
       return this.control.request("research_execute", { project, operation, request });
     }

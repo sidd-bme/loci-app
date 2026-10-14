@@ -178,7 +178,7 @@ async function reviewAndExport(result, destination) {
     await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "exact review");
   picker.export = destination; await installPickers();
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await until(() => fs.stat(path.join(destination, "manifest.json")).catch(() => null), (s) => s?.isFile(), "reviewed export");
   const exported = JSON.parse(await fs.readFile(path.join(destination, "result.json"), "utf8"));
   const manifest = JSON.parse(await fs.readFile(path.join(destination, "manifest.json"), "utf8"));

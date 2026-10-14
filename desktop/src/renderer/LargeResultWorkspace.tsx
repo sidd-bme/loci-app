@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import "./LargeResultWorkspace.css";
+import { resultTitle } from "./result-title";
 
 type Row = Record<string, unknown>;
 type Region = { x: number; y: number; width: number; height: number };
@@ -67,7 +68,7 @@ export function LargeAnalysisPanel({ api, source, selection, busy, onBusy, onErr
     finally { onBusy(null); }
   };
   return <section className="research-panel large-analysis" aria-label="Large image analysis">
-    <h3>Threshold components</h3>
+    <h3>Threshold segmentation</h3>
     <p>Native channel {selection.c + 1} · Z {selection.z + 1} · T {selection.t + 1}. Four-connected objects across the entire selected region.</p>
     <label>Threshold in raw source values<input aria-label="Large image threshold" type="number" value={threshold} disabled={busy} onChange={(event) => setThreshold(event.target.value)} /></label>
     <div className="research-grid">
@@ -202,7 +203,7 @@ export function LargeResultViewport({ api, result, focus, onPickStart, onPick }:
         }} />}
       {error && <div className="large-result-error" role="alert"><p>{error}</p><button onClick={() => setRetry((value) => value + 1)}>Retry view</button></div>}
     </div>
-    <div className="large-result-caption">Result coordinates · X {region.x}–{region.x + region.width - 1}, Y {region.y}–{region.y + region.height - 1} · {result.object_count.toLocaleString()} objects · revision {result.revision_hash.slice(0, 8)}</div>
+    <div className="large-result-caption">Result coordinates · X {region.x}–{region.x + region.width - 1}, Y {region.y}–{region.y + region.height - 1} · {result.object_count.toLocaleString()} objects</div>
   </section>;
 }
 
@@ -238,8 +239,8 @@ export function LargeResultInspector({ api, result, selected, onSelect, onLocate
     setRows([]); setLoading(true); setPageError(null); setOffset(next);
   };
   return <section className="research-panel large-object-inspector" aria-label="Large result objects">
-    <h2>Objects & measurements</h2><p>{result.object_count.toLocaleString()} objects · calibrated raw-source measurements</p>
-    <p className="large-method-note">Select an object on the image or in this list. Colours identify labels; sampled overview pixels are not measurement data.</p>
+    <h2>Objects & measurements</h2><p>{resultTitle(result)} · {result.object_count.toLocaleString()} objects</p>
+    <p className="large-method-note">Select an object on the image or in the list.</p>
     <div className="large-object-page"><button disabled={loading || offset === 0} onClick={() => movePage(Math.max(0, offset - 200))}>Previous</button><span role="status">{loading ? "Loading objects…" : result.object_count ? `${offset + 1}–${Math.min(offset + rows.length, result.object_count)}` : "No objects"}</span><button disabled={loading || offset + 200 >= result.object_count} onClick={() => movePage(offset + 200)}>Next</button></div>
     {pageError && <p role="alert">{pageError} <button onClick={() => { pageGeneration.current++; setRows([]); setLoading(true); setPageError(null); setPageRetry((value) => value + 1); }}>Retry objects</button></p>}
     <div className="large-object-list"><table><thead><tr><th>Object</th><th>Area ({result.geometry?.unit}²)</th><th>Pixels</th></tr></thead><tbody>{rows.map((row) => <tr key={String(row.label)} aria-selected={row.label === selected?.label}><td><button onClick={() => onSelect(row)}>#{String(row.label)}</button></td><td>{Number(row.measure).toLocaleString(undefined, { maximumFractionDigits: 6 })}</td><td>{Number(row.voxel_count).toLocaleString()}</td></tr>)}</tbody></table></div>
@@ -253,9 +254,10 @@ export function LargeResultInspector({ api, result, selected, onSelect, onLocate
       }); }}>Remove object in new revision</button>
     </section>}
     <div className="large-object-page"><button disabled={busy || !result.parent_id} onClick={onUndo}>Undo removal</button><button disabled={busy || !canRedo} onClick={onRedo}>Redo removal</button></div>
-    <hr /><p>{result.review?.disposition === "reviewed" ? "Reviewed revision" : "Review this exact revision before export."}</p>
+    <hr /><p>{result.review?.disposition === "reviewed" ? "Reviewed revision" : "Mark this result reviewed before export."}</p>
     <button disabled={busy || result.review?.disposition === "reviewed"} onClick={() => void action("Review", async () => { await api.reviewResult(result.id, result.revision_hash, "reviewed"); await onRefresh(); })}>Mark reviewed</button>
-    <button disabled={busy || result.review?.disposition !== "reviewed"} onClick={() => void action("Export", async () => { await api.exportResult(result.id, result.revision_hash); })}>Export revision</button>
-    <p className="large-method-note">Export includes exact image/label OME-TIFF, all object measurements and provenance. Save study retains complete correction history. Large results currently support whole-object removal.</p>
+    <button disabled={busy || result.review?.disposition !== "reviewed"} onClick={() => void action("Export", async () => { await api.exportResult(result.id, result.revision_hash); })}>Export result</button>
+    <details><summary>Export contents</summary><p className="large-method-note">Includes image/label OME-TIFF, all object measurements and provenance. Save the study to retain correction history.</p></details>
+    <details><summary>Technical record</summary><p className="large-method-note">Result <code style={{ overflowWrap: "anywhere" }}>{result.id}</code><br />Revision <code style={{ overflowWrap: "anywhere" }}>{result.revision_hash}</code></p><p className="large-method-note">Labels identify objects. Sampled overviews support navigation; measurements use stored source pixels. Correction supports whole-object removal.</p></details>
   </section>;
 }

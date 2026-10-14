@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { ResearchDesktopApi, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
 
+import { resultTitle } from "./result-title";
+
 /** Closing/clearing changes the working list; original files and history remain. */
 export function WorkspaceRecordActions({ api, snapshot, source, busy, onBusy, onChange, onError }: {
   api: Pick<ResearchDesktopApi, "updateWorkspace">; snapshot: ResearchSnapshot; source: ResearchSource | null; busy: boolean;
@@ -35,16 +37,17 @@ export function WorkspaceRecordActions({ api, snapshot, source, busy, onBusy, on
         <button disabled={disabled || !results.length} onClick={() => void change({ expected_revision: workspace.revision,
           sources: [], results: results.map((item) => ({ id: item.id, revision_hash: item.revision_hash, visible: false })) }, "Results cleared from the working list.")}>Clear image results</button>
       </>}
-      <small>Original files and scientific history are kept. Closed images and cleared results can be restored here.</small>
+      <small>Close or clear from this list; restore here when needed. Original files and history are kept.</small>
       {workspace.closed_sources.length > 0 && <div className="workspace-restorable"><span>Closed images</span>
         {workspace.closed_sources.map((item) => <button key={item.id} disabled={disabled} title={item.name}
           aria-label={`Reopen ${item.name}`} onClick={() => void change({ expected_revision: workspace.revision,
             sources: [{ id: item.id, sha256: item.sha256, visible: true }], results: [] }, "Image reopened.")}>{item.name}</button>)}
       </div>}
       {hidden.length > 0 && <div className="workspace-restorable"><span>Cleared results for this image</span>
-        {hidden.map((item) => <button key={item.id} disabled={disabled} title={`Restore exact revision ${item.revision_hash}`}
-          aria-label={`Restore result ${item.id}`} onClick={() => void change({ expected_revision: workspace.revision,
-            sources: [], results: [{ id: item.id, revision_hash: item.revision_hash, visible: true }] }, "Result restored.")}>{item.kind}<small>{item.object_count} objects · {item.revision_hash.slice(0, 8)}</small></button>)}
+        {hidden.map((item, index) => <button key={item.id} disabled={disabled}
+          aria-label={`Restore ${source?.name ?? "image"} · ${resultTitle(item)} · ${item.object_count} objects · Run ${index + 1}`} onClick={() => void change({ expected_revision: workspace.revision,
+            sources: [], results: [{ id: item.id, revision_hash: item.revision_hash, visible: true }] }, "Result restored.")}>{resultTitle(item)}<small>{item.object_count} objects · Run {index + 1}</small></button>)}
+        <details><summary>Technical record</summary><div>{hidden.map((item, index) => <p key={item.id}>Run {index + 1} · {resultTitle(item)}<br />Result <code style={{ overflowWrap: "anywhere" }}>{item.id}</code><br />Revision <code style={{ overflowWrap: "anywhere" }}>{item.revision_hash}</code></p>)}</div></details>
       </div>}
     </div></details>
     {undo && <div className="workspace-change-receipt" role="status"><span>{undo.message}</span>

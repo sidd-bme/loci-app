@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchAgentAccessReceipt,
@@ -117,7 +117,10 @@ describe("ResearchAgentPanel", () => {
     const createAgentAccess = vi.fn().mockResolvedValue(receipt);
     renderPanel(bridge(execute, createAgentAccess));
     fireEvent.click(screen.getByText("Validate exact scope and recipe"));
-    expect(await screen.findByLabelText("Exact recipe validation")).toHaveTextContent(validation.recipe_sha256);
+    const validationCard = await screen.findByLabelText("Exact recipe validation");
+    expect(validationCard).toHaveTextContent("Scope and settings checked");
+    expect(within(validationCard).getByText(validation.recipe_sha256)).not.toBeVisible();
+    expect(within(validationCard).getByText(/unvalidated-research-method/)).not.toBeVisible();
     fireEvent.click(screen.getByLabelText("Allow display-only recipe previews"));
     fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
     fireEvent.click(screen.getByLabelText("Disclose previews"));
@@ -138,7 +141,12 @@ describe("ResearchAgentPanel", () => {
       limits: { cpu_seconds: 60, memory_bytes: 512 * 1024 ** 2, concurrency: 2 },
     }));
     expect(await screen.findByLabelText("Created agent access receipt")).toHaveTextContent("agent-policy.json");
-    expect(screen.getByLabelText("Created agent access receipt")).not.toHaveTextContent("/Users/");
+    const ready = screen.getByLabelText("Created agent access receipt");
+    expect(ready).not.toHaveTextContent("/Users/");
+    const policyHash = within(ready).getByText(receipt.policy_sha256);
+    expect(policyHash).not.toBeVisible();
+    fireEvent.click(within(ready).getByText("Technical record"));
+    expect(policyHash).toBeVisible();
   });
 
   it("rejects invalid limits and unsupported reference-bound recipes", async () => {
@@ -284,4 +292,16 @@ describe("ResearchAgentPanel", () => {
     expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
   });
 
+});
+
+it("points file-based vision clients to Agent and keeps source fingerprints in a closed record", () => {
+  renderPanel(bridge(vi.fn()));
+  fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "web" } });
+  expect(screen.getByText(/Agent → Export vision handoff/)).toBeVisible();
+  expect(screen.queryByText(/Display → Export vision handoff/)).not.toBeInTheDocument();
+  const scope = screen.getByLabelText("Exact agent source and scope");
+  const fingerprint = within(scope).getByText(source.sha256);
+  expect(fingerprint).not.toBeVisible();
+  fireEvent.click(within(scope).getByText("Technical record"));
+  expect(fingerprint).toBeVisible();
 });

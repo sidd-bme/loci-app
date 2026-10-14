@@ -7,7 +7,7 @@ import type {
   ResearchResult,
   ResearchSnapshot,
 } from "../shared/research-contracts";
-import { ResearchTemporalPanel, type TrackingGraph } from "./ResearchTemporalPanel";
+import { ResearchTemporalPanel, trackingFrameLabels, type TrackingGraph } from "./ResearchTemporalPanel";
 
 afterEach(cleanup);
 
@@ -256,16 +256,17 @@ describe("ResearchTemporalPanel", () => {
     );
     expect(onPublished).toHaveBeenCalledWith(temporal);
     expect(screen.getByText("Unresolved automatic hypotheses")).toBeVisible();
-    expect(screen.getAllByText(/remains an unresolved automatic hypothesis/)).toHaveLength(3);
+    expect(screen.getAllByText(/Review candidates before publishing an association edit/)).toHaveLength(3);
     expect(screen.getByText(/one source has multiple plausible targets/)).toHaveTextContent(
-      "split_or_merge: 11111111:1 → 22222222 candidates 2, 3",
+      "Possible split or merge: Frame 1 · 0 s · object 1 → Frame 2 · 7 s candidates 2, 3",
     );
     expect(screen.getByText(/one target has multiple plausible sources/)).toHaveTextContent(
-      "split_or_merge: 22222222:2 → 11111111 candidates 1, 4",
+      "Possible split or merge: Frame 2 · 7 s · object 2 → Frame 1 · 0 s candidates 1, 4",
     );
-    expect(
-      screen.getByText(/Associations describe observations, not biological lineage or identity/),
-    ).toBeVisible();
+    const method = screen.getByText(/Associations describe observations, not biological lineage or identity/);
+    expect(method).not.toBeVisible();
+    fireEvent.click(screen.getByText("Tracking method"));
+    expect(method).toBeVisible();
   });
 
   it("requires every missing observation to carry an ID, reason, and increasing time", () => {
@@ -360,4 +361,33 @@ describe("ResearchTemporalPanel", () => {
     );
     expect(onPublished).toHaveBeenLastCalledWith(corrected);
   });
+});
+
+it("labels stored graph times independently of the currently open source or result list", () => {
+  const ordered = { ...graph, frames: [...graph.frames].reverse() };
+  const labels = trackingFrameLabels(ordered);
+  expect(labels.get(ids[1])).toBe("Frame 1 · 7 s");
+  expect(labels.get(ids[0])).toBe("Frame 2 · 0 s");
+  expect(ordered.frames[0].frame_id).toBe(ids[1]);
+  expect(ordered.frames[0].time_s).toBe(7);
+});
+
+it("keeps unknown exact references distinct and retains every ambiguous duplicate occurrence", () => {
+  const first = "sameprefix" + "a".repeat(22);
+  const second = "sameprefix" + "b".repeat(22);
+  const partial: TrackingGraph = {
+    ...graph,
+    frames: [graph.frames[0], { ...graph.frames[0], time_s: 7 }],
+    edges: [{ ...graph.edges[0], source_frame_id: first, target_frame_id: second }],
+    hypotheses: [],
+    trajectories: [],
+  };
+  const labels = trackingFrameLabels(partial);
+  expect(labels.get(first)).toBe("Unlisted frame 1");
+  expect(labels.get(second)).toBe("Unlisted frame 2");
+  expect(labels.get(ids[0])).toBe("Frame 1 · 0 s / Frame 2 · 7 s");
+  expect(partial.edges[0].source_frame_id).toBe(first);
+  expect(partial.edges[0].target_frame_id).toBe(second);
+  const unknownTime = trackingFrameLabels({ ...partial, frames: [{ ...graph.frames[0], time_s: Number.NaN }] });
+  expect(unknownTime.get(ids[0])).toBe("Frame 1 · time unavailable");
 });

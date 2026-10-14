@@ -164,7 +164,11 @@ try {
   await selectWorkbenchTool(page, "Quantify");
   await page.getByRole("button", { name: "Field assay", exact: true }).click();
   const readiness = page.getByLabel("Field assay readiness", { exact: true });
-  await readiness.getByText(source.sha256.slice(0, 12), { exact: false }).waitFor();
+  await readiness.waitFor({ state: "visible" });
+  assert.equal(await readiness.getAttribute("data-source-id"), source.id);
+  assert.equal(await readiness.getAttribute("data-source-sha256"), source.sha256);
+  assert.ok((await readiness.innerText()).includes(source.name));
+  assert.ok(!(await readiness.innerText()).includes(source.sha256.slice(0, 12)));
   await page.getByText("T 0, Z 0", { exact: true }).first().waitFor();
   const focusSelection = page.getByLabel("Focus region selection", { exact: true });
   const backgroundSelection = page.getByLabel("Background annotation selection", { exact: true });
@@ -187,7 +191,7 @@ try {
   await preview.getByText("50 ADU", { exact: true }).waitFor();
   await preview.getByText("Background ADU", { exact: true }).locator("..").getByText("1", { exact: true }).waitFor();
   await preview.getByText("46 ADU", { exact: true }).first().waitFor();
-  await preview.getByText("1 (manual_override)", { exact: true }).waitFor();
+  await preview.getByText("1 (manual count)", { exact: true }).waitFor();
   const afterPreview = await page.evaluate(() => window.lociResearch.getSnapshot());
   assert.equal(afterPreview.results.length, 0, "Display-only preview unexpectedly adopted a result.");
 

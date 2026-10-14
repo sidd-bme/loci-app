@@ -87,3 +87,80 @@ def test_imports_loci_imagej_roi_and_rejects_wrong_exact_revision(tmp_path):
                 "measurement_channels": [0],
             },
         )
+
+
+@pytest.mark.parametrize("context", [(0, 0), (1, 1)])
+@pytest.mark.parametrize("format_name", ["geojson", "imagej"])
+def test_roi_import_binds_exact_time_and_channel_before_publication(tmp_path, context, format_name):
+    """A matching grid/revision cannot authorize another acquisition plane."""
+    time, channel = context
+    image = tmp_path / "multiplane.ome.tif"
+    tifffile.imwrite(
+        image,
+        np.arange(2 * 2 * 12 * 12, dtype=np.uint16).reshape(2, 2, 12, 12),
+        ome=True,
+        metadata={"axes": "TCYX"},
+        photometric="minisblack",
+    )
+    workbench = Workbench(ResearchProject.create(tmp_path / "study.loci-study", "Bound planes"))
+    source = workbench.import_native(str(image))
+    output = workbench.execute(
+        "run_recipe",
+        {"source_id": source["id"], "selection": {"t": time, "c": channel}},
+    )
+    parent = workbench.project.result(output["result"]["id"])
+
+    def request(roi_time, roi_channel):
+        roi = create_polygon_roi(
+            annotation_id="plane-bound-roi",
+            image_shape=(12, 12),
+            geometry=geometry_from_dict(parent["provenance"]["geometry"]),
+            source_sha256=source["sha256"],
+            result_sha256=parent["revision_hash"],
+            source_t=roi_time,
+            source_c=roi_channel,
+            plane="XY",
+            plane_index=0,
+            points=[{"u": 1, "v": 1}, {"u": 8, "v": 1}, {"u": 4, "v": 8}],
+        )
+        payload = (
+            canonical_json(roi_to_geojson(roi))
+            if format_name == "geojson"
+            else base64.b64encode(roi_to_imagej(roi)).decode("ascii")
+        )
+        return {
+            "result_id": parent["id"],
+            "revision_hash": parent["revision_hash"],
+            "format": format_name,
+            "payload": payload,
+            "measurement_channels": [channel],
+        }
+
+    frozen_results = workbench.project.list_results()
+    frozen_arrays = {
+        key: item.read_bytes()
+        for key, item in (
+            (name, workbench.project.arrays / (descriptor["sha256"] + ".npy"))
+            for name, descriptor in parent["arrays"].items()
+        )
+    }
+    for wrong_time, wrong_channel in [(1 - time, channel), (time, 1 - channel)]:
+        with pytest.raises(ValueError, match="acquisition T/C"):
+            import_annotations(workbench, request(wrong_time, wrong_channel))
+        assert workbench.project.list_results() == frozen_results
+        assert workbench.project.result(parent["id"]) == parent
+        assert {
+            name: (workbench.project.arrays / (descriptor["sha256"] + ".npy")).read_bytes()
+            for name, descriptor in parent["arrays"].items()
+        } == frozen_arrays
+
+    imported = import_annotations(workbench, request(time, channel))
+    child = workbench.project.result(imported["result"]["id"])
+    properties = child["provenance"]["annotations"][0]["geojson"]["properties"]
+    assert properties["source_t"] == time
+    assert properties["source_c"] == channel
+    assert child["parent_id"] == parent["id"]
+    assert child["arrays"] == parent["arrays"]
+    assert workbench.project.review_state(child["id"]) is None
+    assert workbench.project.result(parent["id"]) == parent
+    workbench.close()

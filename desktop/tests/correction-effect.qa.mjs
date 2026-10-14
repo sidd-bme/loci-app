@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 // Successful scientific actions use the real packaged controls. Read-only
 // bridge inspection supplies assertions; explicit rejection probes exercise
@@ -183,7 +183,7 @@ async function selectSource(name) {
 }
 async function openResult(name, result) {
   await selectSource(name);
-  const row = page.locator(`[data-result-id="${result.id}"]`);
+  const row = page.locator(`.research-sources [data-result-id="${result.id}"]`);
   if (!(await row.getAttribute("class"))?.includes("selected")) await row.click();
   await wait(() => row.getAttribute("class"), value => value?.includes("selected"), "select exact revision");
 }
@@ -217,6 +217,7 @@ async function adopt(name, count) {
   await wait(ready, Boolean, "selected native plane");
   await dialogs(labelsPath(name));
   await selectWorkbenchTool(page, "Analyze");
+  await revealExternalLabels(page);
   await page.getByRole("button", { name: "Import labels", exact: true }).click();
   const overlay = page.getByAltText("Checked label overlay on the selected source plane", { exact: true });
   await wait(() => overlay.evaluate(img => img.complete && img.naturalWidth > 0), Boolean, "decoded known-label preview");
@@ -295,12 +296,27 @@ async function assertFullPrecision(rows, kind, unit) {
 }
 async function selectedRevisionDetails(select, result, label) {
   const option = await select.locator("option:checked").textContent();
-  assert.equal(option, result.kind + " · " + result.id.slice(0, 8));
+  assert.equal(await select.inputValue(), result.id);
+  const state = await snapshot();
+  const sourceName = state.sources.find(source => source.id === result.source_id)?.name;
+  assert.ok(sourceName && option.startsWith(sourceName + " · "));
+  assert.ok(option.includes(result.method_label ?? (result.kind === "corrected-labels" ? "Corrected segmentation" : "Imported labels")));
+  assert.ok(option.includes(` · ${result.object_count} ${result.object_count === 1 ? "object" : "objects"} · Run `));
+  assert.ok(!option.includes(result.id.slice(0, 8)), "Internal result ID leaked into the ordinary choice.");
   const detail = panel().getByLabel(label, { exact: true });
   await detail.waitFor({ state: "visible" });
   const text = await detail.textContent();
-  assert.ok(text.includes(result.created_at), "Selected timestamp is not accessible");
+  const created = detail.locator("time");
+  assert.equal(await created.getAttribute("datetime"), result.created_at, "Readable creation time lost its exact timestamp binding");
+  assert.ok((await created.textContent()).trim().length > 0, "Readable creation time is empty");
+  assert.ok(!text.includes(result.created_at), "Raw timestamp leaked into the routine revision details");
   assert.ok(text.includes(result.review?.disposition ?? "pending review"), "Selected review state is not accessible");
+  const technical = panel().getByLabel("Technical record for " + label, { exact: true });
+  assert.equal(await technical.evaluate(element => element.open), false);
+  assert.ok((await technical.textContent()).includes(result.id));
+  assert.ok((await technical.textContent()).includes(result.revision_hash));
+  assert.equal(await technical.getByText(result.created_at, { exact: true }).isVisible(), false);
+  assert.ok((await technical.textContent()).includes(result.created_at), "Technical record lost the original timestamp");
   await assertHorizontalFit(detail, "selected revision details");
 }
 async function startEffect(child, parents) {
@@ -389,14 +405,18 @@ async function captureReports(prefix) {
     await screenshot(prefix + "-" + name + "-full-precision", detail);
   }
   await screenshot(prefix + "-audit", await disclosure("Correction audit for " + fields[0]));
-  await screenshot(prefix + "-identities", await disclosure("Exact receipt and revision identities"));
-  await screenshot(prefix + "-identities-bottom", panel().getByText("Exact receipt and revision identities", { exact: true })
-    .locator("..").locator("p").last());
+  const record = panel().getByRole("region", { name: "Experiment effect receipt", exact: true })
+    .getByText("Technical record", { exact: true }).locator("..");
+  if (!(await record.evaluate(element => element.open))) await record.locator(":scope > summary").click();
+  await screenshot(prefix + "-identities", record);
+  await screenshot(prefix + "-identities-bottom", record.locator("p").last());
   await screenshot(prefix + "-export-controls", panel().getByRole("button", { name: "Export reviewed effect report", exact: true }));
 }
 async function restore(receipt) {
   await disclosure("Saved experiment effects");
-  await panel().getByRole("button", { name: `Restore experiment effect ${receipt.receipt_sha256.slice(0, 32)}`, exact: true }).click();
+  const restoreButton = panel().locator(`button[data-report-id="${receipt.receipt_sha256.slice(0, 32)}"]`);
+  assert.match(await restoreButton.getAttribute("aria-label"), /^Restore .+ report [1-9][0-9]*$/);
+  await restoreButton.click();
   await panel().getByText("Historical snapshot", { exact: false }).waitFor();
 }
 async function theme(value) {

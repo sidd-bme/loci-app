@@ -24,7 +24,7 @@ const source = (id: string, name: string, sha256: string): ResearchSource => ({
 });
 const result: ResearchResult = {
   schema: "loci.research-result/v2", id: RESULT_ID, source_id: ID_A,
-  source_sha256: SHA_A, kind: "large-components", created_at: "now",
+  source_sha256: SHA_A, kind: "large-segmentation", created_at: "now",
   revision_hash: "1".repeat(64), object_count: 1,
   arrays: { image: { shape: [64, 64], dtype: "uint16" }, labels: { shape: [64, 64], dtype: "uint32" } },
   geometry: { axes: "YX", unit: "um", affine: [[.5, 0, 0], [0, .5, 0], [0, 0, 1]] },
@@ -154,7 +154,7 @@ it("keeps a completed A run in history without replacing B after A to B to A nav
   await sourceButton("Source B");
   await sourceButton("Source A");
   state.completeRun();
-  await waitFor(() => expect(screen.getByRole("button", { name: /large-components.*1 objects/i })).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByRole("button", { name: /Threshold segmentation.*1 object/i })).toBeInTheDocument());
   expect(screen.getByLabelText("Active image")).toHaveTextContent("Source A");
   expect(screen.queryByRole("region", { name: "Large quantitative result" })).not.toBeInTheDocument();
   expect(state.execute).not.toHaveBeenCalledWith("select_result", expect.anything());
@@ -180,7 +180,7 @@ it("leaves B on screen when A's large run finishes after switching sources", asy
   expect(screen.queryByRole("region", { name: "Large quantitative result" })).not.toBeInTheDocument();
   expect(state.execute).not.toHaveBeenCalledWith("select_result", expect.anything());
   await sourceButton("Source A");
-  expect(await screen.findByRole("button", { name: /large-components.*1 objects/i })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: /Threshold segmentation.*1 object/i })).toBeInTheDocument();
 });
 
 it("does not adopt A after navigating to B while its result selection is pending", async () => {
@@ -208,7 +208,7 @@ it("keeps B visible when deletion of A resolves after navigation", async () => {
   const state = harness(true);
   render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
   await screen.findByRole("main", { name: "Research workspace" });
-  const history = await screen.findByRole("button", { name: /large-components.*1 objects/i });
+  const history = await screen.findByRole("button", { name: /Threshold segmentation.*1 object/i });
   await waitFor(() => expect(history).toBeEnabled());
   fireEvent.click(history);
   await chooseInfo();
@@ -227,7 +227,7 @@ it("keeps B visible when deletion of A resolves after navigation", async () => {
   expect(state.execute).not.toHaveBeenCalledWith("select_result", expect.anything());
   expect(state.current().results).toHaveLength(2);
   await sourceButton("Source A");
-  expect(await screen.findByRole("button", { name: /large-corrected-labels.*0 objects/i })).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: /Corrected segmentation.*0 objects/i })).toBeInTheDocument();
   expect(screen.queryByRole("region", { name: "Large quantitative result" })).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
@@ -236,7 +236,7 @@ it("does not let a delayed image pick replace the user's later table selection",
   const state = harness(true);
   render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
   await screen.findByRole("main", { name: "Research workspace" });
-  const history = await screen.findByRole("button", { name: /large-components.*1 objects/i });
+  const history = await screen.findByRole("button", { name: /Threshold segmentation.*1 object/i });
   await waitFor(() => expect(history).toBeEnabled());
   fireEvent.click(history);
   await chooseInfo();

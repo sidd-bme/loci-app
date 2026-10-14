@@ -1341,6 +1341,42 @@ describe("native research bridge", () => {
     await expect(fs.lstat(path.join(root, "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("describes only an exact result revision on the read-only control worker", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const binding = { result_id: "a".repeat(32), revision_hash: "b".repeat(64) };
+    const control = mocks.clients[1];
+    await call("execute", "describe_result", binding);
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", {
+      project, operation: "describe_result", request: binding,
+    });
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_submit")).toBe(false);
+    for (const invalid of [
+      { result_id: binding.result_id },
+      { ...binding, revision_hash: "stale" },
+      { ...binding, private_path: "/private/source" },
+    ]) {
+      await expect(call("execute", "describe_result", invalid)).rejects.toThrow("exact result");
+    }
+  });
+
+  it("rejects a result description after its captured study closes", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    let finish!: (value: unknown) => void;
+    mocks.request.mockImplementation((method: string) => method === "research_execute"
+      ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({}));
+    const pending = call("execute", "describe_result", {
+      result_id: "a".repeat(32), revision_hash: "b".repeat(64),
+    });
+    const rejected = expect(pending).rejects.toThrow("study changed during inspection");
+    await call("new-session");
+    finish({ schema: "loci.result-context/v1" });
+    await rejected;
+  });
+
   it("uses an isolated restartable viewer worker and never cancels the analysis worker", async () => {
     const project = path.join(root, "Study.loci-study");
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });

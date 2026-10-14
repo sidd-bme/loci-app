@@ -4,7 +4,7 @@
 }
 
 .research-quantification fieldset {
-  margin: 10px 0;
+  margin: 12px 0;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 8px;
@@ -15,13 +15,13 @@
 }
 
 .research-quantification textarea {
-  min-height: 58px;
+  min-height: 64px;
   resize: vertical;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: var(--graphite-850);
   color: var(--ink);
-  padding: 5px;
+  padding: 8px;
 }
 
 .research-gate {
@@ -31,8 +31,21 @@
 }
 
 .research-quantification .research-kv {
-  margin-top: 10px;
+  margin-top: 12px;
 }
+
+.research-quantification .research-kv > div { gap: 8px; }
+.research-quantification .research-kv dd,
+.research-quantification table { font-variant-numeric: tabular-nums; }
+.quantification-guidance { margin: 8px 0; color: var(--ink-muted); font-size: var(--type-sm); }
+.quantification-negative { color: var(--warning); }
+.quantification-technical { margin-block: 12px; }
+.quantification-technical > summary { min-height: 32px; align-content: center; cursor: pointer; }
+.quantification-technical .research-kv > div { grid-template-columns: minmax(0, 1fr); }
+.quantification-technical dd { overflow-wrap: anywhere; }
+.quantification-compact-table th { white-space: normal; }
+.quantification-position { min-width: 96px; white-space: normal; }
+.field-assay-preview-results { margin-top: 12px; }
 
 .field-assay-adoption p {
   font-size: var(--type-sm);
@@ -41,3 +54,7 @@
 .field-assay-review-reason { color: var(--ink-muted); }
 .research-quantification .research-callout[role="alert"] { color: var(--warning); }
 .research-quantification .research-mode-tabs button { text-transform: none; }
+
+.research-compartment-table table { font-variant-numeric: tabular-nums; }
+.research-compartment-table th, .research-compartment-table td { white-space: nowrap; }
+.research-compartment-pages { display: flex; align-items: center; gap: 8px; }

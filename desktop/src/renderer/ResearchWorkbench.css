@@ -172,6 +172,11 @@
   overflow: hidden;
   text-align: left;
 }
+.research-layers-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0 8px; }
+.research-layers-heading h2 { margin: 0; }
+.research-window-actions { display: flex; gap: 2px; }
+.research-window-actions button { min-height: 28px; width: 28px; padding: 5px; border-color: transparent; background: transparent; }
+.assistant-display-status { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); color: var(--ink-secondary); }
 .research-sources > button.research-source-item,
 .research-sources-list > button.research-source-item {
   display: flex;
@@ -279,6 +284,7 @@
 }
 .research-canvas-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -298,7 +304,9 @@
   gap: 8px;
   font-size: var(--type-md);
   color: var(--ink-muted);
+  white-space: nowrap;
 }
+.result-source-count { white-space: nowrap; }
 .research-review-export-quick-btn {
   font-size: var(--type-sm);
   padding: 2px 8px;
@@ -468,8 +476,8 @@
 }
 .research-panel label {
   display: grid;
-  gap: 3px;
-  margin: 7px 0;
+  gap: 6px;
+  margin: 12px 0;
   color: var(--ink-secondary);
 }
 .research-panel input,
@@ -486,7 +494,7 @@
 .research-panel fieldset {
   min-width: 0;
   margin: 12px 0;
-  padding: 8px 10px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 4px;
 }
@@ -607,6 +615,14 @@
   outline: 2px solid var(--processing);
   outline-offset: -2px;
 }
+.research-intensity-values { min-width: 8rem; }
+.research-intensity-values summary { cursor: pointer; }
+.research-intensity-values section { padding-top: 8px; }
+.research-intensity-values strong { font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
+.research-intensity-values dl { margin: 4px 0 0; }
+.research-intensity-values dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.research-intensity-values dt { color: var(--ink-muted); }
+.research-intensity-values dd { margin: 0; user-select: text; }
 .research-result-summary-card {
   margin: 12px 0;
   padding: 10px;
@@ -1522,6 +1538,16 @@
 .analysis-scope-control button:focus:not(:focus-visible) { outline: none; }
 .analysis-scope-control button:focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
 .analysis-scope-control p { margin: 4px 0 0; line-height: 1.5; color: var(--ink-secondary); }
+.external-labels-disclosure { margin: 0 16px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.external-labels-disclosure > summary { min-height: 32px; align-content: center; cursor: pointer; color: var(--ink-secondary); }
+.image-first-workbench .external-labels-disclosure > .research-panel { padding: 8px 0; }
+.research-panel > details { margin-block: 12px; }
+.research-panel > details > summary { min-height: 32px; align-content: center; cursor: pointer; }
+.study-analysis-section { padding-block: 8px; border-top: 1px solid var(--line); }
+.study-analysis-section > summary { font-weight: 550; }
+.study-analysis-section .research-check > span { min-width: 0; overflow-wrap: anywhere; }
+.study-analysis-section .research-check small { display: block; margin-top: 4px; color: var(--ink-muted); }
+.research-workbench summary:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; border-radius: 3px; }
 .segmentation-family { display: grid; gap: 7px; padding: 12px 14px 0; font-size: var(--type-sm); color: var(--ink-secondary); }
 .segmentation-family select { width: 100%; min-height: 32px; }
 .cellpose-panel > p, .cellpose-panel details p { font-size: var(--type-sm); line-height: 1.5; }
@@ -1878,7 +1904,7 @@
 /* Author workflows in a dedicated workspace while retaining the live image.
    The normal inspector width and source-rail preference are left untouched. */
 .image-first-workbench.is-workflow-workspace {
-  grid-template-columns: min(var(--research-sources-width, 160px), 160px) minmax(240px, 0.6fr) minmax(460px, 1.4fr);
+  grid-template-columns: 200px minmax(240px, 0.6fr) minmax(460px, 1.4fr);
 }
 .is-workflow-workspace .research-inspector {
   overflow: hidden;
@@ -1914,7 +1940,7 @@
 }
 @media (max-width: 1100px) {
   .image-first-workbench.is-workflow-workspace {
-    grid-template-columns: 140px minmax(220px, 0.55fr) minmax(440px, 1.45fr);
+    grid-template-columns: 200px minmax(220px, 0.55fr) minmax(440px, 1.45fr);
   }
 }
 @media (max-width: 860px) {
@@ -1996,7 +2022,7 @@
 
 /* Statistics keeps the image linked and gives measured data a readable workspace. */
 .image-first-workbench.is-statistics-workspace {
-  grid-template-columns: min(var(--research-sources-width, 160px), 160px) minmax(260px, 0.9fr) minmax(460px, 1.1fr);
+  grid-template-columns: 200px minmax(260px, 0.9fr) minmax(460px, 1.1fr);
 }
 .image-first-workbench.is-statistics-workspace .research-inspector {
   background: var(--graphite-900);
@@ -2011,11 +2037,11 @@
 .is-statistics-workspace .image-view-tools { max-width: calc(100% - 16px); width: max-content; box-sizing: border-box; flex-wrap: wrap; justify-content: center; }
 .population-workspace-host { min-height: 0; min-width: 0; flex: 1; overflow: auto; container-type: inline-size; }
 .population-workspace-host[hidden], .research-canvas[hidden] { display: none; }
-.image-first-workbench.is-statistics-focused { grid-template-columns: min(var(--research-sources-width, 160px), 160px) minmax(0, 1fr); }
+.image-first-workbench.is-statistics-focused { grid-template-columns: 200px minmax(0, 1fr); }
 .image-first-workbench.is-statistics-focused .research-inspector-shell { grid-column: 2; }
 @media (max-width: 1100px) {
-  .image-first-workbench.is-statistics-workspace { grid-template-columns: 130px minmax(220px, 0.85fr) minmax(420px, 1.15fr); }
-  .image-first-workbench.is-statistics-focused { grid-template-columns: 130px minmax(0, 1fr); }
+  .image-first-workbench.is-statistics-workspace { grid-template-columns: 200px minmax(220px, 0.85fr) minmax(420px, 1.15fr); }
+  .image-first-workbench.is-statistics-focused { grid-template-columns: 200px minmax(0, 1fr); }
 }
 @media (max-width: 820px) {
   .image-first-workbench.is-statistics-workspace { grid-template-columns: 100px minmax(160px, 0.7fr) minmax(360px, 1.3fr); }

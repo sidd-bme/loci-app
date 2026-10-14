@@ -3692,9 +3692,10 @@ input[type="range"]:disabled {
 :root[data-font="verdana"] { --font-ui: Verdana, Geneva, sans-serif; }
 
 /* Recipe capacity remains adjacent to the scope; no modal or separate dashboard. */
-.recipe-resources { display: grid; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }
-.recipe-resources-estimate { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.recipe-resources-estimate strong { font-variant-numeric: tabular-nums; }
+.recipe-resources { padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.recipe-resources summary { min-height: 32px; align-content: center; color: var(--ink-secondary); cursor: pointer; }
+.recipe-resources summary strong { float: right; margin-left: 8px; font-size: var(--type-sm); font-weight: 500; font-variant-numeric: tabular-nums; }
+.recipe-resources-body { display: grid; gap: 12px; padding: 8px 0; }
 .recipe-resources label { display: grid; gap: 6px; }
 .recipe-resources select { width: 100%; min-width: 0; }
 .recipe-resources small { color: var(--ink-secondary); line-height: 1.5; }

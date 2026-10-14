@@ -8,7 +8,7 @@ import { LargeAnalysisPanel, LargeResultInspector, LargeResultViewport, clampLar
 import ResearchWorkbench from "./ResearchWorkbench";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-const result: ResearchResult = { schema: "loci.research-result/v2", id: "r1", source_id: "s1", kind: "large-components", created_at: "now", revision_hash: "a".repeat(64), object_count: 201, arrays: { image: { shape: [16384, 16384] } }, geometry: { unit: "um" } };
+const result: ResearchResult = { schema: "loci.research-result/v2", id: "r1", source_id: "s1", kind: "large-segmentation", created_at: "now", revision_hash: "a".repeat(64), object_count: 201, arrays: { image: { shape: [16384, 16384] } }, geometry: { unit: "um" } };
 type Region = { x: number; y: number; width: number; height: number };
 const row = { label: 19, voxel_count: 6, measure: 2.25, measure_unit: "um^2", centroid_index: [2, 3], nearest_centroid_distance: 8, distance_unit: "um", intensity: { raw: { mean: 100, sum: 600 } } };
 function api(execute = vi.fn()): ResearchDesktopApi { return { execute, getSnapshot: vi.fn(), createStudy: vi.fn(), openStudy: vi.fn(), addSources: vi.fn(), reviewResult: vi.fn().mockResolvedValue({}), exportResult: vi.fn().mockResolvedValue({}), cancelJob: vi.fn() }; }
@@ -87,7 +87,11 @@ it("pages objects without a pooled summary and binds removal to the selected rev
   fireEvent.click(screen.getByRole("button", { name: "Next" }));
   await waitFor(() => expect(execute).toHaveBeenCalledWith("result", { result_id: "r1", offset: 200, limit: 200 }));
   expect(screen.queryByText("Quantitative summary")).not.toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Export revision" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Export result" })).toBeDisabled();
+  const fingerprint = screen.getByText(result.revision_hash);
+  expect(fingerprint).not.toBeVisible();
+  fireEvent.click(screen.getByText("Technical record"));
+  expect(fingerprint).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Remove object in new revision" }));
   await waitFor(() => expect(onResult).toHaveBeenCalledWith(child, 1));
   expect(execute).toHaveBeenCalledWith("large_result_delete", { result_id: result.id, revision_hash: result.revision_hash, label: 19 });
@@ -223,7 +227,7 @@ it("does not focus a stale located pixel after a later table selection", async (
   });
   const bridge = { ...api(execute), getSnapshot: vi.fn().mockResolvedValue(snapshot) };
   render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-  const history = await screen.findByRole("button", { name: /large-components.*2 objects/i });
+  const history = await screen.findByRole("button", { name: /Threshold segmentation.*2 objects/i });
   await waitFor(() => expect(history).toBeEnabled());
   fireEvent.click(history);
   fireEvent.click(await screen.findByRole("button", { name: "Results" }));

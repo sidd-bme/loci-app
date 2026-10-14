@@ -450,7 +450,7 @@ try {
     await selectWorkbenchTool(page, "Info");
     const review = page.getByRole("button", { name: "Mark reviewed", exact: true }); await review.waitFor({ state: "visible", timeout: 30_000 }); await review.click();
     await page.getByText("Reviewed", { exact: true }).waitFor({ timeout: 30_000 });
-    const exportRevision = page.getByRole("button", { name: "Export revision", exact: true });
+    const exportRevision = page.getByRole("button", { name: "Export result", exact: true });
     await exportRevision.waitFor({ state: "visible", timeout: 30_000 });
     assert.equal(await exportRevision.isEnabled(), true, "The reviewed result did not enable its real export action.");
   }));

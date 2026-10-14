@@ -5,6 +5,9 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
+import { resultTitle } from "./result-title";
+import "./ResearchTemporalPanel.css";
+
 type Report = <T>(
   work: () => Promise<T>,
   fallback: string,
@@ -127,10 +130,37 @@ function validTracking(value: unknown): TrackingGraph {
 }
 
 function frameName(frameId: string, snapshot: ResearchSnapshot): string {
+  const ordinal = snapshot.results.findIndex((item) => item.id === frameId) + 1;
   const result = snapshot.results.find((item) => item.id === frameId);
-  if (!result) return frameId;
+  if (!result) return "Result unavailable";
   const source = snapshot.sources.find((item) => item.id === result.source_id);
-  return `${source?.name ?? "Source"} · ${result.kind} · ${result.id.slice(0, 8)}…`;
+  const countUnit = result.kind === "temporal-tracking"
+    ? (result.object_count === 1 ? "measurement" : "measurements")
+    : (result.object_count === 1 ? "object" : "objects");
+  return `${source?.name ?? "Image unavailable"} · ${resultTitle(result)} · ${result.object_count} ${countUnit} · Run ${ordinal}`;
+}
+
+/** Preserve every ordered frame occurrence; referenced but unlisted identities stay distinct. */
+export function trackingFrameLabels(graph: TrackingGraph): ReadonlyMap<string, string> {
+  const labels = new Map<string, string>();
+  graph.frames.forEach((frame, index) => {
+    const label = `Frame ${index + 1} · ${Number.isFinite(frame.time_s) ? `${frame.time_s} s` : "time unavailable"}`;
+    const previous = labels.get(frame.frame_id);
+    labels.set(frame.frame_id, previous ? `${previous} / ${label}` : label);
+  });
+  let unlisted = 0;
+  const remember = (id: string) => {
+    if (!labels.has(id)) labels.set(id, `Unlisted frame ${++unlisted}`);
+  };
+  graph.edges.forEach((edge) => { remember(edge.source_frame_id); remember(edge.target_frame_id); });
+  graph.hypotheses.forEach((item) => { remember(item.frame_id); remember(item.candidate_frame_id); });
+  graph.trajectories.forEach((trajectory) => trajectory.forEach((point) => remember(point.frame_id)));
+  return labels;
+}
+
+function hypothesisLabel(kind: string): string {
+  return ({ ambiguous: "Ambiguous association", split_or_merge: "Possible split or merge" } as Record<string, string>)[kind]
+    ?? "Unresolved association";
 }
 
 function acquisitionKey(result: ResearchResult): string {
@@ -204,6 +234,8 @@ export function ResearchTemporalPanel({
       ) ?? [],
     [record, snapshot],
   );
+  const frameLabels = useMemo(() => record ? trackingFrameLabels(record.tracking) : new Map<string, string>(), [record]);
+  const graphFrameName = (id: string) => frameLabels.get(id) ?? "Frame unavailable";
   const source = nodes.find((node) => node.value === sourceNode);
   const target = nodes.find((node) => node.value === targetNode);
   const addValid = Boolean(source && target && source.frameIndex < target.frameIndex);
@@ -405,20 +437,18 @@ export function ResearchTemporalPanel({
 
   return (
     <div className="research-panel research-temporal">
-      <h2>Temporal observation graph</h2>
+      <h2>Track over time</h2>
       <p>
-        Choose exact label-result revisions in acquisition order. Times are actual seconds;
-        absent observations must be explicit records. Associations describe observations,
-        not biological lineage or identity.
+        Add results in acquisition order and enter elapsed seconds. Add a missing observation for any gap.
       </p>
-      <h3>Available exact frames</h3>
+      <h3>Available results</h3>
       <div className="research-compact-list">
         {candidates.map((result) => (
           <div key={result.id}>
             <button disabled={busy} onClick={() => void onOpenResult(result)}>
               Open
             </button>
-            <span>{frameName(result.id, snapshot)}</span>
+            <span title={frameName(result.id, snapshot)}>{frameName(result.id, snapshot)}</span>
             <button
               disabled={
                 busy ||
@@ -609,7 +639,8 @@ export function ResearchTemporalPanel({
         Track using elapsed seconds
       </button>
 
-      <h3>Inspect exact temporal revision</h3>
+      <details><summary>Tracking method</summary><p>Associations describe observations, not biological lineage or identity. Times use verified metadata or your explicit entries; missing observations retain their reason.</p></details>
+      <h3>Inspect tracking result</h3>
       <div className="research-actions">
         <select
           aria-label="Tracking result revision"
@@ -619,7 +650,7 @@ export function ResearchTemporalPanel({
           <option value="">Choose result…</option>
           {trackingResults.map((result) => (
             <option key={result.id} value={result.id}>
-              {result.id.slice(0, 8)}… · {result.object_count} measurements
+              {frameName(result.id, snapshot)}
             </option>
           ))}
         </select>
@@ -630,8 +661,8 @@ export function ResearchTemporalPanel({
       {record && (
         <>
           <p>
-            Exact revision {record.result.id.slice(0, 8)}… · positions in{" "}
-            {record.units?.position ?? "declared physical units"}; time in seconds.
+            Positions in{" "}
+            {record.units?.position ?? "unit unavailable"}; time in seconds.
           </p>
           <h3>Observed associations</h3>
           <table className="research-result-table">
@@ -647,8 +678,8 @@ export function ResearchTemporalPanel({
             <tbody>
               {record.tracking.edges.map((edge, index) => (
                 <tr key={`${edge.source_frame_id}-${edge.source_label}-${index}`}>
-                  <td>{frameName(edge.source_frame_id, snapshot)} / {edge.source_label}</td>
-                  <td>{frameName(edge.target_frame_id, snapshot)} / {edge.target_label}</td>
+                  <td>{graphFrameName(edge.source_frame_id)} / {edge.source_label}</td>
+                  <td>{graphFrameName(edge.target_frame_id)} / {edge.target_label}</td>
                   <td>{edge.cost}</td>
                   <td>{edge.gap}</td>
                   <td>{edge.identity_uncertain ? "yes" : "no"}</td>
@@ -661,10 +692,9 @@ export function ResearchTemporalPanel({
             <ul>
               {record.tracking.hypotheses.map((hypothesis, index) => (
                 <li key={`${hypothesis.kind}-${index}`}>
-                  <strong>{hypothesis.kind}</strong>: {hypothesis.frame_id.slice(0, 8)}:
-                  {hypothesis.label} → {hypothesis.candidate_frame_id.slice(0, 8)} candidates{" "}
-                  {hypothesis.candidate_labels.join(", ")} ({hypothesis.reason}). This remains an unresolved
-                  automatic hypothesis until an explicit edge edit is published.
+                  <strong>{hypothesisLabel(hypothesis.kind)}</strong>: {graphFrameName(hypothesis.frame_id)} · object{" "}
+                  {hypothesis.label} → {graphFrameName(hypothesis.candidate_frame_id)} candidates{" "}
+                  {hypothesis.candidate_labels.join(", ")} ({hypothesis.reason}). Review candidates before publishing an association edit.
                 </li>
               ))}
             </ul>
@@ -680,7 +710,7 @@ export function ResearchTemporalPanel({
                 <th>Object</th>
                 <th>Time (s)</th>
                 <th>XYZ</th>
-                <th>Speed</th>
+                <th>Speed{record.units?.speed ? ` (${record.units.speed})` : ""}</th>
               </tr>
             </thead>
             <tbody>
@@ -688,7 +718,7 @@ export function ResearchTemporalPanel({
                 trajectory.map((point, pointIndex) => (
                   <tr key={`${trackIndex}-${pointIndex}-${point.frame_id}-${point.label}`}>
                     <td>{trackIndex + 1}</td>
-                    <td>{frameName(point.frame_id, snapshot)}</td>
+                    <td>{graphFrameName(point.frame_id)}</td>
                     <td>{point.label}</td>
                     <td>{point.time_s}</td>
                     <td>{point.centroid_world_xyz.join(", ")}</td>
@@ -698,7 +728,12 @@ export function ResearchTemporalPanel({
               )}
             </tbody>
           </table>
-          <h3>Publish one exact association edit</h3>
+          <details><summary>Technical record</summary>
+            <p>Result <code>{record.result.id}</code><br />Revision <code>{record.result.revision_hash}</code></p>
+            <ol>{[...frameLabels].map(([id, label]) => <li key={id}>{label}<br /><code>{id}</code></li>)}</ol>
+            {record.tracking.hypotheses.length > 0 && <p>Recorded hypothesis types: {[...new Set(record.tracking.hypotheses.map((item) => item.kind))].join(", ")}</p>}
+          </details>
+          <h3>Edit an association</h3>
           <label>
             Edit
             <select
@@ -721,8 +756,8 @@ export function ResearchTemporalPanel({
                 <option value="">Choose edge…</option>
                 {record.tracking.edges.map((edge, index) => (
                   <option key={index} value={index}>
-                    {edge.source_frame_id.slice(0, 8)}:{edge.source_label} →{" "}
-                    {edge.target_frame_id.slice(0, 8)}:{edge.target_label}
+                    {graphFrameName(edge.source_frame_id)} · object {edge.source_label} →{" "}
+                    {graphFrameName(edge.target_frame_id)} · object {edge.target_label}
                   </option>
                 ))}
               </select>

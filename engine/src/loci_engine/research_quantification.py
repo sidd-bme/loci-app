@@ -20,6 +20,11 @@ from PIL import Image, ImageDraw
 from scipy import ndimage as ndi
 from skimage.segmentation import watershed
 
+from .compartment_quantification import (
+    CONSERVATION_RTOL,
+    compartment_rows,
+    measure_compartment_channel,
+)
 from .quantitative import (
     DEFAULT_WORKING_BYTES,
     Geometry,
@@ -522,7 +527,7 @@ def _execute_association(
 ) -> dict[str, Any]:
     exact_keys(
         request,
-        {"nuclei", "cells", "roles", "control", "working_bytes"},
+        {"nuclei", "cells", "roles", "control", "working_bytes", "measurement_channels"},
         "result association",
     )
     roles = request.get("roles")
@@ -538,6 +543,39 @@ def _execute_association(
         1024,
         8 * 1024**3,
     )
+    measurement_channels = request.get("measurement_channels")
+    if "measurement_channels" in request:
+        if not isinstance(measurement_channels, list) or not 1 <= len(measurement_channels) <= 32:
+            raise ValueError("Compartment measurement requires 1 to 32 explicit raw channels")
+        measurement_channels = [
+            integer(item, "measurement channel", 0, 255) for item in measurement_channels
+        ]
+        if len(set(measurement_channels)) != len(measurement_channels):
+            raise ValueError("Compartment measurement channels must be distinct")
+        # Account for both input sets before decoding either, then budget the raw
+        # reader, sequential masks/statistics and retained records before channel IO.
+        bound_records = []
+        for role in ("nuclei", "cells"):
+            exact_keys(request.get(role), {"result_id", "revision_hash"}, f"{role} result binding")
+            record = workbench.project.result(checked_id(request[role].get("result_id")))
+            if record["revision_hash"] != request[role].get("revision_hash"):
+                raise ValueError(f"{role.capitalize()} result revision is stale")
+            if "labels" not in record["arrays"] or "image" not in record["arrays"]:
+                raise ValueError(f"{role.capitalize()} result requires image and label artifacts")
+            bound_records.append(record)
+        decoded = sum(
+            _artifact_decoded_bytes(item)
+            for record in bound_records
+            for item in record["arrays"].values()
+        )
+        voxels = math.prod(bound_records[1]["arrays"]["labels"]["shape"])
+        # JSON-sized metadata bounds its larger decoded dictionaries and the
+        # immutable parent copies; do this before decoding or duplicating them.
+        parent_metadata_bytes = 16 * sum(
+            len(canonical_json(record["provenance"]).encode()) for record in bound_records
+        )
+        if decoded * 2 + voxels * 192 + parent_metadata_bytes > working_bytes:
+            raise ValueError("Compartment inputs exceed the combined working-memory budget")
     nuclei, nucleus_arrays, nucleus_geometry, nucleus_source = _bound_label_result(
         workbench, request.get("nuclei"), role="nuclei", working_bytes=working_bytes
     )
@@ -578,6 +616,11 @@ def _execute_association(
             "Association fields and measurements exceed the combined working-memory budget"
         )
     associations = associate_labels(nucleus_arrays["labels"], cell_arrays["labels"])
+    association_summary = {
+        "nucleus_count": len(associations),
+        "ambiguous_count": sum(row["ambiguous"] for row in associations),
+        "unassigned_count": sum(row["cell_label"] is None for row in associations),
+    }
     measurements = copy.deepcopy(cells["provenance"].get("measurements", []))
     if measurements:
         ids = [row.get("label") for row in measurements]
@@ -593,6 +636,83 @@ def _execute_association(
         )
         measurement_basis = "physical-label-grid-only; no verified parent intensity measurements"
 
+    compartment_provenance = None
+    if measurement_channels is not None:
+        object_count = len(measurements)
+        retained_bytes = object_count * (4096 + len(measurement_channels) * 3 * 2048)
+        retained_bytes += len(canonical_json(measurements).encode())
+        retained_bytes += len(canonical_json(metadata_at_association).encode())
+        if memory + cell_arrays["labels"].size * 192 + retained_bytes > working_bytes:
+            raise ValueError("Compartment measurements exceed the combined working-memory budget")
+        measured_rows = compartment_rows(
+            cell_arrays["labels"],
+            nucleus_arrays["labels"],
+            cell_geometry,
+            working_bytes=working_bytes,
+        )
+        raw_bindings = []
+        for channel in measurement_channels:
+            channel_name = _channel_name(metadata_at_association, channel)
+            raw, raw_geometry, raw_selection = workbench.load_scalar(
+                cells["source_id"],
+                {**cell_selection, "c": channel},
+                working_bytes=working_bytes,
+            )
+            if (
+                raw.shape != cell_arrays["labels"].shape
+                or not _same_record(raw_geometry.to_dict(), cell_geometry.to_dict())
+                or not _same_record(
+                    _selection_without_channel(raw_selection),
+                    _selection_without_channel(cell_selection),
+                )
+            ):
+                raise ValueError(
+                    "Raw measurement channel must share the exact selected native grid"
+                )
+            measure_compartment_channel(
+                measured_rows,
+                cell_arrays["labels"],
+                nucleus_arrays["labels"],
+                raw,
+                cell_geometry,
+                channel_name,
+                working_bytes=working_bytes,
+            )
+            raw_bindings.append(
+                {
+                    "index": channel,
+                    "name": channel_name,
+                    "source_id": cells["source_id"],
+                    "source_sha256": cell_source["sha256"],
+                    "selection": raw_selection,
+                    "geometry": raw_geometry.to_dict(),
+                }
+            )
+            del raw
+        measured_by_id = {row["label"]: row for row in measured_rows}
+        for row in measurements:
+            row["compartments"] = measured_by_id[row["label"]]["compartments"]
+        compartment_provenance = {
+            "channel_metadata": copy.deepcopy(metadata_at_association),
+            "label_inputs": {
+                "nuclei": _result_binding(nuclei, nucleus_source),
+                "cells": _result_binding(cells, cell_source),
+            },
+            "schema_version": 1,
+            "channels": raw_bindings,
+            "basis": "raw source-channel bytes on the exact selected native label grid",
+            "partition": {
+                "cell": "cells == cell_id",
+                "nuclear": "(cells == cell_id) & (nuclei > 0)",
+                "cytoplasm": "(cells == cell_id) & (nuclei == 0)",
+            },
+            "empty_policy": "count/measure/sum zero; mean/min/max/std_population null",
+            "conservation": {
+                "relative_tolerance": CONSERVATION_RTOL,
+                "sum_absolute_tolerance": "8 * float64 epsilon * sum(abs(cell raw))",
+            },
+            "association_independent": True,
+        }
     by_cell: dict[int, list[dict[str, Any]]] = {}
     for row in associations:
         if row["cell_label"] is not None:
@@ -625,6 +745,7 @@ def _execute_association(
             "roles": {"nuclei": nucleus_role, "cells": cell_role},
             "control": control,
             "rows": associations,
+            "summary": association_summary,
             "rule": "largest observed overlap; equal overlap resolves to lowest cell label ID",
             "interpretation": "declared label-field association; no biological identity inference",
         },
@@ -647,6 +768,8 @@ def _execute_association(
         },
         "scientific_validation": "unvalidated descriptive research association",
     }
+    if compartment_provenance is not None:
+        provenance["compartment_measurement"] = compartment_provenance
     if job_id is not None:
         provenance["job_id"] = job_id
 
@@ -659,8 +782,38 @@ def _execute_association(
             source = workbench.project.source(current["source_id"], verify=True)
             if source["sha256"] != expected["source_sha256"]:
                 raise ValueError(f"Bound {role} source changed before publication")
+            if measurement_channels is not None:
+                expected_result = nuclei if role == "nuclei" else cells
+                expected_source = nucleus_source if role == "nuclei" else cell_source
+                if not _same_record(current, expected_result) or not _same_record(
+                    source, expected_source
+                ):
+                    raise ValueError(
+                        f"Bound {role} record or source metadata changed before publication"
+                    )
             if not _same_record(current["arrays"], expected["arrays"]):
                 raise ValueError(f"Bound {role} artifact set changed before publication")
+            for descriptor in current["arrays"].values():
+                workbench.project.verify_array(descriptor)
+        # Retained compartment records remain bound to their original nuclear
+        # field when this operation is later run in association-only mode.
+        for binding in (
+            provenance.get("compartment_measurement", {}).get("label_inputs", {}).values()
+        ):
+            if any(
+                binding["result_id"] == expected["result_id"]
+                and binding["revision_hash"] == expected["revision_hash"]
+                for expected in (nucleus_binding, cell_binding)
+            ):
+                continue  # Both current input artifact sets were just verified above.
+            current = workbench.project.result(binding["result_id"])
+            if current["revision_hash"] != binding["revision_hash"] or not _same_record(
+                current["arrays"], binding["arrays"]
+            ):
+                raise ValueError("Retained compartment label input changed before publication")
+            source = workbench.project.source(current["source_id"], verify=True)
+            if source["sha256"] != binding["source_sha256"]:
+                raise ValueError("Retained compartment source changed before publication")
             for descriptor in current["arrays"].values():
                 workbench.project.verify_array(descriptor)
         if not _same_record(
@@ -682,8 +835,11 @@ def _execute_association(
         "result": result_summary(result),
         "associations": associations[:1000],
         "total_associations": len(associations),
+        "association_summary": association_summary,
         "measurements": measurements[:1000],
         "total_measurements": len(measurements),
+        "association_inputs": provenance["association_inputs"],
+        "compartment_measurement": compartment_provenance,
         "adopted": True,
     }
 

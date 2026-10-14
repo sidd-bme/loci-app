@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import hmac
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .medical_image import MedicalInspection, inspect_medical, read_medical
+from .medical_image import MedicalInspection, _file_plan, _safe_file, inspect_medical, read_medical
 from .native_image import (
+    MAX_NATIVE_READ_BUDGET_BYTES,
     NativeCapabilities,
     NativeDimensions,
     NativeImageMetadata,
@@ -21,6 +22,8 @@ from .native_image import (
     PhysicalCalibration,
 )
 from .quantitative import Geometry
+
+MAX_MEDICAL_PROJECTION_BLOCK_PLANES = 32
 
 
 class MedicalViewerSession:
@@ -87,8 +90,19 @@ class MedicalViewerSession:
     def source(self) -> Any:
         return self._source
 
-    def read_region(self, selection: NativeSelection) -> NativeRegion:
+    def _validate_selection(self, selection: NativeSelection) -> None:
         dimensions = self.metadata.dimensions
+        for name in ("series", "level", "t", "c", "z", "x", "y", "width", "height"):
+            value = getattr(selection, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError("Medical viewer coordinates must be integer indexes.")
+        budget = selection.budget_bytes
+        if (
+            isinstance(budget, bool)
+            or not isinstance(budget, int)
+            or not 1 <= budget <= MAX_NATIVE_READ_BUDGET_BYTES
+        ):
+            raise ValueError("The medical viewer read budget is outside the bounded allowance.")
         if (
             selection.series != 0
             or selection.level != 0
@@ -105,6 +119,9 @@ class MedicalViewerSession:
             raise ValueError("The medical viewer selection is outside the scalar source.")
         if selection.expected_sha256 not in {None, self.metadata.sha256}:
             raise ValueError("The medical viewer selection fingerprint differs from its source.")
+
+    def read_region(self, selection: NativeSelection) -> NativeRegion:
+        self._validate_selection(selection)
         region = (
             slice(selection.y, selection.y + selection.height),
             slice(selection.x, selection.x + selection.width),
@@ -131,6 +148,82 @@ class MedicalViewerSession:
             integrity_mode="full-sha256",
         )
 
+    def _projection_memory(self, selection: NativeSelection) -> tuple[int, int]:
+        """Fixed eager footprint and incremental plane footprint, before decode.
+
+        Estimate known SimpleITK/NumPy arrays and finite masks, not total RSS.
+        Eager sources retain the full decoder image/copy before extracting a
+        bounded block. A streamed source retains an image/copy of only the block.
+        """
+        itemsize = np.dtype(self._inspection.dtype).itemsize
+        plane_voxels = selection.width * selection.height
+        eager = self._inspection.format == "dicom-series"
+        if not eager:
+            _, _, eager = _file_plan(_safe_file(self._source))
+        if eager:
+            return (2 * self._inspection.estimated_decoded_bytes, plane_voxels * (itemsize + 1))
+        return 0, plane_voxels * (2 * itemsize + 1)
+
+    def projection_block_depth(self, selection: NativeSelection, z_stop: int) -> int:
+        """Fit a consecutive block to its already-reserved source-read budget."""
+        self._validate_selection(selection)
+        if (
+            isinstance(z_stop, bool)
+            or not isinstance(z_stop, int)
+            or not selection.z < z_stop <= self.metadata.dimensions.z
+        ):
+            raise ValueError("The medical projection Z range is outside the source.")
+        fixed, per_plane = self._projection_memory(selection)
+        depth = (selection.budget_bytes - fixed) // per_plane
+        if depth < 1:
+            raise ValueError("A medical projection block exceeds its memory budget before decode.")
+        return min(depth, z_stop - selection.z, MAX_MEDICAL_PROJECTION_BLOCK_PLANES)
+
+    def read_z_block(
+        self,
+        selection: NativeSelection,
+        z_stop: int,
+        *,
+        cancellation_check: Callable[[], None] | None = None,
+    ) -> np.ndarray:
+        """Read one immutable consecutive ZYX block with full identity checks.
+
+        read_medical verifies source identity before and after every block. The
+        caller releases the previous block before decoding the next, reserves
+        its reduction accumulator separately, and reduces planes in Z order.
+        """
+        if cancellation_check is not None:
+            cancellation_check()
+        allowed = self.projection_block_depth(selection, z_stop)
+        depth = z_stop - selection.z
+        if depth != allowed:
+            raise ValueError("The requested medical Z block exceeds its bounded depth.")
+        region = (
+            slice(selection.y, selection.y + selection.height),
+            slice(selection.x, selection.x + selection.width),
+        )
+        if self._inspection.geometry.axes == "ZYX":
+            region = (slice(selection.z, z_stop), *region)
+        volume = read_medical(
+            self._source,
+            region=region,
+            expected_identity=self._inspection,
+            max_decoded_bytes=selection.budget_bytes,
+        )
+        if cancellation_check is not None:
+            cancellation_check()
+        values = np.asarray(volume.array)
+        if values.ndim == 2:
+            values = values[None]
+        if (
+            values.shape != (depth, selection.height, selection.width)
+            or values.dtype != np.dtype(self._inspection.dtype)
+            or volume.source_identity != self._inspection.source_identity
+        ):
+            raise ValueError("The medical reader returned an inconsistent projection block.")
+        values.flags.writeable = False
+        return values
+
     def geometry(self, selection: dict[str, Any], volume: bool) -> Geometry:
         if not isinstance(selection, dict) or not isinstance(volume, bool):
             raise ValueError("Medical viewer geometry requires a selection and volume flag.")
@@ -150,8 +243,10 @@ class MedicalViewerSession:
             if geometry.axes != "ZYX":
                 raise ValueError("A two-dimensional medical image cannot be used as a volume.")
             return geometry
-        return geometry if geometry.axes == "YX" else Geometry(
-            "YX", geometry.affine, geometry.unit, geometry.frame
+        return (
+            geometry
+            if geometry.axes == "YX"
+            else Geometry("YX", geometry.affine, geometry.unit, geometry.frame)
         )
 
     def verify_strict(self) -> MedicalInspection:

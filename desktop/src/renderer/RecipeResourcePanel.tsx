@@ -11,6 +11,7 @@ export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, 
   const [capacityError, setCapacityError] = useState("");
   const [retry, setRetry] = useState(0);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const key = JSON.stringify({ source_id: source.id, source_sha256: source.sha256, selection, recipe });
   useEffect(() => {
     let cancelled = false;
@@ -49,10 +50,11 @@ export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, 
   const overBudget = current?.bytes !== undefined && current.bytes > recipe.working_bytes;
   const options = [...new Set([...RECIPE_BUDGETS, recipe.working_bytes])].sort((a, b) => a - b);
   return <section className="recipe-resources" aria-label="Recipe resources">
-    <div className="recipe-resources-estimate" role="status" aria-live="polite">
-      <span>Estimated working memory</span>
+    <details open={expanded || overBudget || Boolean(current?.error)} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    <summary><span>Memory</span>
       <strong>{current?.bytes !== undefined ? memorySize(current.bytes) : current?.error ? "Unavailable" : "Checking…"}</strong>
-    </div>
+    </summary>
+    <div className="recipe-resources-body">
     {current?.error && <><p className="recipe-resources-warning">{current.error}</p>
       <button disabled={busy} onClick={() => { setEstimate(null); setRetry((value) => value + 1); }}>Recheck estimate</button></>}
     <label>Memory allowance
@@ -72,5 +74,6 @@ export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, 
     {resources && recipe.working_bytes > resources.recommended_working_bytes && <p className="recipe-resources-warning">
       Above this computer’s recommended allowance.
     </p>}
+    </div></details>
   </section>;
 }

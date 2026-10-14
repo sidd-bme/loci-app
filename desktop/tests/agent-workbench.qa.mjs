@@ -186,11 +186,12 @@ try {
   nativeImage(await client.call('source_image', { request: imageRequest }));
   const basePreviewBefore = await client.call('preview_recipe', { request: approved }); nativeImage(basePreviewBefore);
   assert.equal(basePreviewBefore.structured_content.object_count, fixture.expected_objects);
-  await selectWorkbenchTool(page, 'Display');
+  await selectWorkbenchTool(page, 'Agent');
   const vision = page.getByRole('region', { name: 'Vision assistant tools', exact: true });
   await vision.getByLabel('Follow assistant display', { exact: true }).check();
-  await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === true);
   await page.waitForFunction(() => { const box = document.querySelector('.source-agent-controls input[type="checkbox"]'); return box?.checked && !box.disabled; });
+  await selectWorkbenchTool(page, 'Display');
+  await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === true);
   assert.equal(await page.getByLabel('Channel 1 color', { exact: true }).isDisabled(), true);
   const savedBefore = await view();
   const changed = (await client.call('set_source_display', { source_id: source.id, source_sha256: source.sha256, expected_revision: savedBefore.revision, channels: [{ ...imageRequest.channels[0], color: '#ff00aa' }] })).structured_content;
@@ -200,7 +201,7 @@ try {
   assert.deepEqual(adopted.state.selection, savedBefore.state.selection); assert.deepEqual(adopted.state.camera, savedBefore.state.camera); assert.deepEqual(adopted.state.channels[1], savedBefore.state.channels[1]);
   await client.call('set_source_display', { source_id: source.id, source_sha256: source.sha256, expected_revision: savedBefore.revision, channels: imageRequest.channels }, true);
   assert.deepEqual(await view(), adopted, 'A rejected stale display write must preserve the saved revision and state');
-  await vision.getByLabel('Follow assistant display', { exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Take control', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === false);
   const color = page.getByLabel('Channel 1 color', { exact: true }); await color.locator('..').locator('..').locator('..').evaluate((element) => { if (element.tagName === 'DETAILS') element.open = true; });
   await color.fill('#00aaff');
@@ -249,6 +250,7 @@ try {
   await verifyHandoff(path.join(exports, 'assistant.loci-vision'), source, handoff.artifacts);
   const humanDestination = path.join(output, 'human.loci-vision');
   await app.evaluate(({ dialog }, destination) => { dialog.showSaveDialog = async (options) => { if (options.title !== 'Export image for a vision assistant') throw new Error('Unexpected vision picker'); return { canceled: false, filePath: destination }; }; }, humanDestination);
+  await selectWorkbenchTool(page, 'Agent');
   await vision.getByRole('button', { name: 'Export vision handoff', exact: true }).click();
   await vision.getByText(/^Saved human\.loci-vision/).waitFor();
   await verifyHandoff(humanDestination, source);
@@ -258,14 +260,14 @@ try {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 768 }));
   for (const theme of ['graphite', 'paper']) {
     await page.getByRole('button', { name: 'Open settings', exact: true }).click(); await page.getByLabel('Application theme', { exact: true }).selectOption(theme); await page.getByRole('button', { name: 'Close settings', exact: true }).click();
-    for (const tool of ['Display', 'Agent']) {
-      await selectWorkbenchTool(page, tool);
-      if (tool === 'Agent') await configureScope();
-      const target = tool === 'Display' ? vision : panel;
+    for (const surface of ['vision', 'connection']) {
+      await selectWorkbenchTool(page, 'Agent');
+      if (surface === 'connection') await configureScope();
+      const target = surface === 'vision' ? vision : panel;
       await target.scrollIntoViewIfNeeded();
-      const layout = await page.evaluate((selector) => { const e = document.querySelector(selector), b = e.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height, viewport: window.innerWidth, overflow: e.scrollWidth > e.clientWidth + 2, document_overflow: document.documentElement.scrollWidth > window.innerWidth + 2 }; }, tool === 'Display' ? '.source-agent-controls' : '.research-agent');
+      const layout = await page.evaluate((selector) => { const e = document.querySelector(selector), b = e.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height, viewport: window.innerWidth, overflow: e.scrollWidth > e.clientWidth + 2, document_overflow: document.documentElement.scrollWidth > window.innerWidth + 2 }; }, surface === 'vision' ? '.source-agent-controls' : '.research-agent');
       assert.equal(layout.overflow, false); assert.equal(layout.document_overflow, false); assert.ok(layout.x >= -2 && layout.x + layout.width <= layout.viewport + 2);
-      const file = `compact-${tool.toLowerCase()}-${theme}.png`; await page.screenshot({ path: path.join(output, file) }); receipt.screenshots.push(file); receipt.checks.push({ name: `compact-${tool}-${theme}`, layout });
+      const file = `compact-${surface}-${theme}.png`; await page.screenshot({ path: path.join(output, file) }); receipt.screenshots.push(file); receipt.checks.push({ name: `compact-${surface}-${theme}`, layout });
     }
   }
   await fs.rename(policyPath, path.join(access, 'agent-policy.revoked.json'));

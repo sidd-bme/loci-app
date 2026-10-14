@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDesktopApi,
@@ -84,15 +84,89 @@ function api(execute: ResearchDesktopApi["execute"]): ResearchDesktopApi {
 function renderPanel(execute: ResearchDesktopApi["execute"], custom = snapshot) {
   const onPublished = vi.fn().mockResolvedValue(undefined);
   const onPreview = vi.fn();
-  render(<ResearchQuantificationPanel
-    api={api(execute)} snapshot={custom} source={custom.sources[0]} selection={selection}
-    recipe={recipe} setRecipe={vi.fn()} report={async (work) => work()} busy={false}
+  const panelApi = api(execute);
+  const setRecipe = vi.fn();
+  const element = (next: ResearchSnapshot) => <ResearchQuantificationPanel
+    api={panelApi} snapshot={next} source={next.sources[0]} selection={selection}
+    recipe={recipe} setRecipe={setRecipe} report={async (work) => work()} busy={false}
     onBusyChange={vi.fn()} onPreview={onPreview} onPublished={onPublished}
-  />);
-  return { onPublished, onPreview };
+  />;
+  const view = render(element(custom));
+  return { onPublished, onPreview, setRecipe, updateSnapshot: (next: ResearchSnapshot) => view.rerender(element(next)) };
 }
 
 describe("ResearchQuantificationPanel", () => {
+  it("disambiguates reference filenames without routine fingerprints and binds exact source IDs", async () => {
+    const filename = "A long acquisition reference filename.ome.tif";
+    const second = { ...snapshot.sources[0], id: "6".repeat(32), sha256: "7".repeat(64), name: filename };
+    const custom = { ...snapshot, sources: [{ ...snapshot.sources[0], name: filename }, second] };
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {});
+    const { setRecipe } = renderPanel(execute, custom);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByText("Recipe", { exact: true }));
+    const flat = screen.getByLabelText("Flat-field source");
+    expect(within(flat).getByRole("option", { name: `${filename} · Image 1` })).toHaveValue(sourceId);
+    expect(within(flat).getByRole("option", { name: `${filename} · Image 2` })).toHaveValue(second.id);
+    expect(flat).not.toHaveTextContent(sourceId.slice(0, 8));
+    expect(flat).not.toHaveTextContent(second.id.slice(0, 8));
+    fireEvent.change(flat, { target: { value: sourceId } });
+    fireEvent.change(screen.getByLabelText("Dark-field source"), { target: { value: second.id } });
+    expect(screen.getByText(sourceSha)).not.toBeVisible();
+    expect(screen.getByText(second.sha256)).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Bind flat-field step" }));
+    const update = setRecipe.mock.calls.at(-1)![0] as (previous: ResearchRecipe) => ResearchRecipe;
+    expect(update(recipe).references).toEqual({
+      flatfield: { source_id: sourceId, selection }, darkfield: { source_id: second.id, selection },
+    });
+  });
+
+  it("shows readable puncta columns with exact coordinate and response records in closed details", async () => {
+    const peak = { label: 7, index: [3, 4], index_axes: "YX", flat_index_c_order: 34,
+      world_xyz: [20.23456789, 5.123456789, 0], world_frame: "image", distance_unit: "um",
+      response: 0.123456789123, raw: 1234.56789123 };
+    const frozen = JSON.stringify(peak);
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata :
+      operation === "puncta_preview" ? { preview: true, adopted: false, overlay: "data:image/png;base64,AA==",
+        overlay_basis: "selected-raw-plane", total_peaks: 1, peaks: [peak], measurements: [] } : {});
+    renderPanel(execute);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByText("Puncta", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "Recorded control" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview puncta candidates" }));
+    const preview = await screen.findByRole("region", { name: "Puncta preview" });
+    expect(within(preview).getByRole("columnheader", { name: "Position XYZ" })).toBeVisible();
+    expect(within(preview).getByRole("columnheader", { name: "LoG response" })).toBeVisible();
+    expect(within(preview).getByText("0.123457")).toHaveAttribute("data-exact-value", String(peak.response));
+    expect(within(preview).getByText("20.2346, 5.12346, 0 um")).toBeVisible();
+    expect(within(preview).getByText("flat index c order")).not.toBeVisible();
+    expect(within(preview).getByText(String(peak.response))).not.toBeVisible();
+    preview.querySelector("details")!.open = true;
+    expect(within(preview).getByText(String(peak.response))).toBeVisible();
+    expect(JSON.stringify(peak)).toBe(frozen);
+  });
+
+  it("keeps colocalisation precision, undefined metrics and method text in their proper disclosure", async () => {
+    const metrics = { pearson_r: 0.123456789123, manders_first: null, manders_second: -0,
+      voxel_pairs: 80, formula: "Exact recorded Pearson and thresholded Manders formula", basis: "raw selected channels" };
+    const adopted = { ...results[0], id: "8".repeat(32), kind: "colocalisation" };
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata :
+      operation === "colocalisation_run" ? { adopted: true, result: adopted, metrics } : {});
+    renderPanel(execute);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByText("Colocalisation", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Colocalisation controls and assumptions"), { target: { value: "Recorded control" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run and adopt colocalisation" }));
+    const measurements = await screen.findByLabelText("Colocalisation measurements");
+    expect(within(measurements).getByText("0.123457")).toHaveAttribute("title", String(metrics.pearson_r));
+    expect(within(measurements).getByText("not defined")).toBeVisible();
+    expect(within(measurements).getByText("-0")).toBeVisible();
+    expect(screen.getByText(metrics.formula)).not.toBeVisible();
+    expect(screen.getByText(String(metrics.pearson_r))).not.toBeVisible();
+    screen.getByText(metrics.formula).closest("details")!.open = true;
+    expect(screen.getByText(String(metrics.pearson_r))).toBeVisible();
+    expect(Object.is(metrics.manders_second, -0)).toBe(true);
+  });
+
   it("shows immutable originals and saves declarations against the loaded revision", async () => {
     const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : { ...metadata, revision: 4 });
     renderPanel(execute);
@@ -161,14 +235,16 @@ describe("ResearchQuantificationPanel", () => {
   it("filters exact compatible association bindings and sends declared roles", async () => {
     const incompatible = { ...result("6".repeat(32), "7".repeat(64)), geometry: { ...geometry, unit: "px" } };
     const custom = { ...snapshot, results: [...results, incompatible] };
-    const associationResult = { ...results[1], id: "7".repeat(32), revision_hash: "7".repeat(64), kind: "nucleus-cell-association" };
+    const associationResult = { ...results[1], id: "7".repeat(32), revision_hash: "7".repeat(64), kind: "nucleus-cell-association", object_count: 1, parent_id: results[1].id, arrays: { ...results[1].arrays, nuclei_labels: results[0].arrays!.labels } };
     const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {
       adopted: true, result: associationResult,
+      association_inputs: { nuclei: { result_id: results[0].id, revision_hash: results[0].revision_hash }, cells: { result_id: results[1].id, revision_hash: results[1].revision_hash } },
+      association_summary: { nucleus_count: 1, ambiguous_count: 0, unassigned_count: 0 },
       associations: [{ nucleus_label: 1, cell_label: 2, overlap_fraction: 0.8, ambiguous: false }], total_associations: 1,
     });
     const { onPublished } = renderPanel(execute, custom);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("Association"));
+    fireEvent.click(screen.getByText("Compartments"));
     fireEvent.change(screen.getByLabelText("Nuclei result"), { target: { value: results[0].id } });
     await waitFor(() => expect(screen.getByLabelText("Cells result")).toHaveValue(results[1].id));
     expect(screen.getByLabelText("Cells result")).not.toContainHTML(incompatible.id);
@@ -180,6 +256,7 @@ describe("ResearchQuantificationPanel", () => {
       cells: { result_id: results[1].id, revision_hash: results[1].revision_hash },
       roles: { nuclei: "nucleus label field", cells: "cell boundary label field" },
     }));
+    fireEvent.click(screen.getByText(/1 nucleus assignments/));
     expect(screen.getByText(/cannot be edited directly/)).toBeVisible();
   });
 
@@ -209,7 +286,7 @@ describe("ResearchQuantificationPanel", () => {
     );
     renderPanel(execute, custom);
     await screen.findByText(/original: Original A/);
-    fireEvent.click(screen.getByText("Association"));
+    fireEvent.click(screen.getByText("Compartments"));
     fireEvent.change(screen.getByLabelText("Nuclei result"), {
       target: { value: results[0].id },
     });
@@ -248,7 +325,7 @@ describe("ResearchQuantificationPanel", () => {
       control: "single-stain and bleed-through controls reviewed",
       working_bytes: 512 * 1024 ** 2,
     });
-    expect(screen.getByText("pearson r")).toBeVisible();
+    expect(within(screen.getByLabelText("Colocalisation measurements")).getByText("Pearson r")).toBeVisible();
   });
 
   it("shows identical-channel colocalisation errors without calling the engine", async () => {
@@ -266,5 +343,104 @@ describe("ResearchQuantificationPanel", () => {
       await screen.findByText("Choose two distinct acquisition channels."),
     ).toHaveAttribute("role", "alert");
     expect(execute).not.toHaveBeenCalledWith("colocalisation_run", expect.anything());
+  });
+});
+
+function compartmentResponse() {
+  const stats = (count: number, sum: number) => ({ count, sum, mean: count ? sum / count : null, min: count ? sum / count - 1 : null, max: count ? sum / count + 1 : null, std_population: count ? 1 : null });
+  const record = (count: number, sum: number) => ({ voxel_count: count, measure: count, measure_kind: "area", measure_unit: "um^2", intensity: { "1: DNA": stats(count, sum), "2: RNA": stats(count, sum * 2) } });
+  return {
+    adopted: true,
+    result: { ...results[1], id: "7".repeat(32), revision_hash: "7".repeat(64), kind: "nucleus-cell-association", object_count: 1, parent_id: results[1].id, arrays: { ...results[1].arrays, nuclei_labels: results[0].arrays!.labels } },
+    association_inputs: { nuclei: { result_id: results[0].id, revision_hash: results[0].revision_hash }, cells: { result_id: results[1].id, revision_hash: results[1].revision_hash } },
+    association_summary: { nucleus_count: 1, ambiguous_count: 1, unassigned_count: 0 },
+    associations: [{ nucleus_label: 1, cell_label: 70000, ambiguous: true, overlap_fraction: 0.5 }], total_associations: 1,
+    measurements: [{ label: 70000, compartments: { cell: record(2, 6), nuclear: record(0, 0), cytoplasm: record(2, 6) } }], total_measurements: 1,
+    compartment_measurement: { channel_metadata: metadata, channels: [0, 1].map((index) => ({ index, name: `${index + 1}: ${metadata.channels[index].name}`, source_id: sourceId, source_sha256: sourceSha, geometry, selection: { ...selection, c: index } })) },
+  };
+}
+async function selectCompartments() {
+  await screen.findByText(/original: Original A/);
+  fireEvent.click(screen.getByText("Compartments"));
+  fireEvent.change(screen.getByLabelText("Nuclei result"), { target: { value: results[0].id } });
+  await waitFor(() => expect(screen.getByLabelText("Cells result")).toHaveValue(results[1].id));
+  fireEvent.change(screen.getByLabelText("Association controls and assumptions"), { target: { value: "Declared control" } });
+  fireEvent.click(screen.getByLabelText("Measure compartment channel 1: DNA"));
+  fireEvent.click(screen.getByLabelText("Measure compartment channel 2: RNA"));
+}
+describe("explicit compartment measurement", () => {
+  it("sends raw channels and displays every statistic with undefined empty means", async () => {
+    const response = compartmentResponse();
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : response);
+    const { onPublished } = renderPanel(execute);
+    await selectCompartments();
+    fireEvent.click(screen.getByText("Measure compartments"));
+    await waitFor(() => expect(onPublished).toHaveBeenCalledWith(response.result));
+    expect(execute).toHaveBeenCalledWith("associate_results", expect.objectContaining({ measurement_channels: [0, 1] }));
+    expect(screen.getByText("Nuclear intersection")).toBeVisible();
+    for (const heading of ["Sum", "Mean", "Min", "Max", "Population SD"]) expect(screen.getByRole("columnheader", { name: heading })).toBeVisible();
+    expect(screen.getAllByText("—")).toHaveLength(4);
+    fireEvent.change(screen.getByLabelText("Compartment table channel"), { target: { value: "2: RNA" } });
+    expect(screen.getAllByText("12")).toHaveLength(2);
+  });
+  it.each(["parent", "nuclear revision", "channels", "NaN", "empty mean", "partition"])("rejects malformed response: %s", async (change) => {
+    const response = compartmentResponse();
+    if (change === "parent") response.result.parent_id = results[0].id;
+    if (change === "nuclear revision") response.association_inputs.nuclei.revision_hash = "a".repeat(64);
+    if (change === "channels") response.compartment_measurement.channels.reverse();
+    if (change === "NaN") response.measurements[0].compartments.cell.intensity["1: DNA"].sum = NaN;
+    if (change === "empty mean") response.measurements[0].compartments.nuclear.intensity["1: DNA"].mean = 0;
+    if (change === "partition") response.measurements[0].compartments.cell.voxel_count = 7;
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : response);
+    const { onPublished } = renderPanel(execute);
+    await selectCompartments();
+    fireEvent.click(screen.getByText("Measure compartments"));
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(screen.queryByText("Nuclear intersection")).not.toBeInTheDocument();
+  });
+  it("rejects delayed measurement when the selected inputs change", async () => {
+    let resolve!: (value: unknown) => void;
+    const execute = vi.fn((operation: string) => operation === "channel_metadata" ? Promise.resolve(metadata) : new Promise((done) => { resolve = done; }));
+    const { onPublished } = renderPanel(execute);
+    await selectCompartments();
+    fireEvent.click(screen.getByText("Measure compartments"));
+    fireEvent.change(screen.getByLabelText("Nuclei role declaration"), { target: { value: "Revised role" } });
+    resolve(compartmentResponse());
+    expect(await screen.findByText("The selected compartment inputs changed during measurement.")).toHaveAttribute("role", "alert");
+    expect(onPublished).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("compartment table and drafts", () => {
+  it("preserves declared roles, controls and raw channels during unrelated snapshot updates", async () => {
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {});
+    const { updateSnapshot } = renderPanel(execute);
+    await selectCompartments();
+    fireEvent.change(screen.getByLabelText("Nuclei role declaration"), { target: { value: "Reviewed nuclei" } });
+    updateSnapshot({ ...snapshot, results: [...results, result("8".repeat(32), "6".repeat(64))] });
+    expect(screen.getByLabelText("Nuclei role declaration")).toHaveValue("Reviewed nuclei");
+    expect(screen.getByLabelText("Association controls and assumptions")).toHaveValue("Declared control");
+    expect(screen.getByLabelText("Measure compartment channel 1: DNA")).toBeChecked();
+    expect(screen.getByLabelText("Cells result")).toHaveValue(results[1].id);
+    expect(execute.mock.calls.filter(([operation]) => operation === "channel_metadata")).toHaveLength(1);
+  });
+
+  it("paginates cells without truncating their compartment statistics", async () => {
+    const response = compartmentResponse();
+    const first = response.measurements[0];
+    response.measurements = Array.from({ length: 26 }, (_, index) => ({ ...first, label: 70000 + index }));
+    response.total_measurements = 26;
+    response.result.object_count = 26;
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : response);
+    renderPanel(execute);
+    await selectCompartments();
+    fireEvent.click(screen.getByText("Measure compartments"));
+    await screen.findByText("26 measured cells.");
+    expect(screen.queryByText("70025")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Next cells"));
+    expect(screen.getAllByText("70025")).toHaveLength(3);
+    expect(within(screen.getByRole("region", { name: "Compartment measurements" })).queryByText("70000")).not.toBeInTheDocument();
   });
 });

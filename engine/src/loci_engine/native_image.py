@@ -1654,19 +1654,6 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
         raise NativeImageError("Loci could not inspect this TIFF safely.") from exc
 
 
-def _ordinary_calibration(image: Image.Image) -> PhysicalCalibration | None:
-    dpi = image.info.get("dpi")
-    if not isinstance(dpi, tuple) or len(dpi) < 2:
-        return None
-    try:
-        x_dpi, y_dpi = float(dpi[0]), float(dpi[1])
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if not all(math.isfinite(value) and value > 0 for value in (x_dpi, y_dpi)):
-        return None
-    return PhysicalCalibration("YX", (25_400.0 / y_dpi, 25_400.0 / x_dpi), "µm")
-
-
 def _ordinary_layout(image: Image.Image) -> tuple[np.dtype[Any], int, str]:
     layouts: dict[str, tuple[np.dtype[Any], int, str]] = {
         "1": (np.dtype(np.bool_), 1, "none"),
@@ -1694,7 +1681,9 @@ def _inspect_ordinary(path: Path, sha256: str) -> NativeImageMetadata:
                 raise NativeImageError("Animated or multi-frame ordinary images are unsupported.")
             dtype, samples, semantics = _ordinary_layout(image)
             dimensions = NativeDimensions(1, 1, 1, int(image.height), int(image.width), samples)
-            calibration = _ordinary_calibration(image)
+            # PNG/JPEG pixel density describes the raster's presentation size.
+            # It does not establish the specimen scale or optical magnification.
+            calibration = None
             axes, shape = _canonical_shape(dimensions)
             source_axes = "YXS" if samples > 1 else "YX"
             source_shape = (

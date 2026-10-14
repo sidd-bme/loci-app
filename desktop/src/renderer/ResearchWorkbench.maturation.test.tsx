@@ -299,7 +299,7 @@ describe("ResearchWorkbench maturation workflows", () => {
     fireEvent.click(resultsBtn);
 
     // Select the result
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     // Wait for the result view to load measurements

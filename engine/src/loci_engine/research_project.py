@@ -81,6 +81,20 @@ def checked_text(value: Any, name: str, maximum: int = 256, *, empty: bool = Fal
     return value
 
 
+def validate_source_calibration(record: dict[str, Any]) -> None:
+    """Refuse legacy print-density geometry without rewriting scientific history."""
+    metadata = record.get("metadata", {})
+    if record.get("source_kind") == "native" and metadata.get("format") in {"PNG", "JPEG"}:
+        calibrated = metadata.get("physical_calibration") is not None or any(
+            level.get("calibration") is not None for level in metadata.get("levels", [])
+        )
+        if calibrated:
+            raise ValueError(
+                "This image used print DPI as specimen calibration. Preserve this study "
+                "and import the image into a new study to measure in pixels."
+            )
+
+
 class ResearchProject:
     """A versioned .loci-study directory; all database writes are transactions."""
 
@@ -246,6 +260,7 @@ class ResearchProject:
         source = Path(path)
         if source_kind not in {"native", "whole_slide"}:
             raise ValueError("Unknown plain-file source reader")
+        validate_source_calibration({"source_kind": source_kind, "metadata": metadata})
         if not source.is_absolute() or source.is_symlink() or not source.is_file():
             raise ValueError("Source must be an explicitly selected plain local file")
         source = source.resolve(strict=True)
@@ -271,6 +286,7 @@ class ResearchProject:
                         )
                     if existing.get("derivation") != derivation:
                         raise ValueError("Registered source has a different conversion derivation")
+                    validate_source_calibration(existing)
                     return self.public_source(existing)
             record = {
                 "id": uuid.uuid4().hex,
@@ -415,6 +431,7 @@ class ResearchProject:
             raise ValueError("Source is not registered in this study")
         record = parse_json(row[0])
         if verify:
+            validate_source_calibration(record)
             if record.get("locator_state") == "relink-required":
                 raise ValueError(
                     "Source locator is unavailable after interchange; relink an exact local copy"

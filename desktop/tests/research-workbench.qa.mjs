@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { qualifyExtendedWorkflows } from "./research-extended-workflows.qa.mjs";
 import { qualifyMedicalWorkflow } from "./research-medical-workflow.qa.mjs";
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -427,7 +427,7 @@ try {
   await selectTool(page, "Info");
   await page.getByRole("button", { name: "Mark reviewed" }).click();
   await noUiError(page, "reviewing 3D result");
-  await page.getByRole("button", { name: "Export revision" }).click();
+  await page.getByRole("button", { name: "Export result" }).click();
   await assertFileExists(path.join(exportPath, "manifest.json"));
 
   // RGB is selected as a declared brightfield source.  The UI must never call RGB
@@ -454,17 +454,16 @@ try {
   await rows(page, 1, "pixel^2");
   await assertRowValues(page, [90]);
   await page.getByRole("button", { name: "Run declared stain" }).click();
+  const stainState = await waitForSnapshot(page, state => state?.results.some(item => item.kind === "declared-stain-analysis"), "declared stain publication");
+  const stainResult = stainState.results.find((item) => item.kind === "declared-stain-analysis");
+  assert.ok(stainResult, "Declared stain result was not published.");
   await visible(
     page,
-    page
-      .locator(".research-sources")
-      .getByRole("button", { name: /^declared-stain-analysis/ }),
+    page.locator(`.research-sources [data-result-id="${stainResult.id}"]`),
     "durable histology result",
   );
   await noUiError(page, "running declared histology");
   await screenshot(page, "declared-h-dab");
-  const stainState = await page.evaluate(() => window.lociResearch.getSnapshot());
-  const stainResult = stainState.results.find((item) => item.kind === "declared-stain-analysis");
   const stainRecord = await page.evaluate((result_id) => window.lociResearch.execute("result", { result_id }), stainResult.id);
   assert.deepEqual(stainRecord.provenance.recipe.gates, [{
     name: "Declared technical DAB rule", channel: "DAB-basis", statistic: "mean",
@@ -477,7 +476,9 @@ try {
   await page.getByRole("button", { name: "Preview tissue mask", exact: true }).click();
   await page.getByRole("button", { name: "Adopt tissue mask", exact: true }).waitFor();
   await page.getByRole("button", { name: "Adopt tissue mask", exact: true }).click();
-  await visible(page, page.locator(".research-sources").getByRole("button", { name: /^tissue-region-mask/ }), "adopted tissue regions");
+  const tissueState = await waitForSnapshot(page, state => state?.results.some(item => item.kind === "tissue-region-mask"), "tissue region publication");
+  const tissueResult = tissueState.results.find(item => item.kind === "tissue-region-mask");
+  await visible(page, page.locator(`.research-sources [data-result-id="${tissueResult.id}"]`), "adopted tissue regions");
   await noUiError(page, "adopting tissue regions");
   await screenshot(page, "tissue-regions");
 

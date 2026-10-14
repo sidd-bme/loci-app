@@ -5,6 +5,23 @@ All notable changes to Loci will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Inspectable analysis context across result selection, correction, review, export and reopening.
+- Explicit raw-channel measurements for cell, nuclear and remaining compartments, with retained label dependencies.
+- Portable four-interface and ImageJ numerical reproduction harnesses.
+
+### Improved
+
+- Readable source and result choices, concise analysis controls and clearer Workflow and Statistics layouts.
+- Source-channel overlays after model adoption and reopening, and coordination between source viewing and result export.
+- ROI acquisition binding, bounded medical projections, RGBA display and vendor codec diagnostics.
+- PNG/JPEG measurements use pixel units; print density is no longer interpreted as specimen calibration.
+
+These changes describe the source tree. The published download remains the version identified in the [release record](docs/RELEASE_STATUS.md).
+
 ## [v0.2.0-beta.1] - 2026-10-12
 
 ### Added

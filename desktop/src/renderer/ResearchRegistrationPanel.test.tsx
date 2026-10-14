@@ -131,12 +131,12 @@ function bridge(execute: ResearchDesktopApi["execute"]): ResearchDesktopApi {
   };
 }
 
-function renderPanel(execute: ResearchDesktopApi["execute"]) {
+function renderPanel(execute: ResearchDesktopApi["execute"], current = snapshot) {
   const onPublished = vi.fn().mockResolvedValue(undefined);
   render(
     <ResearchRegistrationPanel
       api={bridge(execute)}
-      snapshot={snapshot}
+      snapshot={current}
       report={async (work) => work()}
       busy={false}
       onBusyChange={vi.fn()}
@@ -353,4 +353,15 @@ describe("ResearchRegistrationPanel", () => {
     );
     expect(onPublished).toHaveBeenCalledWith(derived);
   });
+});
+
+it("uses source and method choices with distinct run ordinals while submitting original identities", () => {
+  const extra = { ...results[0], id: "e".repeat(32), revision_hash: "f".repeat(64), kind: "unknown_internal_kind" };
+  renderPanel(vi.fn(), { ...snapshot, results: [...results, extra] });
+  const select = screen.getByLabelText("Registration fixed result") as HTMLSelectElement;
+  const choices = Array.from(select.options).filter((option) => option.value);
+  expect(choices.map((option) => option.value)).toEqual([...results.map((result) => result.id), extra.id]);
+  expect(choices[0].text).toBe("Source 1 · Segmentation · 1 object · Run 1");
+  expect(choices[2].text).toBe("Source 1 · Analysis result · 1 object · Run 3");
+  expect(choices.map((option) => option.text).join(" ")).not.toMatch(/unknown_internal_kind|11111111|eeeeeeee/);
 });

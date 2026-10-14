@@ -83,7 +83,7 @@ export async function qualifyMedicalWorkflow({ app, page, runRoot, screenshot, n
   assert.equal(Object.values(record.measurements[0].intensity)[0].sum, 16895);
   assert.equal(record.provenance.geometry.frame, "LPS");
   assert.equal(record.provenance.geometry.axes, "ZYX");
-  await wait(async () => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"),
+  await wait(async () => page.locator(`.research-sources [data-result-id="${result.id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"), "exact result display");
   await screenshot(page, "medical-calibrated-3d-result");
 
@@ -94,7 +94,7 @@ export async function qualifyMedicalWorkflow({ app, page, runRoot, screenshot, n
   const corrected = correctedState.results.find((item) => item.parent_id === result.id);
   assert.equal(corrected.object_count, 0);
   await click("Undo revision");
-  await wait(async () => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"),
+  await wait(async () => page.locator(`.research-sources [data-result-id="${result.id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"), "exact medical correction undo");
   const destination = path.join(runRoot, "medical-volume-export");
   await app.evaluate(({ dialog }, output) => {
@@ -110,7 +110,7 @@ export async function qualifyMedicalWorkflow({ app, page, runRoot, screenshot, n
   await click("Info");
   await click("Mark reviewed");
   await wait(snapshot, (value) => value.results.some((item) => item.id === result.id && item.review?.disposition === "reviewed"), "review exact medical revision");
-  await click("Export revision");
+  await click("Export result");
   await wait(() => fs.stat(path.join(destination, "manifest.json")).catch(() => null), (value) => value?.size > 0, "atomic medical export");
   await checkNifti(path.join(destination, "image.nii.gz"), false);
   await checkNifti(path.join(destination, "labels.nii.gz"), true);

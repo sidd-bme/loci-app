@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 // All scientific mutations use visible packaged controls and real native-dialog
 // handlers. Snapshots and inspection RPCs are read-only assertion evidence.
@@ -182,6 +182,7 @@ async function preview() {
   // Reselecting the already-open tool intentionally covers the same-tool
   // navigation regression: its next busy render must not discard a valid grant.
   await selectWorkbenchTool(page, "Analyze");
+  await revealExternalLabels(page);
   await page.getByRole("button", { name: "Import labels", exact: true }).click();
   const overlay = page.getByAltText("Checked label overlay on the selected source plane", { exact: true });
   await wait(() => overlay.isVisible(), Boolean, "checked native label preview");
@@ -252,6 +253,7 @@ try {
   await wait(snapshot, state => state.sources.length === 2, "native source import");
   const calibrated = await nativePlane(fixture.calibrated, 1);
   await dialogs(fixture.labels, true);
+  await revealExternalLabels(page);
   await page.getByRole("button", { name: "Import labels", exact: true }).click();
   await wait(() => page.getByRole("button", { name: "Import labels", exact: true }).isEnabled(), Boolean, "cancelled native picker");
   assert.equal((await snapshot()).results.length, 0);
@@ -404,11 +406,11 @@ try {
   assert.deepEqual(await inspect(parent.id), records.parent);
   assert.deepEqual(await inspect(child.id), records.child);
   await selectWorkbenchTool(page, "Info");
-  assert.equal(await page.getByRole("button", { name: "Export revision", exact: true }).isEnabled(), false,
+  assert.equal(await page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), false,
     "Correction child must be explicitly reviewed before export");
   await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await wait(snapshot, state => state?.results?.find(item => item.id === child.id)?.review?.disposition === "reviewed", "explicit reopened child review");
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await wait(() => fs.stat(path.join(exportPath, "manifest.json")).catch(() => null), value => value?.size > 0, "atomic reviewed export");
   await screenshot("05-cold-reopen-review-export");
   await selectWorkbenchTool(page, "Portability");

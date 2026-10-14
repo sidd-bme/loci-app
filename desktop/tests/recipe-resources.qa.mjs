@@ -74,7 +74,7 @@ try{
  assert.equal(await page.locator('.research-alert').count(),0);
  await capture('04-larger-result-and-measurements');
  await page.getByRole('button',{name:'Mark reviewed',exact:true}).click();
- await page.getByRole('button',{name:'Export revision',exact:true}).click();
+ await page.getByRole('button',{name:'Export result',exact:true}).click();
  await until(()=>fs.stat(path.join(exported,'manifest.json')).then(()=>true,()=>false),'atomic reviewed export');
  const exportRecord=JSON.parse(await fs.readFile(path.join(exported,'result.json'),'utf8'));
  assert.equal(exportRecord.result.provenance.recipe.working_bytes,1024**3);

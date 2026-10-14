@@ -273,7 +273,7 @@ try {
   // 5. Review and Export
   await selectWorkbenchTool(page, "Info");
   await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
 
   await until(() => fs.stat(path.join(exported, "manifest.json")).then(() => true, () => false), "atomic reviewed export");
 

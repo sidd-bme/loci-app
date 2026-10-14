@@ -7,8 +7,10 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ViewerRequestQueue } from "../main/viewer-request-queue";
 import ResearchWorkbench from "./ResearchWorkbench";
 import { dispatchWorkbenchCommand } from "./workbench-commands";
 import { FIRST_STUDY_SOURCE_SHA256 } from "./first-study-display";
@@ -17,6 +19,7 @@ import type {
   ResearchBatchTask,
   ResearchDesktopApi,
   ResearchJob,
+  ResearchSelection,
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
@@ -168,6 +171,18 @@ function resultPage(
   const result = results.find((item) => item.id === request.result_id);
   if (!result) throw new Error("Result page mock requires an exact fixture identity");
   return { result, measurements };
+}
+function correctionInfo(result = snapshot.results[0]) {
+  return {
+    result_id: result.id,
+    revision_hash: result.revision_hash,
+    label_sha256: "1".repeat(64),
+    shape: [3, 48, 64],
+    label_ids: [1, 2],
+    parent_id: null,
+    measurement_channels: [{ index: 0, name: "Raw 1", basis: "raw-source-channel-values" }],
+    derived_measurement_arrays: null,
+  };
 }
 function viewerContractResponse(
   operation: string,
@@ -353,7 +368,7 @@ function api(overrides: Partial<ResearchDesktopApi> = {}): ResearchDesktopApi {
   };
 }
 
-async function selectHistoryResult(name = /segmentation/) {
+async function selectHistoryResult(name = /^Segmentation,/i) {
   const button = await screen.findByRole("button", { name });
   await waitFor(() => expect(button).toBeEnabled());
   fireEvent.click(button);
@@ -369,6 +384,9 @@ async function openTool(
     Temporal: "Track over time", Registration: "Register & resample", Info: "Review & export", Study: "Study & batch" };
   fireEvent.click(await screen.findByRole("combobox", { name: `${group} tool` }));
   fireEvent.click(await screen.findByRole("option", { name: labels[tool] }));
+  if (tool === "Study") for (const details of document.querySelectorAll<HTMLDetailsElement>("details.study-analysis-section")) {
+    details.open = true; fireEvent(details, new Event("toggle"));
+  }
 }
 async function openAdvancedTool(tool: string) {
   fireEvent.click(await screen.findByRole("button", { name: "Search all tools" }));
@@ -391,7 +409,7 @@ describe("ResearchWorkbench", () => {
       return Promise.resolve({});
     });
     render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(study), execute })} onBack={vi.fn()} />);
-    await selectHistoryResult(/corrected-labels/);
+    await selectHistoryResult(/Corrected segmentation/);
     await openTool("Results", "Info");
     fireEvent.click(screen.getByRole("button", { name: "Show experiment effect" }));
     expect(await screen.findByRole("region", { name: "Experiment effect" })).toBeInTheDocument();
@@ -459,17 +477,19 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
   });
 
-  it("shows result revision and review state while rejecting contradictory review receipts", async () => {
+  it("shows readable result and review state while rejecting contradictory review receipts", async () => {
     const active = structuredClone(snapshot);
     active.results[0].review = { disposition: "reviewed" };
     active.results.push({ ...active.results[0], id: "e".repeat(32), revision_hash: "f".repeat(64),
       review: { disposition: "reviewed", revision_hash: "stale" } as never });
     render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(active) })} onBack={vi.fn()} />);
-    const first = await screen.findByRole("button", { name: new RegExp(`revision ${active.results[0].revision_hash}, reviewed review`) });
+    const first = await screen.findByRole("button", { name: /reviewed review$/ });
     expect(first).toHaveAttribute("data-review-state", "reviewed");
-    expect(first).toHaveTextContent("1 objects · dddddddd");
-    expect(first.getAttribute("data-loci-help") ?? first.title).toContain(active.results[0].id);
-    const second = screen.getByRole("button", { name: new RegExp(`revision ${active.results[1].revision_hash}, pending review`) });
+    expect(first).toHaveTextContent("1 object · Reviewed");
+    expect(first).toHaveAttribute("data-result-id", active.results[0].id);
+    expect(first).not.toHaveTextContent(active.results[0].revision_hash);
+    expect(first.title).not.toContain(active.results[0].id);
+    const second = screen.getByRole("button", { name: /pending review$/ });
     expect(second).toHaveAttribute("data-review-state", "pending");
   });
 
@@ -635,7 +655,7 @@ describe("ResearchWorkbench", () => {
     }
 
     const historyButton = screen.getByRole("button", {
-      name: /segmentation/,
+      name: /Segmentation/i,
     });
     expect(historyButton).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(historyButton);
@@ -760,6 +780,110 @@ describe("ResearchWorkbench", () => {
     expect(viewer).toHaveAttribute("data-camera", previousCamera);
   });
 
+  it.each(["success", "cancel", "error"] as const)(
+    "drains saved display settings and pauses refinement for result export (%s)",
+    async (outcome) => {
+      const reviewed = structuredClone(snapshot);
+      reviewed.results[0].review = { disposition: "reviewed" };
+      reviewed.sources[0].metadata.dimensions!.z = 1;
+      reviewed.sources[0].metadata.levels![0].dimensions.z = 1;
+      reviewed.sources[0].source_kind = "native";
+      const planeGeometry = { axes: "YX", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], unit: "pixel", frame: "image" };
+      reviewed.results[0].source_sha256 = reviewed.sources[0].sha256;
+      reviewed.results[0].selection = { x: 0, y: 0, width: 64, height: 48, z: 0, t: 0, c: 0, level: 0 };
+      reviewed.results[0].geometry = planeGeometry;
+      reviewed.results[0].arrays = { image: { shape: [48, 64], dtype: "float64" } };
+      let main!: HTMLElement;
+      let finishWrite!: () => void;
+      let finishExport!: (value: unknown) => void;
+      let rejectExport!: (error: Error) => void;
+      let rejectTile!: (error: Error) => void;
+      let blockWrite = false;
+      let blockRefinement = false;
+      let pendingWrite: Record<string, unknown> | null = null;
+      let pendingTile = false;
+      const exportResult = vi.fn(() => {
+        expect(main).toHaveAttribute("inert");
+        return new Promise((resolve, reject) => { finishExport = resolve; rejectExport = reject; });
+      });
+      const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(reviewed), exportResult });
+      const original = desktop.execute;
+      desktop.execute = vi.fn(async (operation, request, options) => {
+        if (operation === "result_view") return {
+          ...resultView(reviewed.results[0], "z", 0, [48, 64]),
+          geometry: planeGeometry,
+        };
+        const state = request.state as { channels?: Array<{ low?: number }> } | undefined;
+        if (operation === "save_source_view" && blockWrite && state?.channels?.[0]?.low === 7) {
+          blockWrite = false;
+          pendingWrite = structuredClone(request);
+          return new Promise((resolve) => {
+            finishWrite = () => resolve({ source_id: request.source_id,
+              source_sha256: request.source_sha256, revision: Number(request.expected_revision) + 1,
+              state: request.state });
+          });
+        }
+        if (operation === "viewer_tile" && !request.overview && blockRefinement) {
+          blockRefinement = false;
+          pendingTile = true;
+          return new Promise((_, reject) => { rejectTile = reject; });
+        }
+        return original(operation, request, options);
+      });
+      render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+      main = await screen.findByRole("main", { name: "Research workspace" });
+      await selectHistoryResult();
+      await openTool("View", "Display");
+      const low = await screen.findByLabelText("Channel 1 low");
+      await waitFor(() => expect(low).toHaveValue("0"));
+      blockWrite = true;
+      blockRefinement = true;
+      fireEvent.change(low, { target: { value: "7" } });
+      fireEvent.keyDown(low, { key: "Enter" });
+      await waitFor(() => expect(pendingTile).toBe(true));
+      await waitFor(() => expect(pendingWrite).not.toBeNull());
+      const viewer = screen.getByLabelText("Image viewer: Specimen");
+      const camera = viewer.getAttribute("data-camera");
+      const cacheBytes = Number(viewer.getAttribute("data-cache-bytes"));
+      expect(cacheBytes).toBeGreaterThan(0);
+      expect(pendingWrite).toEqual(expect.objectContaining({
+        source_id: reviewed.sources[0].id, source_sha256: reviewed.sources[0].sha256,
+        state: expect.objectContaining({ channels: expect.arrayContaining([
+          expect.objectContaining({ channel: 0, low: 7, high: 255 }),
+        ]) }),
+      }));
+      await openTool("Results", "Info");
+      fireEvent.click(screen.getByRole("button", { name: "Export result" }));
+      expect(main).toHaveAttribute("inert");
+      expect(exportResult).not.toHaveBeenCalled();
+      await act(async () => { finishWrite(); });
+      await waitFor(() => expect(exportResult).toHaveBeenCalledExactlyOnceWith(
+        reviewed.results[0].id, reviewed.results[0].revision_hash, undefined,
+      ));
+      await act(async () => { rejectTile(new Error("Wait for the study to finish opening.")); });
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThanOrEqual(cacheBytes);
+      await act(async () => {
+        if (outcome === "error") rejectExport(new Error("Export destination unavailable"));
+        else finishExport(outcome === "cancel" ? null : { exported: true });
+      });
+      await waitFor(() => expect(main).not.toHaveAttribute("inert"));
+      if (outcome === "error") {
+        expect(screen.getByRole("alert")).toHaveTextContent("Export destination unavailable");
+        fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+      } else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await openTool("View", "Display");
+      expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
+      expect(screen.getByLabelText("Channel 1 high")).toHaveValue("255");
+      expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      await waitFor(() => expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThan(cacheBytes));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(desktop.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
+    },
+  );
+
   it("pauses source refinement across workspace result changes and preserves exact undo", async () => {
     let finishClear!: () => void;
     let rejectTile!: (error: Error) => void;
@@ -817,7 +941,7 @@ describe("ResearchWorkbench", () => {
       Number(previousCacheBytes),
     );
     expect(viewer).toHaveAttribute("data-camera", previousCamera);
-    expect(screen.queryByRole("button", { name: /segmentation/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Specimen · Segmentation/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     await waitFor(() => expect(updateWorkspace).toHaveBeenCalledTimes(2));
@@ -833,7 +957,7 @@ describe("ResearchWorkbench", () => {
         visible: true,
       }] }],
     ]);
-    expect(await screen.findByRole("button", { name: /segmentation/ })).toBeVisible();
+    expect(await screen.findByRole("button", { name: /Segmentation/i })).toBeVisible();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
@@ -904,7 +1028,7 @@ describe("ResearchWorkbench", () => {
         visible: true,
       }],
     });
-    expect(await screen.findByRole("button", { name: /segmentation/ })).toBeVisible();
+    expect(await screen.findByRole("button", { name: /Segmentation/i })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
@@ -1801,7 +1925,7 @@ describe("ResearchWorkbench", () => {
 
     expect(screen.getByText("Review required before export")).toBeVisible();
     const markReviewed = screen.getByRole("button", { name: "Mark reviewed" });
-    const exportRevision = screen.getByRole("button", { name: "Export revision" });
+    const exportRevision = screen.getByRole("button", { name: "Export result" });
     expect(exportRevision).toBeDisabled();
     fireEvent.click(markReviewed);
     fireEvent.click(markReviewed);
@@ -1965,7 +2089,7 @@ describe("ResearchWorkbench", () => {
         }],
       }),
     ));
-    expect(screen.getByText("Rule: max derived stain coordinate > threshold.", { exact: true })).toBeVisible();
+    expect(screen.getByText("Maximum stain coordinate > threshold", { exact: true })).toBeVisible();
   });
   it("binds model adoption to the returned exact preview", async () => {
     const model = {
@@ -1976,7 +2100,7 @@ describe("ResearchWorkbench", () => {
         input: { channels: [{ name: "declared-fluorescence-intensity", source_index: 0 }] },
       },
       technical_compatibility: "reference-qualified",
-      reference_qualification: {},
+      reference_qualification: { compatible: true, package_sha256: "9".repeat(64) },
       scientific_validation: { status: "unvalidated" },
       usage_rights: {},
     };
@@ -1999,6 +2123,12 @@ describe("ResearchWorkbench", () => {
     fireEvent.change(await screen.findByLabelText("Model package"), {
       target: { value: model.model_id },
     });
+    expect(screen.getByText("Reference check passed.")).toBeVisible();
+    const exactRecord = screen.getByText(JSON.stringify(model.reference_qualification));
+    expect(exactRecord.closest("details")).not.toHaveAttribute("open");
+    expect(exactRecord).not.toBeVisible();
+    fireEvent.click(exactRecord.closest("details")!.querySelector("summary")!);
+    expect(exactRecord).toBeVisible();
     fireEvent.click(screen.getByText("Preview model overlay"));
     await waitFor(() =>
       expect(bridge.execute).toHaveBeenCalledWith(
@@ -2056,7 +2186,10 @@ describe("ResearchWorkbench", () => {
       target: { value: model.model_id },
     });
     fireEvent.click(screen.getByText("Preview model overlay"));
-    expect(await screen.findByText(/Pending preview/)).toBeVisible();
+    const pendingPreview = await screen.findByText("Preview ready to adopt.");
+    expect(pendingPreview).toBeVisible();
+    expect(pendingPreview).toHaveAttribute("data-model-preview-id", "f".repeat(32));
+    expect(pendingPreview).toHaveAttribute("data-model-preview-sha256", "1".repeat(64));
     fireEvent.change(screen.getByLabelText("Model threshold"), {
       target: { value: "0.7" },
     });
@@ -2440,9 +2573,11 @@ describe("ResearchWorkbench", () => {
     expect(table).toHaveTextContent("6");
     expect(table).toHaveTextContent("8");
     expect(table).toHaveTextContent("2");
-    expect(
-      screen.getByText(/receipt SHA-256: 9999999999999999/),
-    ).toBeVisible();
+    const receipt = screen.getByRole("region", { name: "Study run comparison receipt" });
+    const technicalRecord = within(receipt).getByText("Technical record").closest("details")!;
+    expect(technicalRecord).not.toHaveAttribute("open");
+    fireEvent.click(within(receipt).getByText("Technical record"));
+    expect(within(receipt).getByText(/Receipt: 9999999999999999/)).toBeVisible();
     expect(screen.getByLabelText("Run A exact revision bindings")).toHaveTextContent(
       `Result ${runA[0].id}; revision ${runA[0].revision_hash}`,
     );
@@ -2517,7 +2652,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Annotate", "Correction");
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByText(/Label fingerprint/);
     const image = await screen.findByAltText("Exact selected result revision");
     expect(image).toHaveAttribute("src", "data:image/png;base64,z0");
     expect(screen.queryByText("Loading exact correction plane…")).not.toBeInTheDocument();
@@ -2527,6 +2662,84 @@ describe("ResearchWorkbench", () => {
       index: 0,
       labels: true,
     });
+  });
+
+  it("keeps a superseded history plane quiet while the current correction request waits in the real viewer queue", async () => {
+    let release!: () => void;
+    const decoding = new Promise<void>(resolve => { release = resolve; });
+    const queue = new ViewerRequestQueue(async (operation, value) => {
+      if (operation === "viewer_tile") { await decoding; return {}; }
+      const request = value as Record<string, unknown>;
+      return { ...resultView(snapshot.results[0], "z", Number(request.index ?? 1)),
+        image: `data:image/png;base64,z${Number(request.index ?? 1)}` };
+    });
+    const active = queue.request("viewer_tile", {});
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,source" });
+      if (operation === "result") return Promise.resolve(resultPage(request, snapshot.results));
+      if (operation === "result_view") return queue.request(operation, request);
+      if (operation === "correction_info") return Promise.resolve(correctionInfo());
+      return Promise.resolve({});
+    });
+    render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Annotate", "Correction");
+    await waitFor(() => expect(execute.mock.calls.filter(([operation]) => operation === "result_view")).toHaveLength(2));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await act(async () => { release(); await active; });
+    expect(await screen.findByAltText("Exact selected result revision")).toHaveAttribute("src", "data:image/png;base64,z0");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it.each(["Current decoder failed.", "View superseded by a newer request."])(
+    "keeps a current correction-plane failure visible: %s", async (failure) => {
+      const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+        if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,source" });
+        if (operation === "result") return Promise.resolve(resultPage(request, snapshot.results));
+        if (operation === "result_view") return request.index === undefined
+          ? Promise.resolve(resultView()) : Promise.reject(new Error(failure));
+        if (operation === "correction_info") return Promise.resolve(correctionInfo());
+        return Promise.resolve({});
+      });
+      render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
+      await selectHistoryResult();
+      await openTool("Annotate", "Correction");
+      expect(await screen.findByRole("alert")).toHaveTextContent(failure);
+      expect(screen.queryByAltText("Exact selected result revision")).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps a current history-plane failure visible", async () => {
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,source" });
+      if (operation === "result") return Promise.resolve(resultPage(request, snapshot.results));
+      if (operation === "result_view") return Promise.reject(new Error("Current history decoder failed."));
+      return Promise.resolve({});
+    });
+    render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Current history decoder failed.");
+  });
+
+  it("ignores a failed correction-plane request after its effect scope is abandoned", async () => {
+    let rejectPlane!: (error: Error) => void;
+    const plane = new Promise((_, reject) => { rejectPlane = reject; });
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return Promise.resolve({ image: "data:image/png;base64,source" });
+      if (operation === "result") return Promise.resolve(resultPage(request, snapshot.results));
+      if (operation === "result_view") return request.index === undefined
+        ? Promise.resolve(resultView()) : plane;
+      if (operation === "correction_info") return Promise.resolve(correctionInfo());
+      return Promise.resolve({});
+    });
+    render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Annotate", "Correction");
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("result_view", expect.objectContaining({ index: 0 })));
+    await openTool("View", "Display");
+    await act(async () => { rejectPlane(new Error("Abandoned correction decoder failed.")); await Promise.resolve(); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("renders the requested correction axis and index before mapping native plane pixels", async () => {
@@ -2587,7 +2800,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={api({ execute })} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Annotate", "Correction");
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByText(/Label fingerprint/);
     fireEvent.change(screen.getByLabelText("Correction plane"), {
       target: { value: "XZ" },
     });
@@ -2735,9 +2948,9 @@ describe("ResearchWorkbench", () => {
       derived_measurement_arrays: null,
     });
     expect(
-      await screen.findByText("Select an exact segmented result first."),
+      await screen.findByText("Select a segmentation result to edit labels or add an ROI."),
     ).toBeVisible();
-    expect(screen.queryByText(/Exact label SHA-256/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Label fingerprint/)).not.toBeInTheDocument();
   });
   it("maps correction canvas points through the actual result image and binds an immutable child to its SHA", async () => {
     const child: ResearchSnapshot["results"][number] = {
@@ -2795,7 +3008,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Annotate", "Correction");
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByText(/Label fingerprint/);
     const image = screen.getByAltText("Exact selected result revision");
     vi.spyOn(image, "getBoundingClientRect").mockReturnValue({
       left: 100,
@@ -2895,7 +3108,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Annotate", "Correction");
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByText(/Label fingerprint/);
     const image = screen.getByAltText("Exact selected result revision");
     const frame = image.closest(".research-image-frame") as HTMLElement;
     vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({
@@ -2934,6 +3147,47 @@ describe("ResearchWorkbench", () => {
       ),
     );
   });
+  it.each([undefined, 0])("binds result-overlay viewing to an explicit display channel when persisted c is %s", async (persistedChannel) => {
+    const active = structuredClone(snapshot);
+    const source = active.sources[0];
+    source.source_kind = "native";
+    source.metadata.dimensions!.t = 3;
+    source.metadata.levels![0].dimensions.t = 3;
+    const planeGeometry = { axes: "YX", unit: "pixel", frame: "image",
+      affine: [[1, 0, 0, 10], [0, 1, 0, 20], [0, 0, 1, 0], [0, 0, 0, 1]] };
+    const result = active.results[0];
+    result.kind = persistedChannel === undefined ? "model-segmentation" : "segmentation";
+    result.source_sha256 = source.sha256;
+    result.selection = { x: 10, y: 20, width: 12, height: 8, z: 0, t: 2, c: 0, level: 0 };
+    // Managed model selections deliberately omit c: their input is channel-mapped.
+    if (persistedChannel === undefined) delete (result.selection as Partial<ResearchSelection>).c;
+    const persistedSelection = structuredClone(result.selection);
+    result.geometry = planeGeometry;
+    result.arrays = { image: { shape: [8, 12], dtype: "float64" } };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(async (operation, request) => {
+      if (operation === "result") return resultPage(request, active.results);
+      if (operation === "result_view") return { ...resultView(result, "z", 0, [8, 12]),
+        image: "data:image/png;base64,result#viewer-12x8", geometry: planeGeometry };
+      return {};
+    }) });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    const viewer = await screen.findByLabelText("Image viewer: Specimen");
+    const channel = screen.getByLabelText("C", { exact: true });
+    fireEvent.change(channel, { target: { value: "1" } });
+    fireEvent.keyDown(channel, { key: "Enter" });
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_tile",
+      expect.objectContaining({ overview: true, c: 1 }), expect.anything()));
+    await waitFor(() => expect(viewer).toHaveAttribute("data-prepared", "true"));
+    vi.mocked(bridge.execute).mockClear();
+    await selectHistoryResult(persistedChannel === undefined ? /^Model segmentation,/i : /^Segmentation,/i);
+    await waitFor(() => expect(viewer).toHaveAttribute("data-result-overlay", `${result.id}:${result.revision_hash}`));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_tile",
+      expect.objectContaining({ overview: true, t: 2, z: 0, c: persistedChannel ?? 1 }), expect.anything()));
+    await waitFor(() => expect(viewer).toHaveAttribute("data-prepared", "true"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(result.selection).toEqual(persistedSelection);
+  });
+
   it("keeps a verified 2D result on the source camera and removes it on source return", async () => {
     const active = structuredClone(snapshot);
     const source = active.sources[0];
@@ -3018,14 +3272,14 @@ describe("ResearchWorkbench", () => {
     await waitFor(() => expect(viewer).toHaveAttribute("data-result-overlay",
       `${original.id}:${original.revision_hash}`));
     await openTool("Annotate", "Correction");
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByText(/Label fingerprint/);
     await waitFor(() => expect(viewer).toHaveAttribute("data-result-overlay",
       `${original.id}:${original.revision_hash}`));
     const canvas = screen.getByLabelText("Source image and bound annotations");
     fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     const camera = viewer.getAttribute("data-camera");
 
-    fireEvent.click(screen.getByRole("button", { name: /corrected-labels/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Corrected segmentation/ }));
     expect(await screen.findByText("Loading result…")).toBeVisible();
     expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
     expect(screen.getByLabelText("Source image and bound annotations")).toBe(canvas);
@@ -3076,7 +3330,7 @@ describe("ResearchWorkbench", () => {
     );
     fireEvent.click(screen.getByText("Other"));
     expect(
-      await screen.findByText("Select an exact segmented result first."),
+      await screen.findByText("Select a segmentation result to edit labels or add an ROI."),
     ).toBeVisible();
   });
   it("persists immutable undo and redo selections with advancing cursor revisions", async () => {
@@ -3143,7 +3397,7 @@ describe("ResearchWorkbench", () => {
       }),
     });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    await selectHistoryResult(/corrected-labels/);
+    await selectHistoryResult(/Corrected segmentation/);
     await openTool("Annotate", "Correction");
     fireEvent.click(await screen.findByText("Undo revision"));
     await waitFor(() =>
@@ -3268,11 +3522,11 @@ describe("ResearchWorkbench", () => {
     expect(jobCenter).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Job Center" })).toBeInTheDocument();
 
-    // Check operation labels and short IDs
+    // Show useful operation labels while keeping exact IDs in the cancel request.
     expect(screen.getByText("Analysis")).toBeInTheDocument();
     expect(screen.getByText("Classical segmentation")).toBeInTheDocument();
-    expect(screen.getByText("#job-runn")).toBeInTheDocument();
-    expect(screen.getByText("#job-comp")).toBeInTheDocument();
+    expect(screen.queryByText("#job-runn")).not.toBeInTheDocument();
+    expect(screen.queryByText("#job-comp")).not.toBeInTheDocument();
 
     // Check progress bar for running job
     expect(screen.getByText("65%")).toBeInTheDocument();

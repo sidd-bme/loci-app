@@ -106,6 +106,12 @@ def import_annotations(
     else:
         raise ValueError("Annotation format must be geojson or imagej")
 
+    selection = parent["provenance"]["selection"]
+    if any(roi.source_t != selection["t"] or roi.source_c != selection["c"] for roi in rois):
+        raise ValueError(
+            "Imported annotation acquisition T/C does not match the exact selected result plane"
+        )
+
     arrays = {
         key: workbench.project.load_array(descriptor)
         for key, descriptor in parent["arrays"].items()

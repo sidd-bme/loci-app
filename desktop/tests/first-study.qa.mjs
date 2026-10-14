@@ -32,6 +32,9 @@ await fs.mkdir(userData, { recursive: true });
 await fs.mkdir(path.join(output, "screenshots"));
 async function sha(file) { const hash = createHash("sha256"); for await (const bytes of createReadStream(file)) hash.update(bytes); return hash.digest("hex"); }
 const snapshot = () => page.evaluate(() => window.lociResearch.getSnapshot());
+// Snapshot insertion order differs from the persisted result listing. Compare
+// every complete record by durable identity while retaining duplicates/counts.
+const resultRecords = (value) => [...value.results].sort((a, b) => a.id.localeCompare(b.id));
 const inspect = (id) => page.evaluate((result_id) => window.lociResearch.execute("result", { result_id }), id);
 async function until(read, accept, label, allowAlert = false) {
   const deadline = Date.now() + 60_000;
@@ -199,10 +202,10 @@ try {
   await page.getByRole("button", { name: "Redo revision", exact: true }).click();
   await page.locator(`[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
   await selectWorkbenchTool(page, "Info");
-  assert.equal(await page.getByRole("button", { name: "Export revision", exact: true }).isEnabled(), false);
+  assert.equal(await page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), false);
   await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await until(snapshot, (value) => value.results.find((result) => result.id === corrected.id)?.review?.disposition === "reviewed", "visible human-only review control");
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await until(() => fs.stat(path.join(exported, "manifest.json")).catch(() => null), (value) => value?.isFile(), "atomic reviewed export");
   const resultJson = JSON.parse(await fs.readFile(path.join(exported, "result.json"), "utf8"));
   assert.equal(resultJson.result.revision_hash, corrected.revision_hash);
@@ -225,14 +228,14 @@ print(json.dumps({'raw_exact':True,'corrected_labels_exact':True,'shape':[256,25
   await page.locator(`[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
   await selectWorkbenchTool(page, "Info");
   assert.equal(beforeClose.results.find((result) => result.id === corrected.id).review.disposition, "reviewed");
-  await until(() => page.getByRole("button", { name: "Export revision", exact: true }).isEnabled(), Boolean, "selected reviewed revision after Save As");
+  await until(() => page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), Boolean, "selected reviewed revision after Save As");
   report.checks.saved_capture = { selected_result_id: corrected.id, revision_hash: corrected.revision_hash, review: "reviewed" };
   await shot("04-reviewed-saved");
   await close(); await launch();
   await fileMenuAction(page, "Open study");
   const reopened = await until(snapshot, (value) => value?.results.length === 2, "cold saved reopen");
   assert.deepEqual(reopened.sources, beforeClose.sources);
-  assert.deepEqual(reopened.results, beforeClose.results);
+  assert.deepEqual(resultRecords(reopened), resultRecords(beforeClose));
   oracle((await inspect(parent.id)).measurements);
   oracle((await inspect(corrected.id)).measurements, [2, 3]);
   await viewerReady();
@@ -245,14 +248,14 @@ print(json.dumps({'raw_exact':True,'corrected_labels_exact':True,'shape':[256,25
   assert.equal(await sha(sourcePath), source.sha256);
   await page.getByRole("button", { name: "Open study", exact: true }).click();
   const afterDiscard = await until(snapshot, (value) => value?.results.length === 2, "saved reopen after managed discard");
-  assert.deepEqual(afterDiscard.results, reopened.results);
+  assert.deepEqual(resultRecords(afterDiscard), resultRecords(reopened));
   await viewerReady();
   await selectWorkbenchTool(page, "Portability");
   await page.getByRole("button", { name: "Export portable study", exact: true }).click();
   await until(() => fs.stat(archive).catch(() => null), (value) => value?.isFile(), "portable archive");
   await page.getByRole("button", { name: "Import portable study", exact: true }).click();
   const unavailable = await until(snapshot, (value) => value.sources[0].locator_state === "relink-required", "portable source unavailable");
-  assert.deepEqual(unavailable.results, reopened.results);
+  assert.deepEqual(resultRecords(unavailable), resultRecords(reopened));
   await selectWorkbenchTool(page, "Display");
   const recovery = page.locator(".image-view-unavailable").getByRole("button", { name: "Relink exact source", exact: true });
   await recovery.click();
@@ -260,7 +263,7 @@ print(json.dumps({'raw_exact':True,'corrected_labels_exact':True,'shape':[256,25
   assert.match(await page.locator('.research-alert[role="alert"]').textContent(), /match|fingerprint|size/i);
   const rejected = await snapshot();
   assert.equal(rejected.sources[0].locator_state, "relink-required");
-  assert.deepEqual(rejected.results, unavailable.results);
+  assert.deepEqual(resultRecords(rejected), resultRecords(unavailable));
   await shot("05-mismatched-source");
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   pickerSource = exact; await pickers();
@@ -268,7 +271,7 @@ print(json.dumps({'raw_exact':True,'corrected_labels_exact':True,'shape':[256,25
   const relinked = await until(snapshot, (value) => value.sources[0].locator_state !== "relink-required", "exact relink");
   assert.equal(relinked.sources[0].id, source.id);
   assert.equal(relinked.sources[0].sha256, source.sha256);
-  assert.deepEqual(relinked.results, unavailable.results);
+  assert.deepEqual(resultRecords(relinked), resultRecords(unavailable));
   await viewerReady();
   assert.equal(await sha(sourcePath), source.sha256);
   await shot("06-exact-source-restored");

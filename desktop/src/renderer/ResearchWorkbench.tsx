@@ -8,6 +8,8 @@ import {
   ChevronLeft,
   FolderOpen,
   GripVertical,
+  PanelsTopLeft,
+  PictureInPicture2,
   ImagePlus,
   Lightbulb,
   Play,
@@ -47,6 +49,9 @@ import type {
 } from "../shared/research-contracts";
 import "./ResearchWorkbench.css";
 import { firstStudyDisplayChannels } from "./first-study-display";
+import { initialSourceDisplay, type SourceDisplayDefaults } from "./initial-source-display";
+import { ResultContextPanel } from "./ResultContextPanel";
+import { resultTitle } from "./result-title";
 import { LargeAnalysisPanel, LargeResultViewport, LargeResultInspector, isLargeResult } from "./LargeResultWorkspace";
 import {
   ResearchCorrectionPanel,
@@ -339,7 +344,7 @@ function useComparisonPane(
     void Promise.all([
       api.execute("viewer_defaults", { source_id: source.id, t: 0, z: 0, auto: false }),
       api.execute("source_view", { source_id: source.id }),
-    ]).then(([defaultsValue, savedValue]) => {
+    ]).then(async ([defaultsValue, savedValue]) => {
       if (token.current !== currentToken) return;
       const defaults = defaultsValue as {
         source_id?: string;
@@ -351,7 +356,9 @@ function useComparisonPane(
         throw new Error("Comparison defaults do not match the selected source.");
       if (saved.source_id !== source.id || saved.source_sha256 !== source.sha256 || !Number.isInteger(saved.revision))
         throw new Error("Saved comparison display does not match the selected source.");
-      const channels = comparisonChannels(saved.state?.channels ?? defaults.channels, source);
+      const initial = await initialSourceDisplay(api, source, defaultsValue as SourceDisplayDefaults, Boolean(saved.state), comparisonSelection(source).z);
+      if (token.current !== currentToken) return;
+      const channels = comparisonChannels(saved.state?.channels ?? initial.channels, source);
       const selection = clamp(saved.state?.selection ?? comparisonSelection(source), dimensions);
       const initialCamera = comparisonCamera(saved.state?.camera);
       setView({
@@ -1085,6 +1092,8 @@ export default function ResearchWorkbench({
       switchDocument(() => desktopApi.exportSourceView!(request), false) } : {}),
     ...(desktopApi.exportVolumeFigure ? { exportVolumeFigure: (request) =>
       switchDocument(() => desktopApi.exportVolumeFigure!(request), false) } : {}),
+    exportResult: (id, revisionHash, runId) =>
+      switchDocument(() => desktopApi.exportResult(id, revisionHash, runId), false),
     ...(desktopApi.exportBatch ? { exportBatch: (bindings, options) =>
       switchDocument(() => desktopApi.exportBatch!(bindings, options), false) } : {}),
     ...(desktopApi.inspectVendor ? { inspectVendor: () =>
@@ -1709,14 +1718,16 @@ export default function ResearchWorkbench({
     setRawVolumeOpen(false); setRawVolume(null); setVolumeDisplay({ renderMode: "blend", quality: 50 }); rawVolumeToken.current++;
     const token = ++displayToken.current;
     void viewDrain.current.then(() => Promise.all([api.execute("viewer_defaults", { source_id: source.id, t: 0, z: 0, auto: false }),
-      api.execute("source_view", { source_id: source.id })])).then(([value, saved]) => {
+      api.execute("source_view", { source_id: source.id })])).then(async ([value, saved]) => {
       if (displayToken.current !== token) return;
-      const defaults = value as { source_id: string; source_sha256: string; channels: Channel[]; basis: unknown };
+      let defaults = value as SourceDisplayDefaults;
       if (defaults.source_id !== source.id || defaults.source_sha256 !== source.sha256 || !Array.isArray(defaults.channels))
         throw new Error("Display defaults do not match this source.");
       const view = saved as SavedSourceView;
       if (view.source_id !== source.id || view.source_sha256 !== source.sha256 || !Number.isInteger(view.revision))
         throw new Error("Saved display settings do not match this source.");
+      defaults = await initialSourceDisplay(api, source, defaults, Boolean(view.state), Math.floor(dimensions.z / 2));
+      if (displayToken.current !== token) return;
       const exampleChannels = snapshot ? firstStudyDisplayChannels(snapshot.project, source, defaults.channels) : null;
       const initialChannels = exampleChannels ?? defaults.channels;
       setChannels(view.state?.channels ?? initialChannels); setDefaultChannels(initialChannels);
@@ -2130,6 +2141,11 @@ export default function ResearchWorkbench({
           axis: requestedAxis,
           ...(requestedIndex === undefined ? {} : { index: requestedIndex }),
           labels: true,
+        }).catch((caught) => {
+          // A newer plane owner may supersede this queued history view while
+          // its immutable measurements are still being loaded.
+          if (planeToken !== resultViewToken.current) return null;
+          throw caught;
         }),
       ]);
       const page = record as { result?: ResearchResult; measurements?: Array<Record<string, unknown>> };
@@ -2437,6 +2453,9 @@ export default function ResearchWorkbench({
         );
         setCorrectionViewLoading(false);
       });
+    return () => {
+      if (token === resultViewToken.current) resultViewToken.current++;
+    };
   }, [
     api,
     correctionView.index,
@@ -2488,6 +2507,12 @@ export default function ResearchWorkbench({
     const resolved = resolveResultPlaneOverlay(source, selectedResult, displayedResultView, 1);
     return resolved.ok ? resolved.overlay : null;
   }, [source, selectedResult, displayedResultView]);
+  const sourceResultSelection = useMemo(() => {
+    const persisted = selectedResult?.selection;
+    if (!persisted) return null;
+    // Channel-mapped results retain their grid; c belongs to the source display.
+    return persisted.c === undefined ? { ...persisted, c: shownSelection.c } : persisted;
+  }, [selectedResult?.selection, shownSelection.c]);
   const pendingSourceResultCanvas = useMemo(() => {
     const shape = selectedResult?.arrays?.image?.shape;
     if (tab !== "Correction" || !correctionViewLoading || !source || !selectedResult ||
@@ -2974,13 +2999,13 @@ export default function ResearchWorkbench({
               </div>
             )}
           </div>
-          <h2>Layers & results</h2>
-          {source && window.lociImageWindows && <button disabled={Boolean(busy) || documentSwitching}
+          <div className="research-layers-heading"><h2>Layers & results</h2>
+          {source && window.lociImageWindows && <div className="research-window-actions"><button aria-label="Restore image windows" title="Restore image windows" disabled={Boolean(busy) || documentSwitching}
             onClick={() => void report(async () => {
               await viewStore.current?.flush();
               await window.lociImageWindows!.restore();
-            }, "Could not restore the image-window layout.")}>Restore image windows</button>}
-          {source && window.lociImageWindows && <button
+            }, "Could not restore the image-window layout.")}><PanelsTopLeft /></button>
+          <button aria-label="Detach image"
             disabled={Boolean(busy) || documentSwitching || !viewSettingsReady || source.locator_state === "relink-required" || annotationDraft.length > 0 || correctionPoints.length > 0}
             title={annotationDraft.length || correctionPoints.length ? "Finish or discard the current draft before detaching" : "Open this image in its own window; this window becomes the control panel"}
             onClick={() => void report(async () => {
@@ -2994,7 +3019,8 @@ export default function ResearchWorkbench({
               };
               if (!await viewStore.current?.flush()) throw new Error("Save the display settings before detaching this image.");
               await window.lociImageWindows!.open(source.id, { sourceSha256: source.sha256, presentation });
-            }, "Could not open the image window.")}>Detach image</button>}
+            }, "Could not open the image window.")}><PictureInPicture2 /></button></div>}
+          </div>
           {source && <button className={!resultId ? "selected" : ""} aria-pressed={!resultId}
             onClick={() => { largeNavigationIntent.current++; largeSelectionIntent.current++; objectPickToken.current++; setPopulationObject(null); setSelectedRow(null); setResultId(null); setResultView(null); setImage(null); }}>Original image</button>}
           {snapshot.results
@@ -3005,8 +3031,8 @@ export default function ResearchWorkbench({
                 disabled={sourceIsChanging}
                 data-result-id={item.id}
                 data-review-state={resultReviewState(item)}
-                title={`Result ${item.id}\nExact revision ${item.revision_hash}\n${resultReviewState(item)} review`}
-                aria-label={`${item.kind}, ${item.object_count} objects, revision ${item.revision_hash}, ${resultReviewState(item)} review`}
+                title={`${resultTitle(item)} · ${new Date(item.created_at).toLocaleString()}`}
+                aria-label={`${resultTitle(item)}, ${item.object_count} ${item.object_count === 1 ? "object" : "objects"}, ${resultReviewState(item)} review`}
                 className={item.id === resultId ? "selected" : ""}
                 aria-pressed={item.id === resultId}
                 onClick={() => {
@@ -3016,9 +3042,8 @@ export default function ResearchWorkbench({
                   void loadResult(item.id, item);
                 }}
               >
-                <span className="research-result-kind">{item.kind}</span>
-                <small className="research-result-meta">{item.object_count} objects · {item.revision_hash.slice(0, 8)}</small>
-                <small className="research-result-meta">{resultReviewState(item)} review</small>
+                <span className="research-result-kind">{resultTitle(item)}</span>
+                <small className="research-result-meta">{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {resultReviewState(item) === "reviewed" ? "Reviewed" : resultReviewState(item) === "excluded" ? "Excluded" : "To review"}</small>
                 {item.label_import && <small className="research-result-meta">{item.parent_id ? "Corrected from " : "Imported "}{item.label_import.file_name} · {item.label_import.producer?.name ?? "Unknown producer"}</small>}
               </button>
             ))}
@@ -3072,7 +3097,7 @@ export default function ResearchWorkbench({
           {sourceResultOverlay && (
             <>
               <span className="result-source-link">Result on source · Z {(selectedResult?.selection?.z ?? 0) + 1}, T {(selectedResult?.selection?.t ?? 0) + 1}</span>
-              {selectedResult && <span className="result-source-count">{selectedResult.object_count.toLocaleString()} objects</span>}
+              {selectedResult && <span className="result-source-count">{selectedResult.object_count.toLocaleString()} {selectedResult.object_count === 1 ? "object" : "objects"}</span>}
               <button
                 type="button"
                 className="research-review-export-quick-btn"
@@ -3358,7 +3383,7 @@ export default function ResearchWorkbench({
                 } finally { setBusy(null); }
               }, "The selected source did not match the archived fingerprint and size.");
             } : undefined}
-            selection={sourceResultOverlay && selectedResult?.selection ? selectedResult.selection : shownSelection}
+            selection={sourceResultOverlay && sourceResultSelection ? sourceResultSelection : shownSelection}
             channels={compareDefault ? defaultChannels : channels}
             projection={sourceResultOverlay ? "plane" : resolvedProjection}
             initialCamera={viewCamera ?? savedCamera}
@@ -3497,18 +3522,16 @@ export default function ResearchWorkbench({
           draftControl={annotationState.control}
           points={annotationDraft} onPoints={setAnnotationDraft} onAnnotations={setSourceAnnotations} onError={setError} /></div>}
         {source && dimensions && tab === "Display" && rawVolumeOpen && <section className="volume-inspector" aria-label="Volume workspace information">
-          <h2>Volume workspace</h2>
-          <p>Explore three linked slice planes and a 3D view. Expand any pane for a closer look.</p>
+          <h2>Volume</h2>
           <dl><dt>Source grid</dt><dd>{dimensions.x} × {dimensions.y} × {dimensions.z}</dd>
             <dt>Coordinates</dt><dd>{rawVolume?.context.frame === "image" ? "Source image axes" : rawVolume?.context.frame ?? "Loading…"}</dd>
             <dt>Units</dt><dd>{rawVolume?.context.unit ?? "Loading…"}</dd></dl>
           {dimensions.t > 1 && <label>Time <output>{shownSelection.t + 1} / {dimensions.t}</output>
             <input aria-label="Volume time frame" type="range" min={0} max={dimensions.t - 1} value={shownSelection.t}
               onChange={(event) => setSelection((previous) => ({ ...previous, t: Number(event.target.value) }))} /></label>}
-          <h3>Display controls</h3><p>Adjust volume channel colours, range and opacity below the panes. The fourth pane switches between volume rendering and intersecting planes.</p>
           <details><summary>Navigation</summary><p>Drag a slice crosshair to update all planes. Scroll or use ↑/↓ to step through that slice.</p>
             <p>In 3D, drag to rotate, right-drag or Shift-drag to pan, and scroll to zoom. R resets the camera.</p></details>
-          <p className="volume-inspector-note">Slices use the displayed grid with linear resampling. PNG export captures the 3D pane and records its display settings.</p>
+          <details><summary>Display details</summary><p className="volume-inspector-note">Slices use the displayed grid with linear resampling. PNG export captures the 3D pane and records its display settings.</p></details>
           <div className="research-actions"><button onClick={() => setRawVolumeOpen(false)}>Return to 2D</button>
             <button onClick={() => setTab("Info")}>Image details</button></div>
         </section>}
@@ -3519,9 +3542,8 @@ export default function ResearchWorkbench({
           <button onClick={() => setAbCompareMode(false)}>Return to single image</button>
         </section>}
         {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && (
-          <><AgentImagePanel api={api} source={source} selection={shownSelection} channels={channels}
-            projection={resolvedProjection} following={assistantFollowing} followBusy={assistantFollowBusy || !viewSettingsReady}
-            onFollowing={(value) => void followAssistantDisplay(value)} onError={setError} />
+          <>{assistantFollowing && <div className="assistant-display-status" role="status"><span>Assistant display is active</span>
+            <button disabled={assistantFollowBusy} onClick={() => void followAssistantDisplay(false)}>Take control</button></div>}
           <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy}><SourceDisplayPanel
             api={api}
             source={source}
@@ -3621,6 +3643,7 @@ export default function ResearchWorkbench({
         )}
         {source && dimensions && tab === "Analyze" && (
           <>
+          <details className="external-labels-disclosure"><summary>Import existing labels</summary>
           <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
             navigationIntent={() => largeNavigationIntent.current}
             scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={(message, owner) => {
@@ -3637,7 +3660,7 @@ export default function ResearchWorkbench({
               if (await persistRevision(target, measurements, undefined, current, true) && current()) {
                 setRedoStack([]); setCorrectionObjectTarget(null); openWorkbenchTab("Population");
               }
-            }} />
+            }} /></details>
           <label className="segmentation-family">Segment with<select aria-label="Segmentation model" value={segmentationFamily} onChange={(event) => setSegmentationFamily(event.target.value as typeof segmentationFamily)}>
             <option value="classical">Classical methods</option><option value="large-components">Large image · threshold components</option><option value="adaptive">Loci Adaptive Watershed</option>{isRgb && <option value="stain">Declared stain separation</option>}<option value="cellpose-sam">Cellpose-SAM</option><option value="cellpose-sam-v2">Cellpose-SAM v2</option>
           </select></label>
@@ -3820,6 +3843,9 @@ export default function ResearchWorkbench({
           />
         )}
         {source && dimensions && tab === "Agent" && (
+          <><AgentImagePanel api={api} source={source} selection={shownSelection} channels={channels}
+            projection={resolvedProjection} following={assistantFollowing} followBusy={assistantFollowBusy || !viewSettingsReady}
+            onFollowing={(value) => void followAssistantDisplay(value)} onError={setError} />
           <ResearchAgentPanel
             api={api}
             source={source}
@@ -3836,7 +3862,7 @@ export default function ResearchWorkbench({
                     : current,
               )
             }
-          />
+          /></>
         )}
         {tab === "Remote" && (
           <ResearchRemotePanel
@@ -3896,7 +3922,7 @@ export default function ResearchWorkbench({
             busy={busy !== null}
           />
         )}
-        {source && dimensions && tab === "Study" && (
+        {source && dimensions && tab === "Study" && (correctionEffectSeed || snapshot.results.some((result) => ["corrected-labels", "large-corrected-labels"].includes(result.kind))) && (
           <ResearchCorrectionEffectPanel key={`correction-effect:${studyEpoch}`}
             api={api} snapshot={snapshot} seed={correctionEffectSeed}
             contextKey={`${studyEpoch}:${documentSwitching}:${source.id}:${resultId ?? ""}`}
@@ -4052,7 +4078,6 @@ export default function ResearchWorkbench({
                     {job.error ? <p className="workbench-jobs__error">{job.error}</p> : null}
                     <div className="workbench-jobs__meta">
                       <span><Laptop size={11} aria-hidden="true" />Local</span>
-                      <span><code>#{job.id.slice(0, 8)}</code></span>
                       {timeLabel ? <time dateTime={job.updated_at}>{timeLabel}</time> : null}
                       {job.cancel_requested && isActive ? <span className="workbench-jobs__cancelling">Cancelling</span> : null}
                     </div>
@@ -4328,14 +4353,10 @@ function Analyze({
         setRecipe(event.target.value === "rgb_intensity" ? { ...scalar, input_transform: "rgb_intensity", measurement_channels: [], gates: [],
           segmentation: { ...recipe.segmentation, threshold: 0.5 } } : { ...scalar, measurement_channels: [0] });
       }}><option value="">Choose an explicit conversion…</option><option value="rgb_intensity">Weighted RGB intensity</option></select>
-      <small>Converts encoded RGB samples to 0–1 intensity. Counts and geometry are retained; intensities are derived, not biological channels.</small></label>}
+      <small>Derived intensity · 0–1</small></label>}
       {isRgb && (
         <>
-          <h3>Declared brightfield stain analysis</h3>
-          <p>
-            Declare the basis before separation. RGB components are display
-            values, never biological channels.
-          </p>
+          <h3>Stain separation</h3>
           <label>
             Stain basis{" "}
             <select
@@ -4399,7 +4420,7 @@ function Analyze({
             </label>
           )}
           <fieldset>
-            <legend>Optional declared stain measurement rule</legend>
+            <legend>Stain measurement rule</legend>
             <label className="research-check">
               <input
                 aria-label="Enable stain measurement rule"
@@ -4407,7 +4428,7 @@ function Analyze({
                 checked={stainRuleEnabled}
                 onChange={(event) => setStainRuleEnabled(event.target.checked)}
               />
-              Classify each segmented object by an explicit stain-coordinate threshold
+              Classify objects by stain threshold
             </label>
             {stainRuleEnabled && (
               <>
@@ -4470,9 +4491,7 @@ function Analyze({
                     onChange={(event) => setStainRuleControl(event.target.value)}
                   />
                 </label>
-                <p>
-                  Rule: {stainRuleStatistic} derived stain coordinate &gt; threshold.
-                </p>
+                <small>{stainRuleStatistic === "max" ? "Maximum" : stainRuleStatistic === "mean" ? "Mean" : "Sum"} stain coordinate &gt; threshold</small>
               </>
             )}
           </fieldset>
@@ -4695,10 +4714,6 @@ function ModelPanel({
   return (
     <div className="research-panel">
       <h2>Managed model package</h2>
-      <p>
-        Technical compatibility, supplier rights, and scientific validation are
-        separate records. A model preview is display-only until exact adoption.
-      </p>
       <label>
         Working memory{" "}
         <select
@@ -4750,21 +4765,16 @@ function ModelPanel({
       </label>
       {selected && (
         <div className="research-model-records">
-          <p>
-            <strong>Technical compatibility:</strong>{" "}
-            {String(selected.technical_compatibility)}
-          </p>
-          <p>
-            <strong>Reference qualification:</strong>{" "}
-            {JSON.stringify(selected.reference_qualification)}
-          </p>
-          <p>
-            <strong>Scientific validation:</strong>{" "}
-            {JSON.stringify(selected.scientific_validation)}
-          </p>
-          <p>
-            <strong>Rights:</strong> {JSON.stringify(selected.usage_rights)}
-          </p>
+          <p>{recoverable ? "Re-import this package to run it." : "Reference check passed."}</p>
+          <details className="research-technical-record">
+            <summary>Technical record</summary>
+            <dl className="research-kv">
+              <div><dt>Compatibility</dt><dd>{String(selected.technical_compatibility)}</dd></div>
+              <div><dt>Reference check</dt><dd>{JSON.stringify(selected.reference_qualification)}</dd></div>
+              <div><dt>Scientific validation</dt><dd>{JSON.stringify(selected.scientific_validation)}</dd></div>
+              <div><dt>Usage rights</dt><dd>{JSON.stringify(selected.usage_rights)}</dd></div>
+            </dl>
+          </details>
         </div>
       )}
       {modelId && (
@@ -4922,9 +4932,8 @@ function ModelPanel({
             </button>
           </div>
           {pending && (
-            <p>
-              Pending preview {pending.id.slice(0, 8)}… is bound to its SHA-256
-              and current source/settings.
+            <p data-model-preview-id={pending.id} data-model-preview-sha256={pending.sha256}>
+              Preview ready to adopt.
             </p>
           )}
         </>
@@ -5371,10 +5380,6 @@ function StudyPanel({
   return (
     <div className="research-panel">
       <h2>Reusable study recipe</h2>
-      <p>
-        Every selected source is validated by the engine. Dimensions or
-        selections are never quietly clipped across sources.
-      </p>
       <label>
         Recipe name{" "}
         <input
@@ -5471,11 +5476,8 @@ function StudyPanel({
           )}
         </p>
       ))}
-      <h3>Biological-replicate summary</h3>
-      <p>
-        Choose exact reviewed or explicitly excluded result revisions. This
-        reports descriptive means and SD; it does not calculate p-values.
-      </p>
+      <details className="study-analysis-section"><summary>Summary & export</summary>
+      <p>Descriptive means and SD across biological replicates.</p>
       {snapshot.results.map((item) => (
         <label key={item.id} className="research-check">
           <input
@@ -5491,7 +5493,7 @@ function StudyPanel({
               )
             }
           />
-          {item.kind} · {item.review?.disposition ?? "pending"}
+          <span>{snapshot.sources.find((source) => source.id === item.source_id)?.name ?? "Source unavailable"}<small>{resultTitle(item)} · {item.review?.disposition ?? "pending"}</small></span>
         </label>
       ))}
       <button
@@ -5528,18 +5530,15 @@ function StudyPanel({
           mean: {String(row.mean)} · SD: {String(row.sd)}
         </div>
       ))}
-      <h3>Compare two versioned runs</h3>
-      <p>
-        Assign one exact result per source to run A and run B. Both groups must
-        use the same sources, method, measurement units and scope. Excluded
-        revisions remain in the audit receipt but do not enter replicate means.
-      </p>
+      </details>
+      <details className="study-analysis-section"><summary>Compare runs</summary>
+      <p>Assign one reviewed or excluded result per source to each run.</p>
       {snapshot.results.map((item) => {
         const disposition = item.review?.disposition ?? "pending";
         const eligible = disposition === "reviewed" || disposition === "excluded";
         return (
           <div className="research-summary" key={`run-comparison-${item.id}`}>
-            <strong>{item.kind}</strong> · {item.id} · {disposition}
+            <strong>{resultTitle(item)}</strong><p>{snapshot.sources.find((source) => source.id === item.source_id)?.name ?? "Source unavailable"} · {disposition}</p>
             <label className="research-check">
               <input
                 type="checkbox"
@@ -5611,10 +5610,7 @@ function StudyPanel({
           className="research-comparison-receipt"
           aria-label="Study run comparison receipt"
         >
-          <p>
-            Descriptive comparison only; no object-level p-values. Independent
-            n is based on biological replicate means.
-          </p>
+          <p>Independent n: biological replicates.</p>
           <div className="research-result-table">
             <table aria-label="Study run comparison">
               <thead>
@@ -5642,7 +5638,9 @@ function StudyPanel({
             </table>
           </div>
           <p>
-            Unit: {comparison.unit ?? "none declared"} · receipt SHA-256: {comparison.receipt_sha256}
+            Unit: {comparison.unit ?? "none declared"}
+          </p>
+          <details><summary>Technical record</summary><p>Receipt: {comparison.receipt_sha256}
             {comparison.comparison_document && (
               <>
                 {" "}· saved comparison {comparison.comparison_document.id}, revision {comparison.comparison_document.revision}
@@ -5664,8 +5662,10 @@ function StudyPanel({
               </ul>
             </div>
           ))}
+          </details>
         </section>
       )}
+      </details>
     </div>
   );
 }
@@ -5684,6 +5684,33 @@ function formatCellValue(value: unknown): string {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+const measurementHeadings: Record<string, string> = {
+  label: "Object", measure: "Measure", measure_unit: "Unit", measure_kind: "Quantity",
+  area: "Area", volume: "Volume", centroid_index: "Centroid (index)",
+  centroid_world_xyz: "Centroid (x, y, z)", intensity: "Channel intensity",
+};
+const intensityHeadings: Record<string, string> = {
+  mean: "Mean", sum: "Sum", min: "Minimum", max: "Maximum", std_population: "Population SD",
+};
+
+function MeasurementCell({ field, value }: { field: string; value: unknown }): React.JSX.Element {
+  if (field === "intensity" && value && typeof value === "object" && !Array.isArray(value)) {
+    const channels = Object.entries(value);
+    return <details className="research-intensity-values" onClick={(event) => event.stopPropagation()}>
+      <summary>{channels.length} {channels.length === 1 ? "channel" : "channels"}</summary>
+      {channels.map(([name, statistics]) => <section key={name} aria-label={name}>
+        <strong>{name}</strong>
+        {statistics && typeof statistics === "object" && !Array.isArray(statistics)
+          ? <dl>{Object.entries(statistics).map(([statistic, number]) => <div key={statistic}>
+            <dt>{intensityHeadings[statistic] ?? statistic.replaceAll("_", " ")}</dt>
+            <dd title={typeof number === "number" ? String(number) : undefined}>{formatCellValue(number)}</dd>
+          </div>)}</dl> : <span>{formatCellValue(statistics)}</span>}
+      </section>)}
+    </details>;
+  }
+  return <span title={typeof value === "number" ? String(value) : undefined}>{formatCellValue(value)}</span>;
 }
 
 function ResultTable({
@@ -5709,7 +5736,7 @@ function ResultTable({
     }
   }, [selected]);
 
-  if (!rows.length) return <p>No adopted object table yet.</p>;
+  if (!rows.length) return <p>No measurements yet.</p>;
   const fields = [
     "label",
     "measure",
@@ -5754,7 +5781,7 @@ function ResultTable({
         <thead>
           <tr role="row">
             {fields.map((field) => (
-              <th key={field} role="columnheader">{field}</th>
+              <th key={field} role="columnheader" data-field={field}>{measurementHeadings[field]}</th>
             ))}
           </tr>
         </thead>
@@ -5772,8 +5799,8 @@ function ResultTable({
                 onClick={() => onSelect(index)}
               >
                 {fields.map((field) => (
-                  <td key={field} role="gridcell">
-                    {formatCellValue(row[field])}
+                  <td key={field} role="gridcell" data-field={field}>
+                    <MeasurementCell field={field} value={row[field]} />
                   </td>
                 ))}
               </tr>
@@ -6163,16 +6190,17 @@ export function Info({
       <h2>Review & export</h2>
       {result ? (
         <>
-          <p>Selected result · revision {result.revision_hash.slice(0, 12)}…</p>
-          {result.label_import && <dl className="research-label-import-metadata" aria-label="Label import identity">
+          <h3 className="research-result-title">{resultTitle(result)}</h3>
+          <p>{result.object_count?.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · <span role="status">{reviewStatus}</span></p>
+          {result.label_import && <details><summary>Imported label details</summary><dl className="research-label-import-metadata" aria-label="Label import identity">
             <div><dt>Label file</dt><dd>{result.label_import.file_name}</dd></div>
             <div><dt>Producer</dt><dd>{result.label_import.producer ? `${result.label_import.producer.name}${result.label_import.producer.version ? ` · ${result.label_import.producer.version}` : " · version unknown"} (declared)` : "Unknown"}</dd></div>
             <div><dt>Import profile</dt><dd>{result.label_import.profile} · {result.label_import.original_dtype} · {result.label_import.shape.join(" × ")} YX</dd></div>
             <div><dt>Input SHA-256</dt><dd>{result.label_import.file_sha256}</dd></div>
             <div><dt>Upstream settings</dt><dd>Unknown</dd></div>
             {result.parent_id && <div><dt>Correction parent</dt><dd>{result.parent_id}</dd></div>}
-          </dl>}
-          <p>{reviewStatus}</p>
+          </dl></details>}
+          <div className="research-actions">
           <button
             disabled={busy || reviewPending || disposition === "reviewed"}
             onClick={() => void markReviewed()}
@@ -6188,8 +6216,10 @@ export function Info({
               )
             }
           >
-            Export revision
+            Export result
           </button>
+          </div>
+          <ResultContextPanel api={api} result={result} />
           {rows.length > 0 && (
             <div className="research-result-summary-card">
               <h3>Quantitative summary</h3>
