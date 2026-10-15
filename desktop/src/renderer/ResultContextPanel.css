@@ -1,0 +1,13 @@
+.result-context { border-block: 1px solid var(--line); padding-block: 8px; margin-block: 16px; }
+.result-context summary { min-height: 32px; align-content: center; color: var(--ink-secondary); cursor: pointer; }
+.result-context-body { display: grid; gap: 16px; padding-block: 12px 4px; }
+.result-context-fields { display: grid; gap: 10px; margin: 0; font-variant-numeric: tabular-nums; }
+.result-context-fields > div { display: grid; grid-template-columns: minmax(96px, 0.9fr) minmax(0, 1.1fr); gap: 12px; }
+.result-context-fields dt { color: var(--ink-muted); }
+.result-context-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.result-context-body section > h3 { margin: 0 0 12px; }
+.result-context-body ol { padding-left: 18px; margin: 0; }
+.result-context-body > button { justify-self: start; }
+.result-context-body p { margin: 0; }
+.result-context-body > details { padding-top: 8px; border-top: 1px solid var(--line); }
+.result-context-body > details[open] > :not(summary) { margin-top: 12px; }

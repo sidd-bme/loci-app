@@ -63,3 +63,24 @@ describe("durable working list actions", () => {
     expect(view.onBusy).toHaveBeenLastCalledWith(null);
   });
 });
+
+it("restores duplicate method runs through human labels while retaining their exact identities", async () => {
+  const view = mount();
+  const runs = [
+    { ...result, method_label: "Watershed segmentation" },
+    { ...result, method_label: "Watershed segmentation", id: "e".repeat(32), revision_hash: "f".repeat(64) },
+  ];
+  const cleared = { ...initial, results: [], workspace: { revision: 3, closed_sources: [], hidden_results: runs } };
+  view.rerender(<WorkspaceRecordActions {...view.props} snapshot={cleared} />);
+  const first = screen.getByRole("button", { name: "Restore Source.tif · Watershed segmentation · 36 objects · Run 1" });
+  const second = screen.getByRole("button", { name: "Restore Source.tif · Watershed segmentation · 36 objects · Run 2" });
+  expect(first.textContent).toContain("36 objects · Run 1");
+  expect(second.textContent).toContain("36 objects · Run 2");
+  expect(first.textContent).not.toContain(result.id);
+  const fingerprint = screen.getByText(runs[1].revision_hash);
+  expect(fingerprint.closest("details")?.hasAttribute("open")).toBe(false);
+  fireEvent.click(second);
+  await waitFor(() => expect(view.api.updateWorkspace).toHaveBeenLastCalledWith({
+    expected_revision: 3, sources: [], results: [{ id: runs[1].id, revision_hash: runs[1].revision_hash, visible: true }],
+  }));
+});

@@ -755,9 +755,8 @@ def test_png_region_is_exact_and_full_decode_is_budgeted(tmp_path: Path) -> None
     metadata = inspect_native(path)
     assert metadata.format == "PNG"
     assert metadata.axes == "TCZYX"
-    assert metadata.physical_calibration is not None
-    assert metadata.physical_calibration.axes == "YX"
-    assert metadata.physical_calibration.spacing == pytest.approx((200.0, 100.0), rel=0.01)
+    assert metadata.physical_calibration is None
+    assert metadata.levels[0].calibration is None
 
     region = read_native_region(
         path, NativeSelection(x=11, y=7, width=9, height=8, budget_bytes=2_000)
@@ -767,6 +766,31 @@ def test_png_region_is_exact_and_full_decode_is_budgeted(tmp_path: Path) -> None
 
     with pytest.raises(NativeReadBudgetError, match="No pixel data was read"):
         read_native_region(path, NativeSelection(x=11, y=7, width=9, height=8, budget_bytes=1_300))
+
+
+@pytest.mark.parametrize("format_name", ["PNG", "JPEG"])
+@pytest.mark.parametrize("rgb", [False, True])
+def test_print_dpi_never_becomes_specimen_calibration(tmp_path, format_name, rgb):
+    image = np.arange(20 * 30, dtype=np.uint8).reshape(20, 30)
+    if rgb:
+        image = np.stack([image, image, image], axis=-1)
+    path = tmp_path / f"print-density.{format_name.lower()}"
+    Image.fromarray(image).save(path, format=format_name, dpi=(300, 150))
+    original = path.read_bytes()
+    with Image.open(path) as decoded:
+        assert decoded.info["dpi"] == pytest.approx((300, 150), rel=1e-3)
+        expected = np.asarray(decoded).copy()
+    with NativeImageSession(path) as session:
+        assert session.metadata.physical_calibration is None
+        assert session.metadata.levels[0].calibration is None
+        geometry = session.geometry({"level": 0, "x": 7, "y": 4, "z": 0}, False)
+        assert geometry.unit == "pixel"
+        assert geometry.spacing == (1.0, 1.0)
+        np.testing.assert_array_equal(
+            session.read_region(NativeSelection(x=7, y=4, width=10, height=8)).pixels,
+            expected[4:12, 7:17],
+        )
+    assert path.read_bytes() == original
 
 
 def test_tiled_tiff_budget_accounts_for_decoded_segment_before_read(tmp_path: Path) -> None:

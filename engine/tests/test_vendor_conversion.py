@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -25,6 +26,55 @@ FIXTURE_HASHES = {
     "nd2": "77c921fa2d3ebce182c261d28790de97d119062e550029b5e501d6200720eb0d",
     "lif": "a4bc49b2fb9f1adf3a66872d01e1450db1d898fc7f4d2386aefa28836c2ec419",
 }
+
+
+@pytest.mark.parametrize(
+    "stderr, expected",
+    [
+        (
+            b'Exception in thread "main" java.lang.UnsatisfiedLinkError: '
+            b"'long ome.jxrlib.JXRJNI.new_DecodeContext()'\n"
+            b"\tat ome.jxrlib.DecodeContext.<init>(DecodeContext.java:43)\n"
+            b"\tat loci.formats.in.ZeissCZIReader.openBytes(ZeissCZIReader.java:446)\n"
+            b"/private/native-library/path",
+            "The selected Java runtime cannot decode JPEG-XR with this reader. "
+            "Choose a compatible Java runtime, or convert with a trusted external reader.",
+        ),
+        (
+            b"java.lang.UnsatisfiedLinkError: other.native.Library",
+            "Bio-Formats could not calculate source-plane bounds.",
+        ),
+        (
+            b"ome.jxrlib.JXRJNI: unrelated read failure",
+            "Bio-Formats could not calculate source-plane bounds.",
+        ),
+        (
+            b"java.lang.OutOfMemoryError: Java heap space",
+            "Bio-Formats could not calculate source-plane bounds.",
+        ),
+    ],
+)
+def test_reader_bounds_reports_only_exact_jpeg_xr_link_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected: str
+) -> None:
+    # Representative actual approved Java21/8.5.0 CZI stderr, with no JNI execution.
+    monkeypatch.setattr(
+        vendor_module,
+        "_run_bounded",
+        lambda *args, **kwargs: vendor_module._ProcessResult(1, b"", stderr),
+    )
+    runtime = SimpleNamespace(
+        java=tmp_path / "java", jar=tmp_path / "reader.jar", source=tmp_path / "source.czi"
+    )
+    series = {"dimension_order": "XYCZT", "dimensions": {"c": 1, "z": 1, "t": 1}}
+    with pytest.raises(VendorConversionError) as caught:
+        vendor_module._reader_minmax(
+            runtime, VendorConversionRequest(0, 0, 0, 0), series, (0, 0, 32, 24), tmp_path
+        )
+    assert str(caught.value) == expected
+    assert "/private" not in str(caught.value)
+    assert "JXRJNI" not in str(caught.value)
+    assert list(tmp_path.iterdir()) == []
 
 
 def _fixture_root() -> Path:

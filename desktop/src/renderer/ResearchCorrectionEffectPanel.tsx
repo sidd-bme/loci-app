@@ -6,6 +6,7 @@ import {
   type CorrectionEffectMeans, type CorrectionEffectReceipt, type CorrectionEffectRequest,
 } from "../shared/correction-effect-contracts";
 import "./ResearchCorrectionEffectPanel.css";
+import { resultTitle } from "./result-title";
 
 export interface CorrectionEffectSeed { beforeId: string; afterId: string }
 type Props = {
@@ -31,13 +32,23 @@ export function formatCorrectionEffectValue(value: number | null, signed = false
 const number = (value: number | null) => formatCorrectionEffectValue(value);
 const signed = (value: number | null) => formatCorrectionEffectValue(value, true);
 const signedCount = (value: number) => value > 0 ? `+${value}` : exact(value);
-const name = (result: ResearchResult) => `${result.kind} · ${result.id.slice(0, 8)}`;
+const name = (result: ResearchResult, snapshot?: ResearchSnapshot) => {
+  const ordinal = snapshot ? snapshot.results.findIndex(item => item.id === result.id) + 1 : null;
+  const source = snapshot?.sources.find(item => item.id === result.source_id)?.name;
+  return `${source ? `${source} · ` : ""}${resultTitle(result)} · ${result.object_count} ${result.object_count === 1 ? "object" : "objects"}${ordinal ? ` · Run ${ordinal}` : ""}`;
+};
 function RevisionDetail({ result, label, sourceName, id }: { result: ResearchResult; label: string; sourceName?: string; id?: string }) {
-  return <p id={id} className="correction-effect-revision-detail" aria-label={label}>
+  const timestamp = typeof result.created_at === "string" ? new Date(result.created_at) : null;
+  const created = timestamp && Number.isFinite(timestamp.getTime())
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(timestamp)
+    : null;
+  return <><p id={id} className="correction-effect-revision-detail" aria-label={label}>
     {sourceName && <span>{sourceName}</span>}
     <span>{name(result)} · {result.review?.disposition ?? "pending review"}</span>
-    <span>Created {result.created_at}</span>
-  </p>;
+    <span>Created {created ? <time dateTime={result.created_at}>{created}</time> : "Unknown time"}</span>
+  </p><details aria-label={`Technical record for ${label}`}><summary>Technical record</summary>
+    <p>Result <code>{result.id}</code><br />Revision <code>{result.revision_hash}</code><br />Created <code>{result.created_at}</code></p>
+  </details></>;
 }
 function failure(error: unknown): string {
   return (error instanceof Error ? error.message : "Could not calculate the experiment effect.")
@@ -184,7 +195,7 @@ export function ResearchCorrectionEffectPanel({ api, snapshot, seed, contextKey,
       }}>
         <option value="">Choose a corrected revision</option>
         {corrections.map(result => <option key={result.id} value={result.id}>
-          {name(result)}
+          {name(result, snapshot)}
         </option>)}
       </select>
     </label>
@@ -206,7 +217,7 @@ export function ResearchCorrectionEffectPanel({ api, snapshot, seed, contextKey,
             aria-describedby={selected ? detailId : undefined}
             onChange={event => { invalidateChoice(); setPeers(previous => ({ ...previous, [source.id]: event.target.value })); }}>
             <option value="">Not included — choose an exact revision</option>
-            {options.map(result => <option key={result.id} value={result.id}>{name(result)}</option>)}
+            {options.map(result => <option key={result.id} value={result.id}>{name(result, snapshot)}</option>)}
           </select>
           {!options.length && <span>No ordinary label result available.</span>}
         </label>
@@ -225,9 +236,9 @@ export function ResearchCorrectionEffectPanel({ api, snapshot, seed, contextKey,
     {error && <p role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {saved.length > 0 && <details><summary>Saved experiment effects</summary>
-      {saved.map(document => <button key={document.id} disabled={busy || working !== null}
-        aria-label={`Restore experiment effect ${document.id}`} onClick={() => restore(document.id)}>
-        {document.receipt.study} · {document.receipt.receipt_sha256.slice(0, 12)}
+      {saved.map((document, index) => <button key={document.id} disabled={busy || working !== null}
+        data-report-id={document.id} aria-label={`Restore ${document.receipt.study} report ${index + 1}`} onClick={() => restore(document.id)}>
+        {document.receipt.study} · Report {index + 1}
       </button>)}
     </details>}
     {receipt && <section aria-label="Experiment effect receipt" data-receipt-sha256={receipt.receipt_sha256}>
@@ -259,15 +270,15 @@ export function ResearchCorrectionEffectPanel({ api, snapshot, seed, contextKey,
           <details><summary>Full precision image values for {row.metadata.sample}</summary>
             <FullPrecision row={row} label={`image ${row.metadata.sample}`} unit={receipt.unit} />
           </details>
-          <div className="correction-effect-actions"><button disabled={busy || working !== null} onClick={() => void onOpenResult(row.before_result_id)}>Inspect before {row.before_result_id.slice(0, 8)}</button>
-            <button disabled={busy || working !== null} onClick={() => void onOpenResult(row.after_result_id)}>Inspect after {row.after_result_id.slice(0, 8)}</button></div>
+          <div className="correction-effect-actions"><button disabled={busy || working !== null} data-result-id={row.before_result_id} aria-label={`Inspect before ${snapshot.sources.find(source => source.id === row.source_id)?.name ?? row.metadata.sample}`} onClick={() => void onOpenResult(row.before_result_id)}>Inspect before</button>
+            <button disabled={busy || working !== null} data-result-id={row.after_result_id} aria-label={`Inspect after ${snapshot.sources.find(source => source.id === row.source_id)?.name ?? row.metadata.sample}`} onClick={() => void onOpenResult(row.after_result_id)}>Inspect after</button></div>
           {row.correction ? <details><summary>Correction audit for {row.metadata.sample}</summary>
             <p>Changed voxels: {row.correction.changed_voxel_count}. Added IDs: {row.correction.added_label_ids.join(", ") || "none"}. Removed IDs: {row.correction.removed_label_ids.join(", ") || "none"}. Changed retained IDs: {row.correction.changed_retained_label_ids.join(", ") || "none"}.</p>
             <pre>{JSON.stringify(row.correction.operations, null, 2)}</pre><p>{row.correction.label_identity_interpretation}</p>
           </details> : <p>Unchanged exact revision on both sides.</p>}
         </div>)}
       </details>
-      <details><summary>Exact receipt and revision identities</summary><p>Receipt SHA-256: {receipt.receipt_sha256}</p>
+      <details><summary>Technical record</summary><p>Receipt SHA-256: {receipt.receipt_sha256}</p>
         {[...receipt.before_bindings, ...receipt.after_bindings].map((binding, index) => <p key={`${index}:${binding.result_id}`}>
           {binding.result_id} · revision {binding.revision_hash} · source {binding.source_sha256} · sample revision {binding.sample_document.revision} · {binding.review?.disposition ?? "pending"}
         </p>)}<p>{receipt.interpretation}</p>

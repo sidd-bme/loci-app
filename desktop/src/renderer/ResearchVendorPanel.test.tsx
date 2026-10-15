@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -157,9 +157,13 @@ describe("ResearchVendorPanel", () => {
       max_output_bytes: 64 * 1024 ** 2,
     }));
     expect(onSnapshot).toHaveBeenCalledWith(importedSnapshot);
-    expect(await screen.findByLabelText("Vendor conversion receipt")).toHaveTextContent(
-      `${artifactHash.slice(0, 12)}…${artifactHash.slice(-8)}`,
-    );
+    const conversionReceipt = await screen.findByLabelText("Vendor conversion receipt");
+    expect(conversionReceipt).toHaveTextContent("image.ome.tif added to the study.");
+    const fingerprint = within(conversionReceipt).getByText(artifactHash);
+    expect(fingerprint).not.toBeVisible();
+    fireEvent.click(within(conversionReceipt).getByText("Technical record"));
+    expect(fingerprint).toBeVisible();
+    expect(within(conversionReceipt).getByText(pixelHash)).toBeVisible();
   });
 
   it("discards the previous grant before a cancelled replacement inspection", async () => {

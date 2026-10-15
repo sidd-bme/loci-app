@@ -16,7 +16,10 @@ agent setup. See the [changelog](../CHANGELOG.md) and [user guide](USING_LOCI.md
 
 The app was built from clean public source
 [`cc24ebc`](https://github.com/sidd-bme/loci-app/commit/cc24ebcbf69e3ce4bdf7bde7edf8ea198731ad48).
-Later commits update tests, documentation and media; application runtime files are unchanged.
+The release-preparation commits following that build updated tests,
+documentation and media without changing its runtime. Newer source work is
+listed under **Unreleased** in the [changelog](../CHANGELOG.md); it does not
+replace or requalify the published download.
 
 - [Hosted source checks](https://github.com/sidd-bme/loci-app/actions/runs/38202925977)
   at `90a7dc8`: typecheck, 1,321 desktop tests, 16 packaging tests, 1,672 engine tests

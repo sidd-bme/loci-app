@@ -460,7 +460,7 @@ try {
     "human review of corrected temporal revision",
   );
   const reviewedResult = reviewed.results.find((item) => item.id === corrected.id);
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitFor(
     page,
     () => fs.readdir(exportPath).catch(() => []),

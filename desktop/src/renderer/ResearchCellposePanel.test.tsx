@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useLayoutEffect } from "react";
 import type {
   CellposeProfileId,
   CellposeSettings,
@@ -15,7 +16,7 @@ import type {
   ResearchSelection,
   ResearchSource,
 } from "../shared/research-contracts";
-import { ResearchCellposePanel } from "./ResearchCellposePanel";
+import { ResearchCellposePanel, Setting } from "./ResearchCellposePanel";
 
 afterEach(() => {
   cleanup();
@@ -51,6 +52,33 @@ const numericSetting = (
   minimum = 0,
   maximum = 10_000,
 ) => ({ key, label, section: "Input", valueType, help: `${label} help`, minimum, maximum, step: 1, choices: [] });
+
+it("keeps an invalid first edit visible when it arrives before passive setting synchronisation", async () => {
+  const onChange = vi.fn();
+  const onValidity = vi.fn();
+  function EarlyEdit() {
+    useLayoutEffect(() => { fireEvent.change(screen.getByLabelText("Diameter"), { target: { value: "not-a-number" } }); }, []);
+    return <Setting definition={numericSetting("diameter_px", "Diameter", "number", 1, 1000)} value={30}
+      disabled={false} onChange={onChange} onValidity={onValidity} />;
+  }
+  await act(async () => { render(<EarlyEdit />); });
+  expect(screen.getByLabelText("Diameter")).toHaveValue("not-a-number");
+  expect(screen.getByLabelText("Diameter")).toHaveAttribute("aria-invalid", "true");
+  expect(onValidity).toHaveBeenLastCalledWith(false);
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it("names the device choice exactly and forwards the explicit CPU selection", () => {
+  const onChange = vi.fn();
+  render(<Setting definition={{ key: "device", label: "Compute device", section: "Performance",
+    valueType: "choice", help: "Select the requested backend", minimum: null, maximum: null, step: null,
+    choices: ["auto", "cpu", "mps", "cuda"] }} value="auto" disabled={false}
+    onChange={onChange} onValidity={vi.fn()} />);
+  const device = screen.getByRole("combobox", { name: "Compute device" });
+  expect(device).toHaveAccessibleName("Compute device");
+  fireEvent.change(device, { target: { value: "cpu" } });
+  expect(onChange).toHaveBeenLastCalledWith("cpu");
+});
 
 const profile: SegmentationProfile = {
   schemaVersion: "1",

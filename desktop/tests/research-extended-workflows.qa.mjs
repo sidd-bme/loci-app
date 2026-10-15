@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 // All mutations below use visible controls in the actual packaged application.
 // Read-only snapshots and result inspection provide numerical assertions against
@@ -17,7 +17,7 @@ export async function qualifyExtendedWorkflows({
     "Quantify", "Temporal", "Registration", "Agent", "Remote", "Model", "Study",
     "Portability", "Info"]);
   const tab = (name) => tools.has(name) ? selectWorkbenchTool(page, name)
-    : page.getByRole("button", { name, exact: true }).click();
+    : name === "Open study" ? fileMenuAction(page, name) : page.getByRole("button", { name, exact: true }).click();
   const openAnalysisRegion = async () => {
     const details = page.locator("details.analysis-region-settings");
     if (!await details.evaluate((element) => element.open)) {
@@ -44,7 +44,7 @@ export async function qualifyExtendedWorkflows({
       (item) => !before.has(item.id) && (!kind || item.kind === kind),
     );
     await wait(
-      async () => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"),
+      async () => page.locator(`.research-sources [data-result-id="${result.id}"]`).getAttribute("class"),
       (value) => value?.includes("selected"),
       `open published ${kind ?? "result"} revision`,
     );
@@ -56,8 +56,8 @@ export async function qualifyExtendedWorkflows({
     await page.locator(".research-sources").getByRole("button", {
       name: new RegExp("^" + source.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     }).click();
-    await page.locator(`[data-result-id="${result.id}"]`).click();
-    await wait(async () => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"),
+    await page.locator(`.research-sources [data-result-id="${result.id}"]`).click();
+    await wait(async () => page.locator(`.research-sources [data-result-id="${result.id}"]`).getAttribute("class"),
       (value) => value?.includes("selected"), "select exact revision");
   };
   const paths = {
@@ -110,10 +110,10 @@ export async function qualifyExtendedWorkflows({
   assert.equal(deleted.object_count, 1);
   assert.equal(deleted.parent_id, original.id);
   await tab("Undo revision");
-  await wait(async () => page.locator(`[data-result-id="${original.id}"]`).getAttribute("class"),
+  await wait(async () => page.locator(`.research-sources [data-result-id="${original.id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"), "3D correction undo");
   await tab("Redo revision");
-  await wait(async () => page.locator(`[data-result-id="${deleted.id}"]`).getAttribute("class"),
+  await wait(async () => page.locator(`.research-sources [data-result-id="${deleted.id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"), "3D correction redo");
   await page.getByRole("button", { name: "Surface", exact: true }).click();
   await page.getByLabel("Surface basis").selectOption("labels");
@@ -162,9 +162,12 @@ export async function qualifyExtendedWorkflows({
     frames.push(result);
   }
   await tab("Temporal");
+  const temporalState = await snapshot();
   for (const frame of frames) {
+    const ordinal = temporalState.results.findIndex(item => item.id === frame.id) + 1;
+    assert.ok(ordinal > 0);
     const candidate = page.locator(".research-temporal .research-compact-list > div")
-      .filter({ hasText: frame.id.slice(0, 8) });
+      .filter({ has: page.locator("span").filter({ hasText: new RegExp(` · Run ${ordinal}$`) }) });
     await candidate.getByRole("button", { name: "Add frame" }).click();
   }
   for (let index = 0; index < frames.length; index++)
@@ -229,7 +232,7 @@ export async function qualifyExtendedWorkflows({
   assert.ok(puncta.object_count > 0);
   await screenshot(page, "extended-puncta");
 
-  await tab("Association");
+  await tab("Compartments");
   await page.getByLabel("Nuclei result").selectOption(puncta.id);
   await page.getByLabel("Cells result").selectOption(frames[0].id);
   await page.getByLabel("Association controls and assumptions").fill(
@@ -282,7 +285,7 @@ export async function qualifyExtendedWorkflows({
   await tab("Mark reviewed");
   await wait(snapshot, (state) => state.results.some((item) =>
     item.id === roi.id && item.review?.disposition === "reviewed"), "review ROI revision");
-  await tab("Export revision");
+  await tab("Export result");
   const geojsonPath = path.join(paths.roiExport, "annotations.geojson");
   const imagejPath = path.join(paths.roiExport, "annotation-qa-roi.roi");
   await wait(

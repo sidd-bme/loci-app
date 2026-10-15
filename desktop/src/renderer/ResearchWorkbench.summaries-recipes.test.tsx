@@ -438,7 +438,7 @@ describe("Info Review & export rendered summary component", () => {
     // Review controls remain present and gated
     const reviewBtn = screen.getByRole("button", { name: "Mark reviewed" });
     expect(reviewBtn).toBeEnabled();
-    const exportBtn = screen.getByRole("button", { name: "Export revision" });
+    const exportBtn = screen.getByRole("button", { name: "Export result" });
     expect(exportBtn).toBeDisabled(); // Requires reviewed disposition
   });
 
@@ -546,8 +546,8 @@ describe("Info Review & export rendered summary component", () => {
       selectedRow={null} onSelectRow={vi.fn()} onSave={vi.fn()}
       report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
     const table = screen.getByRole("region", { name: "Result measurements" });
-    expect(within(table).getByRole("columnheader", { name: "area" })).toBeVisible();
-    expect(within(table).getByRole("columnheader", { name: "volume" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "Area" })).toBeVisible();
+    expect(within(table).getByRole("columnheader", { name: "Volume" })).toBeVisible();
     expect(within(table).getByText("200")).toBeVisible();
     expect(screen.queryByText(/^Mean /)).not.toBeInTheDocument();
   });
@@ -563,6 +563,33 @@ describe("Info Review & export rendered summary component", () => {
     expect(within(table).getByRole("gridcell", { name: "-1.00e-5" })).toBeVisible();
     expect(within(table).getByRole("gridcell", { name: "Infinity" })).toBeVisible();
     expect(within(table).getByText("[1.00e-3, -1.00e-3]")).toBeVisible();
+  });
+
+  it("presents per-channel statistics without JSON and retains signed precision", () => {
+    const original = { label: 1, measure: 12, intensity: {
+      "1: acquired signal": { mean: -0.000012345, sum: -0.002469, std_population: 0.0000001 },
+      "2: acquired reference": { mean: 103.456789, sum: 20691.3578 },
+    } };
+    const rows = [structuredClone(original)];
+    const onSelect = vi.fn();
+    render(<Info source={mockSource as any} snapshot={mockSnapshot}
+      api={createMockApi()} result={mockResult as any} rows={rows}
+      selectedRow={null} onSelectRow={onSelect} onSave={vi.fn()}
+      report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    const table = screen.getByRole("region", { name: "Result measurements" });
+    expect(within(table).getByRole("columnheader", { name: "Channel intensity" })).toBeVisible();
+    const channels = within(table).getByText("2 channels");
+    const details = channels.closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(channels);
+    expect(onSelect).not.toHaveBeenCalled();
+    details.setAttribute("open", "");
+    expect(within(details).getByText("1: acquired signal")).toBeVisible();
+    expect(within(details).getByText("Population SD")).toBeVisible();
+    expect(within(details).getByTitle("-0.000012345")).toHaveTextContent("-1.23e-5");
+    expect(within(details).getByTitle("103.456789")).toHaveTextContent("103.457");
+    expect(table.textContent).not.toContain('"std_population"');
+    expect(rows).toEqual([original]);
   });
 });
 

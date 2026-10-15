@@ -687,6 +687,15 @@ def _reader_minmax(
     expected_headless_exit = (
         result.returncode == 1 and b"java.awt.HeadlessException" in result.stderr
     )
+    if (
+        result.returncode != 0
+        and b"java.lang.UnsatisfiedLinkError" in result.stderr
+        and b"ome.jxrlib.JXRJNI" in result.stderr
+    ):
+        raise VendorConversionError(
+            "The selected Java runtime cannot decode JPEG-XR with this reader. "
+            "Choose a compatible Java runtime, or convert with a trusted external reader."
+        )
     if result.returncode != 0 and not expected_headless_exit:
         raise VendorConversionError("Bio-Formats could not calculate source-plane bounds.")
     minimum_match = _FIRST_MIN_RE.search(stdout)

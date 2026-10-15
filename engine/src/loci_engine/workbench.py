@@ -40,7 +40,13 @@ from .quantitative import (
     validate_processing_steps,
 )
 from .research_operations import OPERATION_CATALOG
-from .research_project import ResearchProject, canonical_json, checked_id, checked_text
+from .research_project import (
+    ResearchProject,
+    canonical_json,
+    checked_id,
+    checked_text,
+    validate_source_calibration,
+)
 from .study_analysis import validate_sample_metadata
 
 MAX_VIEW_EDGE = 2048
@@ -293,6 +299,8 @@ def result_working_bytes(result: dict[str, Any]) -> int:
 
 
 def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .research_result_context import method_label
+
     provenance = result["provenance"]
     imported = provenance.get("external_labels")
     label_import = {key: imported[key] for key in (
@@ -304,6 +312,7 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         "id": result["id"],
         "source_id": result["source_id"],
         "kind": result["kind"],
+        "method_label": method_label(result),
         "created_at": result["created_at"],
         "parent_id": result["parent_id"],
         "revision_hash": result["revision_hash"],
@@ -417,6 +426,7 @@ class Workbench:
 
     def _session(self, source_id: str, *, check=None) -> NativeImageSession:
         source = self.project.source(source_id)
+        validate_source_calibration(source)
         if source.get("locator_state") == "relink-required":
             raise ValueError(
                 "Source locator is unavailable after interchange; relink an exact local copy"
@@ -1340,6 +1350,10 @@ class Workbench:
             )
         # Desktop-only display services are deliberately outside the public
         # agent operation catalog and its separately granted disclosure surface.
+        if operation == "describe_result":
+            from .research_result_context import describe_result
+
+            return describe_result(self, request)
         if operation == "verify_source":
             exact_keys(request, {"source_id"}, operation)
             source = self.project.source(checked_id(request.get("source_id")), verify=True)

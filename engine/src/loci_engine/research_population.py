@@ -199,13 +199,131 @@ def _objects(
                         },
                         statistic == "std_population",
                     )
+        compartments = row.get("compartments")
+        if compartments is not None:
+            exact_keys(compartments, {"cell", "nuclear", "cytoplasm"}, "compartment measurements")
+            if set(compartments) != {"cell", "nuclear", "cytoplasm"}:
+                raise ValueError("Compartment measurements require a complete cell partition")
+            for compartment, record in compartments.items():
+                if (
+                    not isinstance(record, dict)
+                    or record.get("measure_kind") != kind
+                    or record.get("measure_unit") != unit
+                ):
+                    raise ValueError("Compartment measurement kinds or units disagree with cell")
+                compartment_count = integer(
+                    record.get("voxel_count"), "compartment count", 0, count
+                )
+                for field, metric_kind, metric_unit in (
+                    ("voxel_count", "count", "pixel" if kind == "area" else "voxel"),
+                    ("measure", kind, unit),
+                ):
+                    value = _bound(record.get(field), f"compartment {field}")
+                    if value < 0 or (compartment_count == 0 and value != 0):
+                        raise ValueError("Invalid empty or negative compartment measure")
+                    metric = f"compartment:{compartment}:{field}"
+                    add(
+                        metric,
+                        value,
+                        {
+                            "id": metric,
+                            "label": f"{compartment.capitalize()} {field}",
+                            "kind": metric_kind,
+                            "unit": metric_unit,
+                            "compartment": compartment,
+                        },
+                        True,
+                    )
+                compartment_intensity = record.get("intensity")
+                if (
+                    not isinstance(compartment_intensity, dict)
+                    or not 1 <= len(compartment_intensity) <= 32
+                ):
+                    raise ValueError("Compartment intensity requires bounded raw channels")
+                for channel, statistics in compartment_intensity.items():
+                    if not isinstance(channel, str) or not channel or len(channel.encode()) > 1024:
+                        raise ValueError("Invalid compartment intensity channel")
+                    exact_keys(statistics, {"count", *STATISTICS}, "compartment intensity")
+                    if (
+                        not isinstance(statistics, dict)
+                        or set(statistics) != {"count", *STATISTICS}
+                        or integer(statistics.get("count"), "compartment intensity count", 0, count)
+                        != compartment_count
+                    ):
+                        raise ValueError("Compartment intensity count disagrees with partition")
+                    for statistic in ("count", *STATISTICS):
+                        value = statistics.get(statistic)
+                        if statistic in {"count", "sum"}:
+                            value = _bound(value, f"compartment {statistic}")
+                        elif compartment_count == 0:
+                            if value is not None:
+                                raise ValueError("Empty compartment intensity must be undefined")
+                        else:
+                            value = _bound(value, f"compartment {statistic}")
+                        if compartment_count == 0 and statistic in {"count", "sum"} and value != 0:
+                            raise ValueError("Empty compartment count and sum must be zero")
+                        metric = (
+                            f"compartment:{compartment}:{intensity_metric_id(channel, statistic)}"
+                        )
+                        metric_unit = (
+                            ("pixel" if kind == "area" else "voxel")
+                            if statistic == "count"
+                            else (
+                                (
+                                    "source-intensity*pixel"
+                                    if kind == "area"
+                                    else "source-intensity*voxel"
+                                )
+                                if statistic == "sum"
+                                else "source-intensity"
+                            )
+                        )
+                        add(
+                            metric,
+                            value,
+                            {
+                                "id": metric,
+                                "label": f"{compartment.capitalize()} {channel} {statistic}",
+                                "kind": "count" if statistic == "count" else "intensity",
+                                "unit": metric_unit,
+                                "channel": channel,
+                                "statistic": statistic,
+                                "compartment": compartment,
+                            },
+                            statistic in {"count", "std_population"},
+                        )
+            if (
+                compartments["cell"]["voxel_count"] != count
+                or compartments["nuclear"]["voxel_count"] + compartments["cytoplasm"]["voxel_count"]
+                != count
+            ):
+                raise ValueError("Compartment counts do not conserve the cell whole")
+            whole, nuclear, cytoplasm = (
+                compartments[name] for name in ("cell", "nuclear", "cytoplasm")
+            )
+            if (
+                not math.isclose(whole["measure"], row["measure"], rel_tol=1e-12, abs_tol=0)
+                or not math.isclose(
+                    whole["measure"],
+                    nuclear["measure"] + cytoplasm["measure"],
+                    rel_tol=1e-12,
+                    abs_tol=0,
+                )
+                or set(whole["intensity"]) != set(nuclear["intensity"])
+                or set(whole["intensity"]) != set(cytoplasm["intensity"])
+            ):
+                raise ValueError("Compartment physical measures or raw channels disagree")
         result.append({"label": label, "values": values, "index_axes": axes, **coordinates})
     ordered = [
         descriptors[key]
         for key in ("measure", "voxel_count", "nearest_centroid_distance")
         if key in descriptors
     ]
-    ordered.extend(descriptors[key] for key in sorted(descriptors) if key.startswith("intensity:"))
+    ordered.extend(
+        descriptors[key]
+        for key in sorted(descriptors)
+        if key.startswith(("intensity:", "compartment:"))
+    )
     for row in result:
         row["values"] = {metric["id"]: row["values"].get(metric["id"]) for metric in ordered}
     return result, ordered

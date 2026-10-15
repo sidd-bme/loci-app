@@ -7,10 +7,29 @@ import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
-// A bounded real learned-model journey complements the full classical batch,
-// correction and recovery suite. Its CPU reference is fixed before this run.
+// A bounded learned-model journey uses the source receipt's explicit device.
+// Each device has its own pinned label reference; this is not CPU/MPS equality.
 const run = promisify(execFile);
 const projectRoot = path.resolve(import.meta.dirname, "../..");
+const publicationReceipt = process.env.LOCI_QA_LEARNED_RECEIPT
+  ? JSON.parse(await fs.readFile(process.env.LOCI_QA_LEARNED_RECEIPT, "utf8")) : null;
+if (publicationReceipt) assert.equal(publicationReceipt.status, "passed");
+const publicationCase = publicationReceipt?.cases.find((item) => item.name === "cellpose");
+const expectedCount = publicationCase?.object_count ?? 46;
+const expectedProfile = publicationReceipt?.cellpose_request.profile_id ?? "cellpose-sam";
+const expectedDevice = publicationReceipt?.cellpose_request.settings.device ?? "cpu";
+assert.ok(["cpu", "mps"].includes(expectedDevice), "This local qualification needs an explicit CPU or MPS receipt");
+if (publicationCase?.requested_device !== undefined) assert.equal(publicationCase.requested_device, expectedDevice);
+if (publicationCase?.resolved_device !== undefined) assert.equal(publicationCase.resolved_device, expectedDevice);
+if (expectedDevice === "mps") {
+  assert.ok(publicationCase?.label_reference_path && publicationCase?.label_reference_sha256,
+    "MPS needs its own device-neutral reference; a CPU reference is not interchangeable");
+  assert.equal(publicationCase.requested_device, "mps");
+  assert.equal(publicationCase.resolved_device, "mps");
+  assert.equal(publicationReceipt.cellpose_device.requested_device, "mps");
+  assert.equal(publicationReceipt.cellpose_device.resolved_device, "mps");
+  assert.equal(publicationReceipt.cellpose_device.fallback_reason, null);
+}
 function required(name) {
   assert.ok(
     process.env[name] && path.isAbsolute(process.env[name]),
@@ -21,7 +40,9 @@ function required(name) {
 const appBundle = required("LOCI_PACKAGED_APP");
 const source = required("LOCI_QA_IMAGE");
 const checkpoint = required("LOCI_QA_CELLPOSE_CHECKPOINT");
-const cpuReference = required("LOCI_QA_CPU_REFERENCE");
+const referenceVariable = process.env.LOCI_QA_LABEL_REFERENCE ? "LOCI_QA_LABEL_REFERENCE" : "LOCI_QA_CPU_REFERENCE";
+if (expectedDevice === "mps") assert.equal(referenceVariable, "LOCI_QA_LABEL_REFERENCE");
+const labelReference = required(referenceVariable);
 const output = required("LOCI_QA_OUTPUT_ROOT");
 assert.equal(
   process.platform,
@@ -30,8 +51,8 @@ assert.equal(
 );
 const relativeOutput = path.relative(projectRoot, output);
 assert.ok(
-  relativeOutput === ".." || relativeOutput.startsWith(`..${path.sep}`),
-  "QA output must be outside the repository",
+  relativeOutput === ".." || relativeOutput.startsWith(`..${path.sep}`) || relativeOutput.startsWith(`.loci${path.sep}evidence${path.sep}`),
+  "QA output must be outside tracked source or inside ignored .loci/evidence",
 );
 const executablePath = path.join(appBundle, "Contents/MacOS/Loci");
 const workerPath = path.join(
@@ -53,15 +74,15 @@ async function sha(file) {
 const sourceHash = await sha(source);
 assert.equal(
   sourceHash,
-  "2b086faa8e3b55202ea40604da32aec01aa7e99c7a7df861d03e773430730539",
+  publicationReceipt?.source.sha256 ?? "2b086faa8e3b55202ea40604da32aec01aa7e99c7a7df861d03e773430730539",
 );
 assert.equal(
   await sha(checkpoint),
-  "e1440429eb384f95afe32bcba6510f90d518eaedc917ede549bed6804004abe2",
+  publicationReceipt?.cellpose_checkpoint.sha256 ?? "e1440429eb384f95afe32bcba6510f90d518eaedc917ede549bed6804004abe2",
 );
 assert.equal(
-  await sha(cpuReference),
-  "9f2d248fe1ded0b1d7963692dcf87c0ffcd6aa94799d45f9746d7a8324e5adf2",
+  await sha(labelReference),
+  publicationCase?.label_reference_sha256 ?? publicationCase?.cpu_labels_sha256 ?? "9f2d248fe1ded0b1d7963692dcf87c0ffcd6aa94799d45f9746d7a8324e5adf2",
 );
 const errors = [];
 const requests = [];
@@ -128,8 +149,8 @@ async function waitFor(read, accept, description, timeout = 60_000) {
   while (performance.now() - start < timeout) {
     last = await read();
     if (accept(last)) return last;
-    const alert = await page.locator('.research-error[role="alert"]').textContent().catch(() => null);
-    if (alert) throw new Error(`${description}: ${alert}`);
+    const alert = page.locator('.research-alert[role="alert"]');
+    if (await alert.isVisible()) throw new Error(`${description}: ${await alert.textContent()}`);
     await page.waitForTimeout(150);
   }
   throw new Error(`${description}: timed out; last value ${JSON.stringify(last)}`);
@@ -147,35 +168,48 @@ try {
   const opened = await waitFor(snapshot, (value) => value?.sources.length === 1, "direct image opening");
   assert.equal(opened.results.length, 0, "Opening a source unexpectedly ran analysis");
   assert.equal(opened.sources[0].sha256, sourceHash);
-  assert.deepEqual(opened.sources[0].metadata.dimensions, { t: 1, c: 1, z: 1, y: 256, x: 256 });
+  assert.deepEqual(opened.sources[0].metadata.dimensions, { t: 1, c: 1, s: 1, z: 1, y: 256, x: 256 });
+  assert.equal(opened.sources[0].name, path.basename(source));
+  const sourceButton = page.locator(`.research-sources button[data-source-id="${opened.sources[0].id}"]`);
+  await sourceButton.waitFor({ state: "visible" });
+  assert.equal(await sourceButton.locator('.research-source-name').textContent(), opened.sources[0].name);
+  assert.equal(await sourceButton.getAttribute("aria-current"), "true");
   await page.waitForFunction(() => Number(document.querySelector('.image-viewport')?.getAttribute('data-cache-bytes')) > 0 && !document.querySelector('.image-view-loading'), null, { timeout: 60_000 });
   await selectWorkbenchTool(page, "Analyze");
-  await page.getByLabel("Segmentation model", { exact: true }).selectOption("cellpose-sam");
-  await page.getByRole("button", { name: "Import checkpoint…", exact: true }).click();
-  await page.getByText("Ready locally", { exact: true }).waitFor({ timeout: 120_000 });
-  const device = page.getByLabel("Compute device", { exact: true });
-  if (!(await device.isVisible())) await page.locator('.cellpose-advanced > summary').click();
-  await device.selectOption("cpu");
-  await screenshot("01-provisioned-cpu.png");
+  await page.getByLabel("Segmentation model", { exact: true }).selectOption(expectedProfile);
+  const checkpointImport = page.getByRole("button", { name: "Import checkpoint…", exact: true });
+  const ready = page.getByText("Ready locally", { exact: true });
+  const availability = await waitFor(async () => ({
+    ready: await ready.isVisible(),
+    needsImport: await checkpointImport.isVisible(),
+  }), (value) => value.ready || value.needsImport, "selected profile availability", 120_000);
+  if (availability.needsImport) await checkpointImport.click();
+  await ready.waitFor({ timeout: 120_000 });
+  const advanced = page.locator('.cellpose-panel .cellpose-advanced');
+  if (await advanced.getAttribute("open") === null) await advanced.locator(':scope > summary').click();
+  const device = advanced.getByLabel("Compute device", { exact: true });
+  await device.selectOption(expectedDevice);
+  assert.equal(await device.inputValue(), expectedDevice);
+  await screenshot(`01-provisioned-${expectedDevice}.png`);
   const started = performance.now();
   await page.getByRole("button", { name: "Segment image", exact: true }).click();
-  const analyzed = await waitFor(snapshot, (value) => value?.results.length === 1, "pinned CPU inference", 420_000);
+  const analyzed = await waitFor(snapshot, (value) => value?.results.length === 1, `pinned ${expectedDevice.toUpperCase()} inference`, 420_000);
   timings.inference_seconds = (performance.now() - started) / 1000;
   const summary = analyzed.results[0];
   assert.equal(summary.kind, "cellpose-segmentation");
-  assert.equal(summary.object_count, 46, "Pinned supplier image CPU regression count changed");
+  assert.equal(summary.object_count, expectedCount, "Pinned supplier image device-specific regression count changed");
   assert.equal(summary.source_id, opened.sources[0].id);
   const computed = await resultRecord(summary.id);
   const runtime = computed.provenance.runtime.cellpose;
   assert.equal(runtime.package.version, "4.2.1.1");
   assert.equal(runtime.model.sha256, await sha(checkpoint));
-  assert.equal(runtime.requested_device, "cpu");
-  assert.equal(runtime.resolved_device, "cpu");
+  assert.equal(runtime.requested_device, expectedDevice);
+  assert.equal(runtime.resolved_device, expectedDevice);
   assert.equal(runtime.fallback_reason, null);
-  assert.equal(computed.provenance.profile.id, "cellpose-sam");
+  assert.equal(computed.provenance.profile.id, expectedProfile);
   assert.deepEqual(computed.result.arrays.labels.shape, [256, 256]);
   assert.equal(computed.result.source_sha256, sourceHash);
-  await page.locator(`[data-result-id="${summary.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`.research-sources [data-result-id="${summary.id}"][aria-pressed="true"]`).waitFor();
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
   await screenshot("02-learned-result.png");
   await selectWorkbenchTool(page, "Info");
@@ -191,9 +225,9 @@ try {
   assert.deepEqual(savedRecord.result.arrays, computed.result.arrays);
   assert.deepEqual(savedRecord.provenance, computed.provenance);
   // The clone makes a new document. Explicitly select its retained result.
-  await page.locator(`[data-result-id="${summary.id}"]`).click();
+  await page.locator(`.research-sources [data-result-id="${summary.id}"]`).click();
   await selectWorkbenchTool(page, "Info");
-  await page.getByRole("button", { name: "Export revision", exact: true }).click();
+  await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitFor(() => fs.stat(path.join(exportDirectory, "manifest.json")).catch(() => null),
     (value) => value?.isFile(), "atomic reviewed export");
   const exported = JSON.parse(await fs.readFile(path.join(exportDirectory, "result.json"), "utf8"));
@@ -201,7 +235,7 @@ try {
   assert.equal(exported.review.disposition, "reviewed");
   assert.equal(exported.result.revision_hash, summary.revision_hash);
   const { measurements: _measurements, ...exportedProvenance } = exported.result.provenance;
-  assert.equal(_measurements.length, 46);
+  assert.equal(_measurements.length, expectedCount);
   assert.deepEqual(exportedProvenance, savedRecord.provenance);
   assert.equal(exported.source.sha256, sourceHash);
   assert.equal("path" in exported.source, false);
@@ -213,18 +247,18 @@ try {
   const verification = await run(python, [
     "-c",
     "import json,sys,numpy as np,tifffile; a=np.load(sys.argv[1],allow_pickle=False); b=np.load(sys.argv[2],allow_pickle=False); c=tifffile.imread(sys.argv[3]); assert a.dtype.kind=='u'; np.testing.assert_array_equal(a,b); np.testing.assert_array_equal(c,b); assert a.shape==(256,256); print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'all_voxels_equal':True,'ome_tiff_equal':True,'objects':int(np.unique(a[a>0]).size)}))",
-    path.join(exportDirectory, "labels.npy"), cpuReference, path.join(exportDirectory, "labels.ome.tif"),
+    path.join(exportDirectory, "labels.npy"), labelReference, path.join(exportDirectory, "labels.ome.tif"),
   ]);
   const numerical = JSON.parse(verification.stdout);
-  assert.equal(numerical.objects, 46);
+  assert.equal(numerical.objects, expectedCount);
   await screenshot("03-reviewed-export.png");
   await close();
   await launch();
-  // The saved study may be recovered automatically; if not, use its visible
-  // recent record. Neither route is allowed to initiate new inference.
+  // The saved study may be recovered automatically. Otherwise reopen its
+  // exact saved location through the ordinary native picker; Recent work uses
+  // the retained study title, which need not equal the save filename.
   if (await page.locator('main.image-first-empty').count()) {
-    const recent = page.locator('.recent-sessions button', { hasText: "cellpose-qualification" });
-    await recent.click();
+    await page.getByRole("button", { name: "Open study", exact: true }).click();
   }
   const reopened = await waitFor(snapshot, (value) => value?.results.length === 1, "saved study reopening");
   assert.deepEqual(reopened.sources, saved.sources);
@@ -233,7 +267,7 @@ try {
   assert.deepEqual(restored.result, savedRecord.result);
   assert.deepEqual(restored.provenance, savedRecord.provenance);
   assert.equal(restored.result.review.disposition, "reviewed");
-  await page.locator(`[data-result-id="${summary.id}"]`).click();
+  await page.locator(`.research-sources [data-result-id="${summary.id}"]`).click();
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
   await selectWorkbenchTool(page, "Info");
   await screenshot("04-reopened.png");
@@ -243,9 +277,16 @@ try {
   assert.deepEqual(requests, []);
   const report = {
     schema: "loci.cellpose-packaged-qualification/v1",
+    status: "passed",
+    publication_source_receipt: process.env.LOCI_QA_LEARNED_RECEIPT ?? null,
+    review: "SIMULATED automated gate exercise; no human scientific approval",
     source_sha256: sourceHash,
     checkpoint_sha256: await sha(checkpoint),
-    cpu_reference_sha256: await sha(cpuReference),
+    requested_device: expectedDevice,
+    resolved_device: runtime.resolved_device,
+    label_reference_path: labelReference,
+    label_reference_sha256: await sha(labelReference),
+    ...(expectedDevice === "cpu" ? { cpu_reference_sha256: await sha(labelReference) } : {}),
     application_sha256: await sha(executablePath),
     worker_sha256: await sha(workerPath),
     asar_sha256: await sha(archivePath),

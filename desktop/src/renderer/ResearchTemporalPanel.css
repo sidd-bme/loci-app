@@ -1,0 +1,16 @@
+.research-temporal .research-compact-list > div {
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding-block: 8px;
+}
+
+.research-temporal .research-compact-list span {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.research-temporal details code {
+  overflow-wrap: anywhere;
+}

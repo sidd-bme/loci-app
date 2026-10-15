@@ -88,6 +88,50 @@ the transactional result-publication callback after child artifact staging, the
 engine reopens both result records, verifies their revisions and source hashes,
 compares the complete artifact sets, and hash-validates every referenced array.
 
+### Raw-channel compartment measurements
+
+An optional `measurement_channels` list adds compartment measurements to the same
+association operation. It must contain 1–32 distinct source-channel indices;
+omitting it preserves the association-only behaviour and existing parent
+measurements. For every cell label `k`, the exact selected native grid defines:
+
+```text
+cell      = cells == k
+nuclear   = (cells == k) & (nuclei > 0)
+cytoplasm = (cells == k) & (nuclei == 0)
+```
+
+These names describe declared label partitions. They do not certify that a
+threshold or model identified biological compartments. Nuclear overlap is
+independent of the largest-overlap association assignment: every positive
+nuclear pixel or voxel within the cell contributes to that cell's intersection,
+including ambiguous nuclei crossing cell boundaries. Unassigned and ambiguous
+assignment counts remain separately available.
+
+Each compartment retains pixel/voxel count, physical area or volume with units,
+and raw per-channel count, sum, mean, minimum, maximum and population standard
+deviation. Empty compartments contain zero count, physical measure and sum, with
+`null` mean/minimum/maximum/standard deviation. Nuclear plus cytoplasmic counts,
+physical measures and raw sums conserve the cell whole. Floating-point sum
+checks use relative tolerance `1e-12` plus an absolute allowance of eight float64
+epsilons times the sum of absolute cell samples, preserving signed cancellation.
+
+Raw channels are read sequentially from the unchanged source, even when labels
+were produced from a processed image. Their grid, selection and calibration must
+match exactly. Provenance retains original nuclear/cell result revisions,
+channel metadata and explicit source/channel bindings; parent measurements and
+marker gates retain their original basis. Association-only descendants preserve
+the original compartment bindings. Memory is checked before input decoding and
+raw-channel reads, and publication rechecks source/metadata/input identities.
+
+The desktop **Compartments** tool selects the two label results and optional raw
+channels. Population tables expose typed compartment metrics, and reviewed CSV
+exports flatten them into named `compartments:<partition>:...` columns. Export
+verifies the retained label dependencies. Synthetic partition, correction,
+staleness, memory, export and reopen tests define the numerical contract. The
+[release record](RELEASE_STATUS.md) identifies published builds and their
+qualification scope; source tests alone do not qualify a packaged application.
+
 ## Persisted colocalisation
 
 `colocalisation_run` requires one source and selection, two distinct channel

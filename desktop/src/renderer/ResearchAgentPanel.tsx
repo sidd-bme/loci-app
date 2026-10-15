@@ -323,28 +323,32 @@ export function ResearchAgentPanel({
       <label>Assistant client <select aria-label="Assistant client" value={client} onChange={(event) => setClient(event.target.value)}>
         <option value="codex">Codex</option><option value="claude">Claude Desktop</option>
         <option value="web">ChatGPT web / claude.ai</option></select></label>
-      {client === "web" ? <p className="research-derived-notice">For a file-based conversation, use Display → Export vision handoff, then upload image.png and context.json to your chosen vision model. Live automation requires a compatible local MCP client.</p> :
+      {client === "web" ? <p className="research-derived-notice">For a file-based conversation, use Agent → Export vision handoff, then upload image.png and context.json to your chosen vision model. Live automation requires a compatible local MCP client.</p> :
         <p className="research-agent-client-help">{client === "claude" ? "The saved bundle includes a Claude-compatible MCP configuration." : "The saved bundle includes STDIO settings and Codex configuration. Interactive access also includes a local Loci plugin."} Connect it after reviewing the permissions below.</p>}
       <details><summary>Connection and safety details</summary><p>The local server has no shell, file browser, import, policy-editing or model-installation tool. Your assistant provider may receive the responses you allow.</p></details>
 
       <section className="research-agent-card" aria-label="Exact agent source and scope">
-        <h3>Exact source and scope</h3>
+        <h3>Source and scope</h3>
         <dl className="research-kv">
-          <div><dt>Display name</dt><dd>{source.name} (untrusted metadata)</dd></div>
-          <div><dt>Source ID</dt><dd>{source.id}</dd></div>
-          <div><dt>Source SHA-256</dt><dd>{source.sha256}</dd></div>
+          <div><dt>Display name</dt><dd>{source.name}</dd></div>
           <div><dt>Crop and axes</dt><dd>{scopeSummary(selection)}</dd></div>
           <div><dt>Measurement channels</dt><dd>{agentRecipe.measurement_channels.join(", ")}</dd></div>
           <div><dt>Working memory</dt><dd>{(agentRecipe.working_bytes / MIB).toLocaleString()} MiB</dd></div>
         </dl>
+        <details><summary>Technical record</summary><dl className="research-kv">
+          <div><dt>Source ID</dt><dd>{source.id}</dd></div>
+          <div><dt>Source SHA-256</dt><dd>{source.sha256}</dd></div>
+        </dl></details>
         <details><summary>Displayed recipe settings</summary><pre>{JSON.stringify(agentRecipe, null, 2)}</pre></details>
         {hasReferences && <p role="alert">Agent recipes currently reject flat-field and dark-field references. Remove those bindings from this recipe before validation.</p>}
         <button disabled={busy || localBusy || hasReferences} onClick={() => void validate()}>
           Validate exact scope and recipe
         </button>
         {validation && <div className="research-summary" aria-label="Exact recipe validation">
-          <strong>Validated recipe SHA-256</strong> {validation.recipe_sha256}<br />
-          {validation.estimated_working_bytes.toLocaleString()} estimated bytes · {validation.resolved_device} · {validation.scientific_validation}
+          <strong>Scope and settings checked</strong><br />
+          {validation.estimated_working_bytes.toLocaleString()} estimated bytes · {validation.resolved_device}
+          <details><summary>Technical record</summary><p>Recipe SHA-256 <code>{validation.recipe_sha256}</code></p>
+            <p>Method validation: {validation.scientific_validation}</p></details>
         </div>}
       </section>
 
@@ -380,7 +384,7 @@ export function ResearchAgentPanel({
           onChange={(event) => setHandoffNameText(event.target.value)} placeholder="candidate-01.loci-vision" /></label>}
         {(allowImage || allowHandoff) && !disclosures.includes("previews") && <p role="alert">Image access requires previews disclosure.</p>}
         {(allowDisplay || allowHandoff) && !contextDisclosed && <p role="alert">Display and handoff access require geometry, provenance and analysis context disclosures.</p>}
-        {allowDisplay && <p>Open Display → Follow assistant display to see changes in this window. Display changes preserve source pixels and numerical analysis.</p>}
+        {allowDisplay && <p>Open Agent → Follow assistant display to see changes in this window. Display changes preserve source pixels and numerical analysis.</p>}
         {allowHandoff && <p>Handoffs are provisional image/context files. They do not require or confer result review. Names must end in .loci-vision.</p>}
       </section>
 
@@ -448,16 +452,18 @@ export function ResearchAgentPanel({
           <div><dt>Policy file</dt><dd>{receipt.policy_filename}</dd></div>
           <div><dt>MCP config</dt><dd>{receipt.config_filename}</dd></div>
           {receipt.plugin_filename && <div><dt>Local plugin</dt><dd>{receipt.plugin_filename}</dd></div>}
-          <div><dt>Policy SHA-256</dt><dd>{receipt.policy_sha256}</dd></div>
-          <div><dt>Project ID</dt><dd>{receipt.project_id}</dd></div>
-          <div><dt>Recipe SHA-256</dt><dd>{receipt.recipe_sha256}</dd></div>
           <div><dt>Operations</dt><dd>{receipt.operations.join(", ")}</dd></div>
           <div><dt>Disclosures</dt><dd>{receipt.disclosures.length ? receipt.disclosures.join(", ") : "none"}</dd></div>
         </dl>
+        <details><summary>Technical record</summary><dl className="research-kv">
+          <div><dt>Policy SHA-256</dt><dd>{receipt.policy_sha256}</dd></div>
+          <div><dt>Project ID</dt><dd>{receipt.project_id}</dd></div>
+          <div><dt>Recipe SHA-256</dt><dd>{receipt.recipe_sha256}</dd></div>
+        </dl></details>
         <p>{client === "claude" ? "In Claude Desktop, open Developer settings → Edit Config. Merge the loci-research entry from mcp-config.json into your existing mcpServers, then restart Claude." : client === "codex" ? "Use the saved README to add the local plugin in Codex, or merge codex-config.toml into your existing MCP configuration. Preserve your other servers." : "Use this bundle with a compatible desktop MCP client."}</p>
         <p>{disclosures.includes("agent_metadata")
           ? "Ask the assistant to read Loci's analysis context and recipe guide, then inspect the permitted source."
-          : "Ask the assistant to read Loci's recipe guide, then inspect the source ID above."} The saved README includes setup and revocation steps.</p>
+          : "Ask the assistant to read Loci's recipe guide, then inspect the permitted source using the binding in Technical record."} The saved README includes setup and revocation steps.</p>
       </section>}
     </div>
   );

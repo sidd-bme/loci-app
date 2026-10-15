@@ -10,6 +10,7 @@ import type {
   ResearchSource,
 } from "../shared/research-contracts";
 import "./ResearchQuantificationPanel.css";
+import { resultTitle } from "./result-title";
 
 type Report = <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
 type PunctaPreview = {
@@ -27,6 +28,73 @@ type AssociationRow = {
   overlap_fraction?: number;
   ambiguous?: boolean;
 };
+type CompartmentStats = { count: number; sum: number; mean: number | null; min: number | null; max: number | null; std_population: number | null };
+type CompartmentRecord = { voxel_count: number; measure: number; measure_kind: "area" | "volume"; measure_unit: string; intensity: Record<string, CompartmentStats> };
+type CompartmentRow = { label: number; compartments: Record<"cell" | "nuclear" | "cytoplasm", CompartmentRecord> };
+
+function compartmentRows(value: unknown, channelNames: string[], geometry: ResearchResult["geometry"]): CompartmentRow[] {
+  if (!Array.isArray(value) || value.length > 1000) throw new Error("Invalid compartment measurement records.");
+  const labels = new Set<number>();
+  for (const item of value) {
+    const row = item as CompartmentRow;
+    if (!row || !Number.isSafeInteger(row.label) || row.label <= 0 || row.label > 0xFFFFFFFF || labels.has(row.label))
+      throw new Error("Invalid compartment cell identity.");
+    labels.add(row.label);
+    for (const name of ["cell", "nuclear", "cytoplasm"] as const) {
+      const record = row.compartments?.[name];
+      if (!record || !Number.isSafeInteger(record.voxel_count) || record.voxel_count < 0 ||
+          !Number.isFinite(record.measure) || record.measure < 0 || (record.voxel_count === 0 && record.measure !== 0) ||
+          !["area", "volume"].includes(record.measure_kind) || typeof record.measure_unit !== "string" ||
+          !record.intensity || Object.keys(record.intensity).length !== channelNames.length ||
+          record.measure_kind !== (geometry?.axes === "YX" ? "area" : "volume") ||
+          record.measure_unit !== `${geometry?.unit}^${geometry?.axes === "YX" ? 2 : 3}`)
+        throw new Error("Invalid compartment geometry or channel records.");
+      for (const channelName of channelNames) {
+        const entries = Object.entries(record.intensity).filter(([key]) => key === channelName);
+        if (entries.length !== 1) throw new Error("Compartment channels did not match the request.");
+        const stats = entries[0][1];
+        if (!stats || stats.count !== record.voxel_count || !Number.isFinite(stats.sum) ||
+            (stats.count === 0 && stats.sum !== 0) ||
+            [stats.mean, stats.min, stats.max, stats.std_population].some((value) =>
+              stats.count === 0 ? value !== null : typeof value !== "number" || !Number.isFinite(value)) ||
+            (stats.std_population !== null && stats.std_population < 0) ||
+            (stats.count > 0 && (stats.mean! < stats.min! - 1e-12 * Math.max(1, Math.abs(stats.min!)) ||
+              stats.mean! > stats.max! + 1e-12 * Math.max(1, Math.abs(stats.max!)))))
+          throw new Error("Invalid compartment intensity statistics.");
+      }
+    }
+    if (row.compartments.cell.voxel_count !== row.compartments.nuclear.voxel_count + row.compartments.cytoplasm.voxel_count)
+      throw new Error("Compartment counts do not conserve the cell whole.");
+    const whole = row.compartments.cell;
+    const nuclear = row.compartments.nuclear;
+    const cytoplasm = row.compartments.cytoplasm;
+    if (whole.measure_kind !== nuclear.measure_kind || whole.measure_kind !== cytoplasm.measure_kind ||
+        whole.measure_unit !== nuclear.measure_unit || whole.measure_unit !== cytoplasm.measure_unit ||
+        Math.abs(whole.measure - nuclear.measure - cytoplasm.measure) > 1e-12 * whole.measure)
+      throw new Error("Compartment physical measures do not conserve the cell whole.");
+  }
+  return value as CompartmentRow[];
+}
+
+function CompartmentTable({ rows, total }: { rows: CompartmentRow[]; total: number }): React.JSX.Element {
+  const [channel, setChannel] = useState("");
+  const [page, setPage] = useState(0);
+  const channels = Object.keys(rows[0]?.compartments.cell.intensity ?? {});
+  const selected = channels.includes(channel) ? channel : channels[0];
+  const pages = Math.max(1, Math.ceil(rows.length / 25));
+  const currentPage = Math.min(page, pages - 1);
+  return <section className="research-compartment-table" aria-label="Compartment measurements">
+    <label>Measured channel<select aria-label="Compartment table channel" value={selected ?? ""} onChange={(event) => setChannel(event.target.value)}>{channels.map((item) => <option key={item}>{item}</option>)}</select></label>
+    <p>{total} measured cells{total > rows.length ? `; ${rows.length} shown here. Open Statistics for the full result.` : "."}</p>
+    <div className="research-result-table"><table><thead><tr>{["Cell", "Compartment", "Count", "Area / volume", "Sum", "Mean", "Min", "Max", "Population SD"].map((heading) => <th key={heading}>{heading}</th>)}</tr></thead>
+      <tbody>{rows.slice(currentPage * 25, (currentPage + 1) * 25).flatMap((row) => (["cell", "nuclear", "cytoplasm"] as const).map((name) => {
+        const record = row.compartments[name]; const stats = record.intensity[selected];
+        return <tr key={`${row.label}:${name}`}><td>{row.label}</td><td>{name === "nuclear" ? "Nuclear intersection" : name === "cell" ? "Cell whole" : "Cell minus nuclei"}</td><td>{record.voxel_count}</td><td><MeasurementValue value={record.measure} /> {record.measure_unit}</td>{[stats.sum, stats.mean, stats.min, stats.max, stats.std_population].map((value, index) => <td key={index}>{value === null ? "—" : <MeasurementValue value={value} />}</td>)}</tr>;
+      }))}</tbody></table></div>
+    {pages > 1 && <div className="research-compartment-pages"><button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous cells</button><span>{currentPage + 1} / {pages}</span><button disabled={currentPage + 1 === pages} onClick={() => setPage(currentPage + 1)}>Next cells</button></div>}
+  </section>;
+}
+
 type SourceAnnotation = {
   id: string;
   label: string;
@@ -108,7 +176,8 @@ function compatible(first: ResearchResult, second: ResearchResult): boolean {
 
 function resultLabel(result: ResearchResult, snapshot: ResearchSnapshot): string {
   const source = snapshot.sources.find((item) => item.id === result.source_id);
-  return `${source?.name ?? "Source"} · ${result.kind} · ${result.id.slice(0, 8)}…`;
+  const ordinal = snapshot.results.findIndex((item) => item.id === result.id) + 1;
+  return `${source?.name ?? "Image unavailable"} · ${resultTitle(result)} · ${result.object_count} objects · Run ${ordinal}`;
 }
 
 function punctaLineage(result: ResearchResult, snapshot: ResearchSnapshot): "initial" | "corrected" | null {
@@ -139,21 +208,73 @@ function validateMetadata(value: unknown, source: ResearchSource): ResearchChann
   return record;
 }
 
-function CompactTable({ rows }: { rows: Array<Record<string, unknown>> }): React.JSX.Element | null {
+function exactValue(value: unknown): string {
+  if (value === null) return "null";
+  if (Object.is(value, -0)) return "-0";
+  return typeof value === "object" ? JSON.stringify(value) ?? "—" : String(value ?? "—");
+}
+
+function measurementText(value: unknown): string {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  if (!Number.isFinite(number)) return String(value ?? "not defined");
+  if (Object.is(number, -0)) return "-0";
+  if (Number.isInteger(number)) return String(number);
+  const rounded = Number(number.toPrecision(6));
+  return Math.abs(rounded) >= 1e6 || Math.abs(rounded) < 1e-4
+    ? number.toExponential(5).replace(/0+e/, "e").replace(/\.e/, "e") : String(rounded);
+}
+
+function MeasurementValue({ value }: { value: unknown }): React.JSX.Element {
+  return <span data-exact-value={exactValue(value)} title={exactValue(value)}>{measurementText(value)}</span>;
+}
+
+function TechnicalValues({ values }: { values: Record<string, unknown> }): React.JSX.Element {
+  return <details className="quantification-technical"><summary>Technical record</summary>
+    <dl className="research-kv">{Object.entries(values).map(([key, value]) => <div key={key}>
+      <dt>{key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</dt><dd>{exactValue(value)}</dd>
+    </div>)}</dl>
+  </details>;
+}
+
+function sourceLabel(item: ResearchSource, sources: ResearchSource[]): string {
+  const duplicates = sources.filter((source) => source.name === item.name);
+  return duplicates.length > 1 ? `${item.name} · Image ${duplicates.findIndex((source) => source.id === item.id) + 1}` : item.name;
+}
+
+function annotationLabel(item: SourceAnnotation, peers: SourceAnnotation[], all: SourceAnnotation[]): string {
+  const label = item.label.trim();
+  const duplicates = peers.filter((peer) => peer.label.trim() === label);
+  const ordinal = all.findIndex((annotation) => annotation.id === item.id) + 1;
+  return !label ? `${item.kind === "point" ? "Count marks" : "Region"} ${ordinal}`
+    : duplicates.length > 1 ? `${label} · ${item.kind === "point" ? "Marks" : "ROI"} ${ordinal}` : label;
+}
+
+const metricLabels: Record<string, string> = {
+  pearson_r: "Pearson r", manders_first: "Manders, first channel", manders_second: "Manders, second channel",
+  threshold_first: "First raw threshold", threshold_second: "Second raw threshold", voxel_pairs: "Paired pixels / voxels",
+};
+
+function CompactTable({ rows, kind, note }: { rows: Array<Record<string, unknown>>; kind: "peaks" | "associations"; note?: string }): React.JSX.Element | null {
   if (!rows.length) return null;
-  const columns = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).slice(0, 6);
-  return (
-    <div className="research-result-table">
-      <table>
-        <thead><tr>{columns.map((column) => <th key={column}>{column.replaceAll("_", " ")}</th>)}</tr></thead>
-        <tbody>
-          {rows.slice(0, 100).map((row, index) => (
-            <tr key={index}>{columns.map((column) => <td key={column}>{typeof row[column] === "object" ? JSON.stringify(row[column]) : String(row[column] ?? "—")}</td>)}</tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  const columns = kind === "peaks" ? ["Peak", "Position XYZ", "LoG response", "Raw intensity"] : ["Nucleus", "Cell", "Overlap fraction", "Assignment"];
+  const technicalColumns = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
+  const shown = rows.slice(0, 100);
+  return <>
+    <div className="research-result-table quantification-compact-table"><table><thead><tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
+      <tbody>{shown.map((row, index) => <tr key={index}>{kind === "peaks" ? <>
+        <td><MeasurementValue value={row.label} /></td>
+        <td className="quantification-position">{Array.isArray(row.world_xyz) ? <>{row.world_xyz.map(measurementText).join(", ")} {String(row.distance_unit ?? "")}</> : "—"}</td>
+        <td><MeasurementValue value={row.response} /></td><td><MeasurementValue value={row.raw} /></td>
+      </> : <>
+        <td><MeasurementValue value={row.nucleus_label} /></td><td>{row.cell_label == null ? "Unassigned" : <MeasurementValue value={row.cell_label} />}</td>
+        <td><MeasurementValue value={row.overlap_fraction} /></td><td>{row.ambiguous ? "Ambiguous" : row.cell_label == null ? "Unassigned" : "Assigned"}</td>
+      </>}</tr>)}</tbody></table></div>
+    <details className="quantification-technical"><summary>Technical record</summary>{note && <p>{note}</p>}<div className="research-result-table"><table>
+      <caption>Full precision · {shown.length} {kind === "peaks" ? "peaks" : "assignments"}{rows.length > shown.length ? ` of ${rows.length}` : ""}</caption>
+      <thead><tr>{technicalColumns.map((column) => <th key={column}>{column.replaceAll("_", " ")}</th>)}</tr></thead>
+      <tbody>{shown.map((row, index) => <tr key={index}>{technicalColumns.map((column) => <td key={column}>{exactValue(row[column])}</td>)}</tr>)}</tbody>
+    </table></div></details>
+  </>;
 }
 
 export function ResearchQuantificationPanel({
@@ -255,8 +376,8 @@ export function ResearchQuantificationPanel({
   const [metrics, setMetrics] = useState<Record<string, unknown> | null>(null);
 
   const labelResults = useMemo(
-    () => snapshot.results.filter((result) => Boolean(result.arrays?.image && result.arrays?.labels)),
-    [snapshot.results],
+    () => snapshot.results.filter((result) => result.source_id === source.id && Boolean(result.arrays?.image && result.arrays?.labels)),
+    [snapshot.results, source.id],
   );
   const [nucleiId, setNucleiId] = useState("");
   const nucleus = labelResults.find((result) => result.id === nucleiId) ?? null;
@@ -267,6 +388,20 @@ export function ResearchQuantificationPanel({
   const [associationControl, setAssociationControl] = useState("");
   const [associations, setAssociations] = useState<AssociationRow[]>([]);
   const [associationTotal, setAssociationTotal] = useState(0);
+  const [associationCounts, setAssociationCounts] = useState<{ ambiguous_count: number; unassigned_count: number } | null>(null);
+  const [compartmentChannels, setCompartmentChannels] = useState<number[]>([]);
+  const [compartmentMeasurements, setCompartmentMeasurements] = useState<CompartmentRow[]>([]);
+  const [compartmentTotal, setCompartmentTotal] = useState<number | null>(null);
+  const associationToken = useRef(0);
+  useEffect(() => {
+    associationToken.current += 1;
+    setAssociations([]);
+    setAssociationTotal(0);
+    setAssociationCounts(null);
+    setCompartmentMeasurements([]);
+    setCompartmentTotal(null);
+  }, [nucleus?.id, nucleus?.revision_hash, cellsId, source.id, source.sha256, metadata?.revision, JSON.stringify(compartmentChannels), nucleusRole, cellRole, associationControl]);
+  useEffect(() => { setCompartmentChannels([]); }, [source.id]);
 
   useEffect(() => {
     const token = ++metadataToken.current;
@@ -522,21 +657,58 @@ export function ResearchQuantificationPanel({
     const output = await run("Could not associate nucleus and cell labels.", async () => {
       const cells = compatibleCells.find((item) => item.id === cellsId);
       if (!nucleus || !cells) throw new Error("Choose two compatible exact label revisions.");
+      const token = associationToken.current;
+      const requestedChannels = [...compartmentChannels];
       const value = (await api.execute("associate_results", {
         nuclei: { result_id: nucleus.id, revision_hash: nucleus.revision_hash },
         cells: { result_id: cells.id, revision_hash: cells.revision_hash },
         roles: { nuclei: nucleusRole, cells: cellRole },
+        ...(requestedChannels.length ? { measurement_channels: requestedChannels } : {}),
         control: associationControl.trim() || (() => { throw new Error("Declare the association controls and assumptions."); })(),
         working_bytes: WORKING_BYTES,
-      })) as { adopted?: boolean; result?: unknown; associations?: AssociationRow[]; total_associations?: number };
+      })) as { adopted?: boolean; result?: unknown; associations?: AssociationRow[]; total_associations?: number; association_summary?: { nucleus_count: number; ambiguous_count: number; unassigned_count: number }; measurements?: unknown; total_measurements?: number; association_inputs?: Record<string, { result_id: string; revision_hash: string }>; compartment_measurement?: { channels?: Array<{ index: number; name: string; source_id: string; source_sha256: string; selection: ResearchResult["selection"]; geometry: ResearchResult["geometry"] }>; channel_metadata?: unknown } };
       if (value.adopted !== true) throw new Error("Association was not adopted.");
       const result = exactResult(value.result, cells.source_id);
+      if (token !== associationToken.current) throw new Error("The selected compartment inputs changed during measurement.");
+      if (result.kind !== "nucleus-cell-association" || result.parent_id !== cells.id ||
+          result.source_sha256 !== cells.source_sha256 ||
+          !canonicalEqual(result.geometry, cells.geometry) || !canonicalEqual(result.selection, cells.selection) ||
+          result.arrays?.labels?.sha256 !== cells.arrays?.labels?.sha256 ||
+          result.arrays?.nuclei_labels?.sha256 !== nucleus.arrays?.labels?.sha256 ||
+          value.association_inputs?.nuclei?.result_id !== nucleus.id || value.association_inputs?.nuclei?.revision_hash !== nucleus.revision_hash ||
+          value.association_inputs?.cells?.result_id !== cells.id || value.association_inputs?.cells?.revision_hash !== cells.revision_hash ||
+          !Array.isArray(value.associations) || !Number.isSafeInteger(value.total_associations) ||
+          (value.total_associations ?? -1) < 0 || value.associations.length !== Math.min(value.total_associations ?? -1, 1000) ||
+          value.associations.some((row) => !Number.isSafeInteger(row.nucleus_label) || (row.nucleus_label ?? 0) <= 0 ||
+            (row.cell_label !== null && (!Number.isSafeInteger(row.cell_label) || (row.cell_label ?? 0) <= 0)) ||
+            typeof row.ambiguous !== "boolean" || !Number.isFinite(row.overlap_fraction) ||
+            (row.overlap_fraction ?? -1) < 0 || (row.overlap_fraction ?? 2) > 1))
+        throw new Error("Association response did not match the selected immutable inputs.");
+      if (!value.association_summary || value.association_summary.nucleus_count !== value.total_associations ||
+          [value.association_summary.ambiguous_count, value.association_summary.unassigned_count].some((count) =>
+            !Number.isSafeInteger(count) || count < 0 || count > (value.total_associations ?? -1)))
+        throw new Error("Invalid nucleus assignment accounting.");
+      const channelNames = requestedChannels.map((index) => `${index + 1}: ${metadata?.channels[index]?.name}`);
+      const measured = requestedChannels.length ? compartmentRows(value.measurements, channelNames, cells.geometry) : [];
+      if (requestedChannels.length && (!Number.isSafeInteger(value.total_measurements) ||
+          value.total_measurements !== result.object_count ||
+          measured.length !== Math.min(value.total_measurements ?? -1, 1000) ||
+          !canonicalEqual(value.compartment_measurement?.channels?.map((item) => item.index), requestedChannels) ||
+          !canonicalEqual(value.compartment_measurement?.channel_metadata, metadata) ||
+          value.compartment_measurement?.channels?.some((item, index) => item.name !== channelNames[index] ||
+            item.source_id !== cells.source_id || item.source_sha256 !== cells.source_sha256 ||
+            !canonicalEqual(item.geometry, cells.geometry) ||
+            !canonicalEqual(item.selection, { ...cells.selection, c: requestedChannels[index] }))))
+        throw new Error("Compartment response did not match the selected raw channels.");
       await onPublished(result);
-      return value;
+      return { ...value, measured, token };
     });
-    if (!output) return;
+    if (!output || output.token !== associationToken.current) return;
     setAssociations(output.associations ?? []);
-    setAssociationTotal(Number(output.total_associations ?? 0));
+    setAssociationCounts(output.association_summary ?? null);
+    setAssociationTotal(Number(output.total_associations));
+    setCompartmentMeasurements(output.measured);
+    setCompartmentTotal(compartmentChannels.length ? Number(output.total_measurements) : null);
   };
 
   const currentAssayConfigFingerprint = JSON.stringify({
@@ -806,7 +978,7 @@ export function ResearchQuantificationPanel({
     <div className="research-panel research-quantification">
       <div className="research-mode-tabs research-quantification-tabs">
         {(["channels", "recipe", "puncta", "colocalisation", "association", "field-assay"] as const).map((item) => (
-          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{({ channels: "Channels", recipe: "Recipe", puncta: "Puncta", colocalisation: "Colocalisation", association: "Association", "field-assay": "Field assay" })[item]}</button>
+          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{({ channels: "Channels", recipe: "Recipe", puncta: "Puncta", colocalisation: "Colocalisation", association: "Compartments", "field-assay": "Field assay" })[item]}</button>
         ))}
       </div>
       {actionError && <p role="alert">{actionError}</p>}
@@ -828,19 +1000,25 @@ export function ResearchQuantificationPanel({
 
       {mode === "recipe" && <>
         <h2>Quantitative recipe inputs</h2>
-        <p>These controls update the existing non-destructive recipe. Every spatial value uses the selected source geometry unit.</p>
+        <p>Spatial values use the source geometry unit.</p>
         <fieldset><legend>Background subtraction</legend>
           <label>Gaussian background sigma<input aria-label="Background sigma" type="number" step="any" value={background} onChange={(event) => setBackground(event.target.value)} /></label>
           <label className="research-check"><input type="checkbox" checked={backgroundClip} onChange={(event) => setBackgroundClip(event.target.checked)} /> Clip negative values</label>
           <button onClick={() => updateBackground(!recipe.steps.some((step) => step.op === "subtract_background"))}>{recipe.steps.some((step) => step.op === "subtract_background") ? "Remove background step" : "Add background step"}</button>
         </fieldset>
         <fieldset><legend>Flat-field reference</legend>
-          <label>Flat source<select aria-label="Flat-field source" value={flatSource} onChange={(event) => setFlatSource(event.target.value)}><option value="">Choose exact source…</option>{snapshot.sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.id.slice(0, 8)}…</option>)}</select></label>
+          <label>Flat source<select aria-label="Flat-field source" value={flatSource} onChange={(event) => setFlatSource(event.target.value)}><option value="">Choose exact source…</option>{snapshot.sources.map((item) => <option key={item.id} value={item.id}>{sourceLabel(item, snapshot.sources)}</option>)}</select></label>
           <label>Flat scalar channel<input aria-label="Flat-field channel" type="number" min="0" step="1" value={flatChannel} onChange={(event) => setFlatChannel(event.target.value)} /></label>
-          <label>Optional dark source<select aria-label="Dark-field source" value={darkSource} onChange={(event) => setDarkSource(event.target.value)}><option value="">No dark reference</option>{snapshot.sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.id.slice(0, 8)}…</option>)}</select></label>
+          <label>Optional dark source<select aria-label="Dark-field source" value={darkSource} onChange={(event) => setDarkSource(event.target.value)}><option value="">No dark reference</option>{snapshot.sources.map((item) => <option key={item.id} value={item.id}>{sourceLabel(item, snapshot.sources)}</option>)}</select></label>
           {darkSource && <label>Dark scalar channel<input aria-label="Dark-field channel" type="number" min="0" step="1" value={darkChannel} onChange={(event) => setDarkChannel(event.target.value)} /></label>}
           <button onClick={() => updateFlatfield(!recipe.steps.some((step) => step.op === "flatfield"))}>{recipe.steps.some((step) => step.op === "flatfield") ? "Remove flat-field step" : "Bind flat-field step"}</button>
-          <p>References must match the selected crop, shape, and physical grid exactly; the engine rejects mismatches.</p>
+          <p>Use references on the same crop and physical grid.</p>
+          {(flatSource || darkSource) && <TechnicalValues values={{
+            flat_source_id: flatSource || null,
+            flat_source_sha256: snapshot.sources.find((item) => item.id === flatSource)?.sha256 ?? null,
+            dark_source_id: darkSource || null,
+            dark_source_sha256: snapshot.sources.find((item) => item.id === darkSource)?.sha256 ?? null,
+          }} />}
         </fieldset>
         <fieldset><legend>Raw measurement channels</legend>{channelOptions.map((channel) => <label className="research-check" key={channel.index}><input type="checkbox" checked={recipe.measurement_channels.includes(channel.index)} onChange={(event) => setRecipe((old) => ({ ...old, measurement_channels: event.target.checked ? [...old.measurement_channels, channel.index].sort((a, b) => a - b) : old.measurement_channels.filter((item) => item !== channel.index) }))} /> {channel.index + 1}: {channel.name}</label>)}</fieldset>
         <fieldset><legend>Marker gates</legend><button onClick={addGate} disabled={!channelOptions.length}>Add explicit gate</button>
@@ -856,45 +1034,48 @@ export function ResearchQuantificationPanel({
       </>}
 
       {mode === "puncta" && <>
-        <h2>Puncta candidates</h2><p>All LoG scales, thresholds, distances, borders, and assumptions are explicit. Preview is display-only; adoption reruns the unchanged request.</p>
+        <h2>Puncta candidates</h2><p>Preview candidates before adoption.</p>
         <div className="research-grid">
           {[ ["Physical LoG sigma", punctaSigma, setPunctaSigma], ["LoG response threshold", punctaResponse, setPunctaResponse], ["Raw intensity threshold", punctaRaw, setPunctaRaw], ["Physical minimum distance", punctaDistance, setPunctaDistance], ["Physical aperture radius", punctaAperture, setPunctaAperture] ].map(([label, value, setter]) => <label key={label as string}>{label as string}<input aria-label={label as string} type="number" step="any" value={value as string} onChange={(event) => (setter as (v: string) => void)(event.target.value)} /></label>)}
         </div>
         <label className="research-check"><input type="checkbox" checked={punctaBorder} onChange={(event) => setPunctaBorder(event.target.checked)} /> Exclude peaks whose aperture touches the crop border</label>
         <label>Control / assumptions<textarea aria-label="Puncta control and assumptions" value={punctaControl} onChange={(event) => setPunctaControl(event.target.value)} /></label>
         <div className="research-actions"><button disabled={locked || isRgb} onClick={() => void previewPuncta()}>Preview puncta candidates</button><button className="research-primary" disabled={locked || !punctaPreview} onClick={() => void adoptPuncta()}>Adopt unchanged puncta request</button></div>
-        {punctaPreview && <><p className="research-summary">Display-only {punctaPreview.overlayBasis}; {punctaPreview.totalPeaks} initial peaks before correction. Manual label edits may change regions later, while this peak receipt remains the initial-peaks-before-correction record.</p><CompactTable rows={punctaPreview.peaks} /></>}
+        {punctaPreview && <section aria-label="Puncta preview" data-request-fingerprint={punctaPreview.fingerprint}><p className="research-summary">{punctaPreview.totalPeaks} initial peaks before correction.</p><CompactTable rows={punctaPreview.peaks} kind="peaks" note={`Display: ${punctaPreview.overlayBasis}. Peak records describe the initial detection before label correction.`} /></section>}
       </>}
 
       {mode === "colocalisation" && <>
-        <h2>Descriptive colocalisation</h2><p>Choose two exact acquisition channels and declare both raw thresholds and controls. Metrics describe spatial association; they do not establish molecular interaction or independent samples.</p>
-        {isRgb && <p role="alert">RGB colour components are not biological channels; colocalisation is unavailable.</p>}
+        <h2>Colocalisation measurements</h2><p>Compare two raw acquisition channels.</p>
+        {isRgb && <p role="alert">Colocalisation requires scalar acquisition channels; RGB is not supported.</p>}
         <label>First declared channel<select aria-label="First colocalisation channel" value={firstChannel} onChange={(event) => setFirstChannel(event.target.value)}>{channelOptions.map((item) => <option key={item.index} value={item.index}>{item.index + 1}: {item.name}</option>)}</select></label>
         <label>First raw threshold<input aria-label="First colocalisation threshold" type="number" step="any" value={firstThreshold} onChange={(event) => setFirstThreshold(event.target.value)} /></label>
         <label>Second declared channel<select aria-label="Second colocalisation channel" value={secondChannel} onChange={(event) => setSecondChannel(event.target.value)}>{channelOptions.map((item) => <option key={item.index} value={item.index}>{item.index + 1}: {item.name}</option>)}</select></label>
         <label>Second raw threshold<input aria-label="Second colocalisation threshold" type="number" step="any" value={secondThreshold} onChange={(event) => setSecondThreshold(event.target.value)} /></label>
         <label>Controls / assumptions<textarea aria-label="Colocalisation controls and assumptions" value={colocalisationControl} onChange={(event) => setColocalisationControl(event.target.value)} /></label>
         <button className="research-primary" disabled={locked || isRgb || channelOptions.length < 2} onClick={() => void runColocalisation()}>Run and adopt colocalisation</button>
-        {metrics && <dl className="research-kv">{Object.entries(metrics).map(([key, value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd>{String(value ?? "not defined")}</dd></div>)}</dl>}
+        {metrics && <><dl className="research-kv" aria-label="Colocalisation measurements">{Object.entries(metricLabels).filter(([key]) => key in metrics).map(([key, label]) => <div key={key}><dt>{label}</dt><dd><MeasurementValue value={metrics[key]} /></dd></div>)}</dl><TechnicalValues values={metrics} /></>}
       </>}
 
       {mode === "association" && <>
-        <h2>Nucleus–cell association</h2><p>Bind two distinct immutable label revisions on the same exact source, crop, array grid, and physical geometry. Declare which result is nuclei and which is cells.</p>
+        <h2>Cell compartments</h2><p>Choose nuclei and cell labels, then measure raw channels inside each cell, its nuclear intersection, and its remaining area or volume.</p>
         <label>Nuclei result<select aria-label="Nuclei result" value={nucleiId} onChange={(event) => setNucleiId(event.target.value)}><option value="">Choose exact revision…</option>{labelResults.map((item) => <option key={item.id} value={item.id}>{resultLabel(item, snapshot)}</option>)}</select></label>
-        {nucleus && punctaLineage(nucleus, snapshot) && <p className="research-summary">{punctaLineage(nucleus, snapshot) === "initial" ? "Initial puncta labels; peaks are the initial-peaks-before-correction record." : "Manual label revision selected; its puncta peak receipt still describes initial peaks before correction."}</p>}
+        {nucleus && punctaLineage(nucleus, snapshot) && <p className="research-summary">{punctaLineage(nucleus, snapshot) === "initial" ? "Initial puncta labels." : "Corrected puncta labels; peak counts describe the initial detection."}</p>}
         <label>Nuclei role declaration<input aria-label="Nuclei role declaration" value={nucleusRole} onChange={(event) => setNucleusRole(event.target.value)} /></label>
         <label>Cells result<select aria-label="Cells result" value={cellsId} onChange={(event) => setCellsId(event.target.value)} disabled={!nucleus}><option value="">No compatible exact revision</option>{compatibleCells.map((item) => <option key={item.id} value={item.id}>{resultLabel(item, snapshot)}</option>)}</select></label>
         <label>Cells role declaration<input aria-label="Cells role declaration" value={cellRole} onChange={(event) => setCellRole(event.target.value)} /></label>
         <label>Controls / assumptions<textarea aria-label="Association controls and assumptions" value={associationControl} onChange={(event) => setAssociationControl(event.target.value)} /></label>
-        <button className="research-primary" disabled={locked || !nucleus || !cellsId || nucleusRole.trim() === cellRole.trim()} onClick={() => void runAssociation()}>Associate exact revisions</button>
-        {associationTotal > 0 && <><p className="research-summary">{associationTotal} nucleus association records. Association results cannot be edited directly. Open the exact cell or nucleus parent, create a corrected child, then rerun association.</p><CompactTable rows={associations as Array<Record<string, unknown>>} /></>}
+        <fieldset><legend>Raw compartment channels</legend>{channelOptions.map((channel) => <label className="research-check" key={channel.index}><input type="checkbox" aria-label={`Measure compartment channel ${channel.index + 1}: ${channel.name}`} disabled={isRgb || locked} checked={compartmentChannels.includes(channel.index)} onChange={(event) => setCompartmentChannels((old) => event.target.checked ? [...old, channel.index].sort((a, b) => a - b) : old.filter((item) => item !== channel.index))} /> {channel.index + 1}: {channel.name}</label>)}</fieldset>
+        <button className="research-primary" disabled={locked || !nucleus || !cellsId || nucleusRole.trim() === cellRole.trim()} onClick={() => void runAssociation()}>{compartmentChannels.length ? "Measure compartments" : "Associate exact revisions"}</button>
+        {compartmentMeasurements.length > 0 && <CompartmentTable rows={compartmentMeasurements} total={compartmentTotal ?? 0} />}
+        {compartmentTotal === 0 && <p>No measured cells in this result.</p>}
+        {associationTotal > 0 && <details><summary>{associationTotal} nucleus assignments{associationCounts ? ` · ${associationCounts.ambiguous_count} ambiguous · ${associationCounts.unassigned_count} unassigned` : ""}</summary><p className="research-summary">Association results cannot be edited directly. Correct a parent label result and rerun.</p><CompactTable rows={associations as Array<Record<string, unknown>>} kind="associations" /></details>}
       </>}
 
       {mode === "field-assay" && <>
         <h2>Fluorescence per nucleus</h2>
         <p>Measure signal in a region, subtract background, and divide by the reviewed nucleus count.</p>
-        <dl className="research-kv" aria-label="Field assay readiness">
-          <div><dt>Exact source</dt><dd>{source.name} · {source.sha256.slice(0, 12)}…</dd></div>
+        <dl className="research-kv" aria-label="Field assay readiness" data-source-id={source.id} data-source-sha256={source.sha256}>
+          <div><dt>Image</dt><dd>{source.name}</dd></div>
           <div><dt>Plane</dt><dd>T {selection.t}, Z {selection.z}</dd></div>
           <div><dt>Nuclear channel</dt><dd>{selectedNucleiChannel ? `${selectedNucleiChannel.index + 1}: ${selectedNucleiChannel.name}` : "select a declared channel"}</dd></div>
           <div><dt>Signal channel</dt><dd>{selectedSignalChannel ? `${selectedSignalChannel.index + 1}: ${selectedSignalChannel.name}` : "select a declared channel"}</dd></div>
@@ -925,13 +1106,13 @@ export function ResearchQuantificationPanel({
             }}>
               <option value="">Select focus ROI…</option>
               {planeRegionAnnotations.map((a) => (
-                <option key={a.id} value={a.id}>ROI: {a.label || a.id.slice(0, 8)} · T {a.t}, Z {a.z}</option>
+                <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t}, Z {a.z}</option>
               ))}
               <option value="all">Measure whole field (exploratory only)</option>
             </select></label>
             {fieldAssayFocusMode === "all" && (
-              <p className="research-callout" style={{ fontSize: "12px", color: "#b86200", margin: "4px 0" }}>
-                Whole-field measurement is exploratory only. Reviewed publication requires a human-approved focus ROI.
+              <p className="quantification-guidance">
+                Choose a focus ROI to approve this assay.
               </p>
             )}
 
@@ -944,8 +1125,8 @@ export function ResearchQuantificationPanel({
               <>
                 <label>Background ADU value<input aria-label="Background ADU value" type="number" step="any" value={fieldAssayBackgroundValue} onChange={(event) => setFieldAssayBackgroundValue(event.target.value)} /></label>
                 {(Number(fieldAssayBackgroundValue) === 0 || !fieldAssayBackgroundValue.trim()) && (
-                  <p className="research-callout" style={{ fontSize: "12px", color: "#b86200", margin: "4px 0" }}>
-                    Unmeasured zero background is exploratory only. Reviewed publication requires a cell-free background measurement.
+                  <p className="quantification-guidance">
+                    Measure background before approving this assay.
                   </p>
                 )}
               </>
@@ -953,7 +1134,7 @@ export function ResearchQuantificationPanel({
               <label>Background ROI<select aria-label="Background annotation selection" value={fieldAssayBackgroundAnnotationId} onChange={(event) => setFieldAssayBackgroundAnnotationId(event.target.value)}>
                 <option value="">Select background ROI…</option>
                 {planeRegionAnnotations.map((a) => (
-                  <option key={a.id} value={a.id}>ROI: {a.label || a.id.slice(0, 8)} · T {a.t}, Z {a.z}</option>
+                  <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t}, Z {a.z}</option>
                 ))}
               </select></label>
             )}
@@ -970,9 +1151,9 @@ export function ResearchQuantificationPanel({
               <option value="otsu">Otsu automatic threshold</option>
               <option value="yen">Yen automatic threshold</option>
             </select></label>
-            {(fieldAssaySegmentationMethod === "otsu" || fieldAssaySegmentationMethod === "yen") && (
-              <p className="research-callout" style={{ fontSize: "12px", color: "#b86200", margin: "4px 0" }}>
-                Notice: {fieldAssaySegmentationMethod.toUpperCase()} calculates an image-dependent threshold that varies across fields. It is suitable for exploratory preview, but reviewed publication requires a fixed calibrated threshold across treatments or an authoritative manual count.
+            {(fieldAssaySegmentationMethod === "otsu" || fieldAssaySegmentationMethod === "yen") && fieldAssayManualCountMode === "none" && (
+              <p className="quantification-guidance">
+                Approval needs a fixed threshold or manual count.
               </p>
             )}
             {fieldAssaySegmentationMethod === "manual" && (
@@ -1000,7 +1181,7 @@ export function ResearchQuantificationPanel({
                   const count = a.points?.length ?? 1;
                   return (
                     <option key={a.id} value={a.id}>
-                      Marks: {a.label || a.id.slice(0, 8)} ({count} {count === 1 ? "point" : "points"})
+                      Marks: {annotationLabel(a, planePointAnnotations, sourceAnnotations)} ({count} {count === 1 ? "point" : "points"})
                     </option>
                   );
                 })}
@@ -1016,24 +1197,25 @@ export function ResearchQuantificationPanel({
             </p>
           )}
 
-          {fieldAssayPreview && <div className="field-assay-preview-results" style={{ marginTop: "12px" }}>
+          {fieldAssayPreview && <div className="field-assay-preview-results">
             <h3>Assay quantification preview</h3>
             <img
               className="research-preview"
               src={fieldAssayPreview.qc_overlay}
               alt={`Field assay QC overlay for ${source.name}, T ${selection.t}, Z ${selection.z}`}
             />
-            <p className="research-summary">Display-only QC overlay. Inspect the focus boundary, provisional nuclei outlines, rejected objects, and background region before adoption.</p>
+            <p className="research-summary">Inspect the focus, nuclei and background before saving.</p>
             <dl className="research-kv">
-              <div><dt>Focus area</dt><dd>{fieldAssayPreview.focus_mask_pixels.toLocaleString()} px</dd></div>
-              <div><dt>Raw signal sum</dt><dd>{fieldAssayPreview.raw_signal_sum.toLocaleString()} ADU</dd></div>
-              <div><dt>Background ADU</dt><dd>{String(fieldAssayPreview.summary.background_value_adu ?? "—")}</dd></div>
-              <div><dt>Signed corrected total</dt><dd style={{ color: fieldAssayPreview.integrated_signal_minus_background < 0 ? "var(--warning)" : undefined }}>{fieldAssayPreview.integrated_signal_minus_background.toLocaleString()} ADU</dd></div>
-              <div><dt>Reviewed nuclei count</dt><dd>{fieldAssayPreview.reviewed_count} ({fieldAssayPreview.count_mode})</dd></div>
-              <div><dt>Signal per nucleus</dt><dd>{fieldAssayPreview.field_ratio !== null ? `${fieldAssayPreview.field_ratio} ADU` : "Undefined (0 nuclei)"}</dd></div>
+              <div><dt>Focus area</dt><dd>{fieldAssayPreview.focus_mask_pixels} px</dd></div>
+              <div><dt>Raw signal sum</dt><dd><MeasurementValue value={fieldAssayPreview.raw_signal_sum} /> ADU</dd></div>
+              <div><dt>Background ADU</dt><dd><MeasurementValue value={fieldAssayPreview.summary.background_value_adu} /></dd></div>
+              <div><dt>Signed corrected total</dt><dd className={fieldAssayPreview.integrated_signal_minus_background < 0 ? "quantification-negative" : undefined}><MeasurementValue value={fieldAssayPreview.integrated_signal_minus_background} /> ADU</dd></div>
+              <div><dt>Nucleus count</dt><dd>{fieldAssayPreview.reviewed_count} ({({ algorithmic: "algorithmic", manual_override: "manual count", manual_points: "count marks" } as Record<string, string>)[fieldAssayPreview.count_mode] ?? "count basis unavailable"})</dd></div>
+              <div><dt>Signal per nucleus</dt><dd>{fieldAssayPreview.field_ratio !== null && fieldAssayPreview.field_ratio !== "" ? <><MeasurementValue value={fieldAssayPreview.field_ratio} /> ADU</> : fieldAssayPreview.reviewed_count === 0 ? "Undefined (0 nuclei)" : "Not defined"}</dd></div>
               <div><dt>Saturation</dt><dd>Nuclei: {fieldAssayPreview.saturation.nuclei}, Signal: {fieldAssayPreview.saturation.signal}, BG: {fieldAssayPreview.saturation.background}</dd></div>
             </dl>
 
+            <TechnicalValues values={{ ...fieldAssayPreview.summary, count_mode: fieldAssayPreview.count_mode, field_ratio: fieldAssayPreview.field_ratio }} />
             {fieldAssayPreview.warnings.length > 0 && <div className="research-warnings" role="alert">
               <strong>Warnings:</strong>
               <ul>{fieldAssayPreview.warnings.map((w, idx) => <li key={idx}>{w}</li>)}</ul>
@@ -1042,7 +1224,7 @@ export function ResearchQuantificationPanel({
             <fieldset className="field-assay-adoption"><legend>Save field assay</legend>
               <label>Reviewer name<input aria-label="Reviewer name" value={fieldAssayReviewer} onChange={(event) => setFieldAssayReviewer(event.target.value)} placeholder="Required to approve" /></label>
               <label>Assay notes<textarea aria-label="Assay notes" value={fieldAssayNotes} onChange={(event) => setFieldAssayNotes(event.target.value)} placeholder="Observations or exclusions" /></label>
-              <p id="field-review-scope">Approval records your review of channel identity, acquisition comparability, focus, nuclei and background{(fieldAssayPreview.saturation.nuclei > 0 || fieldAssayPreview.saturation.signal > 0 || fieldAssayPreview.saturation.background > 0) ? ", including the saturated pixels shown above" : ""}.</p>
+              <p id="field-review-scope">Approval records review of channels, acquisition, focus, nuclei and background{(fieldAssayPreview.saturation.nuclei > 0 || fieldAssayPreview.saturation.signal > 0 || fieldAssayPreview.saturation.background > 0) ? ", including saturated pixels" : ""}.</p>
               {(() => {
                 const dynamicWithoutManual =
                   (fieldAssaySegmentationMethod === "otsu" || fieldAssaySegmentationMethod === "yen") &&

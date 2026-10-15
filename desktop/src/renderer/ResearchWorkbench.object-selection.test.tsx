@@ -210,6 +210,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
       image: "data:image/png;base64,same-tool-preview", preview_width: 512, preview_height: 512 }));
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Analyze" }));
+    fireEvent.click(screen.getByText("Import existing labels"));
     await screen.findByRole("button", { name: "Import labels" });
     // Match the packaged journey's complete group + current-tool reselection.
     fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
@@ -239,16 +240,17 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
     });
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Analyze" }));
+    fireEvent.click(screen.getByText("Import existing labels"));
     fireEvent.click(await screen.findByRole("button", { name: "Import labels" }));
     fireEvent.click(await screen.findByRole("button", { name: "Import on this plane" }));
     await waitFor(() => expect(api.execute).toHaveBeenCalledWith("select_result", { result_id: imported.id, revision_hash: imported.revision_hash, expected_revision: 0 }));
     if (navigation === "leaving the import pane") fireEvent.click(screen.getByRole("button", { name: "View" }));
-    else fireEvent.click(screen.getByRole("button", { name: /cell-segmentation, 3 objects/ }));
+    else fireEvent.click(screen.getByRole("button", { name: /Cell segmentation, 3 objects/ }));
     finishSelection({ result: imported, selection: { id: sampleSource.id, revision: 1, data: { result_id: imported.id, revision_hash: imported.revision_hash } } });
     await waitFor(() => expect(screen.queryByText("Working: Importing labels")).not.toBeInTheDocument());
     expect((api.execute as ReturnType<typeof vi.fn>).mock.calls.some(([operation, request]) => operation === "result" && request.result_id === imported.id)).toBe(false);
     expect(screen.queryByText("external-labels")).not.toBeInTheDocument();
-    if (navigation === "choosing another result") expect(screen.getByRole("button", { name: /cell-segmentation, 3 objects/ })).toHaveAttribute("aria-pressed", "true");
+    if (navigation === "choosing another result") expect(screen.getByRole("button", { name: /Cell segmentation, 3 objects/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("selects exact sparse label ID via result_label_at and highlights corresponding table row", async () => {
@@ -266,7 +268,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
     const resultsBtn = await screen.findByRole("button", { name: "Results" });
     fireEvent.click(resultsBtn);
 
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     await waitFor(() => {
@@ -295,7 +297,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
 
     const resultsBtn = await screen.findByRole("button", { name: "Results" });
     fireEvent.click(resultsBtn);
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     await waitFor(() => {
@@ -330,7 +332,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
 
     const resultsBtn = await screen.findByRole("button", { name: "Results" });
     fireEvent.click(resultsBtn);
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     await waitFor(() => {
@@ -366,7 +368,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
 
     const resultsBtn = await screen.findByRole("button", { name: "Results" });
     fireEvent.click(resultsBtn);
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     await waitFor(() => {
@@ -404,7 +406,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
 
     const resultsBtn = await screen.findByRole("button", { name: "Results" });
     fireEvent.click(resultsBtn);
-    const resultBtn = await screen.findByRole("button", { name: /cell-segmentation/ });
+    const resultBtn = await screen.findByRole("button", { name: /Cell segmentation/ });
     fireEvent.click(resultBtn);
 
     await waitFor(() => {
@@ -434,7 +436,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
     });
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Results" }));
-    fireEvent.click(await screen.findByRole("button", { name: /cell-segmentation/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Cell segmentation/ }));
     await screen.findByText("Quantitative summary");
     fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
     fireEvent.change(screen.getByRole("combobox", { name: "Search all tools" }), { target: { value: "Statistics & objects" } });
@@ -452,7 +454,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
     const api = buildApi(() => ({ label: 23, revision_hash: "wrong-revision" }));
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Results" }));
-    fireEvent.click(await screen.findByRole("button", { name: /cell-segmentation/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Cell segmentation/ }));
     await screen.findByText("Quantitative summary");
     const target = (document.querySelector(".research-image-frame") || document.querySelector("canvas"))!;
     fireEvent.pointerDown(target, { clientX: 200, clientY: 200, button: 0 });

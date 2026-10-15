@@ -615,9 +615,9 @@ try {
   stage = "review export and save";
   await inspector.getByRole("button", { name: "Mark reviewed" }).click();
   await waitFor(async () => (await snapshot()).results.find((item) => item.id === correctedResult.id)?.review?.disposition === "reviewed", "exact reviewed revision");
-  await inspector.getByRole("button", { name: "Export revision" }).click();
+  await inspector.getByRole("button", { name: "Export result" }).click();
   await waitFor(() => fs.access(path.join(exportPath, "manifest.json")).then(() => true, () => false), "published export", 900_000);
-  await waitFor(() => inspector.getByRole("button", { name: "Export revision" }).isEnabled(), "export completion", 120_000);
+  await waitFor(() => inspector.getByRole("button", { name: "Export result" }).isEnabled(), "export completion", 120_000);
   const exportRecord = JSON.parse(await fs.readFile(path.join(exportPath, "result.json"), "utf8"));
   const ancestor = JSON.parse(await fs.readFile(path.join(exportPath, `ancestor-${parentResult.id}.json`), "utf8"));
   assert.equal(exportRecord.schema, "loci.research-export/v2");

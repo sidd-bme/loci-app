@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDesktopApi,
@@ -104,6 +104,70 @@ function renderFieldAssayPanel(executeMock: ResearchDesktopApi["execute"]) {
 }
 
 describe("ResearchQuantificationPanel - Field Assay Tab", () => {
+  it("uses per-source ROI and count-mark ordinals while preserving exact annotation bindings", async () => {
+    const annotations = [
+      { id: "c".repeat(32), label: "focus", kind: "polygon", z: 0, t: 0 },
+      { id: "d".repeat(32), label: "focus", kind: "rectangle", z: 0, t: 0 },
+      { id: "e".repeat(32), label: "", kind: "rectangle", z: 0, t: 0 },
+      { id: "f".repeat(32), label: "", kind: "point", z: 0, t: 0, points: [{ x: 2, y: 3 }] },
+    ];
+    const execute = vi.fn(async (op: string) => op === "channel_metadata" ? channelMetadata :
+      op === "source_annotations" ? { ...sourceAnnotations, annotations } :
+      op === "field_assay_preview" ? { preview: true, qc_overlay: "current-qc" } : {});
+    renderFieldAssayPanel(execute);
+    await screen.findByText(/original: Channel 1/);
+    fireEvent.click(screen.getByText("Field assay", { exact: true }));
+    const focus = screen.getByLabelText("Focus region selection");
+    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 1 · T 0, Z 0" })).toHaveValue(annotations[0].id);
+    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 2 · T 0, Z 0" })).toHaveValue(annotations[1].id);
+    expect(within(focus).getByRole("option", { name: "ROI: Region 3 · T 0, Z 0" })).toHaveValue(annotations[2].id);
+    expect(focus).not.toHaveTextContent(annotations[2].id.slice(0, 8));
+    fireEvent.change(focus, { target: { value: annotations[2].id } });
+    fireEvent.change(screen.getByLabelText("Background mode selection"), { target: { value: "value" } });
+    fireEvent.change(screen.getByLabelText("Background ADU value"), { target: { value: "5" } });
+    fireEvent.change(screen.getByLabelText("Count mode"), { target: { value: "points" } });
+    const points = screen.getByLabelText("Manual points annotation");
+    expect(within(points).getByRole("option", { name: "Marks: Count marks 4 (1 point)" })).toHaveValue(annotations[3].id);
+    fireEvent.change(points, { target: { value: annotations[3].id } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("field_assay_preview", expect.objectContaining({
+      focus_annotation_id: annotations[2].id, manual_points_annotation_id: annotations[3].id,
+      source_id: sourceId, z: 0, t: 0,
+    })));
+  });
+
+  it("formats signed fractional measurements without changing their values and shows the empty zero-count ratio", async () => {
+    const signed = -123.456789012345;
+    const ratio = signed / 3;
+    const execute = vi.fn(async (op: string, request: Record<string, unknown>) => {
+      if (op === "channel_metadata") return channelMetadata;
+      if (op === "source_annotations") return sourceAnnotations;
+      if (op === "field_assay_preview") return { preview: true, qc_overlay: "current-qc",
+        summary: { background_value_adu: 112.3456789012345, integrated_signal_minus_background_adu: signed },
+        warnings: [], reviewed_count: Number(request.manual_count), count_mode: "manual_override",
+        raw_signal_sum: 1000, focus_mask_pixels: 10, integrated_signal_minus_background: signed,
+        field_ratio: request.manual_count === 0 ? "" : ratio };
+      return {};
+    });
+    const view = renderFieldAssayPanel(execute);
+    await screen.findByText(/original: Channel 1/);
+    fireEvent.click(screen.getByText("Field assay", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Count mode"), { target: { value: "override" } });
+    fireEvent.change(screen.getByLabelText("Manual count override value"), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    expect(await screen.findByText("-123.457")).toHaveAttribute("data-exact-value", String(signed));
+    expect(screen.getByText("-41.1523")).toHaveAttribute("data-exact-value", String(ratio));
+    expect(screen.getByText(String(signed))).not.toBeVisible();
+    expect(screen.getByText("3 (manual count)")).toBeVisible();
+    expect(view.onPublished).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Manual count override value"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    expect(await screen.findByText("Undefined (0 nuclei)")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Save exploratory" })).toBeEnabled();
+    expect(view.onPublished).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenLastCalledWith("field_assay_preview", expect.objectContaining({ manual_count: 0 }));
+  });
+
   it.each(["configuration", "plane", "source", "unmount"])(
     "does not publish a deferred preview after a %s change",
     async (change) => {
@@ -229,12 +293,13 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     fireEvent.click(screen.getByText("Field assay"));
 
     expect(screen.getByLabelText("Field assay readiness")).toHaveTextContent("Second source");
-    expect(screen.getByLabelText("Field assay readiness")).toHaveTextContent(secondSource.sha256.slice(0, 12));
+    expect(screen.getByLabelText("Field assay readiness")).toHaveAttribute("data-source-sha256", secondSource.sha256);
+    expect(screen.getByLabelText("Field assay readiness")).not.toHaveTextContent(secondSource.sha256.slice(0, 12));
     expect(screen.getByLabelText("Focus region selection").querySelectorAll("option")).toHaveLength(2);
     expect(screen.queryByText(/ROI: focus/)).not.toBeInTheDocument();
   });
 
-  it("defaults to annotation mode for focus and background, shows warnings for whole-field or zero background", async () => {
+  it("defaults to annotation mode for focus and background, explains how to approve whole-field or zero-background inputs", async () => {
     const execute = vi.fn(async (op: string) => {
       if (op === "channel_metadata") return channelMetadata;
       if (op === "source_annotations") return sourceAnnotations;
@@ -252,15 +317,15 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     // Select focus region: choose whole field
     const focusSelect = screen.getByLabelText("Focus region selection");
     fireEvent.change(focusSelect, { target: { value: "all" } });
-    expect(screen.getByText(/Whole-field measurement is exploratory only/)).toBeVisible();
+    expect(screen.getByText("Choose a focus ROI to approve this assay.")).toBeVisible();
 
     // Select background mode: switch to explicit value of 0
     const bgModeSelect = screen.getByLabelText("Background mode selection");
     fireEvent.change(bgModeSelect, { target: { value: "value" } });
-    expect(screen.getByText(/Unmeasured zero background is exploratory only/)).toBeVisible();
+    expect(screen.getByText("Measure background before approving this assay.")).toBeVisible();
   });
 
-  it("displays educational warning when Otsu or Yen automatic threshold is selected", async () => {
+  it("explains the automatic-threshold approval requirement until a manual count is supplied", async () => {
     const execute = vi.fn(async (op: string) => {
       if (op === "channel_metadata") return channelMetadata;
       if (op === "source_annotations") return sourceAnnotations;
@@ -275,8 +340,10 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     fireEvent.change(segSelect, { target: { value: "otsu" } });
 
     expect(
-      screen.getByText(/OTSU calculates an image-dependent threshold that varies across fields/),
+      screen.getByText("Approval needs a fixed threshold or manual count."),
     ).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Count mode"), { target: { value: "override" } });
+    expect(screen.queryByText("Approval needs a fixed threshold or manual count.")).not.toBeInTheDocument();
   });
 
   it("populates multi-point annotations and all_points option", async () => {

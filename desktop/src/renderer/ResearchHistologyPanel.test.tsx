@@ -25,7 +25,7 @@ describe("ResearchHistologyPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview tissue mask" }));
     await waitFor(() => expect(props.onPreview).toHaveBeenCalledWith(preview.image, preview.measurements));
     expect(execute).toHaveBeenCalledWith("tissue_preview", { source_id: "source", selection, settings: { closing_radius_pixels: 0, minimum_component_pixels: 0, control: "Blank-slide control" }, working_bytes: 512 * 1024 ** 2 });
-    expect(screen.getByRole("status")).toHaveTextContent("2 connected regions · 25.00%");
+    expect(screen.getByRole("status")).toHaveTextContent("2 regions · 25.00%");
     execute.mockResolvedValueOnce({ result, measurements: preview.measurements });
     fireEvent.click(screen.getByRole("button", { name: "Adopt tissue mask" }));
     await waitFor(() => expect(props.onResult).toHaveBeenCalledWith(result, preview.measurements));

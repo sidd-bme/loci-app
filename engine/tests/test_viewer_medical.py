@@ -367,3 +367,132 @@ def test_compressed_medical_uses_one_bounded_eager_decode_and_preserves_values(
     assert context["sampling"]["estimated_aggregate_bytes"] <= 2 * 1024**2
     assert len(reads) == 1
     assert hashlib.sha256(source.read_bytes()).hexdigest() == original_hash
+
+
+def test_medical_projection_block_is_exact_readonly_and_bounded_before_decode(
+    tmp_path, monkeypatch
+):
+    import loci_engine.viewer_medical as adapter
+
+    path = tmp_path / "signed.nrrd"
+    values = np.arange(9 * 7 * 6, dtype=np.float64).reshape(9, 7, 6) - 250.25
+    header = (
+        "NRRD0005\ntype: double\ndimension: 3\nspace: left-posterior-superior\n"
+        "sizes: 6 7 9\nspace directions: (0.4,0,0) (0,0.8,0) (0,0,2.5)\n"
+        'space units: "mm" "mm" "mm"\nspace origin: (10,20,-30)\nendian: little\nencoding: raw\n\n'
+    )
+    path.write_bytes(header.encode("ascii") + values.astype("<f8").tobytes())
+    session = MedicalViewerSession(path)
+    per_plane = 4 * 3 * (2 * 8 + 1)
+    selection = NativeSelection(x=1, y=2, width=4, height=3, z=2, budget_bytes=per_plane * 3)
+    assert session.projection_block_depth(selection, 9) == 3
+    calls = []
+    real = adapter.read_medical
+
+    def read(*args, **kwargs):
+        calls.append(kwargs["region"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "read_medical", read)
+    with pytest.raises(ValueError, match="bounded depth"):
+        session.read_z_block(selection, 6)
+    assert calls == []
+    block = session.read_z_block(selection, 5)
+    np.testing.assert_array_equal(block, values[2:5, 2:5, 1:5])
+    assert block.dtype == np.float64 and block.flags.writeable is False
+    assert block.min() < 0
+    with pytest.raises(ValueError):
+        block[0, 0, 0] = 0
+    assert calls == [(slice(2, 5), slice(2, 5), slice(1, 5))]
+    with pytest.raises(ValueError, match="memory budget"):
+        session.projection_block_depth(replace(selection, budget_bytes=per_plane - 1), 5)
+    assert len(calls) == 1
+    np.testing.assert_array_equal(
+        session.geometry({"x": 1, "y": 2, "z": 2}, True).world(np.array([[0, 0, 0]])),
+        [[10.4, 21.6, -25.0]],
+    )
+
+
+def test_compressed_projection_reserves_full_decode_before_any_pixel_read(tmp_path, monkeypatch):
+    import loci_engine.viewer_medical as adapter
+
+    path = tmp_path / "volume.nii.gz"
+    _write_volume(path)
+    session = MedicalViewerSession(path)
+    calls = []
+    monkeypatch.setattr(adapter, "read_medical", lambda *a, **kw: calls.append(kw))
+    fixed = 2 * session.inspection.estimated_decoded_bytes
+    per_plane = 4 * 3 * (np.dtype(session.inspection.dtype).itemsize + 1)
+    selection = NativeSelection(
+        x=1, y=2, width=4, height=3, z=2, budget_bytes=fixed + per_plane * 2 - 1
+    )
+    assert session.projection_block_depth(selection, 20) == 1
+    with pytest.raises(ValueError, match="bounded depth"):
+        session.read_z_block(selection, 4)
+    with pytest.raises(ValueError, match="memory budget"):
+        session.projection_block_depth(replace(selection, budget_bytes=fixed), 20)
+    assert calls == []
+
+
+def test_projection_block_cancels_before_and_after_verified_decode(tmp_path, monkeypatch):
+    import loci_engine.viewer_medical as adapter
+
+    path = tmp_path / "volume.nii"
+    _write_volume(path)
+    session = MedicalViewerSession(path)
+    selection = NativeSelection(x=1, y=2, width=4, height=3, z=2)
+    real = adapter.read_medical
+    calls = []
+
+    def read(*a, **kw):
+        calls.append(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(adapter, "read_medical", read)
+
+    def cancel():
+        raise RuntimeError("cancelled")
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        session.read_z_block(selection, 4, cancellation_check=cancel)
+    assert calls == []
+
+    def after_read():
+        if calls:
+            cancel()
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        session.read_z_block(selection, 4, cancellation_check=after_read)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("z_stop", True),
+        ("z_stop", 21),
+        ("z_stop", 2),
+        ("budget_bytes", True),
+        ("z", True),
+        ("c", 1),
+        ("level", 1),
+        ("expected_sha256", "b" * 64),
+    ],
+)
+def test_medical_projection_block_rejects_invalid_bindings_before_decode(
+    tmp_path, monkeypatch, field, value
+):
+    import loci_engine.viewer_medical as adapter
+
+    path = tmp_path / "volume.nii"
+    _write_volume(path)
+    session = MedicalViewerSession(path)
+    selection = NativeSelection(x=1, y=2, width=4, height=3, z=2)
+    calls = []
+    monkeypatch.setattr(adapter, "read_medical", lambda *a, **kw: calls.append(kw))
+    stop = value if field == "z_stop" else 4
+    if field != "z_stop":
+        selection = replace(selection, **{field: value})
+    with pytest.raises(ValueError):
+        session.read_z_block(selection, stop)
+    assert calls == []

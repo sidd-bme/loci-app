@@ -404,7 +404,7 @@ export function ResearchCorrectionPanel({
     return (
       <div className="research-panel">
         <h2>Corrections & ROI</h2>
-        <p>Select an exact segmented result first.</p>
+        <p>Select a segmentation result to edit labels or add an ROI.</p>
       </div>
     );
   if (!info)
@@ -414,7 +414,7 @@ export function ResearchCorrectionPanel({
         {infoError ? (
           <p role="alert">{infoError}</p>
         ) : (
-          <p>Loading the exact label revision…</p>
+          <p>Loading labels…</p>
         )}
       </div>
     );
@@ -563,8 +563,7 @@ export function ResearchCorrectionPanel({
       <h2>Corrections & ROI</h2>
       {targetError && <p role="alert">{targetError}</p>}
       <p>
-        Edits create an unreviewed child revision. Canvas points are
-        voxel-center coordinates on the displayed exact revision.
+        Choose a label, draw the edit, then apply it. Each edit creates a result for review.
       </p>
       <div className="research-actions">
         <button
@@ -1010,13 +1009,14 @@ export function ResearchCorrectionPanel({
           </button>
         </>
       )}
-      {!viewReady && <p role="status">Loading the selected exact plane…</p>}
-      <p>
-        {info.label_sha256
-          ? `Exact label SHA-256: ${info.label_sha256.slice(0, 12)}…`
-          : "No label array: ROI measurement only"}{" "}
-        · {points.length} drawn points
-      </p>
+      {!viewReady && <p role="status">Loading selected plane…</p>}
+      <p>{!info.label_sha256 && "ROI measurements only; this result has no labels. · "}{points.length} drawn points</p>
+      <details><summary>Technical record</summary>
+        <p>Result <code style={{ overflowWrap: "anywhere" }}>{result.id}</code></p>
+        <p>Revision <code style={{ overflowWrap: "anywhere" }}>{result.revision_hash}</code></p>
+        {info.label_sha256 && <p>Label fingerprint <code style={{ overflowWrap: "anywhere" }}>{info.label_sha256}</code></p>}
+        <p>Drawn points use voxel-centre coordinates on the displayed result.</p>
+      </details>
     </div>
   );
 }

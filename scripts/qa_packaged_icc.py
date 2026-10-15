@@ -1,4 +1,8 @@
-"""Qualify the packaged ICC path using an explicitly synthetic tiled RGB slide."""
+"""Qualify packaged ICC rendering with an analytic profile and fixed RGB pixels.
+
+The default uses authored pixels. An explicitly pinned public image can instead
+supply a fixed crop; the assigned linear profile remains an engineering control.
+"""
 
 from __future__ import annotations
 
@@ -53,7 +57,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--public-rgb", type=Path)
+    parser.add_argument("--public-sha256")
     args = parser.parse_args()
+    if bool(args.public_rgb) != bool(args.public_sha256):
+        parser.error("Supply both --public-rgb and --public-sha256.")
     args.output_dir.mkdir(parents=True, exist_ok=False)
     worker = args.app / "Contents/Resources/loci-engine/loci-engine"
     build_paths = {
@@ -62,11 +70,29 @@ def main() -> None:
         "worker": worker,
     }
     build = {key: identity(path) for key, path in build_paths.items()}
-    project = args.output_dir / "synthetic-icc.loci-study"
-    fixture = args.output_dir / "synthetic-linear-profile.svs"
+    project = args.output_dir / "analytic-profile-control.loci-study"
+    fixture = args.output_dir / "assigned-linear-profile.svs"
     profile = linear_rgb_profile()
-    y, x = np.indices((256, 256))
-    rgb = np.stack((x, y, np.full_like(x, 17)), axis=-1).astype(np.uint8)
+    public_input = None
+    if args.public_rgb:
+        original = identity(args.public_rgb)
+        assert original["sha256"] == args.public_sha256
+        with Image.open(args.public_rgb) as image:
+            assert image.mode == "RGB" and image.width >= 256 and image.height >= 256
+            # Centre crop is fixed geometrically, without choosing its outcome.
+            x, y = (image.width - 256) // 2, (image.height - 256) // 2
+            rgb = np.asarray(image.crop((x, y, x + 256, y + 256))).copy()
+        assert rgb.dtype == np.uint8 and int(rgb.min()) < int(rgb.max())
+        public_input = {
+            "path": str(args.public_rgb.resolve()),
+            **original,
+            "crop_xywh": [x, y, 256, 256],
+            "derived_array_sha256": hashlib.sha256(rgb.tobytes()).hexdigest(),
+            "derivation": "Decoded RGB centre crop; lossless tiled re-encoding; assigned analytic linear profile; no physical calibration inferred.",
+        }
+    else:
+        y, x = np.indices((256, 256))
+        rgb = np.stack((x, y, np.full_like(x, 17)), axis=-1).astype(np.uint8)
     tifffile.imwrite(
         fixture,
         rgb,
@@ -74,10 +100,7 @@ def main() -> None:
         photometric="rgb",
         compression="deflate",
         metadata=None,
-        description=(
-            "Aperio Image Library v12.3.3\n"
-            "256x256 [0,0 256x256] (64x64) |AppMag = 20|MPP = 0.5"
-        ),
+        description=("Aperio Image Library v12.3.3\n256x256 [0,0 256x256] (64x64)"),
         extratags=[(34675, 7, len(profile), profile, False)],
     )
     before = identity(fixture)
@@ -106,7 +129,7 @@ def main() -> None:
         )
         return json.loads(process.stdout)
 
-    cli("create", "--project", str(project), "--title", "Synthetic ICC qualification")
+    cli("create", "--project", str(project), "--title", "Assigned ICC profile control")
     imported = cli("import", "--project", str(project), str(fixture))
     source = imported["sources"][0]
     assert source["source_kind"] == "whole_slide"
@@ -146,8 +169,8 @@ def main() -> None:
     assert viewed["statistics"][0] == {
         "channel": 0,
         "dtype": "uint8",
-        "min": 0.0,
-        "max": 255.0,
+        "min": float(rgb.min()),
+        "max": float(rgb.max()),
         "mean": float(rgb.mean()),
     }
     icc = viewed["display"][0]["icc"]
@@ -156,16 +179,25 @@ def main() -> None:
     assert icc["source_icc_sha256"] == hashlib.sha256(profile).hexdigest()
     assert viewed["source_sha256"] == before["sha256"]
     assert identity(fixture) == before
+    if public_input:
+        assert identity(args.public_rgb) == original
     assert {key: identity(path) for key, path in build_paths.items()} == build
     Image.fromarray(rgb).save(args.output_dir / "raw-linear-rgb.png")
     Image.fromarray(pixels).save(args.output_dir / "packaged-srgb-display.png")
     report = {
         "schema": "loci.packaged-icc-qualification/v1",
         "passed": True,
-        "scope": "Synthetic RGB matrix/TRC golden; not a real scanner profile qualification",
+        "scope": (
+            "Public RGB pixels with an explicitly assigned analytic profile; not a native scanner-profile qualification"
+            if public_input
+            else "Authored RGB matrix/TRC golden; not a native scanner-profile qualification"
+        ),
         "app": build,
         "harness": identity(Path(__file__)),
         "fixture": before,
+        "fixture_path": str(fixture.resolve()),
+        "study": str(project.resolve()),
+        "public_input": public_input,
         "source_unchanged": True,
         "icc": icc,
         "maximum_code_value_error": error,

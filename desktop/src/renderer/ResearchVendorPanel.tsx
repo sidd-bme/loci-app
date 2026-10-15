@@ -160,10 +160,6 @@ function bytes(value: number): string {
   return `${(value / 1024 ** 2).toFixed(1)} MiB`;
 }
 
-function shortHash(value: string): string {
-  return `${value.slice(0, 12)}…${value.slice(-8)}`;
-}
-
 export function ResearchVendorPanel({
   api,
   snapshot,
@@ -375,12 +371,14 @@ export function ResearchVendorPanel({
             <dl className="research-vendor-kv">
               <div><dt>Source</dt><dd>{grant.source_name}</dd></div>
               <div><dt>Format / size</dt><dd>{grant.inspection.format.toUpperCase()} · {bytes(grant.inspection.source_size_bytes)}</dd></div>
-              <div><dt>Source SHA-256</dt><dd><code>{grant.source_sha256}</code></dd></div>
               <div><dt>Bio-Formats</dt><dd>{grant.inspection.runtime.bioformats_version}</dd></div>
-              <div><dt>Reader SHA-256</dt><dd><code>{grant.inspection.runtime.bioformats_jar_sha256}</code></dd></div>
               <div><dt>Java</dt><dd>{grant.inspection.runtime.java_version}</dd></div>
-              <div><dt>Java SHA-256</dt><dd><code>{grant.inspection.runtime.java_sha256}</code></dd></div>
             </dl>
+            <details><summary>Technical record</summary><dl className="research-vendor-kv">
+              <div><dt>Source SHA-256</dt><dd><code>{grant.source_sha256}</code></dd></div>
+              <div><dt>Reader SHA-256</dt><dd><code>{grant.inspection.runtime.bioformats_jar_sha256}</code></dd></div>
+              <div><dt>Java SHA-256</dt><dd><code>{grant.inspection.runtime.java_sha256}</code></dd></div>
+            </dl></details>
           </section>
 
           <section className="research-vendor-card" aria-label="Exact vendor plane selection">
@@ -455,8 +453,11 @@ export function ResearchVendorPanel({
       {conversion && artifact && (
         <section className="research-vendor-card research-vendor-receipt" aria-label="Vendor conversion receipt">
           <h3>Imported derived source</h3>
-          <p>Artifact SHA-256 <code>{shortHash(String(artifact.sha256))}</code></p>
-          <p>Pixel SHA-256 <code>{shortHash(String(artifact.pixel_sha256))}</code></p>
+          <p>{typeof artifact.filename === "string" ? artifact.filename : "Converted plane"} added to the study.</p>
+          <details><summary>Technical record</summary>
+            <p>Artifact SHA-256 <code>{String(artifact.sha256)}</code></p>
+            <p>Pixel SHA-256 <code>{String(artifact.pixel_sha256)}</code></p>
+          </details>
         </section>
       )}
       {status && <p role="status" className="research-vendor-status">{status}</p>}

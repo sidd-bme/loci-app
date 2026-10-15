@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CellposeProfileId, CellposeSettings, CellposeStatus, SegmentationProfile, SegmentationSettingDefinition } from "../shared/contracts";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
@@ -17,11 +17,19 @@ export function Setting({ definition, value, onChange, onValidity, disabled }: {
 }) {
   const [draft, setDraft] = useState(String(value));
   const [invalid, setInvalid] = useState(false);
-  useEffect(() => { setDraft((old) => old.trim() && Number(old) === value ? old : String(value)); setInvalid(false); }, [value]);
+  const applied = useRef(value);
+  useEffect(() => {
+    // A first edit can arrive before passive effects. Only a changed external
+    // value should replace a draft or clear its validation state.
+    if (Object.is(value, applied.current)) return;
+    applied.current = value;
+    setDraft((old) => old.trim() && Number(old) === value ? old : String(value));
+    setInvalid(false);
+  }, [value]);
   if (definition.valueType === "boolean") return <label className="research-check" title={definition.help}>
     <input type="checkbox" checked={Boolean(value)} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />{definition.label}</label>;
   if (definition.valueType === "choice") return <label title={definition.help}>{definition.label}
-    <select value={String(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{definition.choices.map((item) => <option key={item}>{item}</option>)}</select></label>;
+    <select aria-label={definition.label} value={String(value)} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{definition.choices.map((item) => <option key={item}>{item}</option>)}</select></label>;
   const edit = (text: string) => {
     setDraft(text);
     const number = Number(text);

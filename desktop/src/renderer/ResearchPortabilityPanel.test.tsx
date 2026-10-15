@@ -108,8 +108,13 @@ describe("ResearchPortabilityPanel", () => {
 
     fireEvent.click(screen.getByText("Export portable study"));
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "Study.loci-study.zip · SHA-256 111111111111… · 9 members",
+      "Study.loci-study.zip · 9 members",
     );
+    expect(screen.getByRole("status")).not.toHaveTextContent("SHA-256");
+    const fingerprint = screen.getByText("1".repeat(64));
+    expect(fingerprint).not.toBeVisible();
+    fireEvent.click(screen.getByText("Technical record"));
+    expect(fingerprint).toBeVisible();
     fireEvent.click(screen.getByText("Export template"));
     await waitFor(() => expect(exportRecipe).toHaveBeenCalledWith("1".repeat(32), primary.id));
     expect(await screen.findByRole("status")).toHaveTextContent(

@@ -50,6 +50,8 @@ export interface ResearchResult {
   id: string;
   source_id: string;
   kind: string;
+  /** Fixed producing-method vocabulary; never contains a hash or source name. */
+  method_label?: string;
   created_at: string;
   revision_hash: string;
   object_count: number;
@@ -69,6 +71,51 @@ export interface ResearchResult {
   review?: { disposition: string } | null;
   working_bytes?: number;
   label_import?: ResearchLabelImportIdentity;
+}
+export interface ResearchResultContextField {
+  name: string;
+  value: string | number | boolean | null | Array<string | number | boolean | null>;
+  /** Exact allowlisted location in the immutable result record. */
+  source: string;
+}
+/** Desktop execute("describe_result", { result_id, revision_hash }); read-only.
+ * No measurement rows, arbitrary provenance trees or canonical paths are returned.
+ * Replay is a copied original request, never an instruction to execute it.
+ */
+export interface ResearchResultContext {
+  schema: "loci.result-context/v1";
+  result_id: string;
+  revision_hash: string;
+  source_id: string;
+  source_sha256: string;
+  kind: string;
+  method_label: string;
+  producing_method_label: string;
+  engine_version: string | null;
+  settings: ResearchResultContextField[];
+  runtime: ResearchResultContextField[];
+  model: ResearchResultContextField[];
+  importer: ResearchResultContextField[];
+  correction: ResearchResultContextField[];
+  selection: ResearchResult["selection"];
+  calibration: ResearchResult["geometry"];
+  channels: {
+    segmentation: number | null;
+    measurement: number[] | null;
+    names: Array<{ index: number; name: string | null; source: string }> | null;
+  };
+  measurement_basis: string | null;
+  parents: Array<{
+    result_id: string; revision_hash: string; kind: string; method_label: string;
+    revision_bound: boolean;
+  }>;
+  unavailable: string[];
+  replay: {
+    status: "available" | "unsupported";
+    operation: "run_recipe" | "classical_run" | null;
+    request: Record<string, unknown> | null;
+    reason: string | null;
+  };
 }
 export interface ResearchLabelImportIdentity {
   file_name: string;

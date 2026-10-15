@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .native_image import NativeImageMetadata, NativeSelection
+from .native_image import DEFAULT_NATIVE_READ_BUDGET_BYTES, NativeImageMetadata, NativeSelection
 from .viewer_display import (
     MAX_DISPLAY_CHANNELS,
     MAX_DISPLAY_PIXELS,
@@ -38,6 +38,7 @@ from .viewer_display import (
     render_source_rgb,
     resolve_display_defaults,
 )
+from .viewer_medical import MedicalViewerSession
 
 MAX_OVERVIEW_EDGE = 1024
 SOURCE_TILE_EDGE = 512
@@ -220,11 +221,41 @@ def _read_plane_or_projection(
             f"A 2D projection is limited to {MAX_PROJECTION_PLANES} source planes."
         )
     aggregate: np.ndarray | None = None
-    for offset, z in enumerate(range(z_start, z_stop)):
-        if cancellation_check is not None:
-            cancellation_check()
-        region = session.read_region(
-            NativeSelection(
+
+    def reduce_plane(plane: np.ndarray) -> None:
+        nonlocal aggregate
+        if plane.ndim != 2 or plane.shape != (height, width) or plane.dtype.kind not in "buif":
+            raise ViewerImageError("The native reader returned an inconsistent scalar plane.")
+        if plane.dtype.kind == "f" and not np.isfinite(plane).all():
+            raise ViewerImageError("A selected viewer plane contains non-finite values.")
+        if projection == "max":
+            if aggregate is None:
+                aggregate = np.array(plane, copy=True)
+            elif isinstance(session, MedicalViewerSession):
+                # Block dtype is checked against the inspected medical dtype;
+                # retain just one accumulator, matching its memory reservation.
+                np.maximum(aggregate, plane, out=aggregate)
+            else:
+                aggregate = np.maximum(aggregate, plane)
+        else:
+            if aggregate is None:
+                aggregate = plane.astype(np.float64)
+            else:
+                aggregate += plane
+
+    if projection is not None and isinstance(session, MedicalViewerSession):
+        # Reserve reduction scratch outside the decoder block. In particular,
+        # mean must retain the same serial float64 addition order as plane reads.
+        itemsize = np.dtype(metadata.channel_dtypes[channel]).itemsize
+        reserved = width * height * (8 if projection == "mean" else itemsize)
+        budget = min(DEFAULT_NATIVE_READ_BUDGET_BYTES, MAX_VIEWER_WORKING_BYTES - reserved)
+        if budget < 1:
+            raise ViewerImageError("Medical projection accumulator exceeds its memory budget.")
+        z = z_start
+        while z < z_stop:
+            if cancellation_check is not None:
+                cancellation_check()
+            selection = NativeSelection(
                 x=x,
                 y=y,
                 width=width,
@@ -235,27 +266,57 @@ def _read_plane_or_projection(
                 level=level,
                 series=metadata.selected_series,
                 expected_sha256=metadata.sha256,
+                budget_bytes=budget,
             )
-        )
-        plane = np.asarray(region.pixels)
-        if plane.ndim != 2 or plane.shape != (height, width) or plane.dtype.kind not in "buif":
-            raise ViewerImageError("The native reader returned an inconsistent scalar plane.")
-        if plane.dtype.kind == "f" and not np.isfinite(plane).all():
-            raise ViewerImageError("A selected viewer plane contains non-finite values.")
-        if projection is None:
-            return np.array(plane, copy=True, order="C")
-        if projection == "max":
-            aggregate = (
-                np.array(plane, copy=True) if aggregate is None else np.maximum(aggregate, plane)
+            count = session.projection_block_depth(selection, z_stop)
+            block = session.read_z_block(
+                selection, z + count, cancellation_check=cancellation_check
             )
-        else:
-            if aggregate is None:
-                aggregate = plane.astype(np.float64)
-            else:
-                aggregate += plane
-        if offset + 1 == depth and projection == "mean":
-            assert aggregate is not None
-            aggregate /= depth
+            for offset in range(count):
+                if cancellation_check is not None:
+                    cancellation_check()
+                reduce_plane(block[offset])
+            # No view of the previous block is retained at the next decode.
+            del block
+            z += count
+        if cancellation_check is not None:
+            cancellation_check()
+        session.verify_strict()
+    else:
+        for z in range(z_start, z_stop):
+            if cancellation_check is not None:
+                cancellation_check()
+            region = session.read_region(
+                NativeSelection(
+                    x=x,
+                    y=y,
+                    width=width,
+                    height=height,
+                    t=t,
+                    c=channel,
+                    z=z,
+                    level=level,
+                    series=metadata.selected_series,
+                    expected_sha256=metadata.sha256,
+                )
+            )
+            plane = np.asarray(region.pixels)
+            if projection is None:
+                if (
+                    plane.ndim != 2
+                    or plane.shape != (height, width)
+                    or plane.dtype.kind not in "buif"
+                ):
+                    raise ViewerImageError(
+                        "The native reader returned an inconsistent scalar plane."
+                    )
+                if plane.dtype.kind == "f" and not np.isfinite(plane).all():
+                    raise ViewerImageError("A selected viewer plane contains non-finite values.")
+                return np.array(plane, copy=True, order="C")
+            reduce_plane(plane)
+    if projection == "mean":
+        assert aggregate is not None
+        aggregate /= depth
     assert aggregate is not None
     return aggregate
 
@@ -376,7 +437,9 @@ def _sample_rgb_plane(
     source = metadata.levels[0].dimensions
     x_indices = _indices(source.x, output_width)
     y_indices = _indices(source.y, output_height)
-    result = np.empty((output_height, output_width, 3), dtype=np.uint8)
+    # Keep unassociated source alpha, as native tiles and rendered exports do.
+    samples = 4 if metadata.sample_semantics == "RGBA" else 3
+    result = np.empty((output_height, output_width, samples), dtype=np.uint8)
     wrote = False
     for y0 in range(0, source.y, SOURCE_TILE_EDGE):
         height = min(SOURCE_TILE_EDGE, source.y - y0)
@@ -1382,6 +1445,9 @@ def _overview_tile(
     projection = _projection(request.get("projection"), z_stop)
     if metadata.sample_semantics != "none" and (projection is not None or z_stop is not None):
         raise ViewerImageError("Interleaved RGB overview does not support Z projection.")
+    if metadata.sample_semantics != "none" and np.dtype(metadata.channel_dtypes[0]) != np.uint8:
+        # Match native canvas tiles, including before accepting an old cached PNG.
+        raise ViewerImageError("Viewer canvas RGB rendering requires uint8 stored components.")
     requested_c = _integer(request.get("c", settings[0].channel), "c", 0, metadata.dimensions.c - 1)
     level = _select_native_overview_level(metadata, max_edge, exact_plane=projection is None)
     display = _display_payload(settings)

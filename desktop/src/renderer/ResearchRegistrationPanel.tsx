@@ -5,6 +5,8 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
+import { resultTitle } from "./result-title";
+
 type Report = <T>(
   work: () => Promise<T>,
   fallback: string,
@@ -46,7 +48,8 @@ const WORKING_BYTES = 512 * 1024 ** 2;
 
 function resultLabel(result: ResearchResult, snapshot: ResearchSnapshot): string {
   const source = snapshot.sources.find((item) => item.id === result.source_id);
-  return `${source?.name ?? "Source"} · ${result.kind} · ${result.id.slice(0, 8)}…`;
+  const ordinal = snapshot.results.findIndex((item) => item.id === result.id) + 1;
+  return `${source?.name ?? "Image unavailable"} · ${resultTitle(result)} · ${result.object_count} ${result.object_count === 1 ? "object" : "objects"} · Run ${ordinal}`;
 }
 
 function scalarArrays(result: ResearchResult | undefined): string[] {
@@ -696,8 +699,9 @@ export function ResearchRegistrationPanel({
                   <div key={key}><dt>{key.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())}</dt><dd>{String(value)}</dd></div>
                 ))}
               </dl>
-              <details><summary>Preview record</summary>
-                <p>SHA-256 {pending.preview_sha256} · {pending.preview.meaning}</p>
+              <details><summary>Technical record</summary>
+                <p>Preview fingerprint <code style={{ overflowWrap: "anywhere" }}>{pending.preview_sha256}</code></p>
+                <p>{pending.preview.meaning}</p>
               </details>
             </section>
           )}

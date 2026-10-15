@@ -90,17 +90,45 @@ describe("paired correction effect Study panel", () => {
       : row.id === peer.id ? { ...row, created_at: "2026-10-10T01:48:39.777150+00:00", review: { disposition: "excluded" } } : row);
     render(<ResearchCorrectionEffectPanel {...props} />);
     const after = screen.getByRole("combobox", { name: "After correction revision" });
-    expect(within(after).getByRole("option", { name: "corrected-labels · child" })).toBeInTheDocument();
+    expect(within(after).getByRole("option", { name: "Field one.tif · Corrected segmentation · 1 object · Run 2" })).toBeInTheDocument();
     expect(screen.getByLabelText("Selected correction revision details")).toHaveTextContent("pending review");
-    expect(screen.getByLabelText("Selected correction revision details")).toHaveTextContent("2026-10-10T01:48:47.240478+00:00");
+    const rawCreated = "2026-10-10T01:48:47.240478+00:00";
+    const localized = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(rawCreated));
+    const selectedDetail = screen.getByLabelText("Selected correction revision details");
+    expect(selectedDetail).toHaveTextContent(`Created ${localized}`);
+    expect(selectedDetail).not.toHaveTextContent(rawCreated);
+    expect(selectedDetail.querySelector("time")).toHaveAttribute("datetime", rawCreated);
+    const technical = screen.getByLabelText("Technical record for Selected correction revision details");
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText(rawCreated, { exact: true })).not.toBeVisible();
+    fireEvent.click(within(technical).getByText("Technical record", { exact: true }));
+    expect(within(technical).getByText(rawCreated, { exact: true })).toBeVisible();
+    expect(props.snapshot.results.find(row => row.id === child.id)?.created_at).toBe(rawCreated);
     fireEvent.click(screen.getByText("Unchanged context images", { exact: true }));
     const context = screen.getByLabelText("Context revision for Field peer.tif");
     fireEvent.change(context, { target: { value: peer.id } });
     const detail = screen.getByLabelText("Selected context revision details for Field peer.tif");
-    expect(detail).toBeVisible(); expect(detail).toHaveTextContent("excluded"); expect(detail).toHaveTextContent("2026-10-10T01:48:39.777150+00:00");
-    expect(context).toHaveAccessibleDescription(/excluded.*Created 2026-10-10T01:48:39.777150\+00:00/);
+    const peerCreated = "2026-10-10T01:48:39.777150+00:00";
+    const peerLocalized = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(peerCreated));
+    expect(detail).toBeVisible(); expect(detail).toHaveTextContent("excluded"); expect(detail).toHaveTextContent(`Created ${peerLocalized}`);
+    expect(detail).not.toHaveTextContent(peerCreated);
+    expect(detail.querySelector("time")).toHaveAttribute("datetime", peerCreated);
+    expect(context).toHaveAccessibleDescription(/excluded.*Created /);
     fireEvent.change(context, { target: { value: peerNew.id } });
     expect(screen.getByLabelText("Selected context revision details for Field peer.tif")).toHaveTextContent("reviewed");
+  });
+  it("keeps an invalid creation timestamp in the closed record without fabricating a date", () => {
+    const { props } = setup();
+    const invalid = "not-a-valid-timestamp";
+    props.snapshot.results = props.snapshot.results.map(row => row.id === child.id ? { ...row, created_at: invalid } : row);
+    render(<ResearchCorrectionEffectPanel {...props} />);
+    const detail = screen.getByLabelText("Selected correction revision details");
+    expect(detail).toHaveTextContent("Created Unknown time");
+    expect(detail.querySelector("time")).toBeNull();
+    const technical = screen.getByLabelText("Technical record for Selected correction revision details");
+    expect(technical).not.toHaveAttribute("open");
+    expect(within(technical).getByText(invalid, { exact: true })).not.toBeVisible();
+    expect(props.snapshot.results.find(row => row.id === child.id)?.created_at).toBe(invalid);
   });
   it("seeds only the exact direct parent/child, leaving every peer revision explicitly unselected", async () => {
     const { props, execute } = setup(); render(<ResearchCorrectionEffectPanel {...props} />);
@@ -206,4 +234,27 @@ describe("paired correction effect Study panel", () => {
     expect(screen.queryByText("Reviewed report exported.")).toBeNull();
     expect(screen.getByText(/Historical snapshot —/)).toBeVisible(); expect(screen.getByRole("button", { name: "Export reviewed effect report" })).toBeDisabled();
   });
+});
+
+it("uses distinct report ordinals and source-labelled inspection while retaining exact attributes and requests", async () => {
+  const { props } = setup();
+  props.snapshot.comparisons = [
+    { id: "saved-one", revision: 1, updated_at: "2026-10-10", data: { receipt: report() } },
+    { id: "saved-two", revision: 1, updated_at: "2026-10-11", data: { receipt: report() } },
+  ];
+  render(<ResearchCorrectionEffectPanel {...props} seed={null} />);
+  fireEvent.click(screen.getByText("Saved experiment effects"));
+  const first = screen.getByRole("button", { name: "Restore Study report 1" });
+  const second = screen.getByRole("button", { name: "Restore Study report 2" });
+  expect(first).toHaveAttribute("data-report-id", "saved-two");
+  expect(second).toHaveAttribute("data-report-id", "saved-one");
+  expect(first).not.toHaveTextContent(report().receipt_sha256.slice(0, 12));
+  fireEvent.click(first);
+  fireEvent.click(screen.getByText("Image contributions and correction details"));
+  const before = screen.getByRole("button", { name: "Inspect before Field one.tif" });
+  const after = screen.getByRole("button", { name: "Inspect after Field one.tif" });
+  expect(before).toHaveAttribute("data-result-id", parent.id);
+  expect(after).toHaveAttribute("data-result-id", child.id);
+  fireEvent.click(before); fireEvent.click(after);
+  expect(props.onOpenResult.mock.calls).toEqual([[parent.id], [child.id]]);
 });

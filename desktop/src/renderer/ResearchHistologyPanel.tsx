@@ -58,15 +58,15 @@ export function ResearchHistologyPanel({ api, sourceId, selection, busy, report,
 
   return <section className="research-panel" aria-label="Tissue regions">
     <h3>Tissue regions</h3>
-    <p>Otsu threshold on RGB luminance. Measures connected regions in the selected field.</p>
-    <label>Mask closing radius (selected-level pixels)<input aria-label="Tissue closing radius" type="number" min="0" max="64" step="1" value={closing} onChange={(event) => setClosing(event.target.value)} /></label>
+    <p>RGB luminance · Otsu threshold</p>
+    <label>Closing radius (pixels at this level)<input aria-label="Tissue closing radius" type="number" min="0" max="64" step="1" value={closing} onChange={(event) => setClosing(event.target.value)} /></label>
     <label>Minimum connected region (pixels)<input aria-label="Tissue minimum region" type="number" min="0" max="10000000" step="1" value={minimum} onChange={(event) => setMinimum(event.target.value)} /></label>
-    <label>Control or visual-review criterion<textarea aria-label="Tissue control or review criterion" maxLength={2000} value={control} onChange={(event) => setControl(event.target.value)} placeholder="Describe the blank area, control section, or review criterion." /></label>
+    <label>Control / review criterion<textarea aria-label="Tissue control or review criterion" maxLength={2000} value={control} onChange={(event) => setControl(event.target.value)} placeholder="Blank region, control section, or review criterion" /></label>
     {selection.z_stop !== undefined && <p role="status">Select one RGB plane before tissue masking.</p>}
     <div className="research-actions">
       <button disabled={busy || !valid} onClick={() => void execute(true)}>Preview tissue mask</button>
       <button className="research-primary" disabled={busy || !valid || !current} onClick={() => void execute(false)}>Adopt tissue mask</button>
     </div>
-    {current && <p role="status">{current.count} connected regions · {(100 * current.fraction).toFixed(2)}% of this selected field. Adoption saves an editable result.</p>}
+    {current && <p role="status">{current.count} {current.count === 1 ? "region" : "regions"} · {(100 * current.fraction).toFixed(2)}% of selected field</p>}
   </section>;
 }

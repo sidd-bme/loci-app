@@ -33,9 +33,9 @@ function recipeDocument(value: unknown): RecipeDocument | null {
     : null;
 }
 
-function shortHash(value: unknown): string | null {
+function archiveHash(value: unknown): string | null {
   return typeof value === "string" && /^[a-f0-9]{64}$/iu.test(value)
-    ? `${value.slice(0, 12)}…`
+    ? value
     : null;
 }
 
@@ -71,6 +71,7 @@ export function ResearchPortabilityPanel({
   const [flatfield, setFlatfield] = useState("");
   const [darkfield, setDarkfield] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [archiveFingerprint, setArchiveFingerprint] = useState<string | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
   const locked = busy || localBusy;
   const missing = snapshot.sources.filter(
@@ -90,6 +91,7 @@ export function ResearchPortabilityPanel({
     setLocalBusy(true);
     onBusyChange(true);
     setStatus(null);
+    setArchiveFingerprint(null);
     try {
       return await report(work, fallback);
     } finally {
@@ -106,11 +108,9 @@ export function ResearchPortabilityPanel({
     );
     const receipt = record(output);
     if (!receipt) return;
-    const digest = shortHash(receipt.archive_sha256);
+    setArchiveFingerprint(archiveHash(receipt.archive_sha256));
     setStatus(
       `Exported ${String(receipt.export_name ?? "portable study")}${
-        digest ? ` · SHA-256 ${digest}` : ""
-      }${
         typeof receipt.member_count === "number"
           ? ` · ${receipt.member_count} members`
           : ""
@@ -288,6 +288,7 @@ export function ResearchPortabilityPanel({
         onBusyChange={onBusyChange}
         onResult={onResult}
       />
+      {archiveFingerprint && <section className="research-panel"><details><summary>Technical record</summary><p>Archive fingerprint <code style={{ overflowWrap: "anywhere" }}>{archiveFingerprint}</code></p></details></section>}
       {status && <p className="research-portability-status" role="status">{status}</p>}
     </div>
   );

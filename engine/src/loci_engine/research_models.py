@@ -39,7 +39,7 @@ from .quantitative import (
 )
 from .render import render_overlay
 from .research_project import ResearchProject, canonical_json, checked_id
-from .workbench import Workbench, display_scalar
+from .workbench import Workbench, display_scalar, result_summary
 
 MODEL_SCHEMA = "loci.managed-model/v1"
 PREVIEW_SCHEMA = "loci.model-preview/v1"
@@ -901,14 +901,9 @@ def _run(
     )
     return {
         "result": {
-            "id": result["id"],
-            "source_id": result["source_id"],
-            "kind": result["kind"],
-            "revision_hash": result["revision_hash"],
-            "arrays": result["arrays"],
+            **result_summary(result),
             "preview_id": preview_id,
             "preview_sha256": stored_hash,
-            "object_count": len(measurements),
         },
         "measurements": measurements[:1000],
         "total_measurements": len(measurements),

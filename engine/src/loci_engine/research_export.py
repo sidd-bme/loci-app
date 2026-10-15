@@ -24,7 +24,18 @@ def flat_measurements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         flat: dict[str, Any] = {}
         for key, value in row.items():
-            if isinstance(value, dict):
+            if key == "compartments" and isinstance(value, dict):
+                for compartment, record in value.items():
+                    for field, item in record.items():
+                        if field == "intensity":
+                            for channel, statistics in item.items():
+                                for statistic, number in statistics.items():
+                                    flat[
+                                        f"compartments:{compartment}:intensity:{channel}:{statistic}"
+                                    ] = number
+                        else:
+                            flat[f"compartments:{compartment}:{field}"] = item
+            elif isinstance(value, dict):
                 for name, item in value.items():
                     if isinstance(item, dict):
                         for statistic, number in item.items():
@@ -84,6 +95,7 @@ def methods_text(result: dict[str, Any]) -> str:
                 "puncta_peak_status": provenance.get("puncta_peak_status"),
                 "association": provenance.get("association"),
                 "association_inputs": provenance.get("association_inputs"),
+                "compartment_measurement": provenance.get("compartment_measurement"),
                 "colocalisation": provenance.get("colocalisation"),
                 "transform": provenance.get("transform"),
                 "output_grid": provenance.get("output_grid"),
@@ -134,6 +146,9 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
             raise ValueError("An exported reference source changed")
     result_bindings = list(provenance.get("temporal_inputs", []))
     result_bindings.extend(provenance.get("association_inputs", {}).values())
+    result_bindings.extend(
+        provenance.get("compartment_measurement", {}).get("label_inputs", {}).values()
+    )
     result_bindings.extend(
         provenance[key]
         for key in ("parent_result", "fixed_result", "moving_result")

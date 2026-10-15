@@ -12,9 +12,22 @@ const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
 const projectRoot = path.resolve(desktopRoot, "..");
 const TWO_GIB = 2 * 1024 ** 3;
-const EXPECTED_SOURCE_SHA256 =
+const publicationReceipt = process.env.LOCI_QA_LEARNED_RECEIPT
+  ? JSON.parse(await fs.readFile(process.env.LOCI_QA_LEARNED_RECEIPT, "utf8")) : null;
+if (publicationReceipt) assert.equal(publicationReceipt.status, "passed");
+const publicationCase = publicationReceipt?.cases.find((item) => item.name === "onnx");
+const EXPECTED_SOURCE_SHA256 = publicationReceipt?.source.sha256 ??
   "2b086faa8e3b55202ea40604da32aec01aa7e99c7a7df861d03e773430730539";
-const EXPECTED_MODEL = {
+const EXPECTED_MODEL = publicationReceipt ? {
+  id: publicationReceipt.package_identity.package.id,
+  version: publicationReceipt.package_identity.package.version,
+  package_sha256: publicationReceipt.package_identity.package.package_sha256,
+  metadata_sha256: publicationReceipt.package_identity.package.metadata_sha256,
+  model_sha256: publicationReceipt.package_identity.package.model.sha256,
+  reference_input_sha256: publicationReceipt.package_identity.package.reference.input.sha256,
+  reference_output_sha256: publicationReceipt.package_identity.package.reference.output.sha256,
+  result_arrays: Object.fromEntries(Object.entries(publicationCase.arrays).map(([name, value]) => [name, value.sha256])),
+} : {
   id: "nuclei-segmentation-boundary-model",
   version: "0.1.0-zenodo-v7",
   package_sha256:
@@ -95,9 +108,9 @@ function inside(parent, candidate) {
 }
 
 assert.equal(
-  inside(projectRoot, outputRoot),
-  false,
-  "LOCI_QA_OUTPUT_ROOT must be outside the repository.",
+  !inside(projectRoot, outputRoot) || inside(path.join(projectRoot, ".loci", "evidence"), outputRoot),
+  true,
+  "LOCI_QA_OUTPUT_ROOT must be outside tracked source or in ignored .loci/evidence.",
 );
 assert.equal(
   inside(outputRoot, sourcePath),
@@ -319,13 +332,14 @@ async function previewAndAdopt(page, priorIds, label) {
     .click();
   const pending = await visible(
     page,
-    page.getByText(/^Pending preview [a-f0-9]{8}… is bound/u),
+    page.getByText("Preview ready to adopt.", { exact: true }),
     `${label} exact preview`,
     600_000,
   );
-  const pendingText = await pending.textContent();
-  const prefix = pendingText?.match(/Pending preview ([a-f0-9]{8})/u)?.[1];
-  assert.ok(prefix, `${label} preview id was not visible`);
+  const previewId = await pending.getAttribute("data-model-preview-id");
+  const previewSha256 = await pending.getAttribute("data-model-preview-sha256");
+  assert.match(previewId ?? "", /^[a-f0-9]{32}$/u, `${label} preview identity was not bound`);
+  assert.match(previewSha256 ?? "", /^[a-f0-9]{64}$/u, `${label} preview fingerprint was not bound`);
   await screenshot(page, `${label}-preview`);
   await page
     .getByRole("button", { name: "Adopt exact preview", exact: true })
@@ -343,14 +357,14 @@ async function previewAndAdopt(page, priorIds, label) {
     (result_id) => window.lociResearch.execute("result", { result_id }),
     summary.id,
   );
-  assert.ok(
-    record.provenance.model_preview.id.startsWith(prefix),
+  assert.equal(
+    record.provenance.model_preview.id, previewId,
     `${label} adopted a different preview than the one shown`,
   );
-  assert.match(record.provenance.model_preview.sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(record.provenance.model_preview.sha256, previewSha256);
   await visible(
     page,
-    page.locator(`[data-result-id="${summary.id}"]`),
+    page.locator(`.research-sources [data-result-id="${summary.id}"]`),
     `${label} history revision`,
   );
   await screenshot(page, `${label}-adopted`);
@@ -513,18 +527,21 @@ try {
   );
 
   await page.getByRole("button", { name: "Open images", exact: true }).click();
-  const sourceButton = page.locator(".research-sources").getByRole("button", {
-    name: "supplier-reference-nuclei.tif 1 C / 1 Z",
-    exact: true,
-  });
-  await visible(page, sourceButton, "imported supplier reference source");
-  const importedSnapshot = await page.evaluate(() =>
-    window.lociResearch.getSnapshot(),
+  const importedSnapshot = await waitFor(
+    page,
+    () => page.evaluate(() => window.lociResearch.getSnapshot()),
+    (value) => value?.sources.length === 1,
+    "supplier reference import snapshot",
+    120_000,
   );
   assert.equal(importedSnapshot.sources.length, 1);
   const source = importedSnapshot.sources[0];
-  assert.equal(source.name, "supplier-reference-nuclei.tif");
+  assert.equal(source.name, path.basename(sourcePath));
   assert.equal(source.sha256, sourceBefore.sha256);
+  const sourceButton = page.locator(`.research-sources button[data-source-id="${source.id}"]`);
+  await visible(page, sourceButton, "identity-bound supplier reference source");
+  assert.equal(await sourceButton.locator('.research-source-name').textContent(), source.name);
+  assert.equal(await sourceButton.getAttribute("aria-current"), "true");
   assert.deepEqual(source.metadata.dimensions, {
     c: 1,
     s: 1,
@@ -626,9 +643,12 @@ try {
     page,
     page
       .locator(".research-model-records")
-      .filter({ hasText: "reference-qualified on the recorded CPU runtime" }),
+      .filter({ hasText: "Reference check passed." }),
     "visible useful model qualification",
   );
+  const modelTechnical = page.locator(".research-model-records details");
+  assert.equal(await modelTechnical.getAttribute("open"), null);
+  assert.ok((await modelTechnical.textContent()).includes("reference-qualified on the recorded CPU runtime"));
   await screenshot(page, "02-useful-model-qualified");
 
   const usefulRun = await previewAndAdopt(
@@ -637,7 +657,7 @@ try {
     "03-useful-model",
   );
   const usefulRecord = usefulRun.record;
-  assert.equal(usefulRun.summary.object_count, 45);
+  assert.equal(usefulRun.summary.object_count, publicationCase?.object_count ?? 45);
   assert.equal(usefulRecord.result.kind, "model-segmentation");
   assert.equal(usefulRecord.result.source_id, source.id);
   assert.equal(usefulRecord.result.source_sha256, sourceBefore.sha256);
@@ -653,7 +673,7 @@ try {
   assert.deepEqual(usefulRecord.provenance.channel_mapping, [
     {
       model_input_index: 0,
-      model_channel: "declared-fluorescence-intensity",
+      model_channel: publicationReceipt?.package_identity.package.input.channels[0].name ?? "declared-fluorescence-intensity",
       package_source_slot: 0,
       source_channel: 0,
     },
@@ -709,10 +729,10 @@ try {
           item.id === usefulRecord.result.id &&
           item.review?.disposition === "reviewed",
       ),
-    "human review of useful model result",
+    "SIMULATED automated review of useful model result",
   );
   await page
-    .getByRole("button", { name: "Export revision", exact: true })
+    .getByRole("button", { name: "Export result", exact: true })
     .click();
   await waitFor(
     page,
@@ -854,11 +874,18 @@ try {
     exactNumerics(generalityRecord),
   );
   assert.equal(reopenedUseful.result.review.disposition, "reviewed");
-  await page.locator(`[data-result-id="${usefulRecord.result.id}"]`).click();
+  const reopenedResultButton = page.locator(`.research-sources [data-result-id="${usefulRecord.result.id}"]`);
+  await reopenedResultButton.click();
+  const reopenedOverlayKey = `${usefulRecord.result.id}:${usefulRecord.result.revision_hash}`;
   await visible(
     page,
-    page.getByAltText("Exact selected result revision"),
-    "reopened useful-model result",
+    page.locator(`.image-viewport[data-viewer-source="${usefulRecord.result.source_id}"][data-result-overlay="${reopenedOverlayKey}"][data-prepared="true"]`),
+    "reopened exact useful-model source overlay",
+  );
+  assert.equal(await reopenedResultButton.getAttribute("aria-pressed"), "true");
+  assert.equal(
+    await page.locator(`.research-sources [data-source-id="${usefulRecord.result.source_id}"]`).getAttribute("aria-current"),
+    "true",
   );
   await screenshot(page, "09-reopened-numerically-identical-results");
   const reopenCalls = await dialogCalls(app);

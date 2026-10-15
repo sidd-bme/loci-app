@@ -20,6 +20,8 @@ for (const name of [
 const appBundle = path.resolve(process.env.LOCI_PACKAGED_APP);
 const fixture = path.resolve(process.env.LOCI_QA_IMAGE);
 await fs.access(fixture);
+const publicInput = process.env.LOCI_QA_CHROME_PUBLIC_INPUT
+  ? JSON.parse(await fs.readFile(process.env.LOCI_QA_CHROME_PUBLIC_INPUT, "utf8")) : null;
 const runRoot = path.join(
   path.resolve(process.env.LOCI_QA_OUTPUT_ROOT),
   new Date().toISOString().replaceAll(":", "-"),
@@ -55,6 +57,11 @@ const report = {
   cases: [],
   screenshots: [],
 };
+if (publicInput) {
+  assert.equal(report.fixture.sha256, publicInput.source_sha256);
+  assert.equal(publicInput.interpretation, "Public phase microscopy with independent raw measurement oracle");
+  report.public_input = { ...publicInput, manifest_sha256: await hash(process.env.LOCI_QA_CHROME_PUBLIC_INPUT) };
+}
 let app, page, failure;
 const save = () =>
   fs.writeFile(
@@ -79,6 +86,16 @@ async function focusVisible(locator, label, body = false) {
       h = document.querySelector(".workbench-tools").getBoundingClientRect();
     const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const cs = getComputedStyle(el);
+    // Text fields intentionally draw the two-pixel focus ring inside their
+    // boundary: a one-pixel accent border plus one-pixel inset shadow. Verify
+    // that exact visible treatment as well as the external outline used by
+    // buttons/selects; requiring outline alone rejects a visible focus ring.
+    const shadowColor = cs.boxShadow.match(/rgba?\([^)]+\)/)?.[0];
+    const insetFieldRing = el.matches('input:not([type="range"]):not([type="checkbox"]):not([type="color"]):focus-visible') &&
+      /0px 0px 0px 1px inset/.test(cs.boxShadow) && shadowColor &&
+      ['Top', 'Right', 'Bottom', 'Left'].every(side => cs[`border${side}Style`] === 'solid' &&
+        parseFloat(cs[`border${side}Width`]) >= 1 && cs[`border${side}Color`] === shadowColor) &&
+      shadowColor !== cs.backgroundColor && !shadowColor.endsWith(', 0)');
     return {
       focused: document.activeElement === el,
       top: r.top,
@@ -88,6 +105,8 @@ async function focusVisible(locator, label, body = false) {
       hit: Boolean(at && (el === at || el.contains(at))),
       outline: cs.outlineStyle,
       outlineWidth: parseFloat(cs.outlineWidth),
+      insetFieldRing: Boolean(insetFieldRing),
+      boxShadow: cs.boxShadow,
     };
   });
   assert.ok(
@@ -103,8 +122,8 @@ async function focusVisible(locator, label, body = false) {
       `${label}: control lies under task header: ${JSON.stringify(result)}`,
     );
   assert.ok(
-    result.outline !== "none" && result.outlineWidth >= 1.5,
-    `${label}: keyboard focus has no visible ring`,
+    (result.outline !== "none" && result.outlineWidth >= 1.5) || result.insetFieldRing,
+    `${label}: keyboard focus has no visible ring: ${JSON.stringify(result)}`,
   );
   return result;
 }
@@ -153,15 +172,39 @@ try {
     `Task header must be fully opaque: ${JSON.stringify(baseline)}`,
   );
   await selectWorkbenchTool(page, "Display");
-  await page.getByLabel("Z", { exact: true }).fill("1");
+  if (!publicInput) await page.getByLabel("Z", { exact: true }).fill("1");
   await selectWorkbenchTool(page, "Analyze");
-  await page.getByLabel("Threshold", { exact: true }).fill("50");
+  if (publicInput) {
+    await page.getByRole("button", { name: "Whole image", exact: true }).click();
+    await page.getByLabel("Segmentation method", { exact: true }).selectOption("components");
+    await page.getByLabel("Object foreground", { exact: true }).selectOption("bright");
+    await page.getByLabel("Minimum object measure", { exact: true }).fill(String(publicInput.minimum_measure));
+    await page.getByLabel("Exclude border objects", { exact: true }).uncheck();
+    await page.getByLabel("Measurement channel", { exact: true }).selectOption("0");
+  }
+  await page.getByLabel("Threshold", { exact: true }).fill(String(publicInput?.threshold ?? 50));
   await page.getByRole("button", { name: "Run recipe", exact: true }).click();
   await page.waitForFunction(
-    () =>
-      document.querySelectorAll(".research-result-table tbody tr").length === 2,
+    expected => document.querySelectorAll(".research-result-table tbody tr").length === expected,
+    publicInput?.measurements.length ?? 2,
   );
-  assert.deepEqual(
+  if (publicInput) {
+    const state = await page.evaluate(() => window.lociResearch.getSnapshot());
+    assert.equal(state.results.length, 1);
+    const result = state.results[0];
+    assert.equal(result.source_sha256, publicInput.source_sha256);
+    const record = await page.evaluate(id => window.lociResearch.execute("result", { result_id: id }), result.id);
+    assert.deepEqual(record.provenance.selection, publicInput.selection);
+    assert.equal(record.measurements.length, publicInput.measurements.length);
+    for (const [i, expected] of publicInput.measurements.entries()) {
+      const actual = record.measurements[i];
+      assert.equal(actual.label, expected.label); assert.equal(actual.voxel_count, expected.voxel_count);
+      assert.ok(Math.abs(actual.measure - expected.measure) < 1e-9);
+      for (const [key, value] of Object.entries(expected.raw_intensity))
+        assert.ok(Math.abs(Object.values(actual.intensity)[0][key] - value) <= 1e-9 + 1e-12 * Math.abs(value));
+    }
+    report.public_result = { id: result.id, revision_hash: result.revision_hash, object_count: result.object_count };
+  } else assert.deepEqual(
     await page
       .locator(".research-result-table tbody tr")
       .evaluateAll((rows) =>

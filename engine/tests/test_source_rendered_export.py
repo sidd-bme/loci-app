@@ -1,4 +1,6 @@
+import base64
 import hashlib
+import io
 import json
 
 import numpy as np
@@ -413,6 +415,75 @@ def test_rgb16_without_icc_preserves_native_display_codes_and_source_bytes(tmp_p
         assert provenance["precision_policy"] == "native-uint16-display-codes"
         assert provenance["rgb_color_policy"]["display_space"] == "uncharacterized-source-RGB"
         assert 34675 not in tif.pages[0].tags
+    assert source_path.read_bytes() == before
+    assert source["sha256"] == hashlib.sha256(before).hexdigest()
+
+
+@pytest.mark.parametrize("adjusted", [False, True])
+def test_rgba_viewer_and_rendered_png_tiff_preserve_unassociated_alpha(tmp_path, adjusted):
+    colors = np.array(
+        [[255, 32, 128, alpha] for alpha in (0, 1, 64, 127, 128, 191, 254, 255)], dtype=np.uint8
+    )
+    pixels = np.tile(colors[None, ...], (24, 4, 1))
+    workbench, source, request, source_path = _tiff_fixture(tmp_path, pixels)
+    before = source_path.read_bytes()
+    if adjusted:
+        request["view"]["channels"][0].update(low=32.0, high=224.0, gamma=2.0)
+    expected = pixels.copy()
+    if adjusted:
+        rgb = np.clip((pixels[..., :3].astype(np.float64) - 32) / 192, 0, 1)
+        expected[..., :3] = np.rint(np.sqrt(rgb) * 255).astype(np.uint8)
+    try:
+        view = {
+            "source_id": source["id"],
+            "overview": True,
+            "max_edge": 32,
+            "channels": request["view"]["channels"],
+        }
+        overview = workbench.execute("viewer_tile", view)
+        tile = workbench.execute("viewer_tile", request["view"])
+        for payload in (overview, tile):
+            with Image.open(
+                io.BytesIO(base64.b64decode(payload["image"].split(",", 1)[1]))
+            ) as image:
+                assert image.mode == "RGBA"
+                np.testing.assert_array_equal(np.asarray(image), expected)
+        target_png = tmp_path / "rgba-rendered.png"
+        export_rendered_source(workbench, {**request, "format": "png"}, target_png)
+        with Image.open(target_png) as image:
+            assert image.mode == "RGBA"
+            np.testing.assert_array_equal(np.asarray(image), expected)
+        target_tiff = tmp_path / "rgba-rendered.tiff"
+        export_rendered_source(workbench, request, target_tiff)
+        with tifffile.TiffFile(target_tiff) as tif:
+            np.testing.assert_array_equal(tif.asarray(), expected.astype(np.uint16) * 257)
+            assert tif.pages[0].extrasamples == (tifffile.EXTRASAMPLE.UNASSALPHA,)
+        assert workbench.project.list_results() == []
+    finally:
+        workbench.close()
+    assert source_path.read_bytes() == before
+    assert hashlib.sha256(before).hexdigest() == source["sha256"]
+
+
+def test_rgba16_rendered_tiff_preserves_native_rgb_and_alpha_codes(tmp_path):
+    pixels = np.array(
+        [[[65535, 1024, 32768, alpha] for alpha in (0, 1, 16384, 32768, 65534, 65535)]],
+        dtype=np.uint16,
+    )
+    workbench, source, request, source_path = _tiff_fixture(tmp_path, pixels)
+    before = source_path.read_bytes()
+    try:
+        target = tmp_path / "native-rgba16.tiff"
+        export_rendered_source(workbench, request, target)
+        with tifffile.TiffFile(target) as tif:
+            np.testing.assert_array_equal(tif.asarray(), pixels)
+            assert tif.pages[0].extrasamples == (tifffile.EXTRASAMPLE.UNASSALPHA,)
+            assert (
+                json.loads(tif.pages[0].description)["precision_policy"]
+                == "native-uint16-display-codes"
+            )
+    finally:
+        workbench.close()
     assert source_path.read_bytes() == before
     assert source["sha256"] == hashlib.sha256(before).hexdigest()
 

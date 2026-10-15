@@ -274,3 +274,23 @@ describe("Visual workflow interaction and bindings", () => {
   });
 
 });
+
+it("retains exact population counts and keeps the full membership fingerprint in a closed record", async () => {
+  const membership = "d".repeat(64);
+  setup({}, (operation, _request, normal) => {
+    const output = normal();
+    if (operation !== "workflow_run") return output;
+    const run = output as { result: ResearchResult; run: { data: Record<string, unknown> } };
+    return { ...run, run: { ...run.run, data: { ...run.run.data, population: {
+      filtered_count: 3, total_count: 12, membership_sha256: membership, query_sha256: "e".repeat(64),
+    } } } };
+  });
+  fireEvent.click(screen.getByText("Save workflow"));
+  await waitFor(() => expect(screen.getByText("Run workflow")).toBeEnabled());
+  fireEvent.click(screen.getByText("Run workflow"));
+  expect(await screen.findByText("3 of 12 objects match.")).toBeVisible();
+  const fingerprint = screen.getByText(membership);
+  expect(fingerprint).not.toBeVisible();
+  fireEvent.click(screen.getByText("Technical record"));
+  expect(fingerprint).toBeVisible();
+});

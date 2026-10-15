@@ -34,4 +34,6 @@ The [capability matrix](CAPABILITY_MATRIX.md) records format-specific boundaries
 
 Start with [contributing](../CONTRIBUTING.md) for setup and checks, or the [extension guide](EXTENDING_LOCI.md) for where a workflow belongs and how to verify it. Use [building Loci](BUILDING.md) for packaging. The extension guide describes the desktop and analysis engine boundaries.
 
+[Reproduce a bounded workflow](REPRODUCIBILITY.md) to compare the engine, CLI, worker and MCP against independent numerical expectations, or run the installed-ImageJ comparator.
+
 [Image credits](media/README.md) · [Licence](../LICENSE) · [Security](../SECURITY.md) · [Back to Loci](../README.md)

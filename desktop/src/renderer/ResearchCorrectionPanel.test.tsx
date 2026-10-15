@@ -137,7 +137,7 @@ describe("ResearchCorrectionPanel", () => {
         ])}
       />,
     );
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     fireEvent.change(screen.getByLabelText("Correction tool"), {
       target: { value: "add" },
     });
@@ -168,7 +168,7 @@ describe("ResearchCorrectionPanel", () => {
           : Promise.resolve({}),
     );
     render(<ResearchCorrectionPanel {...props(bridge(execute))} />);
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     expect(screen.getByLabelText("Merge label 1")).toBeChecked();
     expect(screen.getByLabelText("Merge label 3")).toBeChecked();
     fireEvent.change(screen.getByLabelText("Retained merge label"), {
@@ -202,7 +202,7 @@ describe("ResearchCorrectionPanel", () => {
     const api = bridge(execute);
     const stable = props(api, [{ u: 4, v: 5 }]);
     const { rerender } = render(<ResearchCorrectionPanel {...stable} />);
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     fireEvent.change(screen.getByLabelText("Correction tool"), {
       target: { value: "split" },
     });
@@ -256,7 +256,7 @@ describe("ResearchCorrectionPanel", () => {
         ])}
       />,
     );
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     fireEvent.change(screen.getByLabelText("Correction tool"), {
       target: { value: "roi" },
     });
@@ -290,7 +290,7 @@ describe("ResearchCorrectionPanel", () => {
           : Promise.resolve({}),
     );
     render(<ResearchCorrectionPanel {...props(bridge(execute))} />);
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     fireEvent.click(screen.getByText("Delete selected label"));
     await waitFor(() =>
       expect(screen.getByText("Undo revision")).toBeDisabled(),
@@ -338,7 +338,7 @@ describe("ResearchCorrectionPanel", () => {
     const stable = props(bridge(execute));
     const setPoints = vi.mocked(stable.setPoints);
     const { rerender } = render(<ResearchCorrectionPanel {...stable} />);
-    await screen.findByText(/Exact label SHA-256/);
+    await screen.findByLabelText("Correction tool");
     fireEvent.change(screen.getByLabelText("Correction tool"), {
       target: { value: "vertex" },
     });
@@ -412,7 +412,7 @@ describe("ResearchCorrectionPanel", () => {
         ])}
       />,
     );
-    await screen.findByText(/No label array: ROI measurement only/);
+    await screen.findByText(/ROI measurements only; this result has no labels/);
     expect(screen.getByLabelText("Correction tool")).toHaveValue("roi");
     expect(screen.getByRole("option", { name: "Add polygon" })).toBeDisabled();
     expect(screen.getByLabelText("Measure REGISTERED-DERIVED:image")).toBeChecked();
@@ -476,4 +476,14 @@ describe("ResearchCorrectionPanel", () => {
       ),
     );
   });
+});
+
+it("keeps complete revision fingerprints in a closed technical record", async () => {
+  render(<ResearchCorrectionPanel {...props(bridge(vi.fn().mockResolvedValue(info)))} />);
+  await screen.findByLabelText("Correction tool");
+  expect(screen.getByText(info.label_sha256)).not.toBeVisible();
+  expect(screen.getByText(parent.revision_hash)).not.toBeVisible();
+  fireEvent.click(screen.getByText("Technical record"));
+  expect(screen.getByText(info.label_sha256)).toBeVisible();
+  expect(screen.getByText(parent.revision_hash)).toBeVisible();
 });

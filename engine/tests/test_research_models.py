@@ -328,6 +328,22 @@ def test_preview_then_exact_adoption_persists_probabilities_labels_and_raw_measu
     )
     result = workbench.project.result(adopted["result"]["id"])
     assert adopted["adopted"] is True
+    # The renderer immediately binds this response to a paged result read,
+    # before refreshing history. It needs the persisted source fingerprint,
+    # revision and the same canonical contract used by the snapshot.
+    page = workbench.execute("result", {"result_id": result["id"], "limit": 200})
+    for key in ("id", "revision_hash", "source_id", "source_sha256"):
+        assert adopted["result"][key] == page["result"][key] == result[key]
+    assert adopted["result"]["source_sha256"] == source_hash
+    summary = {
+        key: value
+        for key, value in adopted["result"].items()
+        if key not in {"preview_id", "preview_sha256"}
+    }
+    assert summary == workbench.snapshot()["results"][0]
+    assert summary["review"] is None
+    assert adopted["result"]["preview_id"] == preview["preview"]["id"]
+    assert adopted["result"]["preview_sha256"] == preview["preview"]["preview_sha256"]
     assert set(result["arrays"]) == {"image", "probabilities", "labels"}
     assert workbench.project.load_array(result["arrays"]["probabilities"]).shape == (1, 11, 13)
     assert workbench.project.load_array(result["arrays"]["labels"]).dtype == np.uint32

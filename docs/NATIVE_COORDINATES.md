@@ -43,6 +43,15 @@ frame whose first voxel centre is zero. A selected crop translates that origin
 by the selected-level spacing. Uncalibrated data use explicit `pixel` units.
 An XY plane retains its calibrated Z coordinate only when Z spacing is declared.
 
+PNG and JPEG print-density metadata (DPI or pixels per metre) does not establish
+specimen calibration. These formats use pixel coordinates and pixel-based
+measurements. A calibrated acquisition should retain its microscopy metadata in
+a supported scientific format, such as OME-TIFF. Sources imported by an older
+Loci version with print DPI converted to specimen spacing remain in their saved
+history, but new analysis and result export are refused. Preserve that study and
+import the unchanged image into a new study to measure in pixels; no saved
+measurement or annotation is silently rescaled.
+
 ## Time coordinates
 
 Every OME `Plane DeltaT` value is retained with its T/C/Z indices, original

@@ -557,9 +557,9 @@ try {
   const inspector = page.getByRole("region", { name: "Large result objects" });
   await inspector.getByRole("button", { name: "Mark reviewed" }).click();
   await waitFor(async () => (await snapshot()).results.find((item) => item.id === correctedResult.id)?.review?.disposition === "reviewed", "exact correction review");
-  await inspector.getByRole("button", { name: "Export revision" }).click();
+  await inspector.getByRole("button", { name: "Export result" }).click();
   await waitFor(() => fs.access(path.join(exportPath, "manifest.json")).then(() => true, () => false), "published export", 900_000);
-  await waitFor(() => inspector.getByRole("button", { name: "Export revision" }).isEnabled(), "export completion", 120_000);
+  await waitFor(() => inspector.getByRole("button", { name: "Export result" }).isEnabled(), "export completion", 120_000);
   const exportJob = await waitFor(async () => (await snapshot()).jobs.find((job) => job.operation === "large_result_export" && ["succeeded", "failed"].includes(job.state)), "durable export resolution", 120_000);
   assert.equal(exportJob?.state, "succeeded", `Durable export did not succeed: ${exportJob?.error}`);
 

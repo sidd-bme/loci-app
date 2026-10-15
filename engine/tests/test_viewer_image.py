@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import os
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
 from PIL import Image, ImageCms
 
 import loci_engine.viewer_image as viewer_image_module
@@ -733,3 +737,341 @@ def test_workbench_private_dispatch_supplies_icc_and_project_cache(tmp_path) -> 
     assert result["source_extent"] == [32, 24]
     assert (project.root / "viewer-overviews").is_dir()
     assert len(list((project.root / "viewer-overviews").glob("*.png"))) == 1
+
+
+@pytest.mark.parametrize("format", ["png", "tiff"])
+@pytest.mark.parametrize("profiled", [False, True])
+@pytest.mark.parametrize("adjusted", [False, True])
+def test_rgba_sampled_overview_preserves_alpha_across_tiles_tone_and_cache(
+    tmp_path, format, profiled, adjusted
+) -> None:
+    yy, xx = np.mgrid[:529, :1033]
+    pixels = np.stack(
+        (
+            xx % 256,
+            yy % 256,
+            (xx + yy) % 256,
+            np.asarray([0, 1, 64, 127, 128, 191, 254, 255], dtype=np.uint8)[xx * 8 // 1033],
+        ),
+        axis=-1,
+    ).astype(np.uint8)
+    profile = (
+        ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes() if profiled else None
+    )
+    source_path = tmp_path / ("rgba." + format)
+    if format == "png":
+        Image.fromarray(pixels).save(source_path, icc_profile=profile)
+    else:
+        tags = [(34675, "B", len(profile), profile, False)] if profile else None
+        tifffile.imwrite(
+            source_path, pixels, photometric="rgb", extrasamples="unassalpha", extratags=tags
+        )
+    before = source_path.read_bytes()
+    with NativeImageSession(source_path) as session:
+        assert session.metadata.sample_semantics == "RGBA"
+        assert session.metadata.dimensions.c == 1 and session.metadata.dimensions.s == 4
+        defaults = viewer_defaults(session, {"source_id": "a" * 32})
+        channels = defaults["channels"]
+        if adjusted:
+            channels[0].update(low=32.0, high=224.0, gamma=2.0)
+        request = {"source_id": "a" * 32, "overview": True, "channels": channels, "max_edge": 64}
+        overview = viewer_tile(session, request, cache_root=tmp_path, embedded_icc=profile)
+        expected = pixels.copy()
+        if adjusted:
+            rgb = np.clip((pixels[..., :3].astype(np.float64) - 32) / 192, 0, 1)
+            expected[..., :3] = np.rint(np.sqrt(rgb) * 255).astype(np.uint8)
+        # Endpoint-aligned deterministic sampling, independent of the renderer helper.
+        xs = np.rint(np.arange(overview["width"]) * 1032 / (overview["width"] - 1)).astype(int)
+        ys = np.rint(np.arange(overview["height"]) * 528 / (overview["height"] - 1)).astype(int)
+        np.testing.assert_array_equal(_decode_png(overview["image"]), expected[ys[:, None], xs])
+        assert set(_decode_png(overview["image"])[..., 3].flat) == {
+            0,
+            1,
+            64,
+            127,
+            128,
+            191,
+            254,
+            255,
+        }
+        cached = viewer_tile(session, request, cache_root=tmp_path, embedded_icc=profile)
+        assert cached["image"] == overview["image"]
+        assert overview["source_extent"] == [1033, 529]
+        assert overview["source_sha256"] == hashlib.sha256(before).hexdigest()
+        native = session.read_region(NativeSelection(x=0, y=0, width=1033, height=529)).pixels
+        np.testing.assert_array_equal(native, pixels)
+    assert source_path.read_bytes() == before
+
+
+def test_public_rgba_overview_reproduces_exact_pinned_pixel_and_alpha_identity(tmp_path) -> None:
+    value = os.environ.get("LOCI_PUBLIC_RGBA_FIXTURE")
+    if not value:
+        pytest.skip("explicit authorized public RGBA fixture is not supplied")
+    source_path = Path(value)
+    before = source_path.read_bytes()
+    digest = "27eadd06259e1507cb6d2a23e9c164596bfe0e3b15949dfbe1209ac28936bb97"
+    assert hashlib.sha256(before).hexdigest() == digest
+    with Image.open(source_path) as image:
+        pixels = np.asarray(image).copy()
+    assert (
+        hashlib.sha256(pixels.tobytes()).hexdigest()
+        == "05cf40088d6b101c79d3e78867be404711268911cb717b7fb57924668abf710f"
+    )
+    with NativeImageSession(source_path) as session:
+        defaults = viewer_defaults(session, {"source_id": "a" * 32})
+        request = {
+            "source_id": "a" * 32,
+            "overview": True,
+            "channels": defaults["channels"],
+            "max_edge": 512,
+        }
+        overview = viewer_tile(session, request, cache_root=tmp_path)
+        np.testing.assert_array_equal(_decode_png(overview["image"]), pixels)
+        assert overview["source_sha256"] == digest
+        assert session.metadata.sample_semantics == "RGBA"
+        assert session.metadata.physical_calibration is None
+    assert source_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("samples", [3, 4])
+def test_uint16_rgb_overview_refuses_wrapping_or_accepting_legacy_cache(
+    tmp_path, monkeypatch, samples
+) -> None:
+    pixels = np.array([[[65535, 1024, 32768, 16384][:samples]]], dtype=np.uint16)
+    source_path = tmp_path / "high-precision.tiff"
+    tifffile.imwrite(
+        source_path,
+        pixels,
+        photometric="rgb",
+        **({"extrasamples": "unassalpha"} if samples == 4 else {}),
+    )
+    before = source_path.read_bytes()
+    monkeypatch.setattr(
+        viewer_image_module,
+        "_cached_png",
+        lambda *args, **kwargs: pytest.fail(
+            "Unsupported precision cannot accept an old wrapped cache"
+        ),
+    )
+    with NativeImageSession(source_path) as session:
+        defaults = viewer_defaults(session, {"source_id": "a" * 32})
+        channels = defaults["channels"]
+        for view in (
+            {"overview": True, "max_edge": 16},
+            {"selection": {"x": 0, "y": 0, "width": 1, "height": 1}},
+        ):
+            with pytest.raises(ViewerImageError, match="requires uint8 stored components"):
+                viewer_tile(
+                    session,
+                    {"source_id": "a" * 32, "channels": channels, **view},
+                    cache_root=tmp_path,
+                )
+        np.testing.assert_array_equal(
+            session.read_region(NativeSelection(x=0, y=0, width=1, height=1)).pixels, pixels
+        )
+    assert source_path.read_bytes() == before
+    assert not list(tmp_path.glob("viewer-overviews/*.png"))
+
+
+def _medical_projection_source(tmp_path, values):
+    from loci_engine.viewer_medical import MedicalViewerSession
+
+    path = tmp_path / "projection.nrrd"
+    z, y, x = values.shape
+    header = (
+        "NRRD0005\ntype: double\ndimension: 3\nspace: left-posterior-superior\n"
+        f"sizes: {x} {y} {z}\nspace directions: (0.7,0,0) (0,0.8,0) (0,0,2.5)\n"
+        'space units: "mm" "mm" "mm"\nspace origin: (10,-20,30)\nendian: little\nencoding: raw\n\n'
+    )
+    path.write_bytes(header.encode("ascii") + values.astype("<f8").tobytes())
+    return path, MedicalViewerSession(path)
+
+
+def _projection(session, method, *, check=None):
+    d = session.metadata.dimensions
+    return viewer_image_module._read_plane_or_projection(
+        session,
+        session.metadata,
+        x=0,
+        y=0,
+        width=d.x,
+        height=d.y,
+        t=0,
+        channel=0,
+        level=0,
+        z_start=0,
+        z_stop=d.z,
+        projection=method,
+        cancellation_check=check,
+    )
+
+
+@pytest.mark.parametrize("method", ["max", "mean"])
+def test_medical_blocks_preserve_exact_serial_reduction_order_and_signed_values(
+    tmp_path, monkeypatch, method
+):
+    import loci_engine.viewer_medical as adapter
+
+    values = np.array([1e16, 1.0, -1e16, 2e16, -2e16, 3.0, 4.0])[:, None, None] * np.ones((1, 2, 3))
+    values[:, 0, 1] = [-8, -7, -6, -5, -4, -3, -2]
+    _, session = _medical_projection_source(tmp_path, values)
+    monkeypatch.setattr(adapter, "MAX_MEDICAL_PROJECTION_BLOCK_PLANES", 2)
+    real = adapter.read_medical
+    reads = []
+
+    def read(*a, **kw):
+        reads.append(kw["region"][0])
+        return real(*a, **kw)
+
+    monkeypatch.setattr(adapter, "read_medical", read)
+    expected = values[0].copy()
+    for plane in values[1:]:
+        if method == "max":
+            expected = np.maximum(expected, plane)
+        else:
+            expected += plane
+    if method == "mean":
+        expected /= len(values)
+    actual = _projection(session, method)
+    np.testing.assert_array_equal(actual, expected)
+    assert actual[0, 1] < 0
+    assert reads == [slice(0, 2), slice(2, 4), slice(4, 6), slice(6, 7)]
+    assert session.geometry({"x": 0, "y": 0, "z": 0}, False).frame == "LPS"
+
+
+def test_full378_projection_read_count_and_previous_block_release(tmp_path, monkeypatch):
+    import weakref
+
+    import loci_engine.viewer_medical as adapter
+    from loci_engine.medical_image import MedicalVolume
+
+    values = np.arange(378 * 2 * 3, dtype=np.float64).reshape(378, 2, 3) - 2000.25
+    _, session = _medical_projection_source(tmp_path, values)
+    calls = []
+    previous = []
+    require_release = False
+
+    def read(*a, **kw):
+        if require_release and previous:
+            assert previous[-1]() is None, "Old block retained across next decode"
+        z, y, x = kw["region"]
+        block = values[z, y, x].copy()
+        previous.append(weakref.ref(block))
+        calls.append(z)
+        return MedicalVolume(
+            block,
+            session.inspection.geometry,
+            session.inspection.format,
+            session.inspection.source_identity,
+            session.inspection.runtime_identity,
+        )
+
+    monkeypatch.setattr(adapter, "read_medical", read)
+
+    class PlaneProtocol:
+        metadata = session.metadata
+        read_region = session.read_region
+
+    baseline = _projection(PlaneProtocol(), "mean")
+    assert len(calls) == 378
+    calls.clear()
+    previous.clear()
+    require_release = True
+    actual = _projection(session, "mean")
+    assert len(calls) == 12
+    assert [s.stop - s.start for s in calls] == [32] * 11 + [26]
+    np.testing.assert_array_equal(actual, baseline)
+
+
+def test_medical_projection_reserves_accumulator_and_rejects_before_decode(tmp_path, monkeypatch):
+    import loci_engine.viewer_medical as adapter
+
+    _, session = _medical_projection_source(tmp_path, np.ones((5, 10, 20), dtype=np.float64))
+    calls = []
+    monkeypatch.setattr(adapter, "read_medical", lambda *a, **kw: calls.append(kw))
+    monkeypatch.setattr(viewer_image_module, "MAX_VIEWER_WORKING_BYTES", 2000)
+    with pytest.raises(ValueError, match="memory budget"):
+        _projection(session, "mean")
+    assert calls == []
+
+
+@pytest.mark.parametrize("depth", [2, 65])
+def test_medical_projection_source_change_before_next_or_final_block_never_publishes_cache(
+    tmp_path, monkeypatch, depth
+):
+    import loci_engine.viewer_medical as adapter
+
+    values = np.arange(depth * 20 * 24, dtype=np.float64).reshape(depth, 20, 24) - 1000.25
+    path, session = _medical_projection_source(tmp_path, values)
+    real = adapter.read_medical
+    reads = []
+
+    def changed(*a, **kw):
+        reads.append(kw["region"][0])
+        block = real(*a, **kw)
+        if len(reads) == 1:
+            path.write_bytes(path.read_bytes() + b"source-change")
+        return block
+
+    monkeypatch.setattr(adapter, "read_medical", changed)
+    with pytest.raises(ValueError, match="identity|source.*changed"):
+        viewer_tile(
+            session,
+            {
+                "source_id": "medical",
+                "overview": True,
+                "t": 0,
+                "c": 0,
+                "z": 0,
+                "z_stop": depth,
+                "projection": "mean",
+                "channels": _channels(1),
+                "max_edge": 16,
+            },
+            cache_root=tmp_path,
+        )
+    assert len(reads) == (1 if depth == 2 else 2)
+    assert not list(tmp_path.rglob("*.png"))
+
+
+def test_medical_projection_mid_block_cancellation_never_publishes_cache(tmp_path, monkeypatch):
+    import loci_engine.viewer_medical as adapter
+
+    _, session = _medical_projection_source(
+        tmp_path, np.ones((65, 20, 24), dtype=np.float64) * -20.25
+    )
+    real = adapter.read_medical
+    reads = []
+    post_read_checks = 0
+
+    def read(*a, **kw):
+        reads.append(kw["region"][0])
+        return real(*a, **kw)
+
+    def cancel():
+        nonlocal post_read_checks
+        if reads:
+            post_read_checks += 1
+            if post_read_checks == 3:
+                raise RuntimeError("cancelled during block reduction")
+
+    monkeypatch.setattr(adapter, "read_medical", read)
+    with pytest.raises(RuntimeError, match="cancelled"):
+        viewer_tile(
+            session,
+            {
+                "source_id": "medical",
+                "overview": True,
+                "t": 0,
+                "c": 0,
+                "z": 0,
+                "z_stop": 65,
+                "projection": "mean",
+                "channels": _channels(1),
+                "max_edge": 16,
+            },
+            cache_root=tmp_path,
+            cancellation_check=cancel,
+        )
+    assert len(reads) == 1
+    assert not list(tmp_path.rglob("*.png"))

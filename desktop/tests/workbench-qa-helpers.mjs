@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
 
+/** Poll awaited IPC snapshots; waitForFunction treats an async predicate as truthy. */
+export async function waitForSnapshot(page, predicate, label, timeout = 30_000) {
+  const deadline = performance.now() + timeout;
+  let snapshot;
+  while (performance.now() < deadline) {
+    snapshot = await page.evaluate(() => window.lociResearch.getSnapshot());
+    if (predicate(snapshot)) return snapshot;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${label}; ${snapshot?.results?.length ?? 0} results available.`);
+}
+
 const toolGroup = {
   Display: "View", Annotate: "Annotate", Epidermis: "Annotate", Correction: "Annotate", Analyze: "Analyze",
   Process: "Analyze", Workflow: "Analyze", Model: "Analyze", Quantify: "Analyze", Temporal: "Analyze",
@@ -26,12 +38,22 @@ export async function selectWorkbenchTool(page, tool) {
       .getByRole("option", { name: toolLabel[tool], exact: true }).click();
   }
   if (tool === "Display") await revealAnalysisRegion(page);
+  if (tool === "Study") {
+    for (const details of await page.locator("details.study-analysis-section").all()) {
+      if (!(await details.evaluate((element) => element.open))) await details.locator(":scope > summary").click();
+    }
+  }
 }
 
 export async function revealAnalysisRegion(page) {
   const details = page.locator("details.analysis-region-settings");
   if (await details.count() && !(await details.evaluate((element) => element.open)))
     await details.locator(":scope > summary").click();
+}
+
+export async function revealExternalLabels(page) {
+  const details = page.locator("details.external-labels-disclosure");
+  if (!(await details.evaluate((element) => element.open))) await details.locator(":scope > summary").click();
 }
 
 export async function createEmptyStudy(page) {
