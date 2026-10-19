@@ -226,10 +226,12 @@ try {
   await page.waitForFunction(() => { const box = document.querySelector('.source-agent-controls input[type="checkbox"]'); return box?.checked && !box.disabled; });
   await selectWorkbenchTool(page, 'Display');
   await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === true);
-  assert.equal(await page.getByLabel('Channel 1 color', { exact: true }).isDisabled(), true);
+  const channelColors = page.getByLabel('Channel 1 color', { exact: true });
+  assert.equal(await channelColors.count(), 2, 'Compact and detailed channel controls are both present');
+  for (const control of await channelColors.all()) assert.equal(await control.isDisabled(), true);
   const savedBefore = await view();
   const changed = (await client.call('set_source_display', { source_id: source.id, source_sha256: source.sha256, expected_revision: savedBefore.revision, channels: [{ ...imageRequest.channels[0], color: '#ff00aa' }] })).structured_content;
-  await page.waitForFunction(() => document.querySelector('[aria-label="Channel 1 color"]')?.value === '#ff00aa');
+  await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="Channel 1 color"]')].length === 2 && [...document.querySelectorAll('[aria-label="Channel 1 color"]')].every((input) => input.value === '#ff00aa'));
   await page.waitForTimeout(1600); // More than one follower poll and the local autosave debounce.
   const adopted = await view(); assert.equal(adopted.revision, changed.revision); assert.equal(adopted.state.channels[0].color, '#ff00aa');
   assert.deepEqual(adopted.state.selection, savedBefore.state.selection); assert.deepEqual(adopted.state.camera, savedBefore.state.camera); assert.deepEqual(adopted.state.channels[1], savedBefore.state.channels[1]);
@@ -237,7 +239,8 @@ try {
   assert.deepEqual(await view(), adopted, 'A rejected stale display write must preserve the saved revision and state');
   await page.getByRole('button', { name: 'Take control', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === false);
-  const color = page.getByLabel('Channel 1 color', { exact: true }); await color.locator('..').locator('..').locator('..').evaluate((element) => { if (element.tagName === 'DETAILS') element.open = true; });
+  for (const control of await channelColors.all()) assert.equal(await control.isEnabled(), true);
+  const color = page.locator('fieldset.source-display-local').getByLabel('Channel 1 color', { exact: true }); await color.locator('..').locator('..').locator('..').evaluate((element) => { if (element.tagName === 'DETAILS') element.open = true; });
   await color.fill('#00aaff');
   let local;
   const saveDeadline = Date.now() + 10000;

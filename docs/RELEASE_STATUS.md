@@ -1,76 +1,84 @@
 # Loci development beta
 
-The current development beta is **0.2.0 for macOS Apple Silicon**.
-The release tag is `v0.2.0-beta.1`; the internal desktop and engine version is `0.2.0`.
-Its [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)
-contains the application archive, checksums, software inventories and dependency licences.
+The current development beta is **v0.2.0-beta.2 for macOS Apple Silicon**.
+The internal desktop and engine version remains `0.2.0`.
+The [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2)
+contains the application, checksums, software inventories and dependency licences.
 
 ## What's new
 
-This version adds independent image windows, object populations and statistics,
-external labels, correction effects, visual workflows and a persistent terminal
-interface. It also improves plane navigation, recipe resource controls and local
-agent setup. See the [changelog](../CHANGELOG.md) and [user guide](USING_LOCI.md).
+Try classical segmentation settings on explicit image regions, compare up to three
+regions and three settings, and adopt the exact inspected preview. Persistent
+channel controls stay above the image. Reproducible gates and named groups retain
+complete membership, exact result revisions and export/reopen provenance.
+
+Folder trees, relative-path search, breadcrumbs and folder batch selection make
+larger studies easier to navigate. This beta also includes saved compute targets,
+recoverable execution, explicit researcher/agent review history, and provisional
+RGB review packages that preserve pending review state. See the
+[changelog](../CHANGELOG.md), [user guide](USING_LOCI.md), and
+[exploration and groups guide](EXPLORATION_AND_GROUPS.md).
 
 ## Build and checks
 
 The app was built from clean public source
-[`cc24ebc`](https://github.com/sidd-bme/loci-app/commit/cc24ebcbf69e3ce4bdf7bde7edf8ea198731ad48).
-The release-preparation commits following that build updated tests,
-documentation and media without changing its runtime. Newer source work is
-listed under **Unreleased** in the [changelog](../CHANGELOG.md); it does not
-replace or requalify the published download.
+[`a04d83f`](https://github.com/sidd-bme/loci-app/commit/a04d83f217e67d772ace268c5cbcce70c4879423).
+Subsequent release-preparation changes update the agent journey harness and release
+documentation; the packaged runtime is unchanged. Local verification used
+Node 24.15.0 and Python 3.12.13. Hosted CI was intentionally skipped.
 
-- [Hosted source checks](https://github.com/sidd-bme/loci-app/actions/runs/38202925977)
-  at `90a7dc8`: typecheck, 1,321 desktop tests, 16 packaging tests, 1,672 engine tests
-  (12 skips), 72 Python harness tests and 60 modeling tests pass.
-- The exact app passes deep strict signature verification and all five packaged
-  core journeys: analysis/export/reopen, shared workspace controls, field assays,
-  external labels and correction effects.
-- The additional volume journey passes shared-display checks, independent engine
-  range checks, graphics-context recovery, histogram controls and figure export.
-  Measured orbit/pan/zoom p95 and p99 frame intervals remain below the defined
-  50/100 ms budgets on the tested M1 Mac.
-- The full segmentation, manual-correction, error-recovery, recursive-batch and
-  export journey passes, including pixel-exact label comparisons and ordinary
-  pointer interactions. Folder import also passes.
-- The ZIP reproduces the app tree exactly. Both CycloneDX inventories and the
-  complete dependency-licence archive pass validation against that same app.
+- Typecheck, 16 packaging checks, 1,543 desktop tests and 2,094 engine tests pass
+  (13 skips; one expected duplicate-ZIP-member warning). Ruff passes.
+- All five packaged core journeys pass on the exact downloadable app: analysis,
+  export and reopen; shared workspace controls; field assays; external labels;
+  and correction effects with replicate weighting.
+- Four additional packaged journeys pass: exploration/groups, folder browsing,
+  provisional review packages and agent workbench. Checks include 10,000-member
+  groups independent of the plot sample, calibrated mean validation, reusable
+  gates with an unavailable unrelated source, unchanged sources and review history,
+  unsupported-filesystem rejection, and actual MCP correction/review/export.
+- Selected real app captures were visually inspected in dark and Paper themes,
+  including narrow layouts and large text. This is engineering inspection, not
+  an independent usability study.
+- Strict deep ad-hoc signature verification passes. The ZIP reproduces the app
+  tree exactly; CRC, both CycloneDX inventories and dependency licences pass.
+
+The first agent journey stopped because a test selector matched both the new
+compact channel control and the existing detailed control. The revised harness
+checks both controls and the rerun passes on the unchanged app. The verification
+record retains the failed attempt and the corrected harness identity.
 
 | Artifact | SHA-256 |
 | --- | --- |
-| macOS ZIP | `ae6e32327e64ebaecb7c78cff6e4aae5edc52f83794c74b764af4d457fc63e1d` |
-| Application archive (`app.asar`) | `e7debc692d298a6a97b6fa0217a8721997b9ca3266af48082b710e7006ff6086` |
-| Frozen engine | `4d85857bf74c18cc1f8f8e237054fe70049769d9a80dbc49e8355b311fb4273d` |
+| macOS ZIP | `a9c303fca8e804459062bb8be4024c2bd566c18757235f8430400a781c08c01c` |
+| Application archive (`app.asar`) | `d68b3bafc9ee9277433521809c88683db525b7191e13c4ecf6659bc3d180b9d5` |
+| Frozen engine | `ba8deeef2187ce7a71824bae53be93d818e28b990f35cdf47c9846a6578bf7ae` |
 
-The release assets include [checksums](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/SHA256SUMS.txt),
-[app and archive evidence](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/macos-release-evidence.json)
-and a [development verification record](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.1/development-verification.json).
-The correction-input harness is recorded at `932256e`; the volume harness retains
-the shared-display checks from `83718de`. These records distinguish source-suite
-checks from checks of the actual downloadable binary.
-
-The passing local run opened in 1.92 seconds and displayed the first fixture in
-2.79 seconds. An earlier launch took 11.63 seconds and exceeded the 8-second
-budget; the retained verification record includes that failure. First-launch
-performance is not guaranteed by the later passing run.
+Release assets include [checksums](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.2/SHA256SUMS.txt),
+[app and archive evidence](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.2/macos-release-evidence.json)
+and a [development verification record](https://github.com/sidd-bme/loci-app/releases/download/v0.2.0-beta.2/development-verification.json).
 
 ## Platform and model notes
 
-- This is an explicitly published **development beta**, with an ad-hoc integrity
-  signature. It is **unnotarized**; Developer ID trust and independent clean-Mac
-  verification remain unavailable. The trusted-release `public_ready` gate is
-  not claimed. Follow the [installation guide](INSTALLATION.md) for first launch.
-- Cellpose checkpoints are supplied by users. They are never bundled or downloaded
-  automatically. See [Cellpose compatibility](CELLPOSE_COMPATIBILITY.md) for setup
-  and model-specific terms.
-- No Windows, Linux or Intel Mac installer is included. See [building Loci](BUILDING.md)
-  for source and platform requirements.
+- This is an explicitly published **development beta** with an ad-hoc integrity
+  signature. It is **unnotarized**. Developer ID trust, a notarization staple and
+  independent clean-Mac verification remain unavailable. The trusted-release
+  `public_ready` gate remains false. Follow the [installation guide](INSTALLATION.md).
+- Cellpose checkpoints are user supplied and never bundled or downloaded
+  automatically. See [Cellpose compatibility](CELLPOSE_COMPATIBILITY.md).
+- No Windows, Linux or Intel Mac installer is included. See [building Loci](BUILDING.md).
 
-The [capability matrix](CAPABILITY_MATRIX.md) describes supported formats and
-operations. Software checks use defined fixtures; they do not establish
-biological accuracy or clinical suitability. Loci is research software and is
-not intended for diagnosis or patient management.
+The [capability matrix](CAPABILITY_MATRIX.md) describes supported operations.
+Defined fixtures establish engineering checks, not biological accuracy or clinical
+suitability. Loci is research software, not intended for diagnosis or patient management.
+
+## Previous release: v0.2.0-beta.1
+
+The [previous beta](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)
+and its evidence remain available. Its ZIP SHA-256 is
+`ae6e32327e64ebaecb7c78cff6e4aae5edc52f83794c74b764af4d457fc63e1d`;
+its clean build source was `cc24ebcbf69e3ce4bdf7bde7edf8ea198731ad48`.
+Those historical checks do not qualify the new beta.
 
 ## Previous release: v0.1.0-beta.1
 
