@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.2.0-beta.2] - 2026-10-19
+
+### Added
+
+- Folder-aware image browsing, relative-path search, breadcrumbs and folder selection for batches.
+- Bounded classical previews and ROI parameter comparisons with exact-result adoption.
+- Persistent compact channel controls, reproducible population gates and named groups.
+- Saved compute targets, recoverable remote execution and explicit review history.
+- Provisional RGB review packages with counts, native outlines and retained provenance.
+
+### Improved
+
+- Robust group discovery when an unrelated source is unavailable.
+- Calibrated-preview mean validation preserves floating-point precision across area scales.
+- Remote read budgets, target refresh and recovery on unsupported export filesystems.
+
+
 ### Added
 
 - Inspectable analysis context across result selection, correction, review, export and reopening.
@@ -20,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ROI acquisition binding, bounded medical projections, RGBA display and vendor codec diagnostics.
 - PNG/JPEG measurements use pixel units; print density is no longer interpreted as specimen calibration.
 
-These changes describe the source tree. The published download remains the version identified in the [release record](docs/RELEASE_STATUS.md).
+The [release record](docs/RELEASE_STATUS.md) identifies the exact tested source and downloadable artifacts. This remains an unnotarized macOS Apple Silicon development beta; no model checkpoints are bundled.
 
 ## [v0.2.0-beta.1] - 2026-10-12
 

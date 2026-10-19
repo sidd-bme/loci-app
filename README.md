@@ -7,7 +7,7 @@
 <p align="center">A local workspace for microscopy, image analysis and the questions in between.</p>
 
 <p align="center">
-  <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1">Download for macOS</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for macOS</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="https://github.com/sidd-bme/loci-app/issues">Feedback</a> ·
   <a href="https://ko-fi.com/lociimaging">Support on Ko-fi</a>
@@ -67,7 +67,7 @@ Give a local agent access to the images and operations you choose. Through MCP, 
 
 ## Start a study
 
-**[Download the development beta for Apple Silicon Macs](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1)**, follow the **[installation guide](docs/INSTALLATION.md)**, then **[open your first image](docs/workflows/FIRST_STUDY.md)**.
+**[Download the development beta for Apple Silicon Macs](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2)**, follow the **[installation guide](docs/INSTALLATION.md)**, then **[open your first image](docs/workflows/FIRST_STUDY.md)**.
 
 This beta is unnotarized, so macOS requires an explicit first-launch approval. Model weights are supplied separately. The guides cover both steps.
 

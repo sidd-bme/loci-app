@@ -24,6 +24,16 @@ The operation catalog is available as `REMOTE_OPERATION_CATALOG`:
 | `attach` | Alias/key; optional `local_job_id` | `{run, attachment}` |
 | `remove_owned` | Alias/key/hash plus `"cleanup_authorized": true` | Cleanup receipt and `{run}` |
 
+## Run on a saved compute target
+
+Supported classical and Cellpose analyses and Study batches offer **Run on: This Mac / saved target**. **Settings → Compute** imports an existing trusted OpenSSH alias and host key, then saves a prepared Linux runtime, separate existing input/result workspaces, scheduler and CPU or Single GPU resources. Import reads local configuration; **Check runtime** contacts the target and may create Loci namespaces under approved roots. Password/MFA sign-in and runtime/model installation are outside this setup path.
+
+Targets can be saved for all studies. Connection paths and credential references remain private; secret key bytes are never copied. Selecting a target binds its exact revision and settings to the study. Edits affect future runs; existing runs retain their immutable target snapshot. Forgetting an application target preserves studies and jobs. Application targets and private connection snapshots are excluded from portable archives; imported historical runs cannot reconnect.
+
+Run authorizes the displayed whole-file transfer, execution, retrieval and attachment. The region limits computation, while transport sends the entire registered file. Classical recipes require CPU targets; GPU targets request CUDA for Cellpose with CPU fallback disabled. The exact runtime/model must already be provisioned and model rights remain an explicit declaration. Workflow-graph remote execution remains outside this route.
+
+Job Center records preparation, queue wait, execution, attachment and connection errors. Reopening recovers the same run; bounded polling and backoff resume its authorized lifecycle. Cancellation intent immediately prevents attachment and persists until scheduler confirmation. Closing Loci does not terminate scheduler work. These mechanisms do not establish live-cluster readiness: check the exact deployed runtime and site resources.
+
 ## Set up remote compute and choose resources
 
 Open **Remote compute** and save a pinned SSH profile for an approved compute
