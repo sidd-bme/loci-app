@@ -2,8 +2,8 @@ import { X } from "lucide-react";
 import { useEffect, useRef } from "react";
 
 /** Native top-layer dialog keeps the chart clear of the scrolling inspector. */
-export default function PopulationChartDialog({ title, children, onClose }: {
-  title: string; children: React.ReactNode; onClose: () => void;
+export default function PopulationChartDialog({ title, children, onClose, closeLabel = "Close enlarged chart" }: {
+  title: string; closeLabel?: string; children: React.ReactNode; onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -30,7 +30,7 @@ export default function PopulationChartDialog({ title, children, onClose }: {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}>
     <header className="population-dialog-heading"><h2>{title}</h2><button ref={close} type="button" onClick={onClose}
-      aria-label="Close enlarged chart"><X size={17} />Close</button></header>
+      aria-label={closeLabel}><X size={17} />Close</button></header>
     <div className="population-dialog-body">{children}</div>
   </dialog>;
 }

@@ -182,11 +182,14 @@ def test_rgb_samples_are_not_reported_as_biological_channels(tmp_path: Path) -> 
         read_native_region(path, NativeSelection(x=0, y=0, width=1, height=1, c=1))
 
 
-def test_bigtiff_pyramid_reads_declared_level_with_scaled_spacing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ome", [False, True])
+def test_bigtiff_pyramid_reads_declared_level_and_only_declared_specimen_spacing(
+    tmp_path: Path, ome: bool
+) -> None:
     path = tmp_path / "pyramid.tf8"
     base = _values((64, 80))
     reduced = np.asarray(base[::2, ::2])
-    with tifffile.TiffWriter(path, bigtiff=True) as tif:
+    with tifffile.TiffWriter(path, bigtiff=True, ome=ome) as tif:
         tif.write(
             base,
             subifds=1,
@@ -194,7 +197,10 @@ def test_bigtiff_pyramid_reads_declared_level_with_scaled_spacing(tmp_path: Path
             compression="deflate",
             resolution=(20_000, 10_000),
             resolutionunit="CENTIMETER",
-            metadata={"axes": "YX"},
+            metadata={
+                "axes": "YX",
+                **({"PhysicalSizeX": 0.5, "PhysicalSizeY": 1.0} if ome else {}),
+            },
         )
         tif.write(
             reduced,
@@ -208,10 +214,14 @@ def test_bigtiff_pyramid_reads_declared_level_with_scaled_spacing(tmp_path: Path
     metadata = inspect_native(path)
     region = read_native_region(path, NativeSelection(x=7, y=5, width=13, height=11, level=1))
 
-    assert metadata.format == "BigTIFF"
+    assert metadata.format == ("OME-TIFF" if ome else "BigTIFF")
     assert len(metadata.levels) == 2
-    assert metadata.levels[0].calibration == PhysicalCalibration("YX", (1.0, 0.5), "µm")
-    assert metadata.levels[1].calibration == PhysicalCalibration("YX", (2.0, 1.0), "µm")
+    assert metadata.levels[0].calibration == (
+        PhysicalCalibration("YX", (1.0, 0.5), "µm") if ome else None
+    )
+    assert metadata.levels[1].calibration == (
+        PhysicalCalibration("YX", (2.0, 1.0), "µm") if ome else None
+    )
     np.testing.assert_array_equal(region.pixels, reduced[5:16, 7:20])
 
 
@@ -768,7 +778,7 @@ def test_png_region_is_exact_and_full_decode_is_budgeted(tmp_path: Path) -> None
         read_native_region(path, NativeSelection(x=11, y=7, width=9, height=8, budget_bytes=1_300))
 
 
-@pytest.mark.parametrize("format_name", ["PNG", "JPEG"])
+@pytest.mark.parametrize("format_name", ["PNG", "JPEG", "TIFF"])
 @pytest.mark.parametrize("rgb", [False, True])
 def test_print_dpi_never_becomes_specimen_calibration(tmp_path, format_name, rgb):
     image = np.arange(20 * 30, dtype=np.uint8).reshape(20, 30)
@@ -789,6 +799,35 @@ def test_print_dpi_never_becomes_specimen_calibration(tmp_path, format_name, rgb
         np.testing.assert_array_equal(
             session.read_region(NativeSelection(x=7, y=4, width=10, height=8)).pixels,
             expected[4:12, 7:17],
+        )
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("unit,resolution", [("INCH", (72, 72)), ("CENTIMETER", (20000, 10000))])
+@pytest.mark.parametrize("physical", [False, True])
+def test_ome_specimen_spacing_is_independent_of_tiff_density(tmp_path, unit, resolution, physical):
+    path = tmp_path / "density.ome.tif"
+    pixels = _values((12, 16))
+    tifffile.imwrite(
+        path,
+        pixels,
+        resolution=resolution,
+        resolutionunit=unit,
+        metadata={
+            "axes": "YX",
+            **({"PhysicalSizeX": 0.5, "PhysicalSizeY": 0.75} if physical else {}),
+        },
+    )
+    original = path.read_bytes()
+    with NativeImageSession(path) as session:
+        expected = PhysicalCalibration("YX", (0.75, 0.5), "µm") if physical else None
+        assert session.metadata.physical_calibration == expected
+        geometry = session.geometry({"level": 0, "x": 0, "y": 0, "z": 0}, False)
+        assert geometry.unit == ("um" if physical else "pixel")
+        assert geometry.spacing == ((0.75, 0.5) if physical else (1.0, 1.0))
+        np.testing.assert_array_equal(
+            session.read_region(NativeSelection(x=0, y=0, width=16, height=12)).pixels,
+            pixels,
         )
     assert path.read_bytes() == original
 

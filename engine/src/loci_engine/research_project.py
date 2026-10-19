@@ -17,6 +17,7 @@ import tempfile
 import uuid
 from collections.abc import Callable
 from contextlib import closing, contextmanager, suppress
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -81,10 +82,14 @@ def checked_text(value: Any, name: str, maximum: int = 256, *, empty: bool = Fal
     return value
 
 
-def validate_source_calibration(record: dict[str, Any]) -> None:
+def validate_source_calibration(
+    record: dict[str, Any], current_metadata: dict[str, Any] | None = None
+) -> None:
     """Refuse legacy print-density geometry without rewriting scientific history."""
     metadata = record.get("metadata", {})
-    if record.get("source_kind") == "native" and metadata.get("format") in {"PNG", "JPEG"}:
+    if record.get("source_kind") != "native":
+        return
+    if metadata.get("format") in {"PNG", "JPEG", "TIFF", "BigTIFF"}:
         calibrated = metadata.get("physical_calibration") is not None or any(
             level.get("calibration") is not None for level in metadata.get("levels", [])
         )
@@ -92,6 +97,19 @@ def validate_source_calibration(record: dict[str, Any]) -> None:
             raise ValueError(
                 "This image used print DPI as specimen calibration. Preserve this study "
                 "and import the image into a new study to measure in pixels."
+            )
+    elif metadata.get("format") == "OME-TIFF" and current_metadata is not None:
+
+        def calibration(value):
+            return {
+                "physical_calibration": value.get("physical_calibration"),
+                "levels": [level.get("calibration") for level in value.get("levels", [])],
+            }
+
+        if canonical_json(calibration(metadata)) != canonical_json(calibration(current_metadata)):
+            raise ValueError(
+                "Saved specimen calibration cannot be verified. Preserve this study and "
+                "import the image into a new study before analyzing or exporting."
             )
 
 
@@ -286,7 +304,7 @@ class ResearchProject:
                         )
                     if existing.get("derivation") != derivation:
                         raise ValueError("Registered source has a different conversion derivation")
-                    validate_source_calibration(existing)
+                    validate_source_calibration(existing, metadata)
                     return self.public_source(existing)
             record = {
                 "id": uuid.uuid4().hex,
@@ -310,7 +328,17 @@ class ResearchProject:
 
     @staticmethod
     def public_source(record: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in record.items() if not key.startswith("private_")}
+        from .source_browser_location import browser_location_for_source
+
+        public = {
+            key: value
+            for key, value in record.items()
+            if not key.startswith("private_") and key != "browser_location"
+        }
+        location = browser_location_for_source(record)
+        if location is not None:
+            public["browser_location"] = location
+        return public
 
     def register_zarr_source(
         self,
@@ -420,7 +448,10 @@ class ResearchProject:
         return self.public_source(record)
 
     def source(
-        self, source_id: str, *, verify: bool = False,
+        self,
+        source_id: str,
+        *,
+        verify: bool = False,
         check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.connection() as connection:
@@ -461,6 +492,22 @@ class ResearchProject:
                 raise ValueError(
                     "Registered source changed or is unavailable; relink an exact copy"
                 )
+            if (
+                record.get("source_kind") == "native"
+                and record["metadata"].get("format") == "OME-TIFF"
+            ):
+                from .native_image import NativeImageSession
+
+                # Older readers could use TIFF print density when OME omitted
+                # PhysicalSize. Recheck its declared geometry without rewriting
+                # saved sources, annotations, results, or measurements.
+                with NativeImageSession(
+                    record["private_path"],
+                    series=record["metadata"]["selected_series"],
+                    expected_sha256=record["sha256"],
+                    check=check,
+                ) as session:
+                    validate_source_calibration(record, asdict(session.metadata))
         return record
 
     def list_sources(self) -> list[dict[str, Any]]:
@@ -541,6 +588,8 @@ class ResearchProject:
             "workflow",
             "workflow_run",
             "workflow_export",
+            "population_group",
+            "exploration",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
@@ -872,8 +921,7 @@ class ResearchProject:
             raise ValueError("Canonical label values disagree with result receipt")
         validate_object_table(self, object_table, check=publication_guard)
         table_labels = {
-            row["label"]
-            for row in iter_object_rows(self, object_table, check=publication_guard)
+            row["label"] for row in iter_object_rows(self, object_table, check=publication_guard)
         }
         if len(table_labels) != object_table["count"]:
             raise ValueError("Object table has duplicate labels")
@@ -954,10 +1002,9 @@ class ResearchProject:
                         **record_canonical["provenance"],
                         "remote_exchange": rec_remote,
                     }
-                if (
-                    existing["revision_hash"] == record["revision_hash"]
-                    or canonical_json(existing_canonical) == canonical_json(record_canonical)
-                ):
+                if existing["revision_hash"] == record["revision_hash"] or canonical_json(
+                    existing_canonical
+                ) == canonical_json(record_canonical):
                     if job_id is not None:
                         job_row = connection.execute(
                             "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)
@@ -1004,9 +1051,7 @@ class ResearchProject:
             )
         return record
 
-    def result(
-        self, result_id: str, *, check: Callable[[], None] | None = None
-    ) -> dict[str, Any]:
+    def result(self, result_id: str, *, check: Callable[[], None] | None = None) -> dict[str, Any]:
         if check is not None:
             check()
         with self.connection() as connection:
@@ -1059,40 +1104,136 @@ class ResearchProject:
         records = [self.result(record_id) for record_id in ids]
         return [r for r in records if source_id is None or r["source_id"] == source_id]
 
-    def review(self, result_id: str, revision_hash: str, disposition: str) -> dict[str, Any]:
-        if disposition not in {"reviewed", "excluded", "pending"}:
-            raise ValueError("Review disposition must be reviewed, excluded or pending")
+    def review(
+        self,
+        result_id: str,
+        revision_hash: str,
+        disposition: str,
+        *,
+        actor: str = "human",
+        actor_id: str = "local-user",
+        authority: dict | None = None,
+        reason: str = "",
+        coverage: str = "",
+        expected_review_sha256: Any = ...,
+        check: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        from .research_review import (
+            MAX_REVIEW_EVENTS,
+            REVIEW_SCHEMA,
+            event_key,
+            review_sha256,
+            validate_review,
+            validate_review_history,
+        )
+
         result = self.result(result_id)
         if result["revision_hash"] != revision_hash:
             raise ValueError("Review must bind to the exact selected result revision")
         key = "review:" + result_id
-        receipt = {
-            "result_id": result_id,
-            "revision_hash": revision_hash,
-            "disposition": disposition,
-            "reviewed_at": timestamp(),
-            "actor": "human",
-        }
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+            previous = None if row is None else parse_json(row[0])
+            history = self._review_events(connection, result_id)
+            if not history and previous is not None and "schema" not in previous:
+                history = [previous]
+            validate_review_history(
+                history,
+                previous,
+                result_id=result_id,
+                revision_hash=revision_hash,
+            )
+            if expected_review_sha256 is not ... and expected_review_sha256 != review_sha256(
+                previous
+            ):
+                raise ValueError("Review changed since it was inspected; refresh before deciding")
+            if len(history) >= MAX_REVIEW_EVENTS:
+                raise ValueError("Review history exceeds its event bound")
+            receipt = validate_review(
+                {
+                    "schema": REVIEW_SCHEMA,
+                    "event_id": uuid.uuid4().hex,
+                    "result_id": result_id,
+                    "revision_hash": revision_hash,
+                    "disposition": disposition,
+                    "reviewed_at": timestamp(),
+                    "actor": actor,
+                    "actor_id": actor_id,
+                    "identity_assurance": "declared",
+                    "authority": None
+                    if authority is None
+                    else parse_json(canonical_json(authority)),
+                    "reason": reason,
+                    "coverage": coverage,
+                    "previous_review_sha256": review_sha256(previous),
+                }
+            )
+            if check:
+                check()
+            if previous is not None and "schema" not in previous:
+                connection.execute(
+                    "INSERT OR IGNORE INTO metadata VALUES(?,?)",
+                    (event_key(previous), canonical_json(previous)),
+                )
+            connection.execute(
+                "INSERT INTO metadata VALUES(?,?)",
+                (event_key(receipt), canonical_json(receipt)),
+            )
             connection.execute(
                 "INSERT OR REPLACE INTO metadata VALUES(?,?)", (key, canonical_json(receipt))
             )
+            if check:
+                check()
         return receipt
+
+    @staticmethod
+    def _review_events(connection: Any, result_id: str) -> list[dict[str, Any]]:
+        from .research_review import MAX_REVIEW_EVENTS
+
+        return [
+            parse_json(row[0])
+            for row in connection.execute(
+                "SELECT value FROM metadata WHERE key LIKE ? ORDER BY rowid LIMIT ?",
+                ("review-event:" + checked_id(result_id) + ":%", MAX_REVIEW_EVENTS + 1),
+            )
+        ]
+
+    def review_history(
+        self,
+        result_id: str,
+        *,
+        check: Callable[[], None] | None = None,
+    ) -> list[dict[str, Any]]:
+        from .research_review import validate_review_history
+
+        result = self.result(result_id, check=check)
+        with self.connection() as connection:
+            connection.execute("BEGIN")
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key=?",
+                ("review:" + result_id,),
+            ).fetchone()
+            current = None if row is None else parse_json(row[0])
+            history = self._review_events(connection, result_id)
+        if not history and current is not None and "schema" not in current:
+            history = [current]
+        return validate_review_history(
+            history,
+            current,
+            result_id=result_id,
+            revision_hash=result["revision_hash"],
+        )
 
     def review_state(
         self, result_id: str, *, check: Callable[[], None] | None = None
     ) -> dict[str, Any] | None:
-        result = self.result(result_id, check=check)
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT value FROM metadata WHERE key=?", ("review:" + result_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        receipt = parse_json(row[0])
-        if receipt["revision_hash"] != result["revision_hash"]:
-            raise ValueError("Stored review is stale for this result revision")
-        return receipt
+        if check:
+            check()
+        history = self.review_history(result_id, check=check)
+        if check:
+            check()
+        return history[-1] if history else None
 
     def submit(self, operation: str, request: dict[str, Any], request_key: str) -> dict[str, Any]:
         checked_text(request_key, "Submission key", 160)

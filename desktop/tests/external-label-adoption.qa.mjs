@@ -92,6 +92,10 @@ async function screenshot(name) {
 async function launch() {
   app = await electron.launch({ executablePath: executable, args: ["--user-data-dir=" + userData], cwd: desktop, timeout: 120_000 });
   page = await app.firstWindow();
+  if (process.env.LOCI_QA_BACKGROUND === "1") await app.evaluate(({ app, BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) { window.setFocusable(false); window.blur(); }
+    app.hide();
+  });
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1280, height: 850 }));
   await dialogs(fixture.labels);
 }

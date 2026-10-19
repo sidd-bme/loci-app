@@ -38,6 +38,12 @@ from .research_project import (
     parse_json,
     timestamp,
 )
+from .research_review import (
+    REVIEW_SCHEMA,
+    event_key,
+    validate_review,
+    validate_review_history,
+)
 from .working_result import _sha256_file_stable
 
 if TYPE_CHECKING:
@@ -45,6 +51,7 @@ if TYPE_CHECKING:
 
 RECIPE_SCHEMA = "loci.recipe-interchange/v1"
 PROJECT_SCHEMA = "loci.study-interchange/v1"
+REVIEW_PROJECT_SCHEMA = "loci.study-interchange/v2"
 MAX_ARCHIVE_MEMBERS = 4096
 MAX_ARCHIVE_BYTES = 32 * 1024**3
 _RECORD_KINDS = frozenset(
@@ -64,10 +71,12 @@ _RECORD_KINDS = frozenset(
         "workflow",
         "workflow_run",
         "workflow_export",
+        "population_group",
+        "exploration",
     }
 )
 _MEMBER_PATTERN = re.compile(
-    r"^(?:sources|results|jobs|reviews)/[a-f0-9]{32}\.json$"
+    r"^(?:sources|results|jobs|reviews|review-history)/[a-f0-9]{32}\.json$"
     r"|^documents/[a-z][a-z0-9_-]{0,31}/[a-f0-9]{32}\.json$"
     r"|^artifacts/[a-f0-9]{64}\.npy$"
 )
@@ -472,6 +481,7 @@ def _historical_job(record: dict[str, Any]) -> dict[str, Any]:
 
 def _database_snapshot(project: ResearchProject) -> dict[str, Any]:
     with project.connection() as connection:
+        connection.execute("BEGIN")
         sources = [
             parse_json(row[0])
             for row in connection.execute("SELECT record FROM sources ORDER BY id")
@@ -493,6 +503,31 @@ def _database_snapshot(project: ResearchProject) -> dict[str, Any]:
                 "SELECT value FROM metadata WHERE key LIKE 'review:%' ORDER BY key"
             )
         ]
+        histories = {}
+        history_result_ids = {
+            row[0]
+            for row in connection.execute(
+                "SELECT DISTINCT substr(key, 14, 32) FROM metadata WHERE key LIKE 'review-event:%'"
+            )
+        }
+        if not history_result_ids <= {review["result_id"] for review in reviews}:
+            raise ValueError("Review history has no current review binding")
+        result_by_id = {result["id"]: result for result in results}
+        for review in reviews:
+            result = result_by_id.get(review["result_id"])
+            if result is None:
+                raise ValueError("Review refers to a missing result")
+            history = project._review_events(connection, result["id"])
+            if not history and "schema" not in review:
+                history = [review]
+            validate_review_history(
+                history,
+                review,
+                result_id=result["id"],
+                revision_hash=result["revision_hash"],
+            )
+            if any(item.get("schema") == REVIEW_SCHEMA for item in history):
+                histories[result["id"]] = history
         metadata = parse_json(
             connection.execute("SELECT value FROM metadata WHERE key='project'").fetchone()[0]
         )
@@ -503,6 +538,7 @@ def _database_snapshot(project: ResearchProject) -> dict[str, Any]:
         "results": results,
         "jobs": jobs,
         "reviews": reviews,
+        "review_histories": histories,
     }
 
 
@@ -521,7 +557,9 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
         records[f"sources/{source['id']}.json"] = canonical_json(source).encode()
     for envelope in snapshot["documents"]:
         if envelope["kind"] in (
-            "large_exchange_grant", "large_export_grant", "labels_import_grant"
+            "large_exchange_grant",
+            "large_export_grant",
+            "labels_import_grant",
         ):
             continue
         if envelope["kind"] == "workspace":
@@ -534,6 +572,24 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
                 {item["id"]: item for item in snapshot["sources"]},
                 {item["id"]: item for item in snapshot["results"]},
             )
+        if envelope["kind"] == "population_group":
+            from .research_groups import validate_group_document
+
+            validate_group_document(
+                envelope,
+                {item["id"]: item for item in snapshot["sources"]},
+                {item["id"]: item for item in snapshot["results"]},
+                snapshot["documents"],
+            )
+        if envelope["kind"] == "exploration":
+            from .research_exploration import validate_exploration_document
+
+            validate_exploration_document(
+                envelope,
+                {item["id"]: item for item in snapshot["sources"]},
+                {item["id"]: item for item in snapshot["results"]},
+                snapshot["documents"],
+            )
         envelope = _path_redacted_document(envelope)
         records[f"documents/{envelope['kind']}/{envelope['id']}.json"] = canonical_json(
             envelope
@@ -545,6 +601,8 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
         records[f"jobs/{job['id']}.json"] = canonical_json(job).encode()
     for review in snapshot["reviews"]:
         records[f"reviews/{review['result_id']}.json"] = canonical_json(review).encode()
+    for result_id, history in snapshot["review_histories"].items():
+        records[f"review-history/{result_id}.json"] = canonical_json(history).encode()
     for name, encoded in records.items():
         _reject_absolute_strings(parse_json(encoded.decode()), name)
     return records
@@ -613,7 +671,7 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
         )
     members.sort(key=lambda item: item["path"])
     manifest = {
-        "schema": PROJECT_SCHEMA,
+        "schema": REVIEW_PROJECT_SCHEMA if snapshot["review_histories"] else PROJECT_SCHEMA,
         "project": snapshot["project"],
         "members": members,
         "raw_sources_included": False,
@@ -782,6 +840,10 @@ def _validate_source(record: Any, expected_id: str) -> dict[str, Any]:
         raise ValueError("Interchanged source metadata fingerprint is inconsistent")
     if any(key.startswith("private_") for key in record):
         raise ValueError("Interchanged source contains a private locator")
+    if "browser_location" in record:
+        from .source_browser_location import validate_browser_location
+
+        validate_browser_location(record["browser_location"])
     _reject_absolute_strings(record, "source record")
     return record
 
@@ -869,6 +931,20 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if "exploration" in provenance:
+        from .research_exploration import validate_exploration_receipt
+
+        receipt = validate_exploration_receipt(provenance["exploration"])
+        if (
+            receipt["source_id"] != result["source_id"]
+            or receipt["source_sha256"] != result["source_sha256"]
+            or canonical_json(receipt["selection"]) != canonical_json(provenance.get("selection"))
+            or canonical_json(receipt["effective_recipe"])
+            != canonical_json(provenance.get("recipe"))
+        ):
+            raise ValueError(
+                "Exploration origin receipt lost its exact result source/context binding"
+            )
     verify_result_derivation(sources[result["source_id"]], provenance)
     references = provenance.get("references", {})
     if not isinstance(references, dict) or len(references) > 1000:
@@ -996,8 +1072,10 @@ def _validate_comparison_document(
     from .study_analysis import compare_runs, summarize_measurements, validate_sample_metadata
 
     data = document["data"]
-    if isinstance(data, dict) and isinstance(data.get("receipt"), dict) and (
-        data["receipt"].get("schema") == "loci.study-correction-effect/v1"
+    if (
+        isinstance(data, dict)
+        and isinstance(data.get("receipt"), dict)
+        and (data["receipt"].get("schema") == "loci.study-correction-effect/v1")
     ):
         # Complete arithmetic and audit validation occurs after archive arrays
         # have been extracted and hash/header checked; do not trust this branch
@@ -1088,14 +1166,7 @@ def _validate_comparison_document(
                 or binding.get("source_sha256") != result["source_sha256"]
                 or binding.get("scope") != scope
                 or not isinstance(review, dict)
-                or set(review)
-                != {"result_id", "revision_hash", "disposition", "reviewed_at", "actor"}
-                or review.get("result_id") != result_id
-                or review.get("revision_hash") != result["revision_hash"]
                 or review.get("disposition") not in {"reviewed", "excluded"}
-                or review.get("actor") != "human"
-                or not isinstance(review.get("reviewed_at"), str)
-                or not review["reviewed_at"]
                 or not isinstance(sample_document, dict)
                 or set(sample_document) != {"revision", "data"}
                 or isinstance(sample_document.get("revision"), bool)
@@ -1103,7 +1174,7 @@ def _validate_comparison_document(
                 or sample_document["revision"] < 1
             ):
                 raise ValueError("Study comparison result binding is stale or invalid")
-            checked_text(review["reviewed_at"], "Comparison review time", 128)
+            validate_review(review, result_id=result_id, revision_hash=result["revision_hash"])
             metadata = validate_sample_metadata(sample_document.get("data")).to_dict()
             source_id = result["source_id"]
             if source_id in scopes:
@@ -1244,7 +1315,7 @@ def import_project(
             }:
                 raise ValueError("Study interchange manifest fields are unsupported")
             if (
-                manifest["schema"] != PROJECT_SCHEMA
+                manifest["schema"] not in {PROJECT_SCHEMA, REVIEW_PROJECT_SCHEMA}
                 or manifest["raw_sources_included"] is not False
                 or manifest["source_locators_included"] is not False
                 or manifest["managed_model_packages_included"] is not False
@@ -1311,6 +1382,7 @@ def import_project(
             results: list[dict[str, Any]] = []
             jobs_raw: list[tuple[dict[str, Any], str]] = []
             reviews: list[dict[str, Any]] = []
+            review_histories: dict[str, list[dict[str, Any]]] = {}
             artifact_members: dict[str, tuple[zipfile.ZipInfo, dict[str, Any]]] = {}
             for member in members:
                 info = by_name[member["path"]]
@@ -1332,7 +1404,15 @@ def import_project(
                     elif parts[0] == "jobs":
                         jobs_raw.append((record, expected_id))
                     elif parts[0] == "reviews":
+                        if not isinstance(record, dict) or record.get("result_id") != expected_id:
+                            raise ValueError(
+                                "Interchanged review identity disagrees with its member"
+                            )
                         reviews.append(record)
+                    elif parts[0] == "review-history":
+                        if manifest["schema"] != REVIEW_PROJECT_SCHEMA:
+                            raise ValueError("Review histories require study interchange v2")
+                        review_histories[expected_id] = record
                 else:
                     if not member["path"].startswith("artifacts/"):
                         raise ValueError("NPY member escaped the artifact namespace")
@@ -1341,6 +1421,9 @@ def import_project(
             result_by_id = {item["id"]: item for item in results}
             if len(source_by_id) != len(sources) or len(result_by_id) != len(results):
                 raise ValueError("Study records contain duplicate identities")
+            from .source_browser_location import validate_browser_roots
+
+            validate_browser_roots(sources)
             referenced_artifacts: dict[str, dict[str, Any]] = {}
             for result in results:
                 source = source_by_id.get(result["source_id"])
@@ -1364,6 +1447,14 @@ def import_project(
                     from .research_workflow import validate_workflow_document
 
                     validate_workflow_document(document, source_by_id, result_by_id, documents)
+                if document["kind"] == "population_group":
+                    from .research_groups import validate_group_document
+
+                    validate_group_document(document, source_by_id, result_by_id, documents)
+                if document["kind"] == "exploration":
+                    from .research_exploration import validate_exploration_document
+
+                    validate_exploration_document(document, source_by_id, result_by_id, documents)
             if set(artifact_members) != set(referenced_artifacts):
                 raise ValueError("Study artifact members do not exactly match result records")
             result_ids = set(result_by_id)
@@ -1374,25 +1465,35 @@ def import_project(
             for review in reviews:
                 if (
                     not isinstance(review, dict)
-                    or set(review)
-                    != {
-                        "result_id",
-                        "revision_hash",
-                        "disposition",
-                        "reviewed_at",
-                        "actor",
-                    }
                     or review.get("result_id") not in result_by_id
                     or review.get("revision_hash")
                     != result_by_id[review["result_id"]]["revision_hash"]
-                    or review.get("disposition") not in {"reviewed", "excluded", "pending"}
-                    or review.get("actor") != "human"
                     or review["result_id"] in review_by_result
                 ):
                     raise ValueError("Interchanged review is stale or invalid")
+                validate_review(
+                    review,
+                    result_id=review["result_id"],
+                    revision_hash=result_by_id[review["result_id"]]["revision_hash"],
+                )
+                if review.get("schema") == REVIEW_SCHEMA and (
+                    manifest["schema"] != REVIEW_PROJECT_SCHEMA
+                    or review["result_id"] not in review_histories
+                ):
+                    raise ValueError("An event review requires its complete decision history")
                 review_by_result[review["result_id"]] = review
+            for result_id, history in review_histories.items():
+                if result_id not in result_by_id or result_id not in review_by_result:
+                    raise ValueError("Review history has no current result/review binding")
+                validate_review_history(
+                    history,
+                    review_by_result[result_id],
+                    result_id=result_id,
+                    revision_hash=result_by_id[result_id]["revision_hash"],
+                )
             project = ResearchProject.create(
-                stage, project_meta["title"],
+                stage,
+                project_meta["title"],
                 schema_version=2 if project_meta["schema"] == "loci.study/v2" else 1,
             )
             for digest, (info, member) in artifact_members.items():
@@ -1460,6 +1561,12 @@ def import_project(
                         "INSERT INTO metadata VALUES(?,?)",
                         ("review:" + review["result_id"], canonical_json(review)),
                     )
+                for history in review_histories.values():
+                    for review in history:
+                        connection.execute(
+                            "INSERT INTO metadata VALUES(?,?)",
+                            (event_key(review), canonical_json(review)),
+                        )
             project = ResearchProject(stage)
             for result in results:
                 checked = project.result(result["id"])

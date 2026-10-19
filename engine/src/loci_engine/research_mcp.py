@@ -17,7 +17,7 @@ from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from .agent_experiments import matching_templates
-from .agent_policy import VISION_POLICY_SCHEMA, AgentPolicy, load_policy
+from .agent_policy import STUDY_POLICY_SCHEMA, VISION_POLICY_SCHEMAS, AgentPolicy, load_policy
 from .export import _rename_noreplace
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
 from .research_process import research_command
@@ -49,7 +49,12 @@ _TOOL_CATALOG = (
         "Submit an exact approved recipe and start a durable job; reuse the same request_key "
         "with the same request for idempotent retries. Poll job_status using the returned job ID.",
     ),
-    ("job_status", "Read one exact policy-scoped durable job."),
+    (
+        "job_status",
+        "Read one exact policy-scoped durable job. Before starting the next operation, "
+        "wait for a terminal state and owned_worker_active=false; a finished result "
+        "can precede worker cleanup.",
+    ),
     ("cancel_job", "Cancel one exact policy-scoped job."),
     (
         "result",
@@ -82,6 +87,40 @@ _VISION_TOOL_CATALOG = (
         "no scientific review is created.",
     ),
 )
+_STUDY_TOOL_CATALOG = (
+    (
+        "action_guide",
+        "Discover shared analysis and editing request schemas, units, effects and retry "
+        "contracts; no study data is read.",
+    ),
+    (
+        "study_results",
+        "Discover accessible result revisions, with zero-based offset and limit 1-50; "
+        "source_id optionally narrows the granted sources.",
+    ),
+    (
+        "validate_action",
+        "Check an explicitly granted action's input scope, revision and resource budget "
+        "before execution.",
+    ),
+    (
+        "inspect_action",
+        "Run an explicitly granted native inspection in a bounded disposable process; "
+        "see action_guide for its request schema.",
+    ),
+    (
+        "submit_action",
+        "Submit an explicitly granted native analysis or correction as a durable task. "
+        "Reuse the same request_key for the same intent.",
+    ),
+    ("review_history", "Inspect the revision-bound decision history and current review digest."),
+    (
+        "review_result",
+        "Record an explicitly delegated agent decision for an exact result revision. "
+        "Supply the current review digest, assessment reason and inspected coverage; "
+        "this never creates a human review.",
+    ),
+)
 _EXPORT_DISCLOSURES = ("geometry", "source_names", "previews", "measurements", "provenance")
 
 
@@ -100,6 +139,12 @@ class JobSupervisor:
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._external_children: dict[str, subprocess.Popen[bytes]] = {}
         self._preview_count = 0
+
+    def owned_worker_active(self, job_id: str) -> bool:
+        """Report only this server's exact owned handle, without exposing a PID."""
+        with self._lock:
+            process = self._children.get(job_id)
+            return process is not None and process.poll() is None
 
     def _command(self, project: ResearchProject, job_id: str) -> list[str]:
         return research_command(
@@ -189,9 +234,13 @@ class JobSupervisor:
             pass
 
     def start(
-        self, workbench: Workbench, request: dict[str, Any], request_key: str
+        self,
+        workbench: Workbench,
+        request: dict[str, Any],
+        request_key: str,
+        operation: str = "run_recipe",
     ) -> dict[str, Any]:
-        job = submit_job(workbench, request, request_key)
+        job = submit_job(workbench, request, request_key, operation=operation)
         if job["state"] != "queued":
             return job
         project = workbench.project
@@ -332,7 +381,18 @@ class JobSupervisor:
                     deadline = time.monotonic() + policy.cpu_seconds * 2 + 30
                     while process.poll() is None:
                         policy.recheck()
-                        policy.source_grant(workbench.project, request["source_id"])
+                        if operation == "inspect_action":
+                            from .agent_actions import authorize_action
+
+                            authorize_action(
+                                PolicyAgent(policy),
+                                workbench,
+                                request["operation"],
+                                request["request"],
+                                mode="read",
+                            )
+                        elif operation != "study_results":
+                            policy.source_grant(workbench.project, request["source_id"])
                         if time.monotonic() > deadline or output.tell() > 32 * 1024**2:
                             raise PermissionError(
                                 "Vision child exceeded its time or response bound"
@@ -507,6 +567,10 @@ class PolicyAgent:
     ) -> dict[str, Any]:
         if not isinstance(request, dict):
             raise ValueError("Recipe request must be an object")
+        if "run_recipe" in self.policy.actions:
+            from .agent_actions import recipe_scope
+
+            return recipe_scope(self.policy, workbench, request)
         recipe_request = request.get("recipe")
         if isinstance(recipe_request, dict) and recipe_request.get("references"):
             raise PermissionError(
@@ -537,6 +601,21 @@ class PolicyAgent:
 
     def _authorize_job(self, workbench: Workbench, job_id: str) -> dict[str, Any]:
         job = workbench.project.job(checked_id(job_id))
+        if job.get("operation") in self.policy.actions:
+            from .agent_actions import authorize_action
+
+            self.policy.require_operation(
+                "submit_recipe"
+                if job["operation"] == "run_recipe" and "submit_recipe" in self.policy.operations
+                else "submit_action"
+            )
+            request = (
+                job["request"]
+                if job["operation"] == "run_recipe"
+                else job["request"].get("task_request")
+            )
+            authorize_action(self, workbench, job["operation"], request, mode="task")
+            return job
         if job.get("operation") not in {"run_recipe", "preview_recipe"} or not isinstance(
             job.get("request"), dict
         ):
@@ -547,6 +626,13 @@ class PolicyAgent:
         return job
 
     def _authorize_result(self, workbench: Workbench, result_id: str) -> dict[str, Any]:
+        if (
+            self.policy.delegation is not None
+            and self.policy.delegation["result_scope"] == "granted-sources"
+        ):
+            from .agent_study import authorize_result
+
+            return authorize_result(self.policy, workbench, result_id)
         result = workbench.project.result(checked_id(result_id))
         self.policy.source_grant(workbench.project, result["source_id"])
         provenance = result.get("provenance")
@@ -557,7 +643,14 @@ class PolicyAgent:
             "selection": provenance.get("selection"),
             "recipe": provenance.get("recipe"),
         }
-        validation = self._validate(workbench, request, "run")
+        validation = self._validate(workbench, request, None if self.policy.delegation else "run")
+        if (
+            self.policy.delegation is not None
+            and validation["recipe_sha256"] not in self.policy.recipes
+            and not matching_templates(self.policy, validation, "run")
+            and not matching_templates(self.policy, validation, "preview")
+        ):
+            raise PermissionError("The result recipe is outside the pinned delegation")
         if (
             result.get("source_sha256") != self.policy.sources[result["source_id"]].sha256
             or provenance.get("recipe_sha256") != validation["recipe_sha256"]
@@ -737,8 +830,9 @@ class PolicyAgent:
                 {"name": name, "description": description}
                 for name, description in (
                     _TOOL_CATALOG
-                    + (_VISION_TOOL_CATALOG if self.policy.schema == VISION_POLICY_SCHEMA else ())
+                    + (_VISION_TOOL_CATALOG if self.policy.schema in VISION_POLICY_SCHEMAS else ())
                     + (_REMOTE_TOOL_CATALOG if self.policy.remote_grants else ())
+                    + (_STUDY_TOOL_CATALOG if self.policy.schema == STUDY_POLICY_SCHEMA else ())
                 )
             ],
             "dataset_contents_included": False,
@@ -816,13 +910,24 @@ class PolicyAgent:
                 "continuation": "Use analysis_context(offset=next_offset, limit=limit) for "
                 "subsequent pages. Grants are authorization, not scientific validation.",
             }
-            if self.policy.schema == VISION_POLICY_SCHEMA:
+            if self.policy.schema in VISION_POLICY_SCHEMAS:
                 templates = sorted(self.policy.experimental_recipes)
                 output["experimental_recipes"] = [
                     self.policy.experimental_recipes[key]
                     for key in templates[offset : offset + limit]
                 ]
                 output["pagination"]["experimental_recipes_count"] = len(templates)
+            if self.policy.delegation is not None:
+                output["delegation"] = dict(self.policy.delegation)
+                output["actions"] = sorted(self.policy.actions)
+                names = sorted(self.policy.export_filenames)
+                output["export"] = {
+                    "allowed": self.policy.export_root is not None,
+                    "filename_mode": "directory" if self.policy.export_new_names else "listed",
+                    "filenames": names[offset : offset + limit],
+                    "next_offset": offset + limit if offset + limit < len(names) else None,
+                    "overwrite": False,
+                }
             self.policy.recheck()
             return output
         finally:
@@ -842,16 +947,20 @@ class PolicyAgent:
                 "scientific_validation": validated["scientific_validation"],
                 "approved": {
                     "preview": bool(
-                        recipe
+                        "run_recipe" in self.policy.actions
+                        or recipe
                         and recipe.preview
                         or matching_templates(self.policy, validated, "preview")
                     ),
                     "run": bool(
-                        recipe and recipe.run or matching_templates(self.policy, validated, "run")
+                        "run_recipe" in self.policy.actions
+                        or recipe
+                        and recipe.run
+                        or matching_templates(self.policy, validated, "run")
                     ),
                 },
             }
-            if self.policy.schema == VISION_POLICY_SCHEMA:
+            if self.policy.schema in VISION_POLICY_SCHEMAS:
                 output["experimental_templates"] = [
                     item["key"] for item in matching_templates(self.policy, validated)
                 ]
@@ -958,7 +1067,12 @@ class PolicyAgent:
         try:
             self.supervisor._reap(workbench.project)
             job = self._authorize_job(workbench, job_id)
-            return {"job": self._safe_job(job)}
+            return {
+                "job": {
+                    **self._safe_job(job),
+                    "owned_worker_active": self.supervisor.owned_worker_active(job_id),
+                }
+            }
         finally:
             workbench.close()
 
@@ -986,6 +1100,12 @@ class PolicyAgent:
                 if summary["review"] is None
                 else {"disposition": summary["review"]["disposition"]},
             }
+            if self.policy.delegation is not None and "agent_metadata" in self.policy.disclosures:
+                from .research_review import review_sha256
+
+                safe_summary["review_sha256"] = review_sha256(summary["review"])
+                if summary["review"] is not None:
+                    safe_summary["review"]["actor"] = summary["review"]["actor"]
             if "agent_metadata" in self.policy.disclosures:
                 safe_summary.update(
                     source_id=summary["source_id"],
@@ -1218,11 +1338,8 @@ class PolicyAgent:
         try:
             for category in ("previews", "geometry", "provenance", "agent_metadata"):
                 self.policy.require_disclosure(category)
-            if (
-                self.policy.export_root is None
-                or filename not in self.policy.export_filenames
-                or Path(filename).name != filename
-                or not filename.endswith(".loci-vision")
+            if not self.policy.allows_export_name(filename) or not filename.endswith(
+                ".loci-vision"
             ):
                 raise PermissionError("Vision export destination is outside policy")
             frame = self._vision_frame(workbench, request, operation="export_vision_handoff")
@@ -1253,6 +1370,193 @@ class PolicyAgent:
         finally:
             workbench.close()
 
+    def review_history(self, result_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+        from .quantitative import integer
+        from .research_review import review_sha256
+
+        workbench = self._workbench("review_history")
+        try:
+            self.policy.require_disclosure("agent_metadata")
+            self._authorize_result(workbench, result_id)
+            offset = integer(offset, "review offset", 0, 10_000)
+            limit = integer(limit, "review limit", 1, 100)
+            history = workbench.project.review_history(result_id)
+            assessment_disclosed = set(_EXPORT_DISCLOSURES) <= self.policy.disclosures
+            events = [
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key not in {"reason", "coverage"} or assessment_disclosed
+                }
+                for event in history[offset : offset + limit]
+            ]
+            self.policy.recheck()
+            return {
+                "events": events,
+                "total_events": len(history),
+                "next_offset": offset + limit if offset + limit < len(history) else None,
+                "current_review_sha256": review_sha256(history[-1] if history else None),
+                "assessment_disclosed": assessment_disclosed,
+            }
+        finally:
+            workbench.close()
+
+    def action_guide(self, operation: str | None = None) -> dict[str, Any]:
+        from .research_action_registry import action_guide
+
+        self.policy.recheck()
+        return action_guide(operation)
+
+    def validate_action(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
+        from .agent_actions import authorize_action
+
+        workbench = self._workbench("validate_action")
+        try:
+            normalized = authorize_action(self, workbench, operation, request)
+            return {
+                "operation": operation,
+                "authorized": True,
+                "request": normalized,
+                "validation": "Input scopes, revisions and resource bounds checked; "
+                "the native executor validates numerical settings when run.",
+            }
+        finally:
+            workbench.close()
+
+    def inspect_action(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
+        from .agent_actions import authorize_action
+
+        workbench = self._workbench("inspect_action")
+        try:
+            normalized = authorize_action(self, workbench, operation, request, mode="read")
+            output = self.supervisor.vision(
+                workbench, {"operation": operation, "request": normalized}, "inspect_action"
+            )
+            authorize_action(self, workbench, operation, normalized, mode="read")
+            return output
+        finally:
+            workbench.close()
+
+    def submit_action(
+        self, operation: str, request: dict[str, Any], request_key: str
+    ) -> dict[str, Any]:
+        from .agent_actions import authorize_action
+
+        workbench = self._workbench("submit_action")
+        try:
+            normalized = authorize_action(self, workbench, operation, request, mode="task")
+            job = self.supervisor.start(workbench, normalized, request_key, operation=operation)
+            return {"job": self._safe_job(job)}
+        finally:
+            workbench.close()
+
+    def study_results(
+        self, source_id: str | None = None, offset: int = 0, limit: int = 50
+    ) -> dict[str, Any]:
+        workbench = self._workbench("study_results")
+        try:
+            self.policy.require_disclosure("agent_metadata")
+            request = {"source_id": source_id, "offset": offset, "limit": limit}
+            return self.supervisor.vision(workbench, request, "study_results")
+        finally:
+            workbench.close()
+
+    def _study_results(self, workbench, request):
+        from .quantitative import exact_keys, integer
+        from .research_project import canonical_json
+        from .workbench import result_summary
+
+        exact_keys(request, {"source_id", "offset", "limit"}, "study results")
+        self.policy.require_disclosure("agent_metadata")
+        source_id = request.get("source_id")
+        sources = [source_id] if source_id is not None else sorted(self.policy.sources)
+        for identity in sources:
+            self.policy.source_grant(workbench.project, identity)
+        offset = integer(request.get("offset", 0), "result offset", 0, 10_000)
+        limit = integer(request.get("limit", 50), "result limit", 1, 50)
+        with workbench.project.connection() as connection:
+            ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT id FROM results WHERE json_extract(record, '$.source_id') IN "
+                    "(SELECT value FROM json_each(?)) ORDER BY rowid LIMIT 10001",
+                    (canonical_json(sources),),
+                )
+            ]
+        if len(ids) > 10_000:
+            raise ValueError("Narrow result discovery to a source with at most 10000 results")
+        authorized = []
+        for result_id in ids:
+            try:
+                record = self._authorize_result(workbench, result_id)
+            except PermissionError:
+                continue
+            review = workbench.project.review_state(result_id)
+            item = {key: record[key] for key in ("id", "source_id", "revision_hash", "kind")}
+            item["review"] = (
+                None if review is None else {key: review[key] for key in ("disposition", "actor")}
+            )
+            if "measurements" in self.policy.disclosures:
+                item["object_count"] = result_summary(record)["object_count"]
+            if "geometry" in self.policy.disclosures:
+                item["selection"] = record["provenance"].get("selection")
+            authorized.append(item)
+        self.policy.recheck()
+        return {
+            "results": authorized[offset : offset + limit],
+            "total_results": len(authorized),
+            "next_offset": offset + limit if offset + limit < len(authorized) else None,
+        }
+
+    def review_result(self, request: dict[str, Any]) -> dict[str, Any]:
+        from .quantitative import exact_keys
+
+        fields = {
+            "result_id",
+            "revision_hash",
+            "disposition",
+            "reason",
+            "coverage",
+            "expected_review_sha256",
+        }
+        exact_keys(request, fields, "agent review")
+        if set(request) != fields:
+            raise ValueError("Agent review requires an exact revision, prior digest and assessment")
+        workbench = self._workbench("review_result")
+        try:
+            self.policy.require_disclosure("agent_metadata")
+            delegation = self.policy.delegation
+            if delegation is None:
+                raise PermissionError("Agent approval requires an explicit study delegation")
+            result = self._authorize_result(workbench, request["result_id"])
+            if result["revision_hash"] != request["revision_hash"]:
+                raise PermissionError("Agent review requires the exact inspected revision")
+
+            def guard():
+                self.policy.recheck()
+                self._authorize_result(workbench, result["id"])
+
+            receipt = workbench.project.review(
+                result["id"],
+                result["revision_hash"],
+                request["disposition"],
+                actor="agent",
+                actor_id=delegation["client_id"],
+                authority={
+                    "kind": "policy-delegation",
+                    "policy_sha256": self.policy.content_sha256,
+                    "delegation_id": delegation["id"],
+                    "client_id": delegation["client_id"],
+                },
+                reason=request["reason"],
+                coverage=request["coverage"],
+                expected_review_sha256=request["expected_review_sha256"],
+                check=guard,
+            )
+            return {"review": receipt}
+        finally:
+            workbench.close()
+
     def export_result(self, result_id: str, revision_hash: str, filename: str) -> dict[str, Any]:
         workbench = self._workbench("export_result")
         try:
@@ -1261,12 +1565,17 @@ class PolicyAgent:
             result = self._authorize_result(workbench, result_id)
             if result["revision_hash"] != revision_hash:
                 raise PermissionError("Export requires the exact authorized result revision")
-            if (
-                self.policy.export_root is None
-                or filename not in self.policy.export_filenames
-                or Path(filename).name != filename
-            ):
+            if not self.policy.allows_export_name(filename):
                 raise PermissionError("The export destination is outside the pinned policy")
+            expected_review = workbench.project.review_state(result_id)
+            if (
+                expected_review is not None
+                and expected_review["actor"] == "agent"
+                and "review_result" not in self.policy.operations
+            ):
+                raise PermissionError(
+                    "Export of agent-reviewed results requires delegated approval and export"
+                )
             # research_export performs the exact review, source, artifact and
             # round-trip checks and publishes with a no-replace atomic rename.
             from .research_export import export_research_result
@@ -1286,7 +1595,11 @@ class PolicyAgent:
                 self.policy.recheck()
                 self._authorize_result(workbench, result_id)
                 review = workbench.project.review_state(result_id)
-                if review is None or review["disposition"] != "reviewed":
+                if (
+                    review is None
+                    or review["disposition"] != "reviewed"
+                    or review != expected_review
+                ):
                     raise PermissionError("The exact result revision is no longer reviewed")
                 _rename_noreplace(staging, target)
                 return {**receipt, "export_name": filename}
@@ -1310,7 +1623,9 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "shell commands."
         ),
     )
-    descriptions = dict(_TOOL_CATALOG + _REMOTE_TOOL_CATALOG + _VISION_TOOL_CATALOG)
+    descriptions = dict(
+        _TOOL_CATALOG + _REMOTE_TOOL_CATALOG + _VISION_TOOL_CATALOG + _STUDY_TOOL_CATALOG
+    )
 
     def annotations(name: str) -> ToolAnnotations:
         read_only = name in {
@@ -1323,6 +1638,11 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "result_view",
             "source_image",
             "source_display",
+            "review_history",
+            "action_guide",
+            "study_results",
+            "validate_action",
+            "inspect_action",
         }
         return ToolAnnotations(
             read_only_hint=read_only,
@@ -1333,6 +1653,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "export_result",
                 "export_vision_handoff",
                 "set_source_display",
+                "review_result",
             },
             open_world_hint=name
             in {
@@ -1349,6 +1670,61 @@ def build_server(policy_path: str | Path) -> MCPServer:
         params = context.params
         if context.method == "tools/call" and isinstance(params, dict):
             name = params.get("name")
+            action_arguments = {
+                "action_guide": ({"operation"}, set()),
+                "study_results": ({"source_id", "offset", "limit"}, set()),
+                "validate_action": ({"operation", "request"}, {"operation", "request"}),
+                "inspect_action": ({"operation", "request"}, {"operation", "request"}),
+                "submit_action": (
+                    {"operation", "request", "request_key"},
+                    {"operation", "request", "request_key"},
+                ),
+            }
+            if name in action_arguments:
+                arguments = params.get("arguments", {})
+                expected, required = action_arguments[name]
+                if (
+                    not isinstance(arguments, dict)
+                    or not required <= set(arguments) <= expected
+                    or any(
+                        type(arguments[key]) is not int
+                        for key in ("offset", "limit")
+                        if key in arguments
+                    )
+                ):
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Action arguments must match the declared schema.",
+                            }
+                        ],
+                        "isError": True,
+                    }
+            if name in {"review_result", "review_history"}:
+                arguments = params.get("arguments")
+                expected = (
+                    {"request"} if name == "review_result" else {"result_id", "offset", "limit"}
+                )
+                required = {"request"} if name == "review_result" else {"result_id"}
+                if (
+                    not isinstance(arguments, dict)
+                    or not required <= set(arguments) <= expected
+                    or any(
+                        type(arguments[key]) is not int
+                        for key in ("offset", "limit")
+                        if key in arguments
+                    )
+                ):
+                    return {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Review arguments must match the declared tool schema.",
+                            }
+                        ],
+                        "isError": True,
+                    }
             if name in {item[0] for item in _VISION_TOOL_CATALOG}:
                 arguments = params.get("arguments")
                 expected = {
@@ -1455,10 +1831,12 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "Inspect the source and settings in Loci."
             ) from None
 
-    def image_result(action):
+    def image_result(action, *, required: bool = True):
         def response():
             value = action()
-            if agent.policy.schema != VISION_POLICY_SCHEMA:
+            if agent.policy.schema not in VISION_POLICY_SCHEMAS:
+                return value
+            if not required and "image" not in value:
                 return value
             from .agent_vision import validate_png
             from .research_project import canonical_json
@@ -1501,7 +1879,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
         from .research_recipe_guide import recipe_guide
 
         return invoke(
-            lambda: recipe_guide(experimental=agent.policy.schema == VISION_POLICY_SCHEMA)
+            lambda: recipe_guide(experimental=agent.policy.schema in VISION_POLICY_SCHEMAS)
         )
 
     @server.tool(
@@ -1520,7 +1898,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
 
         return canonical_json(
             invoke(
-                lambda: recipe_guide(experimental=agent.policy.schema == VISION_POLICY_SCHEMA),
+                lambda: recipe_guide(experimental=agent.policy.schema in VISION_POLICY_SCHEMAS),
                 resource=True,
             )
         )
@@ -1617,7 +1995,76 @@ def build_server(policy_path: str | Path) -> MCPServer:
     def export_result(result_id: str, revision_hash: str, filename: str) -> dict[str, Any]:
         return invoke(lambda: agent.export_result(result_id, revision_hash, filename))
 
-    if agent.policy.schema == VISION_POLICY_SCHEMA:
+    if agent.policy.schema == STUDY_POLICY_SCHEMA:
+
+        @server.tool(
+            name="action_guide",
+            structured_output=True,
+            description=descriptions["action_guide"],
+            annotations=annotations("action_guide"),
+        )
+        def action_guide(operation: str | None = None) -> dict[str, Any]:
+            return invoke(lambda: agent.action_guide(operation))
+
+        @server.tool(
+            name="study_results",
+            structured_output=True,
+            description=descriptions["study_results"],
+            annotations=annotations("study_results"),
+        )
+        def study_results(
+            source_id: str | None = None, offset: int = 0, limit: int = 50
+        ) -> dict[str, Any]:
+            return invoke(lambda: agent.study_results(source_id, offset, limit))
+
+        @server.tool(
+            name="validate_action",
+            structured_output=True,
+            description=descriptions["validate_action"],
+            annotations=annotations("validate_action"),
+        )
+        def validate_action(operation: str, request: dict[str, Any]) -> dict[str, Any]:
+            return invoke(lambda: agent.validate_action(operation, request))
+
+        @server.tool(
+            name="inspect_action",
+            structured_output=True,
+            description=descriptions["inspect_action"],
+            annotations=annotations("inspect_action"),
+        )
+        def inspect_action(operation: str, request: dict[str, Any]) -> dict[str, Any]:
+            return image_result(lambda: agent.inspect_action(operation, request), required=False)
+
+        @server.tool(
+            name="submit_action",
+            structured_output=True,
+            description=descriptions["submit_action"],
+            annotations=annotations("submit_action"),
+        )
+        def submit_action(
+            operation: str, request: dict[str, Any], request_key: str
+        ) -> dict[str, Any]:
+            return invoke(lambda: agent.submit_action(operation, request, request_key))
+
+        @server.tool(
+            name="review_history",
+            structured_output=True,
+            description=descriptions["review_history"],
+            annotations=annotations("review_history"),
+        )
+        def review_history(result_id: str, offset: int = 0, limit: int = 100) -> dict[str, Any]:
+            return invoke(lambda: agent.review_history(result_id, offset, limit))
+
+        @server.tool(
+            name="review_result",
+            structured_output=True,
+            description=descriptions["review_result"],
+            annotations=annotations("review_result"),
+        )
+        def review_result(request: dict[str, Any]) -> dict[str, Any]:
+            return invoke(lambda: agent.review_result(request))
+
+    if agent.policy.schema in VISION_POLICY_SCHEMAS:
 
         @server.tool(
             name="source_image",

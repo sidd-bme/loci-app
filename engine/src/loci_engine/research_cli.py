@@ -152,7 +152,9 @@ def parser() -> argparse.ArgumentParser:
     ):
         vision.add_argument("--" + name, required=True)
     vision.add_argument(
-        "--operation", choices=["source_image", "export_vision_handoff"], required=True
+        "--operation",
+        choices=["source_image", "export_vision_handoff", "inspect_action", "study_results"],
+        required=True,
     )
     vision.add_argument("--cpu-seconds", type=int, required=True)
     vision.add_argument("--memory-bytes", type=int, required=True)
@@ -207,8 +209,17 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         agent = PolicyAgent(policy)
         workbench = agent._workbench(args.operation)
         try:
+            request = _request(args.request)
+            if args.operation == "inspect_action":
+                from .agent_actions import inspect_action
+                from .quantitative import exact_keys
+
+                exact_keys(request, {"operation", "request"}, "action inspection")
+                return inspect_action(agent, workbench, request["operation"], request["request"])
+            if args.operation == "study_results":
+                return agent._study_results(workbench, request)
             return agent._vision_frame(
-                workbench, _request(args.request), supervised=False, operation=args.operation
+                workbench, request, supervised=False, operation=args.operation
             )
         finally:
             workbench.close()
@@ -231,7 +242,9 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             raise PermissionError("Agent child filesystem identities changed")
         return execute_child(policy, args.grant_key, args.operation, args.job)
     if args.command == "discover":
-        return {"schema": "loci.operations/v1", "operations": OPERATION_CATALOG}
+        from .research_action_registry import operation_catalog
+
+        return {"schema": "loci.operations/v1", "operations": operation_catalog()}
     if args.command == "remote-worker":
         from .remote_worker import run_manifest
 
@@ -279,8 +292,12 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             from .research_labels_import import create_import_grant
 
             return create_import_grant(
-                workbench, str(Path(args.path).absolute()), args.source, args.source_sha256,
-                _request(args.selection), args.working_bytes,
+                workbench,
+                str(Path(args.path).absolute()),
+                args.source,
+                args.source_sha256,
+                _request(args.selection),
+                args.working_bytes,
             )
         if args.command == "snapshot":
             reconcile_jobs(project)

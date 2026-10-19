@@ -7,6 +7,7 @@ import stat
 import sys
 import types
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -59,22 +60,26 @@ def _publication(
     cellpose: bool = False,
     cellpose_working_bytes: int = 8 * 1024 * 1024,
     empty_watershed: bool = False,
+    shape: tuple[int, int] = (16, 16),
+    rgb: bool = False,
 ) -> tuple[bytes, Path, VerifiedOutputManifest, Path]:
     staging = tmp_path / "remote" / ".loci-runs" / KEY
     output = tmp_path / "published" / ".loci-runs" / KEY
     (staging / "inputs").mkdir(parents=True)
     output.mkdir(parents=True)
     source = tmp_path / "same-source.ome.tif"
-    image = np.zeros((16, 16), dtype=np.uint16)
+    image = np.zeros((*shape, 3) if rgb else shape, dtype=np.uint8 if rgb else np.uint16)
     image[2:5, 2:5] = 100
     image[10:13, 10:13] = 200
-    metadata = {"axes": "YX"}
+    metadata = {"axes": "YXS" if rgb else "YX"}
     if empty_watershed:
         image.fill(0)
         metadata.update(
             PhysicalSizeX=0.5, PhysicalSizeY=2.0, PhysicalSizeXUnit="µm", PhysicalSizeYUnit="µm"
         )
-    tifffile.imwrite(source, image, ome=True, metadata=metadata)
+    tifffile.imwrite(
+        source, image, ome=True, photometric="rgb" if rgb else "minisblack", metadata=metadata
+    )
     staged = staging / "inputs" / source.name
     staged.write_bytes(source.read_bytes())
     digest = hashlib.sha256(staged.read_bytes()).hexdigest()
@@ -85,8 +90,8 @@ def _publication(
         "selection": {
             "x": 0,
             "y": 0,
-            "width": 16,
-            "height": 16,
+            "width": shape[1],
+            "height": shape[0],
             "t": 0,
             "c": 0,
             "z": 0,
@@ -130,7 +135,7 @@ def _publication(
                     "allow_cpu_fallback": False,
                     "rights_basis": "noncommercial-research",
                     "settings": CellposeSettings(device="cuda").to_dict(),
-                    "measurement_channels": [0],
+                    "measurement_channels": [] if rgb else [0],
                     "gates": [],
                     "working_bytes": cellpose_working_bytes,
                 },
@@ -164,7 +169,9 @@ def _publication(
     return encoded, output / "results.zip", manifest, source
 
 
-def _install_fake_cellpose(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_fake_cellpose(
+    monkeypatch: pytest.MonkeyPatch, *, shape: tuple[int, int] = (16, 16)
+) -> None:
     from loci_engine import cellpose_backend
 
     spec = resolve_cellpose_model_spec("cellpose-sam-v2")
@@ -178,7 +185,7 @@ def _install_fake_cellpose(monkeypatch: pytest.MonkeyPatch) -> None:
             model_spec=spec,
         ),
     )
-    labels = np.zeros((16, 16), dtype=np.int32)
+    labels = np.zeros(shape, dtype=np.int32)
     labels[2:5, 2:5] = 1
     monkeypatch.setattr(
         cellpose_backend,
@@ -186,7 +193,7 @@ def _install_fake_cellpose(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda _image, _settings, _profile: types.SimpleNamespace(
             output=types.SimpleNamespace(
                 labels=labels,
-                normalized=np.zeros((16, 16), dtype=np.float64),
+                normalized=np.zeros(shape, dtype=np.float64),
                 count=1,
             ),
             runtime={
@@ -393,16 +400,28 @@ def test_attach_cellpose_preserves_runtime_rights_and_remeasures_locally(
     assert project.review_state(result["id"]) is None
 
 
-def test_attach_bounds_source_loading_below_cellpose_task_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("rgb", [False, True])
+def test_attach_uses_declared_cellpose_budget_for_source_and_measurement_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rgb: bool
 ) -> None:
-    _install_fake_cellpose(monkeypatch)
+    shape = (2160, 3840)
+    _install_fake_cellpose(monkeypatch, shape=shape)
     request, archive, manifest, source = _publication(
         tmp_path,
         cellpose=True,
         cellpose_working_bytes=2 * 1024**3,
+        shape=shape,
+        rgb=rgb,
     )
     project, local_source_id = _local_project(tmp_path, source)
+    original_load = Workbench.load_scalar
+    allowances = []
+
+    def load_with_declared_budget(self, *args, **kwargs):
+        allowances.append(kwargs["working_bytes"])
+        return original_load(self, *args, **kwargs)
+
+    monkeypatch.setattr(Workbench, "load_scalar", load_with_declared_budget)
 
     receipt = attach_remote_results(
         project,
@@ -415,6 +434,54 @@ def test_attach_bounds_source_loading_below_cellpose_task_budget(
 
     assert receipt["task_results"][0]["local_result_id"]
     assert project.summary()["counts"]["results"] == 1
+    assert allowances == [2 * 1024**3] * (1 if rgb else 2)
+    result = project.result(receipt["task_results"][0]["local_result_id"])
+    assert result["provenance"]["measurements"][0]["voxel_count"] == 9
+    assert project.load_array(result["arrays"]["labels"]).shape == shape
+    assert project.review_state(result["id"]) is None
+
+
+def test_attach_still_rejects_task_allowance_above_host_allocation(tmp_path, monkeypatch):
+    _install_fake_cellpose(monkeypatch)
+    request, archive, manifest, source = _publication(
+        tmp_path, cellpose=True, cellpose_working_bytes=2 * 1024**3
+    )
+    project, local_source_id = _local_project(tmp_path, source)
+    document = json.loads(request)
+    document["resources"]["memory_mb"] = 1024
+    request = _canonical(document)
+    manifest = replace(manifest, request_sha256=hashlib.sha256(request).hexdigest())
+    with pytest.raises(RemoteResultsError, match="exceeds its allocated memory"):
+        attach_remote_results(
+            project,
+            request,
+            archive,
+            expected_archive_sha256=manifest.entries[0].sha256,
+            outer_manifest=manifest,
+            local_source_mapping={REMOTE_SOURCE: local_source_id},
+        )
+    assert project.summary()["counts"]["results"] == 0
+
+
+def test_attach_still_rejects_aggregate_archive_above_memory_envelope(tmp_path, monkeypatch):
+    _install_fake_cellpose(monkeypatch)
+    request, archive, manifest, source = _publication(
+        tmp_path, cellpose=True, cellpose_working_bytes=2 * 1024**3
+    )
+    project, local_source_id = _local_project(tmp_path, source)
+    with zipfile.ZipFile(archive) as zipped:
+        aggregate_bytes = sum(info.file_size for info in zipped.infolist())
+    with pytest.raises(RemoteResultsError, match="exceeds the agent memory envelope"):
+        attach_remote_results(
+            project,
+            request,
+            archive,
+            expected_archive_sha256=manifest.entries[0].sha256,
+            outer_manifest=manifest,
+            local_source_mapping={REMOTE_SOURCE: local_source_id},
+            max_decoded_bytes=aggregate_bytes - 1,
+        )
+    assert project.summary()["counts"]["results"] == 0
 
 
 def test_attach_requires_original_bytes_and_atomically_completes_running_job(

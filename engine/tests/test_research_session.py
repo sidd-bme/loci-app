@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import os
 
@@ -103,3 +104,80 @@ def test_save_as_rejects_directory_entry_churn(tmp_path, monkeypatch):
         clone_study(project, destination)
     assert not destination.exists()
     assert not list(tmp_path.glob(".loci-save-*"))
+
+
+def test_save_as_reports_unsupported_publication_and_cleans_disappearing_sidecars(
+    tmp_path, monkeypatch
+):
+    _, project, _ = populated(tmp_path)
+    real_unlink = os.unlink
+    vanished = []
+
+    def unsupported_publish(staging, target):
+        (staging / "._study.sqlite3").write_bytes(b"synthetic AppleDouble sidecar")
+        raise OSError(errno.ENOTSUP, "Operation not supported", str(target))
+
+    def unlink_with_sidecar_race(path, *args, **kwargs):
+        if os.path.basename(path) == "._study.sqlite3":
+            real_unlink(path, *args, **kwargs)
+            vanished.append(os.path.basename(path))
+            # A sidecar listed by rmtree can disappear with its paired entry.
+            # The second unlink reproduces that missing-entry result.
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(research_session, "_rename_noreplace", unsupported_publish)
+    monkeypatch.setattr(os, "unlink", unlink_with_sidecar_race)
+    destination = tmp_path / "unsupported.loci-study"
+    with pytest.raises(ValueError, match="destination drive.*atomic study saving") as failure:
+        clone_study(project, destination)
+    assert failure.value.__cause__.errno == errno.ENOTSUP
+    assert "APFS" in str(failure.value)
+    assert vanished == ["._study.sqlite3"]
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".loci-save-*"))
+
+
+def test_save_as_preserves_primary_error_when_staging_cleanup_fails(tmp_path, monkeypatch):
+    _, project, _ = populated(tmp_path)
+    primary = OSError(errno.EIO, "synthetic publication failure")
+
+    def failed_publish(staging, target):
+        raise primary
+
+    def failed_cleanup(staging, **kwargs):
+        raise PermissionError("synthetic cleanup failure")
+
+    monkeypatch.setattr(research_session, "_rename_noreplace", failed_publish)
+    monkeypatch.setattr(research_session.shutil, "rmtree", failed_cleanup)
+    destination = tmp_path / "failed.loci-study"
+    with pytest.raises(OSError) as failure:
+        clone_study(project, destination)
+    assert failure.value is primary
+    assert any("synthetic cleanup failure" in note for note in failure.value.__notes__)
+    assert not destination.exists()
+    assert len(list(tmp_path.glob(".loci-save-*"))) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Symlink creation requires Windows privileges")
+def test_save_as_cleanup_does_not_follow_replaced_staging_symlink(tmp_path, monkeypatch):
+    _, project, _ = populated(tmp_path)
+    foreign = tmp_path / "unowned"
+    foreign.mkdir()
+    marker = foreign / "preserve"
+    marker.write_bytes(b"unrelated work")
+    primary = OSError(errno.EIO, "synthetic publication failure")
+    replaced = []
+
+    def replace_staging(staging, target):
+        research_session.shutil.rmtree(staging)
+        staging.symlink_to(foreign, target_is_directory=True)
+        replaced.append(staging)
+        raise primary
+
+    monkeypatch.setattr(research_session, "_rename_noreplace", replace_staging)
+    with pytest.raises(OSError) as failure:
+        clone_study(project, tmp_path / "replaced.loci-study")
+    assert failure.value is primary
+    assert any("replaced or linked" in note for note in failure.value.__notes__)
+    assert replaced[0].is_symlink()
+    assert marker.read_bytes() == b"unrelated work"

@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 from .models import ENGINE_VERSION
+from .research_action_registry import REQUESTS, operation_catalog
 from .research_operations import OPERATION_CATALOG, PREVIEW_OPERATIONS, TASK_OPERATIONS
 
 RECIPE_OPERATIONS = {"validate_recipe", "recipe_preflight", "preview_recipe", "run_recipe"}
@@ -16,15 +17,16 @@ RECIPE_OPERATIONS = {"validate_recipe", "recipe_preflight", "preview_recipe", "r
 
 def discover(query: str | None) -> dict[str, Any]:
     # No-query discovery is the existing public protocol, with no added fields.
+    catalog = operation_catalog()
     if query is None:
-        return {"schema": "loci.operations/v1", "operations": OPERATION_CATALOG}
+        return {"schema": "loci.operations/v1", "operations": catalog}
     words = query.casefold().split()
     return {
         "schema": "loci.operations/v1",
         "query": query,
         "operations": {
             name: item
-            for name, item in OPERATION_CATALOG.items()
+            for name, item in catalog.items()
             if all(word in (name + " " + item["summary"]).casefold() for word in words)
         },
     }
@@ -56,7 +58,7 @@ def operation(name: str) -> dict[str, Any]:
     receipt = {
         "schema": "loci.cli-operation/v1",
         "name": name,
-        **OPERATION_CATALOG[name],
+        **operation_catalog()[name],
         "route": "submit" if durable else "execute",
         "preview": name in PREVIEW_OPERATIONS,
         "invocation": shlex.join(argv),
@@ -67,7 +69,7 @@ def operation(name: str) -> dict[str, Any]:
             if durable
             else "This execute route does not require a durable request key.",
         ],
-        "request_schema": None,
+        "request_schema": REQUESTS.get(name),
         "examples": [],
     }
     if name == "labels_import":

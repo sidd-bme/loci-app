@@ -13,6 +13,7 @@ import os
 import stat
 import tempfile
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,8 @@ from .research_project import ResearchProject, canonical_json, checked_id, parse
 POLICY_SCHEMA = "loci.agent-policy/v1"
 REMOTE_POLICY_SCHEMA = "loci.agent-policy/v2"
 VISION_POLICY_SCHEMA = "loci.agent-policy/v3"
+STUDY_POLICY_SCHEMA = "loci.agent-policy/v4"
+VISION_POLICY_SCHEMAS = frozenset({VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA})
 MAX_POLICY_BYTES = 1024 * 1024
 DISCLOSURES = frozenset(
     {"geometry", "source_names", "previews", "measurements", "provenance", "agent_metadata"}
@@ -45,6 +48,16 @@ VISION_OPERATIONS = frozenset(
     {"source_image", "source_display", "set_source_display", "export_vision_handoff"}
 )
 OPERATIONS = LEGACY_OPERATIONS | VISION_OPERATIONS
+STUDY_OPERATIONS = frozenset(
+    {
+        "review_result",
+        "review_history",
+        "study_results",
+        "validate_action",
+        "inspect_action",
+        "submit_action",
+    }
+)
 _TOP_LEVEL_KEYS = {
     "schema",
     "project",
@@ -95,6 +108,25 @@ def _text(value: Any, label: str, maximum: int = 256) -> str:
     if any(ord(character) < 32 for character in value):
         raise ValueError(f"{label} contains control characters")
     return value
+
+
+def _validate_delegation(value: Any) -> dict[str, Any]:
+    grant = _exact_keys(value, {"id", "client_id", "expires_at", "result_scope"}, "delegation")
+    checked_id(grant["id"])
+    _text(grant["client_id"], "declared client identity")
+    if grant["result_scope"] not in ("pinned-recipes", "granted-sources"):
+        raise ValueError("Choose pinned-recipes or granted-sources for result access")
+    expires = grant["expires_at"]
+    if expires is not None:
+        try:
+            deadline = datetime.fromisoformat(_text(expires, "delegation expiry", 64))
+        except ValueError as exc:
+            raise ValueError("Delegation expiry must be an ISO timestamp with a timezone") from exc
+        if deadline.tzinfo is None:
+            raise ValueError("Delegation expiry must include a timezone")
+        if deadline <= datetime.now(UTC):
+            raise PermissionError("The study delegation has expired")
+    return grant
 
 
 def _unique_integers(value: Any, label: str, maximum: int = 1_000_000) -> tuple[int, ...]:
@@ -236,8 +268,13 @@ class AgentPolicy:
     remote_grants: dict[str, dict[str, Any]] = field(default_factory=dict)
     schema: str = POLICY_SCHEMA
     experimental_recipes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    delegation: dict[str, Any] | None = None
+    actions: frozenset[str] = field(default_factory=frozenset)
+    export_new_names: bool = False
 
     def recheck(self) -> None:
+        if self.delegation is not None:
+            _validate_delegation(self.delegation)
         encoded, identity = _read_plain_policy(self.path)
         if (
             identity != self.file_identity
@@ -265,6 +302,18 @@ class AgentPolicy:
     def require_operation(self, operation: str) -> None:
         if operation not in self.operations:
             raise PermissionError("The pinned policy does not allow this operation")
+
+    def allows_export_name(self, filename: Any) -> bool:
+        try:
+            checked = _text(filename, "export filename", 80)
+        except ValueError:
+            return False
+        return (
+            self.export_root is not None
+            and checked not in {".", ".."}
+            and not any(character in checked for character in ("/", "\\"))
+            and (checked in self.export_filenames or self.export_new_names)
+        )
 
     def require_disclosure(self, category: str) -> None:
         if category not in self.disclosures:
@@ -306,14 +355,20 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    v3 = isinstance(document, dict) and document.get("schema") == VISION_POLICY_SCHEMA
+    v4 = isinstance(document, dict) and document.get("schema") == STUDY_POLICY_SCHEMA
+    v3 = isinstance(document, dict) and document.get("schema") in VISION_POLICY_SCHEMAS
     v2 = isinstance(document, dict) and document.get("schema") in {
         REMOTE_POLICY_SCHEMA,
         VISION_POLICY_SCHEMA,
+        STUDY_POLICY_SCHEMA,
     }
-    extra = ({"remote_grants"} if v2 else set()) | ({"experimental_recipes"} if v3 else set())
+    extra = (
+        ({"remote_grants"} if v2 else set())
+        | ({"experimental_recipes"} if v3 else set())
+        | ({"delegation", "actions"} if v4 else set())
+    )
     root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
-    if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, VISION_POLICY_SCHEMA}:
+    if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, *VISION_POLICY_SCHEMAS}:
         raise ValueError("Unsupported policy schema")
     project_value = _exact_keys(root["project"], {"path", "id"}, "policy project")
     project_path, project_identity = _plain_directory(project_value["path"], "project path")
@@ -373,7 +428,10 @@ def _validated_document(
     ):
         raise ValueError("Policy operations must be a unique list")
     operations = frozenset(root["operations"])
-    if not operations <= (OPERATIONS if v3 else LEGACY_OPERATIONS):
+    supported_operations = (
+        (OPERATIONS | STUDY_OPERATIONS) if v4 else OPERATIONS if v3 else LEGACY_OPERATIONS
+    )
+    if not operations <= supported_operations:
         raise ValueError("Policy contains an unsupported agent operation")
 
     if not isinstance(root["model_packages"], list) or len(root["model_packages"]) > 256:
@@ -403,14 +461,21 @@ def _validated_document(
     export_root: Path | None = None
     export_identity: tuple[int, int] | None = None
     if export_value is not None:
-        value = _exact_keys(export_value, {"root", "filenames"}, "export grant")
+        value = _exact_keys(
+            export_value,
+            {"root", "filenames"} | ({"filename_mode"} if v4 else set()),
+            "export grant",
+        )
         export_root, export_identity = _plain_directory(value["root"], "export root")
-        if not isinstance(value["filenames"], list) or not value["filenames"]:
+        mode = value.get("filename_mode", "listed")
+        if mode not in {"listed", "directory"}:
+            raise ValueError("Export filename mode must be listed or directory")
+        if not isinstance(value["filenames"], list) or not value["filenames"] and mode == "listed":
             raise ValueError("Export grant requires explicit filenames")
         checked_names = []
         for filename in value["filenames"]:
             checked = _text(filename, "export filename", 80)
-            if Path(checked).name != checked or checked in {".", ".."}:
+            if Path(checked).name != checked or "\\" in checked or checked in {".", ".."}:
                 raise ValueError("Export filenames must be single safe path components")
             checked_names.append(checked)
         if len(set(checked_names)) != len(checked_names):
@@ -428,6 +493,27 @@ def _validated_document(
     disclosures = frozenset(root["disclosures"])
     if not disclosures <= DISCLOSURES:
         raise ValueError("Policy contains an unsupported disclosure category")
+    if v4:
+        _validate_delegation(root["delegation"])
+        from .research_action_registry import ACTION_NAMES
+
+        actions = root["actions"]
+        if (
+            not isinstance(actions, list)
+            or any(not isinstance(item, str) for item in actions)
+            or len(set(actions)) != len(actions)
+            or not set(actions) <= ACTION_NAMES
+        ):
+            raise ValueError("Study action grants must name unique supported actions")
+        if actions and (
+            root["delegation"]["result_scope"] != "granted-sources"
+            or not disclosures >= DISCLOSURES
+        ):
+            raise ValueError(
+                "Research actions require granted-sources scope and all response disclosures"
+            )
+        if operations & STUDY_OPERATIONS and "agent_metadata" not in disclosures:
+            raise ValueError("Delegated review requires explicit agent_metadata disclosure")
     if v2:
         from .agent_remote import validate_grants
 
@@ -495,6 +581,10 @@ def load_policy(path: str | Path) -> AgentPolicy:
         experimental_recipes={
             item["key"]: item for item in document.get("experimental_recipes", [])
         },
+        delegation=document.get("delegation"),
+        actions=frozenset(document.get("actions", [])),
+        export_new_names=document["export"] is not None
+        and document["export"].get("filename_mode") == "directory",
     )
 
 
@@ -503,19 +593,32 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
-    v3 = isinstance(specification, dict) and "experimental_recipes" in specification
+    v4 = isinstance(specification, dict) and "delegation" in specification
+    v3 = isinstance(specification, dict) and ("experimental_recipes" in specification or v4)
     v2 = isinstance(specification, dict) and ("remote_grants" in specification or v3)
     expected = (
         (_TOP_LEVEL_KEYS - {"schema", "project"})
         | ({"remote_grants"} if v2 else set())
         | ({"experimental_recipes"} if v3 else set())
+        | ({"delegation"} if v4 else set())
+        | ({"actions"} if v4 and "actions" in specification else set())
     )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": VISION_POLICY_SCHEMA if v3 else REMOTE_POLICY_SCHEMA if v2 else POLICY_SCHEMA,
+        "schema": STUDY_POLICY_SCHEMA
+        if v4
+        else VISION_POLICY_SCHEMA
+        if v3
+        else REMOTE_POLICY_SCHEMA
+        if v2
+        else POLICY_SCHEMA,
         "project": {"path": str(study.root), "id": study.meta["project_id"]},
         **specification,
     }
+    if v4:
+        document.setdefault("actions", [])
+        if document["export"] is not None:
+            document["export"] = {"filename_mode": "listed", **document["export"]}
     if v3:
         from .agent_experiments import normalize_templates
 

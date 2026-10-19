@@ -229,6 +229,7 @@ export async function runCoreRegressions(options, dependencies = {}) {
 
   const report = {
     schema: "loci.core-regressions-receipt/v1",
+    background_window: process.env.LOCI_QA_BACKGROUND === "1",
     mode: options.mode,
     started_at: startedAt,
     completed_at: null,

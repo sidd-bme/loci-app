@@ -281,13 +281,14 @@ describe("ResearchWorkbench maturation workflows", () => {
     } as unknown as ResearchDesktopApi;
   }
 
-  it("renders active viewing badge and independent active styling for active image", async () => {
+  it("marks the current image accessibly with independent active styling", async () => {
     const api = makeApi();
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
 
     const specimenBtn = await screen.findByRole("button", { name: /Specimen 1/ });
     expect(specimenBtn).toHaveClass("active");
-    expect(specimenBtn).toHaveTextContent("Viewing");
+    expect(specimenBtn).toHaveAttribute("aria-current", "true");
+    expect(document.querySelectorAll('button[data-source-id][aria-current="true"]')).toHaveLength(1);
   });
 
   it("displays quantitative summary and interactive ResultTable with keyboard navigation in Review & Export tab", async () => {

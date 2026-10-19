@@ -157,8 +157,10 @@ def _png(array: np.ndarray) -> str:
 
 
 def display_scalar(
-    array: np.ndarray, display: dict[str, Any] | None = None,
-    *, working_bytes: int = DEFAULT_WORKING_BYTES,
+    array: np.ndarray,
+    display: dict[str, Any] | None = None,
+    *,
+    working_bytes: int = DEFAULT_WORKING_BYTES,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     array = validate_array(array, working_bytes=working_bytes)
     if array.ndim != 2:
@@ -303,10 +305,23 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
 
     provenance = result["provenance"]
     imported = provenance.get("external_labels")
-    label_import = {key: imported[key] for key in (
-        "file_name", "producer", "format", "profile", "source_sha256",
-        "file_sha256", "original_dtype", "shape",
-    )} if imported else None
+    label_import = (
+        {
+            key: imported[key]
+            for key in (
+                "file_name",
+                "producer",
+                "format",
+                "profile",
+                "source_sha256",
+                "file_sha256",
+                "original_dtype",
+                "shape",
+            )
+        }
+        if imported
+        else None
+    )
     return {
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
@@ -343,6 +358,7 @@ class Workbench:
         self.sessions.clear()
 
     def snapshot(self) -> dict[str, Any]:
+        from .research_action_registry import operation_catalog
         from .research_jobs import public_job
         from .research_workspace_records import ordered_sources, read_visibility
 
@@ -374,7 +390,7 @@ class Workbench:
             "selections": self.project.documents("selection"),
             "comparisons": self.project.documents("comparison"),
             "jobs": [public_job(job) for job in self.project.list_jobs()],
-            "operations": OPERATION_CATALOG,
+            "operations": operation_catalog(),
         }
 
     def import_native(
@@ -459,6 +475,13 @@ class Workbench:
                     expected_sha256=source["sha256"],
                     **({"check": check} if check is not None else {}),
                 )
+        try:
+            if source.get("source_kind") == "native":
+                validate_source_calibration(source, asdict(session.metadata))
+        except BaseException:
+            session.close()
+            self.sessions.pop(source_id, None)
+            raise
         self._remember(source_id, session)
         return session
 
@@ -1065,6 +1088,8 @@ class Workbench:
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
         workflow_context: dict[str, Any] | None = None,
+        exploration_context: dict[str, Any] | None = None,
+        exploration_details: bool = False,
     ) -> dict[str, Any]:
         validated = self.validate_recipe(request)
         source_id, recipe, selection = (
@@ -1177,6 +1202,37 @@ class Workbench:
             provenance["references"] = reference_records
         if job_id is not None:
             provenance["job_id"] = job_id
+        if exploration_context is not None:
+            from .research_exploration import validate_exploration_receipt
+
+            validate_exploration_receipt(exploration_context)
+            if (
+                exploration_context["source_id"] != source_id
+                or exploration_context["source_sha256"] != self.project.source(source_id)["sha256"]
+                or exploration_context["selection"] != selection
+                or exploration_context["effective_recipe"] != recipe
+                or exploration_context["runtime"] != provenance["runtime"]
+            ):
+                raise ValueError("Exploration receipt does not match the executed recipe")
+            for name in ("image", "labels"):
+                values = np.ascontiguousarray(arrays[name])
+                digest = hashlib.sha256(
+                    canonical_json(
+                        {"dtype": values.dtype.str, "shape": list(values.shape)}
+                    ).encode()
+                )
+                digest.update(values.tobytes())
+                if (
+                    digest.hexdigest()
+                    != exploration_context["content_hashes"][f"{name}_array_sha256"]
+                ):
+                    raise ValueError("Exploration execution content changed before publication")
+            if (
+                hashlib.sha256(canonical_json(rows).encode()).hexdigest()
+                != exploration_context["content_hashes"]["measurements_sha256"]
+            ):
+                raise ValueError("Exploration execution measurements changed before publication")
+            provenance["exploration"] = exploration_context
         workflow_population = None
         if workflow_context is not None:
             from .research_workflow import _population, validate_result_population
@@ -1188,9 +1244,57 @@ class Workbench:
         if preview:
             plane = processed[processed.shape[0] // 2] if processed.ndim == 3 else processed
             rgb, display = display_scalar(plane, working_bytes=recipe["working_bytes"])
+            image = _png(np.round(rgb * 255).astype(np.uint8))
+            details = {}
+            if exploration_details:
+                label_image = image
+                if "labels" in arrays:
+                    labels = arrays["labels"]
+                    label_plane = labels[labels.shape[0] // 2] if labels.ndim == 3 else labels
+                    tint = np.stack(
+                        [
+                            (label_plane * multiplier % 223 + 32) / 255
+                            for multiplier in (67, 97, 137)
+                        ],
+                        axis=-1,
+                    )
+                    overlay = np.where((label_plane > 0)[..., None], 0.6 * rgb + 0.4 * tint, rgb)
+                    label_image = _png(np.round(np.clip(overlay, 0, 1) * 255).astype(np.uint8))
+                measures = np.array([row["measure"] for row in rows], dtype=np.float64)
+                size_summary = {
+                    "count": len(rows),
+                    "measure_kind": "area" if processed.ndim == 2 else "volume",
+                    "measure_unit": f"{geometry.unit}^{processed.ndim}",
+                    "total": float(measures.sum()),
+                    "mean": float(measures.mean()) if len(rows) else None,
+                    "median": float(np.median(measures)) if len(rows) else None,
+                    "min": float(measures.min()) if len(rows) else None,
+                    "max": float(measures.max()) if len(rows) else None,
+                    "border_object_count": sum(bool(row["touches_crop_border"]) for row in rows),
+                }
+                content_hashes = {}
+                for name in ("image", "labels"):
+                    if name in arrays:
+                        values = np.ascontiguousarray(arrays[name])
+                        digest = hashlib.sha256(
+                            canonical_json(
+                                {"dtype": values.dtype.str, "shape": list(values.shape)}
+                            ).encode()
+                        )
+                        digest.update(values.tobytes())
+                        content_hashes[f"{name}_array_sha256"] = digest.hexdigest()
+                content_hashes["measurements_sha256"] = hashlib.sha256(
+                    canonical_json(rows).encode()
+                ).hexdigest()
+                details = {
+                    "label_image": label_image,
+                    "size_summary": size_summary,
+                    "content_hashes": content_hashes,
+                }
             return {
                 "preview": True,
-                "image": _png(np.round(rgb * 255).astype(np.uint8)),
+                "image": image,
+                **details,
                 "display": display,
                 "object_count": len(rows),
                 "measurements": rows[:1000],
@@ -1240,8 +1344,11 @@ class Workbench:
         # avoids a lower, hidden default making a successfully published result unreviewable.
         working_bytes = result_working_bytes(result)
         rgb, display = display_scalar(
-            plane, request.get("display"), working_bytes=working_bytes,
+            plane,
+            request.get("display"),
+            working_bytes=working_bytes,
         )
+        label_image = None
         if request.get("labels", True) and "labels" in result["arrays"]:
             labels = self.project.load_array(result["arrays"]["labels"])
             label_plane = labels if labels.ndim == 2 else np.take(labels, index, axis=axis_number)
@@ -1249,9 +1356,18 @@ class Workbench:
                 [(label_plane * multiplier % 223 + 32) / 255 for multiplier in (67, 97, 137)],
                 axis=-1,
             )
+            rgba = np.concatenate(
+                [
+                    np.round(tint * 255).astype(np.uint8),
+                    np.where(label_plane > 0, 150, 0).astype(np.uint8)[..., None],
+                ],
+                axis=-1,
+            )
+            label_image = _png(rgba)
             rgb = np.where((label_plane > 0)[..., None], 0.6 * rgb + 0.4 * tint, rgb)
         return {
             "image": _png(np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8)),
+            "label_image": label_image,
             "result_id": result["id"],
             "revision_hash": result["revision_hash"],
             "axis": axis,
@@ -1348,8 +1464,12 @@ class Workbench:
             return execute_large(
                 self, operation, request, job_id=job_id, publication_guard=publication_guard
             )
-        # Desktop-only display services are deliberately outside the public
-        # agent operation catalog and its separately granted disclosure surface.
+        if operation == "action_guide":
+            from .research_action_registry import action_guide
+
+            exact_keys(request, {"operation"}, operation)
+            return action_guide(request.get("operation"))
+        # Pixel display services retain their own bounded disclosure surface.
         if operation == "describe_result":
             from .research_result_context import describe_result
 
@@ -1650,10 +1770,48 @@ class Workbench:
             from .research_population import population_locate
 
             return population_locate(self.project, request)
+        if operation.startswith("population_group_") or operation in {
+            "population_gate_evaluate",
+            "population_gate_export",
+            "population_gate_apply",
+        }:
+            from .research_groups import dispatch_group
+
+            return dispatch_group(
+                self.project, operation, request, publication_guard=publication_guard
+            )
+        if operation in {
+            "exploration_preview",
+            "exploration_compare",
+            "exploration_run",
+            "exploration_list",
+            "exploration_get",
+        }:
+            from .research_exploration import dispatch_exploration
+
+            return dispatch_exploration(
+                self, operation, request, job_id=job_id, publication_guard=publication_guard
+            )
         if operation == "population_query":
             from .research_population import population_query
 
             return population_query(self.project, request)
+        if operation == "review_history":
+            from .research_review import review_sha256
+
+            exact_keys(request, {"result_id", "offset", "limit"}, "review history")
+            result = self.project.result(request["result_id"])
+            offset = integer(request.get("offset", 0), "review offset", 0, 10_000)
+            limit = integer(request.get("limit", 100), "review limit", 1, 100)
+            events = self.project.review_history(result["id"])
+            return {
+                "result_id": result["id"],
+                "revision_hash": result["revision_hash"],
+                "events": events[offset : offset + limit],
+                "current_review_sha256": review_sha256(events[-1] if events else None),
+                "total_events": len(events),
+                "next_offset": offset + limit if offset + limit < len(events) else None,
+            }
         if operation == "result":
             exact_keys(request, {"result_id", "offset", "limit"}, "result")
             result = self.project.result(request["result_id"])
@@ -1666,7 +1824,7 @@ class Workbench:
                 total = result["object_count"]
             else:
                 all_rows = result["provenance"].get("measurements", [])
-                rows, total = all_rows[offset:offset + limit], len(all_rows)
+                rows, total = all_rows[offset : offset + limit], len(all_rows)
             return {
                 "result": result_summary(result, self.project.review_state(result["id"])),
                 "measurements": rows,

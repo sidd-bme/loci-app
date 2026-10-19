@@ -447,8 +447,13 @@ def test_new_desktop_context_does_not_widen_mcp_operations_or_disclosures(tmp_pa
     try:
         result = wb.run_recipe(request)["result"]
         assert result["method_label"]
-        assert "describe_result" not in OPERATION_CATALOG
+        assert OPERATION_CATALOG["describe_result"]["mutates"] is False
         assert "describe_result" not in OPERATIONS
+        with pytest.raises(PermissionError, match="operation"):
+            agent.inspect_action(
+                "describe_result",
+                {"result_id": result["id"], "revision_hash": result["revision_hash"]},
+            )
         assert set(agent.result(result["id"])["result"]) == {
             "id",
             "revision_hash",

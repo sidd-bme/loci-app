@@ -737,11 +737,14 @@ def _cellpose_result(
         segment_cellpose,
     )
     from .models import CellposeSettings
-    from .quantitative import DEFAULT_WORKING_BYTES, apply_marker_gates, measure_objects
+    from .quantitative import apply_marker_gates, measure_objects
     from .workbench import runtime_record
 
     cellpose = task.cellpose
-    source_working_bytes = min(cellpose["working_bytes"], DEFAULT_WORKING_BYTES)
+    # The request validator already bounds this allowance by allocated host RAM.
+    # load_scalar applies its own region estimate and native decode-read limit;
+    # the default allowance must not replace an explicitly larger task budget.
+    source_working_bytes = cellpose["working_bytes"]
     settings = CellposeSettings(**cellpose["settings"])
     settings.validate()
     status = get_cellpose_status(cellpose["profile_id"])
@@ -767,7 +770,10 @@ def _cellpose_result(
             allow_rgb=True,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise RemoteWorkerError("Remote Cellpose selection could not be loaded") from exc
+        raise RemoteWorkerError(
+            "Remote Cellpose selection could not be loaded; check the selected region "
+            "and working-memory allowance"
+        ) from exc
     if image.ndim not in {2, 3} or (image.ndim == 3 and image.shape[-1] not in {1, 3, 4}):
         raise RemoteWorkerError("Remote Cellpose requires one 2D scalar or interleaved RGB plane")
     try:

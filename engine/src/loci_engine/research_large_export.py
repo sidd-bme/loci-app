@@ -19,7 +19,7 @@ import tifffile
 
 from .export import _fsync_directory, _rename_noreplace, sanitize_basename
 from .native_image import NativeImageSession, NativeSelection
-from .research_export import flat_measurements, methods_text
+from .research_export import export_source_record, flat_measurements, methods_text
 from .research_project import canonical_json
 from .research_tiled_store import iter_object_rows, iter_tiles, label_value_hash
 from .workbench import geometry_from_dict
@@ -74,7 +74,10 @@ def _copy_checked(source: Path, target: Path, check=None) -> None:
         os.close(descriptor)
     after = source.lstat()
     if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
-        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
     ):
         raise ValueError("Object table changed during export")
 
@@ -242,11 +245,17 @@ def export_large_result(project, result_id, revision_hash, destination, check=No
                     "file": filename,
                 }
             )
+        from .research_review import history_document
+
+        (stage / "review-history.json").write_text(
+            canonical_json(history_document(project, review, check=check)) + "\n",
+            encoding="utf-8",
+        )
         receipt = {
             "schema": "loci.research-export/v2",
             "result": result,
             "review": review,
-            "source": project.public_source(source),
+            "source": export_source_record(source),
             "correction_ancestors": lineage,
             "geometry_authority": "result.provenance.geometry voxel-center XYZ-to-world affine",
             "raw_source_included": False,

@@ -34,6 +34,24 @@ def _open(path: str) -> Workbench:
 
 
 def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "research_review_package_export":
+        from .research_review_package import export_review_package
+
+        exact_keys(params, {"project", "request", "destination"}, method)
+        return export_review_package(
+            _open(params["project"]), params["request"], params["destination"]
+        )
+    if method == "research_compute_targets":
+        from .compute_targets import dispatch
+
+        if set(params) != {"directory", "operation", "request", "project"}:
+            raise ValueError("Compute settings parameters are incomplete")
+        return dispatch(
+            params["directory"],
+            params["operation"],
+            params["request"],
+            ResearchProject(params["project"]) if params["project"] else None,
+        )
     if method == "research_statistics_figure_export":
         from .research_statistics_figure import export_statistics_figure
 
@@ -246,6 +264,7 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         if set(params) not in (
             {"project", "paths", "kind"},
             {"project", "paths", "kind", "relative_paths"},
+            {"project", "paths", "kind", "relative_paths", "import_root"},
         ):
             raise ValueError("research_import contains invalid fields")
         workbench = _open(params["project"])
@@ -268,6 +287,11 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             )
         ):
             raise ValueError("Source relative paths are invalid")
+        from .source_browser_location import associate_import_root, prepare_import_root
+
+        if params.get("import_root") is not None and params.get("kind", "files") != "files":
+            raise ValueError("Only an explicit image-folder selection can declare an import root")
+        root_plan = prepare_import_root(params.get("import_root"), paths, relative_paths)
         imported = []
         if params.get("kind") == "dicom":
             imported.append(workbench.project.register_medical_source(paths))
@@ -281,6 +305,7 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
                     imported.append(workbench.import_native(source, relative_path=relative_path))
         else:
             raise ValueError("Unknown import kind")
+        associate_import_root(workbench.project, imported, root_plan)
         from .research_workspace_records import read_visibility, update_visibility
 
         visibility = read_visibility(workbench.project)

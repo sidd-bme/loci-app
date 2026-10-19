@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Hand, Maximize2, Minus, Plus, RotateCcw } from "lucide-react";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { PopulationMetric, PopulationResponse } from "./ResearchPopulationExplorer";
-import { chartTicks, displayedFraction, fullChartView, isFullChartView, panChartView, populationNumber, viewedDomain, zoomChartView, type ChartView } from "./population-chart-view";
+import { chartTicks, displayedFraction, fullChartView, isFullChartView, panChartView, populationNumber, viewedDomain, zoomChartView, domainValue, type ChartView } from "./population-chart-view";
 
 export const populationDisplayUnit = (unit: string): string => ({ "um": "µm", "um^2": "µm²", "um^3": "µm³", "pixel^2": "pixel²", "pixel^3": "pixel³" }[unit] ?? unit);
 export const populationMetricName = (metric: PopulationMetric | undefined): string =>
@@ -25,10 +25,14 @@ export type PopulationChartProps = {
   disabled?: boolean;
   expanded?: boolean;
   onEnlarge?: () => void;
+  gateDrawing?: { kind: "rectangle" | "polygon"; vertices: Array<[number, number]>; onVertices: (points: Array<[number, number]>) => void } | null;
+  highlightedLabels?: ReadonlySet<number>;
+  axisLabels?: { x: string; y: string };
+
 };
 
 export default function PopulationChart({ kind, data, view, onViewChange, selectedLabel, onSelect, onBinChoose,
-  disabled = false, expanded = false, onEnlarge }: PopulationChartProps) {
+  disabled = false, expanded = false, onEnlarge, gateDrawing = null, highlightedLabels, axisLabels }: PopulationChartProps) {
   const histogram = kind === "histogram";
   const xMetric = data.metrics.find((metric) => metric.id === data.query.x_metric);
   const yMetric = data.metrics.find((metric) => metric.id === data.query.y_metric);
@@ -36,8 +40,8 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
   const hasValues = histogram ? data.histogram.finite_count > 0 : data.scatter.points.length > 0;
   const title = histogram ? "Distribution" : "Relationship";
   const chartName = histogram ? `Histogram of ${populationMetricName(xMetric)}` : `${populationMetricName(yMetric)} versus ${populationMetricName(xMetric)}`;
-  const xLabel = populationMetricName(xMetric);
-  const yLabel = histogram ? "Object count" : populationMetricName(yMetric);
+  const xLabel = axisLabels?.x ?? populationMetricName(xMetric);
+  const yLabel = histogram ? "Object count" : axisLabels?.y ?? populationMetricName(yMetric);
   const [panning, setPanning] = useState(false);
   const [keyboardLabel, setKeyboardLabel] = useState<number | null>(null);
   const [tooltip, setTooltip] = useState<string | null>(null);
@@ -45,6 +49,13 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
   const host = useRef<HTMLDivElement>(null);
   const plot = useRef<SVGSVGElement>(null);
   const drag = useRef<{ x: number; y: number; view: ChartView; width: number; height: number; moved: boolean } | null>(null);
+  const gateDrag = useRef<[number, number] | null>(null);
+  const gatePoint = (event: React.PointerEvent<SVGSVGElement>): [number, number] => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - bounds.left - box.left * bounds.width / width) / (plotWidth * bounds.width / width)));
+    const y = Math.max(0, Math.min(1, (box.bottom * bounds.height / height - (event.clientY - bounds.top)) / (plotHeight * bounds.height / height)));
+    return [domainValue(viewedDomain(domains.x, view.x), x), domainValue(viewedDomain(domains.y, view.y), y)];
+  };
   const clip = useId().replace(/:/g, "");
   const helpId = `${clip}-help`;
   const height = expanded ? Math.max(320, Math.min(520, width * 0.57)) : 260;
@@ -74,6 +85,7 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
   }, [expanded]);
 
   const chartKey = (event: React.KeyboardEvent) => {
+    if (gateDrawing && event.key === "Escape") { event.preventDefault(); gateDrawing.onVertices([]); gateDrag.current = null; return; }
     if (disabled || !hasValues || event.altKey || event.metaKey || event.ctrlKey) return;
     if (event.key === "+" || event.key === "=") { event.preventDefault(); zoom(0.7); }
     else if (event.key === "-") { event.preventDefault(); zoom(1 / 0.7); }
@@ -117,6 +129,12 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
         data-view-x={viewedDomain(domains.x, view.x).join(",")} data-view-y={viewedDomain(domains.y, view.y).join(",")}
         onKeyDown={chartKey}
         onPointerDown={(event) => {
+          if (gateDrawing && !disabled && event.button === 0) {
+            const point = gatePoint(event);
+            if (gateDrawing.kind === "rectangle") { gateDrag.current = point; gateDrawing.onVertices([point, point]); event.currentTarget.setPointerCapture?.(event.pointerId); }
+            else if (gateDrawing.vertices.length < 64) gateDrawing.onVertices([...gateDrawing.vertices, point]);
+            event.preventDefault(); event.currentTarget.focus(); return;
+          }
           if (!panning || disabled || event.button !== 0) return;
           const bounds = event.currentTarget.getBoundingClientRect();
           drag.current = { x: event.clientX, y: event.clientY, view, width: bounds.width * plotWidth / width,
@@ -124,13 +142,14 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
           event.currentTarget.setPointerCapture?.(event.pointerId); event.preventDefault(); event.currentTarget.focus();
         }}
         onPointerMove={(event) => {
+          if (gateDrawing?.kind === "rectangle" && gateDrag.current) { gateDrawing.onVertices([gateDrag.current, gatePoint(event)]); return; }
           const start = drag.current;
           if (!start || !start.width || !start.height) return;
           start.moved = start.moved || Math.abs(event.clientX - start.x) + Math.abs(event.clientY - start.y) > 3;
           onViewChange(panChartView(start.view, (start.x - event.clientX) / start.width, (event.clientY - start.y) / start.height, domains, histogram));
         }}
-        onPointerUp={(event) => { drag.current = null; if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
-        onPointerCancel={() => { drag.current = null; }} onPointerLeave={() => { if (!drag.current) setTooltip(null); }}>
+        onPointerUp={(event) => { gateDrag.current = null; drag.current = null; if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }}
+        onPointerCancel={() => { drag.current = null; gateDrag.current = null; }} onPointerLeave={() => { if (!drag.current) setTooltip(null); }}>
         <defs><clipPath id={clip}><rect x={box.left - 5} y={box.top - 5} width={plotWidth + 10} height={plotHeight + 10} /></clipPath></defs>
         {yTicks.map(({ value, position }) => <g key={value} className="population-tick">
           <line className="population-grid-line" x1={box.left} x2={box.right} y1={box.bottom - position * plotHeight} y2={box.bottom - position * plotHeight} />
@@ -159,16 +178,16 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
               <title>{label}</title>
             </g>;
           }) : visiblePoints.map((point, index) => <circle key={point.label} role="button"
-            tabIndex={!disabled && !panning && point.label === focusLabel ? 0 : -1} data-point-label={point.label}
+            tabIndex={!disabled && !panning && !gateDrawing && point.label === focusLabel ? 0 : -1} data-point-label={point.label}
             aria-label={`Object ${point.label}: ${populationNumber(point.x)}, ${populationNumber(point.y)}`}
             aria-pressed={point.label === selectedLabel} aria-disabled={disabled || panning}
-            className={point.label === selectedLabel ? "population-point selected" : "population-point"}
+            className={point.label === selectedLabel || highlightedLabels?.has(point.label) ? "population-point selected" : "population-point"}
             cx={xPosition(point.x)} cy={yPosition(point.y)} r={point.label === selectedLabel ? 5 : 3.5}
             onPointerEnter={() => { if (!panning) setTooltip(`Object #${point.label} · ${xLabel}: ${populationNumber(point.x)} · ${yLabel}: ${populationNumber(point.y)}`); }}
             onFocus={() => { setKeyboardLabel(point.label); setTooltip(`Object #${point.label} · ${populationNumber(point.x)}, ${populationNumber(point.y)}`); }}
-            onClick={() => { if (!disabled && !panning) onSelect(point.label); }}
+            onClick={() => { if (!disabled && !panning && !gateDrawing) onSelect(point.label); }}
             onKeyDown={(event) => {
-              if (disabled || panning) return;
+              if (disabled || panning || gateDrawing) return;
               if (["Enter", " "].includes(event.key)) { event.preventDefault(); event.stopPropagation(); onSelect(point.label); }
               else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
                 event.preventDefault(); event.stopPropagation();
@@ -177,12 +196,17 @@ export default function PopulationChart({ kind, data, view, onViewChange, select
               }
             }} />)}
         </g>
+        {gateDrawing && gateDrawing.vertices.length > 0 && <path className="population-gate-outline" clipPath={`url(#${clip})`} pointerEvents="none" d={(() => {
+          const points = gateDrawing.kind === "rectangle" && gateDrawing.vertices.length === 2
+            ? [gateDrawing.vertices[0], [gateDrawing.vertices[1][0], gateDrawing.vertices[0][1]], gateDrawing.vertices[1], [gateDrawing.vertices[0][0], gateDrawing.vertices[1][1]]] : gateDrawing.vertices;
+          return points.map((point, index) => `${index ? "L" : "M"}${xPosition(point[0])} ${yPosition(point[1])}`).join(" ") + (points.length >= 3 ? "Z" : "");
+        })()} />}
         <text className="population-axis-title" x={(box.left + box.right) / 2} y={height - 8} textAnchor="middle"><title>{xLabel}</title>{shortAxis(xLabel, plotWidth)}</text>
         <text className="population-axis-title" transform={`translate(14 ${(box.top + box.bottom) / 2}) rotate(-90)`} textAnchor="middle"><title>{yLabel}</title>{shortAxis(yLabel, plotHeight)}</text>
       </svg> : <p className="population-chart-empty">{histogram ? `No finite ${xMetric?.label ?? "measurement"} values match these ranges.` : "No objects have finite values for both axes."}</p>}
     </div>
     <p className="population-chart-readout" aria-live="polite">{tooltip || (full ? "Full data view" : "Zoomed view · filters unchanged")}</p>
-    <p className="population-note" id={helpId}>{panning ? "Drag to pan. Turn Pan off to select objects or filter a bar." : histogram
+    <p className="population-note" id={helpId}>{gateDrawing ? gateDrawing.kind === "rectangle" ? "Drag a rectangle; edit exact bounds below. Escape clears the draft." : "Click polygon vertices; evaluate when finished. Escape clears the draft." : panning ? "Drag to pan. Turn Pan off to select objects or filter a bar." : histogram
       ? "Choose a bar to filter its exact range. Zoom changes the view only."
       : "Choose a point to select an object. Arrow keys move between points; Enter selects."} <span className="population-chart-keyboard">Focus the chart: +/− zoom, arrows pan, Home resets.</span></p>
     <p className="population-note population-chart-accounting">{histogram ? `${data.histogram.finite_count} finite values · ${data.histogram.missing_count} missing. Counts use all matching objects.`

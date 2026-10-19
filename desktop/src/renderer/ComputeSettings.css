@@ -1,0 +1,18 @@
+.compute-settings { display: grid; gap: 16px; min-width: 0; }
+.compute-settings > p, .compute-settings__targets p { margin: 0; }
+.compute-settings__targets { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.compute-settings__targets > li { padding: 14px 0; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.compute-settings__target-heading, .compute-settings__study > div { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.compute-settings__target-heading span, .compute-settings small { color: var(--ink-secondary); }
+.compute-settings__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.compute-settings fieldset { margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 12px; min-width: 0; }
+.compute-settings label { display: grid; gap: 6px; min-width: 0; }
+.compute-settings input, .compute-settings select { width: 100%; min-width: 0; min-height: 36px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--graphite-925); font: inherit; }
+.compute-settings button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink); background: var(--graphite-900); font: inherit; }
+.compute-settings :is(input, select, button):focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
+.compute-settings button:disabled { opacity: .5; }
+.compute-settings__resources { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; }
+.compute-settings__study { display: grid; gap: 10px; }
+.compute-settings__study h4 { margin: 0; }
+.compute-settings code { display: block; overflow-wrap: anywhere; margin-top: 8px; }
+.compute-settings details > label { margin-top: 10px; }

@@ -1,8 +1,10 @@
-import { BookOpen, Boxes, Eye, Palette, Power, Save, X } from "lucide-react";
+import { BookOpen, Boxes, Eye, Palette, Power, Save, Server, X } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import type { InterfaceTextSize, LociTheme, UserPreferences } from "./preferences";
 import CapabilityOverview from "./CapabilityOverview";
+import ComputeSettings from "./ComputeSettings";
+import type { ResearchDesktopApi } from "../shared/research-contracts";
 import "./SettingsDialog.css";
 
 interface SettingsDialogProps {
@@ -11,14 +13,17 @@ interface SettingsDialogProps {
   onClose: () => void;
   onQuit: () => void;
   onOpenGuide?: () => void;
+  computeApi?: ResearchDesktopApi;
+  initialPage?: SettingsPage;
 }
 
-type SettingsPage = "appearance" | "viewing" | "saving" | "capabilities" | "guide";
+export type SettingsPage = "appearance" | "viewing" | "saving" | "capabilities" | "compute" | "guide";
 const pages: Array<{ id: SettingsPage; label: string; icon: typeof Palette }> = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "viewing", label: "Viewing & help", icon: Eye },
   { id: "saving", label: "Saving & export", icon: Save },
   { id: "capabilities", label: "Capabilities", icon: Boxes },
+  { id: "compute", label: "Compute", icon: Server },
   { id: "guide", label: "User guide", icon: BookOpen },
 ];
 const themeOptions: Array<{ id: LociTheme; label: string; note: string }> = [
@@ -59,9 +64,9 @@ function ToggleRow({ checked, label, note, onChange }: {
     <span className="settings-checkbox" aria-hidden="true" /></label>;
 }
 
-export default function SettingsDialog({ preferences, onChange, onClose, onQuit, onOpenGuide }:
+export default function SettingsDialog({ preferences, onChange, onClose, onQuit, onOpenGuide, computeApi, initialPage }:
   SettingsDialogProps): React.JSX.Element {
-  const [page, setPage] = useState<SettingsPage>("appearance");
+  const [page, setPage] = useState<SettingsPage>(initialPage ?? "appearance");
   const [dpiDraft, setDpiDraft] = useState(String(preferences.figureDpi));
   const [dpiError, setDpiError] = useState(false);
   const dpiDirty = useRef(false);
@@ -196,6 +201,7 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
               <div><dt>Recoverable local sessions</dt><dd>Unsaved work stays local. Save as names a study without copying source images.</dd></div></dl>
           </>}
           {page === "capabilities" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3></div><CapabilityOverview /></>}
+          {page === "compute" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3></div><ComputeSettings api={computeApi} /></>}
           {page === "guide" && <><div className="settings-pane-heading"><h3>{activeLabel}</h3>
             <p>Viewing, analysis, review, recovery and export.</p></div>
             <div className="settings-guide-card"><BookOpen size={22} /><div><strong>Using Loci</strong>

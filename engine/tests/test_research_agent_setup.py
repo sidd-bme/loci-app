@@ -29,6 +29,83 @@ def access_request(request, **changes):
     }
 
 
+def test_explicit_delegation_creates_named_review_authority_and_plugin(tmp_path):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "delegated"
+    receipt = create_agent_access(
+        workbench,
+        access_request(
+            request,
+            allow_run=False,
+            disclosures=["agent_metadata"],
+            delegation={
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "granted-sources",
+                "allow_review": True,
+            },
+        ),
+        destination,
+    )
+    assert receipt["schema"] == "loci.agent-policy/v4"
+    assert receipt["delegation"]["client_id"] == "codex"
+    assert set(receipt["operations"]) == {
+        "inspect_source",
+        "validate_recipe",
+        "analysis_context",
+        "result",
+        "review_history",
+        "review_result",
+        "study_results",
+    }
+    policy = load_policy(destination / "agent-policy.json")
+    assert policy.delegation == receipt["delegation"]
+    assert (destination / receipt["plugin_filename"]).is_file()
+    assert "agent decisions" in (destination / "README.txt").read_text()
+    changed = {
+        **request,
+        "recipe": {**request["recipe"], "segmentation": {"method": "components", "threshold": 70}},
+    }
+    result = workbench.run_recipe(changed)["result"]
+    from test_agent_review import decision
+
+    reviewed = PolicyAgent(policy).review_result(decision(result))["review"]
+    assert reviewed["actor"] == "agent" and reviewed["actor_id"] == "codex"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"client_id": ""},
+        {"expires_at": "2020-01-01T00:00:00+00:00"},
+        {"expires_at": "2099-01-01"},
+        {"allow_review": "yes"},
+        {"result_scope": "all-files"},
+        {"actor": "human"},
+    ],
+)
+def test_invalid_delegation_never_publishes(tmp_path, change):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "invalid"
+    with pytest.raises((ValueError, PermissionError)):
+        create_agent_access(
+            workbench,
+            access_request(
+                request,
+                disclosures=["agent_metadata"],
+                delegation={
+                    "client_id": "codex",
+                    "expires_at": None,
+                    "result_scope": "pinned-recipes",
+                    "allow_review": True,
+                    **change,
+                },
+            ),
+            destination,
+        )
+    assert not destination.exists()
+
+
 def test_private_access_bundle_is_exact_usable_and_revocable(tmp_path):
     workbench, source, request = make_study(tmp_path)
     destination = tmp_path / "access"

@@ -115,30 +115,65 @@ def _remote_arguments(call: tuple[list[str], bytes | None, int, int]) -> list[st
     return shlex.split(call[0][-1])
 
 
-def test_connection_discovery_pins_known_host_and_uses_fixed_pbs_probes(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize(
+    "host_alias,lookup",
+    [
+        ("none", "[vanda.cluster.example]:2222"),
+        ("pinned-alias", "pinned-alias"),
+    ],
+)
+def test_host_identity_uses_nondefault_port_or_explicit_host_key_alias(
+    tmp_path, host_alias, lookup
+):
     runner = FakeRunner(
         (
             CommandResult(
-                0,
-                "hostname vanda.cluster.example\nport 22\nhostkeyalias none\n",
-                "",
+                0, f"hostname vanda.cluster.example\nport 2222\nhostkeyalias {host_alias}\n", ""
             ),
             CommandResult(0, f"256 {FINGERPRINT} vanda (ED25519)\n", ""),
-            CommandResult(0, "Linux\n", ""),
-            CommandResult(0, "Python 3.12.4\n", ""),
-            CommandResult(0, "pbs_version = 2024.1.3\n", ""),
-            CommandResult(0, "", ""),
-            CommandResult(0, "", ""),
         )
     )
-    profile = _profile(tmp_path)
+    client = RemoteComputeClient(_profile(tmp_path, known_host=lookup), runner)
+    assert client.verify_host_identity() == FINGERPRINT
+    assert runner.calls[1][0][2] == lookup
+
+
+def _discovery_record(scheduler="pbspro", roots=2, **overrides):
+    return {
+        "schema": "loci.remote-discovery/v1",
+        "operating_system": "Linux",
+        "runtime_version": "Python 3.12.4",
+        "scheduler": scheduler,
+        "scheduler_version": None if scheduler == "direct" else "fixture scheduler 1.0",
+        "verified_root_count": roots,
+        **overrides,
+    }
+
+
+def _discovery_runner(response):
+    return FakeRunner(
+        (
+            CommandResult(0, "hostname vanda.cluster.example\nport 22\nhostkeyalias none\n", ""),
+            CommandResult(0, f"256 {FINGERPRINT} vanda (ED25519)\n", ""),
+            CommandResult(0, response, ""),
+        )
+    )
+
+
+@pytest.mark.parametrize("scheduler", ["pbs", "pbspro", "slurm", "direct"])
+def test_connection_discovery_pins_known_host_and_uses_one_fixed_probe(
+    tmp_path: Path,
+    scheduler: str,
+) -> None:
+    runner = _discovery_runner(json.dumps(_discovery_record(scheduler)))
+    profile = _profile(tmp_path, scheduler)
     receipt = RemoteComputeClient(profile, runner).discover()
 
     assert receipt.host_key_sha256 == FINGERPRINT
     assert receipt.operating_system == "Linux"
-    assert receipt.scheduler == "pbspro"
+    assert receipt.scheduler == scheduler
+    assert receipt.runtime_version == "Python 3.12.4"
+    assert len(runner.calls) == 3  # Two local identity checks and one network session.
     assert runner.calls[0][0] == ["ssh", "-G", "--", "vanda"]
     assert runner.calls[1][0] == [
         "ssh-keygen",
@@ -153,14 +188,202 @@ def test_connection_discovery_pins_known_host_and_uses_fixed_pbs_probes(
     ssh = runner.calls[2][0]
     assert "BatchMode=yes" in ssh
     assert "StrictHostKeyChecking=yes" in ssh
-    assert f"UserKnownHostsFile={profile.known_hosts_file}" in ssh
-    assert _remote_arguments(runner.calls[2]) == ["uname", "-s"]
-    assert _remote_arguments(runner.calls[4]) == ["/opt/pbs/bin/qstat", "--version"]
-    assert _remote_arguments(runner.calls[5]) == [
-        "test",
-        "-d",
+    assert f'UserKnownHostsFile="{profile.known_hosts_file}"' in ssh
+    expected_binary = (
+        ""
+        if scheduler == "direct"
+        else profile.binary("qstat" if scheduler in {"pbs", "pbspro"} else "sinfo")
+    )
+    assert _remote_arguments(runner.calls[2]) == [
+        profile.runtime_python,
+        "-c",
+        remote_module._DISCOVERY_SCRIPT,
+        profile.runtime_python,
+        scheduler,
+        expected_binary,
         profile.remote_project_root,
+        profile.remote_output_root,
     ]
+    assert runner.calls[2][2:] == (30, 64 * 1024)
+    assert runner.calls[2][1] is None
+
+
+def test_discovery_batches_all_permitted_roots_and_preserves_literal_transport_quoting(tmp_path):
+    directory = tmp_path / 'Application Support "quoted"'
+    directory.mkdir()
+    known_hosts = directory / "known-hosts"
+    known_hosts.touch()
+    roots = ("/data/lab/first", "/data/lab/second")
+    profile = _profile(tmp_path, known_hosts_file=known_hosts, remote_input_roots=roots)
+    runner = _discovery_runner(json.dumps(_discovery_record(roots=4)))
+    RemoteComputeClient(profile, runner).test_connection()
+    assert len(runner.calls) == 3
+    arguments = _remote_arguments(runner.calls[2])
+    assert arguments[-4:] == [profile.remote_project_root, profile.remote_output_root, *roots]
+    assert arguments[2] == remote_module._DISCOVERY_SCRIPT
+    options = [
+        value.partition("=")[2]
+        for value in runner.calls[2][0]
+        if value.startswith("UserKnownHostsFile=")
+    ]
+    assert shlex.split(options[0]) == [str(known_hosts)]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not JSON",
+        "[]",
+        "{}",
+        '{"schema":1,"schema":2}',
+        json.dumps(_discovery_record(operating_system="Darwin")),
+        json.dumps(_discovery_record(scheduler="slurm")),
+        json.dumps(_discovery_record(verified_root_count=True)),
+        json.dumps(_discovery_record(verified_root_count=1)),
+        json.dumps(_discovery_record(runtime_version="")),
+        json.dumps(_discovery_record(runtime_version="x" * 4097)),
+        json.dumps(_discovery_record(scheduler_version=None)),
+        json.dumps(_discovery_record(scheduler_version="x" * 4097)),
+        json.dumps(_discovery_record(extra="unexpected")),
+        "x" * (64 * 1024 + 1),
+    ],
+)
+def test_discovery_rejects_malformed_partial_or_oversized_receipts(tmp_path, response):
+    runner = _discovery_runner(response)
+    client = RemoteComputeClient(_profile(tmp_path), runner)
+    with pytest.raises(RemoteComputeError):
+        client.discover()
+    assert client._connection_receipt is None
+    assert len(runner.calls) == 3
+
+
+def test_discovery_pin_failure_never_launches_remote_probe(tmp_path):
+    runner = _discovery_runner(json.dumps(_discovery_record()))
+    runner.results[1] = CommandResult(1, "", "unknown host")
+    client = RemoteComputeClient(_profile(tmp_path), runner)
+    with pytest.raises(RemoteComputeError, match="absent"):
+        client.discover()
+    assert len(runner.calls) == 2
+    assert client._connection_receipt is None
+
+
+def test_discovery_nonzero_ssh_failure_revokes_previous_receipt(tmp_path):
+    runner = _discovery_runner(json.dumps(_discovery_record()))
+    runner.results[-1] = CommandResult(1, json.dumps(_discovery_record()), "probe failed")
+    client = _ready_client(_profile(tmp_path), runner)
+    with pytest.raises(RemoteComputeError, match="Remote command failed"):
+        client.discover()
+    assert client._connection_receipt is None
+    with pytest.raises(RemoteComputeError, match="test_connection"):
+        client.setup_roots()
+    assert len(runner.calls) == 3
+
+
+def _local_discovery_probe(tmp_path, *, scheduler="pbspro", broken=None):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    versions = {"uname": "Linux", "runtime": "Python 3.12.4", "scheduler": "scheduler 1.0"}
+    if broken == "operating_system":
+        versions["uname"] = "Darwin"
+    if broken == "oversized":
+        versions["scheduler"] = "x" * 4097
+    for name, version in versions.items():
+        executable = bin_dir / name
+        code = 1 if broken == name else 0
+        executable.write_text(f"#!/bin/sh\nprintf '%s\\n' {shlex.quote(version)}\nexit {code}\n")
+        executable.chmod(0o700)
+    if broken in {"stdout_flood", "stderr_flood"}:
+        redirect = " >&2" if broken == "stderr_flood" else ""
+        (bin_dir / "scheduler").write_text(
+            "#!/bin/sh\nwhile :; do printf '%s' " + shlex.quote("x" * 4096) + redirect + "; done\n"
+        )
+    roots = [tmp_path / name for name in ("project", "output", "input")]
+    for root in roots:
+        root.mkdir()
+    if broken == "root":
+        roots[2].rmdir()
+    command = [
+        sys.executable,
+        "-c",
+        remote_module._DISCOVERY_SCRIPT,
+        str(bin_dir / "runtime"),
+        scheduler,
+        str(bin_dir / "scheduler"),
+        *(str(root) for root in roots),
+    ]
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=3 if broken in {"stdout_flood", "stderr_flood"} else 15,
+        env={**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]},
+    )
+
+
+@pytest.mark.parametrize("scheduler", ["pbs", "pbspro", "slurm", "direct"])
+def test_discovery_script_checks_fixed_commands_and_every_approved_root(tmp_path, scheduler):
+    result = _local_discovery_probe(tmp_path, scheduler=scheduler)
+    assert result.returncode == 0, result.stderr
+    record = json.loads(result.stdout)
+    assert record["operating_system"] == "Linux"
+    assert record["runtime_version"] == "Python 3.12.4"
+    assert record["scheduler_version"] == (None if scheduler == "direct" else "scheduler 1.0")
+    assert record["verified_root_count"] == 3
+
+
+@pytest.mark.parametrize(
+    "failure", ["operating_system", "runtime", "scheduler", "root", "oversized"]
+)
+def test_discovery_script_failure_never_emits_success_receipt(tmp_path, failure):
+    result = _local_discovery_probe(tmp_path, broken=failure)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert result.stderr.strip()
+
+
+@pytest.mark.parametrize("failure", ["stdout_flood", "stderr_flood"])
+def test_discovery_script_stops_unfinished_producer_at_stream_output_bound(tmp_path, failure):
+    # The producer never exits. Waiting to inspect output until process completion
+    # would exceed this test's three-second transport deadline. Each pipe read is
+    # capped at the remaining 4097-byte detection buffer and the owned group dies.
+    result = _local_discovery_probe(tmp_path, broken=failure)
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "exceeded its output or time bound" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "directory", ["Application Support", 'Support "quoted"', r"Support\folder"]
+)
+def test_transport_preserves_one_literal_host_file_path(tmp_path: Path, directory: str) -> None:
+    root = tmp_path / directory
+    root.mkdir()
+    known_hosts = root / "known-hosts"
+    known_hosts.write_text("vanda ssh-ed25519 AAAA\n")
+    client = RemoteComputeClient(_profile(tmp_path, known_hosts_file=known_hosts), FakeRunner())
+    for command in [client._ssh_prefix(), client._scp_prefix()]:
+        options = [
+            value.partition("=")[2] for value in command if value.startswith("UserKnownHostsFile=")
+        ]
+        assert len(options) == 1
+        assert shlex.split(options[0]) == [str(known_hosts)]
+        assert "StrictHostKeyChecking=yes" in command
+        assert "BatchMode=yes" in command
+
+
+def test_transport_preserves_literal_percent_and_refuses_environment_expansion(
+    tmp_path: Path,
+) -> None:
+    known_hosts = tmp_path / "%h-hosts"
+    known_hosts.touch()
+    client = RemoteComputeClient(_profile(tmp_path, known_hosts_file=known_hosts), FakeRunner())
+    assert f'UserKnownHostsFile="{tmp_path}/%%h-hosts"' in client._ssh_prefix()
+    for name in ["${HOME}-hosts", "line\nbreak", "line\rbreak"]:
+        unsafe = tmp_path / name
+        unsafe.touch()
+        with pytest.raises(ValueError, match="OpenSSH path characters"):
+            RemoteComputeClient(_profile(tmp_path, known_hosts_file=unsafe), FakeRunner())
 
 
 @pytest.mark.parametrize(
@@ -532,7 +755,7 @@ def test_runtime_provisioning_uses_pinned_transport_and_offline_pip(tmp_path: Pa
     assert scp[0] == "scp"
     assert "BatchMode=yes" in scp
     assert "StrictHostKeyChecking=yes" in scp
-    assert f"UserKnownHostsFile={_profile(tmp_path).known_hosts_file}" in scp
+    assert f'UserKnownHostsFile="{_profile(tmp_path).known_hosts_file}"' in scp
     pip = _remote_arguments(runner.calls[4])
     assert pip == [
         runtime,
@@ -659,6 +882,23 @@ def test_submit_reconnect_unknown_state_never_constructs_second_qsub(tmp_path: P
         f"/home/user/loci-projects/.loci-runs/{KEY}",
         "submit.json",
     ]
+
+
+@pytest.mark.parametrize(
+    ("pbs_state", "exit_status", "expected"),
+    [("F", 0, "finished"), ("F", 271, "failed"), ("C", -11, "failed"), ("R", 271, "running")],
+)
+def test_pbs_terminal_nonzero_exit_is_failed(tmp_path, pbs_state, exit_status, expected):
+    runner = FakeRunner(
+        [
+            CommandResult(0, "BOUND\n", ""),
+            CommandResult(0, f"job_state = {pbs_state}\n    Exit_status = {exit_status}\n", ""),
+        ]
+    )
+    client = _ready_client(_profile(tmp_path), runner)
+    status = client.status(_submitted())
+    assert status.state == expected
+    assert f"Exit_status = {exit_status}" in status.detail
 
 
 def test_pbs_and_slurm_status_and_cancel_use_exact_job_identity(tmp_path: Path) -> None:
@@ -979,6 +1219,34 @@ def test_subprocess_runner_bounds_output() -> None:
         )
 
 
+@pytest.mark.parametrize("payload", [None, b"", b"explicit-transfer-payload"])
+def test_transport_never_consumes_the_workers_rpc_input(payload) -> None:
+    # A worker has unread JSON-RPC on stdin while SSH runs. Model that with a
+    # real pipe and child that reads stdin, not a subprocess-call mock.
+    request = b'{"id":"desktop-next","method":"research_execute"}\n'
+    parent = (
+        "import json,os,sys\n"
+        "from loci_engine.remote_compute import SubprocessRunner\n"
+        "result=SubprocessRunner().run([sys.executable,'-c',"
+        "'import sys;sys.stdout.buffer.write(sys.stdin.buffer.read())'],"
+        f"input_bytes={payload!r},timeout_seconds=5)\n"
+        "print(json.dumps({'transport':result.stdout,'pending_rpc':os.read(0,4096).decode()}))\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", parent],
+        input=request,
+        capture_output=True,
+        check=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": str(Path(remote_module.__file__).parents[1])},
+    )
+    observed = json.loads(completed.stdout)
+    assert observed == {
+        "transport": (payload or b"").decode(),
+        "pending_rpc": request.decode(),
+    }
+
+
 def test_output_manifest_fetch_uses_real_bounded_subprocess_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1033,8 +1301,9 @@ def test_output_manifest_verifier_enforces_transport_aligned_size_limit() -> Non
 
 @pytest.mark.skipif(os.name != "posix", reason="Fixed bounded transfer requires POSIX RLIMIT_FSIZE")
 @pytest.mark.parametrize("payload_size", [32, 65])
+@pytest.mark.parametrize("host_directory", ["plain", "Application Support"])
 def test_real_fixed_transfer_helper_bounds_artifact_writes_without_network(
-    tmp_path: Path, monkeypatch, payload_size: int
+    tmp_path: Path, monkeypatch, payload_size: int, host_directory: str
 ) -> None:
     # Executable stands in for SCP only in this scoped subprocess PATH. It writes
     # one local incoming file, exercising the production helper's real OS limit.
@@ -1052,7 +1321,11 @@ def test_real_fixed_transfer_helper_bounds_artifact_writes_without_network(
     )
     executable.chmod(0o700)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ.get("PATH", ""))
-    profile = _profile(tmp_path)
+    hosts = tmp_path / host_directory
+    hosts.mkdir()
+    pin = hosts / "known-hosts"
+    pin.write_text("vanda ssh-ed25519 AAAA\n")
+    profile = _profile(tmp_path, known_hosts_file=pin)
     client = RemoteComputeClient(profile)
     destination = tmp_path / ".incoming-0"
     result = SubprocessRunner().run(
@@ -1109,3 +1382,32 @@ def test_fixed_bounded_helper_rejects_arbitrary_transport_before_exec(tmp_path: 
 
     with pytest.raises(ValueError, match="fixed SCP"):
         exec_bounded_scp(64, ["scp", "-S", "arbitrary", "source", str(tmp_path / ".incoming-0")])
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Bounded SCP requires POSIX resource limits")
+@pytest.mark.parametrize(
+    "option",
+    [
+        'UserKnownHostsFile="/tmp/one" "/tmp/two"',
+        "UserKnownHostsFile=/tmp/Application Support/hosts",
+        'UserKnownHostsFile="/tmp/%h-hosts"',
+        'UserKnownHostsFile="/tmp/${HOME}-hosts"',
+    ],
+)
+def test_bounded_helper_rejects_noncanonical_host_paths_before_limits_or_exec(
+    tmp_path: Path, monkeypatch, option: str
+) -> None:
+    import resource
+
+    from loci_engine.agent_remote_transfer import exec_bounded_scp
+
+    def unexpected(*args):
+        pytest.fail("An invalid pinned path reached process side effects")
+
+    monkeypatch.setattr(resource, "setrlimit", unexpected)
+    monkeypatch.setattr(os, "execvp", unexpected)
+    client = RemoteComputeClient(_profile(tmp_path), FakeRunner())
+    arguments = [*client._scp_prefix(), "vanda:/fixed/output.zip", str(tmp_path / ".incoming-0")]
+    arguments[7] = option
+    with pytest.raises(ValueError, match="pinned transport|OpenSSH path characters"):
+        exec_bounded_scp(64, arguments)

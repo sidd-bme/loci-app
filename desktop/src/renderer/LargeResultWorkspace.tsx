@@ -1,8 +1,10 @@
+import { GroupCentroidOverlay } from "./GroupCentroidOverlay";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import "./LargeResultWorkspace.css";
 import { resultTitle } from "./result-title";
+import { ResearchReviewHistory, researcherReviewed, reviewLabel } from "./ResearchReviewHistory";
 
 type Row = Record<string, unknown>;
 type Region = { x: number; y: number; width: number; height: number };
@@ -107,8 +109,9 @@ export function fittedLargeImageSize(imageShape: number[], stageWidth: number, s
   return { width: width * scale, height: height * scale };
 }
 
-export function LargeResultViewport({ api, result, focus, onPickStart, onPick }: {
+export function LargeResultViewport({ api, result, focus, onPickStart, onPick, groupCentroids = [] }: {
   api: ResearchDesktopApi; result: ResearchResult; focus: { point_index: number[] } | null;
+  groupCentroids?: Array<{ u: number; v: number }>;
   onPickStart: () => number; onPick: (row: Row | null, intent: number) => void;
 }) {
   const [height, width] = result.arrays!.image.shape!;
@@ -201,6 +204,9 @@ export function LargeResultViewport({ api, result, focus, onPickStart, onPick }:
             onPick(picked.measurement, intent);
           }).catch((caught) => { if (expected === token.current) setError(message(caught)); });
         }} />}
+      {ready && view && imageSize && <div style={{ position: "absolute", width: imageSize.width, height: imageSize.height, pointerEvents: "none" }}>
+        <GroupCentroidOverlay width={view.image_shape[1]} height={view.image_shape[0]} points={groupCentroids.filter((point) => point.u >= region.x && point.u < region.x + region.width && point.v >= region.y && point.v < region.y + region.height).map((point) => ({ u: (point.u - region.x + 0.5) / view.step - 0.5, v: (point.v - region.y + 0.5) / view.step - 0.5 }))} />
+      </div>}
       {error && <div className="large-result-error" role="alert"><p>{error}</p><button onClick={() => setRetry((value) => value + 1)}>Retry view</button></div>}
     </div>
     <div className="large-result-caption">Result coordinates · X {region.x}–{region.x + region.width - 1}, Y {region.y}–{region.y + region.height - 1} · {result.object_count.toLocaleString()} objects</div>
@@ -254,8 +260,9 @@ export function LargeResultInspector({ api, result, selected, onSelect, onLocate
       }); }}>Remove object in new revision</button>
     </section>}
     <div className="large-object-page"><button disabled={busy || !result.parent_id} onClick={onUndo}>Undo removal</button><button disabled={busy || !canRedo} onClick={onRedo}>Redo removal</button></div>
-    <hr /><p>{result.review?.disposition === "reviewed" ? "Reviewed revision" : "Mark this result reviewed before export."}</p>
-    <button disabled={busy || result.review?.disposition === "reviewed"} onClick={() => void action("Review", async () => { await api.reviewResult(result.id, result.revision_hash, "reviewed"); await onRefresh(); })}>Mark reviewed</button>
+    <hr /><p>{result.review ? reviewLabel(result.review) : "Mark this result reviewed before export."}</p>
+    <ResearchReviewHistory api={api} result={result} />
+    <button disabled={busy || researcherReviewed(result)} onClick={() => void action("Review", async () => { await api.reviewResult(result.id, result.revision_hash, "reviewed"); await onRefresh(); })}>Mark reviewed</button>
     <button disabled={busy || result.review?.disposition !== "reviewed"} onClick={() => void action("Export", async () => { await api.exportResult(result.id, result.revision_hash); })}>Export result</button>
     <details><summary>Export contents</summary><p className="large-method-note">Includes image/label OME-TIFF, all object measurements and provenance. Save the study to retain correction history.</p></details>
     <details><summary>Technical record</summary><p className="large-method-note">Result <code style={{ overflowWrap: "anywhere" }}>{result.id}</code><br />Revision <code style={{ overflowWrap: "anywhere" }}>{result.revision_hash}</code></p><p className="large-method-note">Labels identify objects. Sampled overviews support navigation; measurements use stored source pixels. Correction supports whole-object removal.</p></details>

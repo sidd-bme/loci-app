@@ -1,0 +1,14 @@
+.population-groups { min-width: 0; }
+.population-groups-toggle { margin-top: 12px; }
+.population-gate-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.population-gate-toolbar label { flex: 1 1 90px; }
+.population-group-editor { border-top: 1px solid var(--line); padding-top: 8px; }
+.population-gate-bounds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.population-gate-bounds input, .population-group-editor textarea { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; }
+.population-gate-outline { fill: var(--mineral-wash); stroke: var(--warning); stroke-width: 2; }
+.population-group-list { list-style: none; padding: 0; }
+.population-group-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding-block: 8px; border-bottom: 1px solid var(--line); }
+.population-group-list label { display: flex; align-items: center; gap: 8px; }
+.population-group-list input { width: auto; }
+.population-gate-count { font-variant-numeric: tabular-nums; }
+.population-gate-count button { margin-left: 8px; }

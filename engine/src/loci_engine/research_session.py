@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import shutil
@@ -16,6 +17,14 @@ from .research_project import ResearchProject, canonical_json, parse_json
 
 CHUNK_BYTES = 1024 * 1024
 MAX_FILES = 100_000
+
+
+def _cleanup_missing_entry(function, path, error_info) -> None:
+    # macOS can remove an AppleDouble sidecar when its paired entry is deleted.
+    # rmtree may already have listed that sidecar; only its disappearance is safe
+    # to ignore. Other cleanup errors must remain visible with the save failure.
+    if not isinstance(error_info[1], FileNotFoundError):
+        raise error_info[1]
 
 
 def _plain_entry_identity(value: os.stat_result) -> tuple[int, int, int]:
@@ -186,11 +195,26 @@ def clone_study(project: ResearchProject, destination: str | Path) -> ResearchPr
             _fsync_directory(staging)
             if ResearchProject._directory_identity(staging) != staging_identity:
                 raise ValueError("Save as staging directory identity changed")
-            _rename_noreplace(staging, target)
+            try:
+                _rename_noreplace(staging, target)
+            except OSError as error:
+                if error.errno in {errno.ENOTSUP, errno.EOPNOTSUPP}:
+                    raise ValueError(
+                        "This destination drive does not support atomic study saving. "
+                        "Choose a folder on an APFS drive or another filesystem that "
+                        "supports atomic no-replace renaming."
+                    ) from error
+                raise
             _fsync_directory(parent)
         return ResearchProject(target)
-    except BaseException:
+    except BaseException as error:
         # Exclusively created staging tree; never target or original sources.
-        if staging.exists() and ResearchProject._directory_identity(staging) == staging_identity:
-            shutil.rmtree(staging)
+        try:
+            if (
+                staging.exists()
+                and ResearchProject._directory_identity(staging) == staging_identity
+            ):
+                shutil.rmtree(staging, onerror=_cleanup_missing_entry)
+        except (OSError, ValueError) as cleanup_error:
+            error.add_note(f"Save as staging cleanup failed: {cleanup_error}")
         raise

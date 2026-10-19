@@ -28,8 +28,8 @@ from .research_project import (
     ResearchProject,
     canonical_json,
     checked_id,
-    checked_text,
 )
+from .research_review import validate_review
 from .study_analysis import measurements_csv, validate_sample_metadata
 from .working_result import _sha256_file_stable
 
@@ -125,16 +125,10 @@ def _scope(result: dict[str, Any]) -> dict[str, Any]:
 def _review(review: Any, result: dict[str, Any]) -> None:
     if review is None:
         return
-    if (
-        not isinstance(review, dict)
-        or set(review) != {"result_id", "revision_hash", "disposition", "reviewed_at", "actor"}
-        or review.get("result_id") != result["id"]
-        or (review.get("revision_hash") != result["revision_hash"])
-        or review.get("disposition") not in {"pending", "reviewed", "excluded"}
-        or (review.get("actor") != "human")
-    ):
-        raise ValueError("Correction-effect review snapshot is invalid")
-    checked_text(review["reviewed_at"], "Correction-effect review time", 128)
+    try:
+        validate_review(review, result_id=result["id"], revision_hash=result["revision_hash"])
+    except ValueError as exc:
+        raise ValueError("Correction-effect review snapshot is invalid") from exc
 
 
 def _binding(result: dict[str, Any], sample: dict[str, Any], review: Any) -> dict[str, Any]:

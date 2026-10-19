@@ -641,7 +641,7 @@ describe("ResearchWorkbench", () => {
     expect(displayTab).toHaveAttribute("aria-pressed", "false");
     expect(processTab).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(displayTab);
-    fireEvent.click(await screen.findByText("DAPI"));
+    fireEvent.click(await screen.findByText("DAPI", { selector: ".source-display summary span" }));
 
     for (const [name, label] of [
       ["Channel 1 low", "Low"],
@@ -883,6 +883,165 @@ describe("ResearchWorkbench", () => {
       expect(desktop.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
     },
   );
+
+  it("flushes a loaded pending view before closing, restores its exact revision on undo, and saves the study", async () => {
+    const first = snapshot.sources[0];
+    const second = { ...structuredClone(first), id: "f".repeat(32), sha256: "e".repeat(64), name: "Second" };
+    let study: ResearchSnapshot = { ...structuredClone(snapshot), sources: [first, second], results: [],
+      workspace: { revision: 0, closed_sources: [], hidden_results: [] } };
+    const views = new Map<string, { source_id: string; source_sha256: string; revision: number; state: unknown }>(
+      study.sources.map(source => [source.id, { source_id: source.id, source_sha256: source.sha256, revision: 0, state: null }]));
+    let gate = false;
+    let finishWrite: (() => void) | undefined;
+    const events: string[] = [];
+    const updateWorkspace = vi.fn(async (change) => {
+      events.push("workspace");
+      const closing = change.sources[0].visible === false;
+      study = { ...study, sources: closing ? [second] : [first, second],
+        workspace: { revision: change.expected_revision + 1, closed_sources: closing ? [first] : [], hidden_results: [] } };
+      return study;
+    });
+    const saveAs = vi.fn(async () => { events.push("saveAs"); return study; });
+    const desktop = api({ getSnapshot: vi.fn(async () => study), updateWorkspace, saveAs });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request) => {
+      const id = String(request.source_id);
+      if (operation === "source_view") { events.push(`read:${id}`); return structuredClone(views.get(id)); }
+      if (operation === "save_source_view") {
+        const prior = views.get(id)!;
+        expect(request.source_sha256).toBe(prior.source_sha256);
+        if (request.expected_revision !== prior.revision) throw new Error("Display revision conflict");
+        if (gate) { gate = false; await new Promise<void>(resolve => { finishWrite = resolve; }); }
+        const saved = { ...prior, revision: prior.revision + 1, state: structuredClone(request.state) };
+        views.set(id, saved); events.push(`write:${id}:${saved.revision}`); return saved;
+      }
+      return original(operation, request);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("View", "Display");
+    const low = await screen.findByLabelText("Channel 1 low");
+    await waitFor(() => expect(low).toHaveValue("0"));
+    fireEvent.change(low, { target: { value: "7" } }); fireEvent.keyDown(low, { key: "Enter" });
+    gate = true;
+    fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
+    try {
+      await waitFor(() => expect(finishWrite).toBeDefined());
+      expect(updateWorkspace).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+    } finally { finishWrite?.(); }
+    await waitFor(() => expect(updateWorkspace).toHaveBeenCalledOnce());
+    expect(events.indexOf(`write:${first.id}:1`)).toBeLessThan(events.indexOf("workspace"));
+    expect(await screen.findByLabelText("Image viewer: Second")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(updateWorkspace).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7"));
+    expect(screen.getByLabelText("Image viewer: Specimen")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Save study" }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(updateWorkspace.mock.calls.map(([change]) => change.sources)).toEqual([
+      [{ id: first.id, sha256: first.sha256, visible: false }], [{ id: first.id, sha256: first.sha256, visible: true }],
+    ]);
+  });
+
+  it("retains the active source and revisioned display store when closing fails", async () => {
+    const first = snapshot.sources[0];
+    const second = { ...structuredClone(first), id: "f".repeat(32), name: "Second" };
+    const study = { ...structuredClone(snapshot), sources: [first, second] };
+    let revision = 0;
+    const updateWorkspace = vi.fn(async () => { throw new Error("Workspace write refused"); });
+    const saveAs = vi.fn(async () => null);
+    const desktop = api({ getSnapshot: vi.fn(async () => study), updateWorkspace, saveAs });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request) => {
+      if (operation === "source_view") return { source_id: first.id, source_sha256: first.sha256, revision, state: null };
+      if (operation === "save_source_view") {
+        expect(request.source_id).toBe(first.id); expect(request.source_sha256).toBe(first.sha256);
+        expect(request.expected_revision).toBe(revision);
+        return { source_id: first.id, source_sha256: first.sha256, revision: ++revision, state: request.state };
+      }
+      return original(operation, request);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("View", "Display");
+    const low = await screen.findByLabelText("Channel 1 low");
+    await waitFor(() => expect(low).toHaveValue("0"));
+    fireEvent.change(low, { target: { value: "7" } }); fireEvent.keyDown(low, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Workspace write refused");
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+    expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
+    expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+      source_id: first.id, expected_revision: 0,
+      state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 7 })]) }),
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.change(low, { target: { value: "9" } }); fireEvent.keyDown(low, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Save study" }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledOnce());
+    expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({ source_id: first.id,
+      expected_revision: revision - 1, state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 9 })]) }) }));
+    expect(vi.mocked(desktop.execute).mock.calls.filter(([operation]) => operation === "source_view")).toHaveLength(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed pending display write visible and blocks close and Save As", async () => {
+    const updateWorkspace = vi.fn(async () => snapshot), saveAs = vi.fn(async () => snapshot);
+    const desktop = api({ updateWorkspace, saveAs });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request) => {
+      if (operation === "save_source_view") throw new Error("Synthetic display write failed");
+      return original(operation, request);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("View", "Display");
+    const low = await screen.findByLabelText("Channel 1 low");
+    await waitFor(() => expect(low).toHaveValue("0"));
+    fireEvent.change(low, { target: { value: "7" } }); fireEvent.keyDown(low, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Synthetic display write failed");
+    expect(updateWorkspace).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Active image")).toHaveTextContent("Specimen");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save study" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Synthetic display write failed");
+    expect(saveAs).not.toHaveBeenCalled();
+  });
+
+  it("closes during pending display preparation and ignores the abandoned read after undo", async () => {
+    const first = snapshot.sources[0];
+    const second = { ...structuredClone(first), id: "f".repeat(32), name: "Second" };
+    let study: ResearchSnapshot = { ...structuredClone(snapshot), sources: [first, second], results: [],
+      workspace: { revision: 0, closed_sources: [], hidden_results: [] } };
+    let rejectDefaults!: (error: Error) => void;
+    let delayed = false;
+    const updateWorkspace = vi.fn(async (change) => {
+      const closing = change.sources[0].visible === false;
+      study = { ...study, sources: closing ? [second] : [first, second],
+        workspace: { revision: change.expected_revision + 1, closed_sources: closing ? [first] : [], hidden_results: [] } };
+      return study;
+    });
+    const saveAs = vi.fn(async () => study);
+    const desktop = api({ getSnapshot: vi.fn(async () => study), updateWorkspace, saveAs });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request) => {
+      if (operation === "viewer_defaults" && !delayed) {
+        delayed = true; return new Promise((_, reject) => { rejectDefaults = reject; });
+      }
+      return original(operation, request);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await waitFor(() => expect(delayed).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
+    await screen.findByLabelText("Image viewer: Second");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await screen.findByLabelText("Image viewer: Specimen");
+    await act(async () => { rejectDefaults(new Error("Abandoned display read")); });
+    fireEvent.click(screen.getByRole("button", { name: "Save study" }));
+    await waitFor(() => expect(saveAs).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(updateWorkspace).toHaveBeenCalledTimes(2);
+  });
 
   it("pauses source refinement across workspace result changes and preserves exact undo", async () => {
     let finishClear!: () => void;
@@ -1444,7 +1603,7 @@ describe("ResearchWorkbench", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByText("DAPI"));
+    fireEvent.click(await screen.findByText("DAPI", { selector: ".source-display summary span" }));
     const low = await screen.findByLabelText("Channel 1 low");
     fireEvent.change(low, {
       target: { value: "7" },
@@ -2197,6 +2356,37 @@ describe("ResearchWorkbench", () => {
       expect(screen.getByText("Adopt exact preview")).toBeDisabled(),
     );
   });
+  it("submits exact folder batch IDs in working order with the selected recipe settings", async () => {
+    const study = structuredClone(snapshot);
+    const paths = ["FBS/Preview.tif", "SFM/Preview.tif", "FBS/Second.tif"];
+    study.sources = paths.map((path, index) => ({ ...structuredClone(snapshot.sources[0]),
+      id: String(index + 1).repeat(32), sha256: String(index + 4).repeat(64), name: path.split("/").at(-1)!,
+      browser_location: { relative_path: path, root: null } }));
+    study.results = [];
+    const bridge = api({ getSnapshot: vi.fn(async () => study), execute: vi.fn(async () => ({ result: { id: "9".repeat(32) } })) });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Analyze" }));
+    fireEvent.change(await screen.findByLabelText("Recipe memory allowance"), { target: { value: String(2 * 1024 ** 3) } });
+    fireEvent.change(screen.getByLabelText("Threshold"), { target: { value: "73" } });
+    fireEvent.blur(screen.getByLabelText("Threshold"));
+    await openTool("Results", "Study");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include folder FBS in batch" }));
+    expect(screen.getByRole("checkbox", { name: "Include SFM/Preview.tif in batch" })).not.toBeChecked();
+    const selectedLeaves = container.querySelectorAll('button[data-source-id][aria-selected="true"]');
+    expect([...selectedLeaves].map(leaf => leaf.getAttribute("data-source-id"))).toEqual([study.sources[0].id]);
+    fireEvent.click(screen.getByRole("button", { name: "Run selected sources sequentially" }));
+    await waitFor(() => expect(bridge.submitBatch).toHaveBeenCalledOnce());
+    const tasks = vi.mocked(bridge.submitBatch!).mock.calls[0][0];
+    expect(tasks.map(task => task.source)).toEqual([study.sources[0], study.sources[2]].map(({ id, sha256 }) => ({ id, sha256 })));
+    expect(tasks.map(task => task.request.source_id)).toEqual([study.sources[0].id, study.sources[2].id]);
+    for (const task of tasks) expect(task.request.recipe).toEqual(expect.objectContaining({
+      working_bytes: 2 * 1024 ** 3, segmentation: expect.objectContaining({ threshold: 73 }),
+    }));
+    expect(tasks[0].request.recipe).toEqual(tasks[1].request.recipe);
+    expect(tasks[0].request.selection).toEqual(tasks[1].request.selection);
+    await waitFor(() => expect(bridge.runBatchJob).toHaveBeenCalledTimes(2));
+  });
+
   it("holds the study worker through preview and batch, then permits another preview", async () => {
     let finishPreview!: (value: unknown) => void;
     let finishRun!: (value: unknown) => void;
@@ -2456,6 +2646,32 @@ describe("ResearchWorkbench", () => {
       revision_hash: "d".repeat(64),
     }], { mode: "summary-only" }));
   });
+  it("exports a pending review package without marking results reviewed", async () => {
+    const study = structuredClone(snapshot);
+    study.results[0].review = { disposition: "pending" };
+    const exportReviewPackage = vi.fn().mockResolvedValue({
+      schema: "loci.review-package-receipt/v1", status: "provisional-review-material",
+      basename: "Synthetic RGB collection", image_count: 1,
+      manifest_sha256: "e".repeat(64), summary_name: "counts.csv",
+    });
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(study), exportReviewPackage });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study");
+    fireEvent.click(screen.getByLabelText("Compare " + study.results[0].id));
+    expect(screen.getByText("Export selected reviewed results")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Review package name"), {
+      target: { value: "Synthetic RGB collection" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Export review package$/ }));
+    await waitFor(() => expect(exportReviewPackage).toHaveBeenCalledWith([{
+      source_id: study.sources[0].id, source_sha256: study.sources[0].sha256,
+      result_id: study.results[0].id, revision_hash: study.results[0].revision_hash,
+    }], { rootLabel: "Synthetic RGB collection" }));
+    expect(await screen.findByText(/Saved 1 images and counts.csv/)).toBeVisible();
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    expect(screen.getByText("Export selected reviewed results")).toBeDisabled();
+  });
+
   it("compares two exact reviewed run groups and renders the reproducibility receipt", async () => {
     const secondSource = {
       ...structuredClone(snapshot.sources[0]),

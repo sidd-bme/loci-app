@@ -42,13 +42,26 @@ def import_stack(workbench, tmp_path):
     return source, workbench.import_native(str(source))
 
 
-def test_print_dpi_uses_pixel_measurements_and_legacy_history_is_not_rescaled(workbench, tmp_path):
+@pytest.mark.parametrize("extension", ["png", "tif", "tf8", "ome.tif"])
+def test_print_dpi_uses_pixel_measurements_and_legacy_history_is_not_rescaled(
+    workbench, tmp_path, extension
+):
     from loci_engine.research_export import export_research_result
 
-    file = tmp_path / "print-density.png"
+    file = tmp_path / f"print-density.{extension}"
     pixels = np.zeros((12, 16), np.uint8)
     pixels[2:5, 4:8] = 200
-    Image.fromarray(pixels).save(file, dpi=(300, 150))
+    if extension == "png":
+        Image.fromarray(pixels).save(file, dpi=(300, 150))
+    else:
+        tifffile.imwrite(
+            file,
+            pixels,
+            bigtiff=extension == "tf8",
+            resolution=(300, 150),
+            resolutionunit="INCH",
+            metadata={"axes": "YX"},
+        )
     original = file.read_bytes()
     source = workbench.import_native(str(file))
     request = {
@@ -80,14 +93,22 @@ def test_print_dpi_uses_pixel_measurements_and_legacy_history_is_not_rescaled(wo
     for active in [workbench, Workbench(ResearchProject(workbench.project.root))]:
         assert active.snapshot()["sources"][0]["metadata"] == legacy["metadata"]
         assert active.project.result(result["id"]) == result
-        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+        with pytest.raises(
+            ValueError, match="print DPI as specimen calibration|Saved specimen calibration"
+        ):
             active.execute("run_recipe", request)
-        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+        with pytest.raises(
+            ValueError, match="print DPI as specimen calibration|Saved specimen calibration"
+        ):
             active.execute("view", {"source_id": source["id"]})
-        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+        with pytest.raises(
+            ValueError, match="print DPI as specimen calibration|Saved specimen calibration"
+        ):
             active.import_native(str(file))
         refused_export = tmp_path / "refused-legacy-export"
-        with pytest.raises(ValueError, match="print DPI as specimen calibration"):
+        with pytest.raises(
+            ValueError, match="print DPI as specimen calibration|Saved specimen calibration"
+        ):
             export_research_result(
                 active.project, result["id"], result["revision_hash"], refused_export
             )

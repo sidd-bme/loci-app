@@ -289,7 +289,9 @@ export function ResearchQuantificationPanel({
   onBusyChange,
   onPreview,
   onPublished,
+  initialMode = "channels",
 }: {
+  initialMode?: "channels" | "association";
   api: ResearchDesktopApi;
   snapshot: ResearchSnapshot;
   source: ResearchSource;
@@ -303,7 +305,7 @@ export function ResearchQuantificationPanel({
   onPublished: (result: ResearchResult) => Promise<void>;
 }): React.JSX.Element {
   const isRgb = source.metadata.sample_semantics === "RGB";
-  const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "field-assay">("channels");
+  const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "field-assay">(initialMode);
   const [sourceAnnotations, setSourceAnnotations] = useState<SourceAnnotation[]>([]);
   const [sourceAnnotationRevision, setSourceAnnotationRevision] = useState<number | null>(null);
   const [fieldAssayAnnotationError, setFieldAssayAnnotationError] = useState<string | null>(null);

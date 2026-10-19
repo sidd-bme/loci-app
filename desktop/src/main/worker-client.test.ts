@@ -229,7 +229,7 @@ describe("EngineWorkerClient", () => {
     await client.dispose();
   });
 
-  it.each(["publish_working_result", "restore_working_result", "research_project_clone", "research_workflow_export"])(
+  it.each(["publish_working_result", "restore_working_result", "research_project_clone", "research_workflow_export", "research_review_package_export"])(
     "treats %s as durable result-state publication",
     async (method) => {
       vi.useFakeTimers();
@@ -246,7 +246,7 @@ describe("EngineWorkerClient", () => {
     },
   );
 
-  it.each(["export", "research_workflow_export"])("waits for an in-flight %s before disposing its worker", async (method) => {
+  it.each(["export", "research_workflow_export", "research_review_package_export"])("waits for an in-flight %s before disposing its worker", async (method) => {
     const client = new EngineWorkerClient();
     const exporting = client.request<{ bundleName: string }>(method, {}, 0);
     const child = spawnedChildren[0];

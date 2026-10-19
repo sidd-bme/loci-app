@@ -54,6 +54,7 @@ const DURABLE_METHODS = new Set([
   "research_source_annotations_export",
   "research_source_annotations_import",
   "research_source_rendered_export",
+  "research_review_package_export",
   "research_import_legacy_project",
   "research_relink",
   "research_export",

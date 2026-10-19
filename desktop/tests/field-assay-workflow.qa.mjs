@@ -120,6 +120,10 @@ try {
     timeout: 120_000,
   });
   const page = await app.firstWindow();
+  if (process.env.LOCI_QA_BACKGROUND === "1") await app.evaluate(({ app, BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) { window.setFocusable(false); window.blur(); }
+    app.hide();
+  });
   launchMs = performance.now() - launchStarted;
   page.on("pageerror", (error) => pageErrors.push(error.message));
   page.on("request", (request) => {

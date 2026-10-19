@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { CellposeProfileId, CellposeSettings, CellposeStatus, SegmentationProfile, SegmentationSettingDefinition } from "../shared/contracts";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
+import type { RemoteAnalysisTarget } from "./ResearchCompute";
 
 export interface ResearchCellposeBatchConfiguration {
   configuredSourceId: string;
@@ -45,13 +46,14 @@ export function Setting({ definition, value, onChange, onValidity, disabled }: {
     onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} /></label>;
 }
 
-export function ResearchCellposePanel({ api, source, selection, profileId, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange }: {
+export function ResearchCellposePanel({ api, source, selection, profileId, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange, remoteTarget }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; profileId: CellposeProfileId;
   busy: boolean; onBusy: (value: string | null) => void; onError: (value: string) => void;
   onResult: (result: ResearchResult) => Promise<void>;
   onBatchConfiguration?: (configuration: ResearchCellposeBatchConfiguration | null) => void;
   workingBytes?: number;
   onWorkingBytesChange?: (bytes: number) => void;
+  remoteTarget?: RemoteAnalysisTarget;
 }) {
   const [profile, setProfile] = useState<SegmentationProfile | null>(null);
   const [status, setStatus] = useState<CellposeStatus | null>(null);
@@ -84,23 +86,29 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   }, [native, profileId, onError]);
   useEffect(() => { setMeasurement(selection.c); }, [source.id, selection.c]);
   useEffect(() => {
-    if (!settings || !status?.ready || hasInvalidSettings || selection.z_stop !== undefined) {
+    if (!settings || (!status?.ready && !remoteTarget) || hasInvalidSettings || selection.z_stop !== undefined) {
       onBatchConfiguration?.(null);
       return;
     }
     onBatchConfiguration?.({
       configuredSourceId: source.id,
       profileId,
-      settings: structuredClone(settings),
+      settings: structuredClone(remoteTarget ? { ...settings, device: remoteTarget.device } : settings),
       measurementChannels: rgb ? [] : [measurement],
       workingBytes: currentWorkingBytes,
     });
-  }, [currentWorkingBytes, hasInvalidSettings, measurement, onBatchConfiguration, profileId, rgb, selection.z_stop, settings, source.id, status?.ready]);
+  }, [currentWorkingBytes, hasInvalidSettings, measurement, onBatchConfiguration, profileId, rgb, selection.z_stop, settings, source.id, status?.ready, remoteTarget?.alias, remoteTarget?.device]);
   const run = async () => {
-    if (!settings || !status?.ready || busy || hasInvalidSettings || selection.z_stop !== undefined) return;
+    if (!settings || (!status?.ready && !remoteTarget) || busy || hasInvalidSettings || selection.z_stop !== undefined) return;
     onBusy("Cellpose segmentation");
     try {
       const { z_stop: _depth, ...plane } = selection;
+      if (remoteTarget) {
+        await remoteTarget.start([{ operation: "cellpose_run", source: { id: source.id, sha256: source.sha256 },
+          request: { source_id: source.id, selection: plane, profile_id: profileId, settings: { ...settings, device: remoteTarget.device },
+            measurement_channels: rgb ? [] : [measurement], working_bytes: currentWorkingBytes } }]);
+        return;
+      }
       const output = await api.execute("cellpose_run", { source_id: source.id, selection: plane,
         profile_id: profileId, settings, measurement_channels: rgb ? [] : [measurement], working_bytes: currentWorkingBytes,
       }) as { result: ResearchResult };
@@ -110,7 +118,7 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
     finally { onBusy(null); }
   };
   return <div className="research-panel cellpose-panel">
-    {!status ? <p role="status">Checking local model…</p> : !status.ready ? <div className="model-availability">
+    {remoteTarget ? <p className="model-ready">{remoteTarget.alias} · {remoteTarget.device === "cuda" ? "CUDA required" : "CPU"}</p> : !status ? <p role="status">Checking local model…</p> : !status.ready ? <div className="model-availability">
       <p>{status.summary}</p><button disabled={importing || busy} onClick={() => {
         if (!native) return; setImporting(true);
         void native.importCellposeModel(profileId).then((next) => { if (next) setStatus(next); })
@@ -133,7 +141,7 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
         busy={busy}
         accessibleName="Cellpose memory allowance"
       />
-      <details className="cellpose-advanced"><summary>Advanced settings</summary><div className="research-grid">{profile.settingsContract.filter((item) => !["diameter_px", "flow_threshold", "cellprob_threshold", "min_size_px"].includes(item.key)).map((definition) =>
+      <details className="cellpose-advanced"><summary>Advanced settings</summary><div className="research-grid">{profile.settingsContract.filter((item) => !["diameter_px", "flow_threshold", "cellprob_threshold", "min_size_px", ...(remoteTarget ? ["device"] : [])].includes(item.key)).map((definition) =>
         <Setting key={`${settingsEpoch}:${definition.key}`} definition={definition} onValidity={(valid) => validity(definition.key, valid)} value={settings[definition.key as keyof CellposeSettings]} disabled={busy}
           onChange={(value) => setSettings((old) => old ? { ...old, [definition.key]: value } : old)} />)}</div>
         <button onClick={() => { setSettings(profile.recommendedSettings as CellposeSettings); setInvalidSettings({}); setSettingsEpoch((value) => value + 1); }}>Reset settings</button></details>
@@ -142,9 +150,9 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
           <dt>Code / model licence</dt><dd>{profile.rights.codeLicense} / {profile.rights.modelLicense}</dd>
           <dt>Commercial use</dt><dd>{profile.rights.commercialUse}</dd></dl>
         <p>{profile.validation.summary}</p>
-        <p>Import a local checkpoint for this profile. Model and runtime memory are additional to the working allowance; GPU batch size affects accelerator memory.</p></details>
+        <p>{remoteTarget ? "The compute target must already have this exact checkpoint and runtime." : "Import a local checkpoint for this profile."} Model and runtime memory are additional to the working allowance; GPU batch size affects accelerator memory.</p></details>
       <p role="status" hidden={!hasInvalidSettings}>Correct the highlighted settings before running.</p>
-      <button className="research-primary" disabled={busy || hasInvalidSettings || !status?.ready || selection.z_stop !== undefined} onClick={() => void run()}>{busy ? "Running…" : "Segment image"}</button>
+      <button className="research-primary" disabled={busy || hasInvalidSettings || (!status?.ready && !remoteTarget) || selection.z_stop !== undefined} onClick={() => void run()}>{busy ? remoteTarget ? "Preparing remote run…" : "Running…" : remoteTarget ? `Segment on ${remoteTarget.alias}` : "Segment image"}</button>
     </>}
   </div>;
 }

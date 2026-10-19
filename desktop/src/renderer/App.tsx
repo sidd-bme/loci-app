@@ -591,6 +591,7 @@ export default function App(): React.JSX.Element {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [recoverableBatches, setRecoverableBatches] = useState<DurableBatchSession[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCompute, setSettingsCompute] = useState(false);
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -2747,8 +2748,10 @@ export default function App(): React.JSX.Element {
   const settingsDialog = <>{settingsOpen ? (
     <SettingsDialog
       preferences={preferences}
+      computeApi={window.lociResearch}
+      initialPage={settingsCompute ? "compute" : "appearance"}
       onChange={setPreferences}
-      onClose={() => setSettingsOpen(false)}
+      onClose={() => { setSettingsOpen(false); setSettingsCompute(false); }}
       onQuit={() => api?.requestQuit()}
       onOpenGuide={() => { setSettingsOpen(false); setManualOpen(true); }}
     />
@@ -2768,6 +2771,7 @@ export default function App(): React.JSX.Element {
           preferences={preferences}
           onBack={() => setResearchOpen(false)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenCompute={() => { setSettingsCompute(true); setSettingsOpen(true); }}
         />
         {settingsDialog}
       </>

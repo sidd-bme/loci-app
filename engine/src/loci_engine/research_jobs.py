@@ -166,6 +166,11 @@ def submit_job(
             if parent["revision_hash"] != observed.get("revision_hash"):
                 raise ValueError("Tracking input revision is stale")
             source_id = parent["source_id"]
+        elif operation == "exploration_run":
+            from .research_exploration import adoption_receipt
+
+            receipt = adoption_receipt(request)
+            source_id = receipt["source_id"]
         elif operation == "model_run":
             preview = next(
                 (

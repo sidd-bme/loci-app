@@ -2079,3 +2079,8 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+/* Display controls and result actions share one intrinsic-height chrome row. */
+.image-first-workbench .research-canvas:has(> .research-view-toolbar) { grid-template-rows: auto minmax(0, 1fr) auto; }
+.research-view-toolbar { min-width: 0; }
+.research-view-toolbar .research-canvas-toolbar { min-height: 36px; box-sizing: border-box; }

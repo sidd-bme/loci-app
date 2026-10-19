@@ -65,7 +65,7 @@ function loadedImage(uri: string): Promise<HTMLImageElement> {
 export function ImageViewport({ api, source, selection, channels, projection = "plane",
   onError, onPoint, annotations = [], draft = [], drawingMode = "navigate", onDraftChange,
   showRegion = false, overrideImage = null,
-  resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null,
+  resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null, resultGroupCentroids = [],
   initialCamera = null, controlledCamera = null, onCamera, onViewReady, onRegion, paused = false,
   showScaleBar = true, showNavigator = true, requestLane, overlayRight = 0,
   onObjectClick, onRelinkSource, relinkBusy = false,
@@ -80,6 +80,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onResultPoint?: (point: { u: number; v: number }) => void;
   resultDrawing?: (CorrectionPreview & { points: Array<{ u: number; v: number }> }) | null;
   resultCentroid?: { u: number; v: number } | null;
+  resultGroupCentroids?: Array<{ u: number; v: number }>;
   initialCamera?: Camera | null; controlledCamera?: Camera | null;
   onCamera?: (camera: Camera) => void;
   onViewReady?: (key: string) => void;
@@ -206,9 +207,9 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const scope = JSON.stringify([source.id, source.sha256, source.locator_state, selection.t,
     selection.z, selection.c, projection, projection === "plane" ? null : selection.z_stop, channels]);
   const current = useRef({ camera, size, extent, scope, annotations, draft, regionDraft,
-    draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid });
+    draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid, resultGroupCentroids });
   current.current = { camera, size, extent, scope, annotations, draft, regionDraft,
-    draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid };
+    draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid, resultGroupCentroids };
 
   const draw = useCallback(() => {
     cancelAnimationFrame(drawFrame.current);
@@ -423,6 +424,16 @@ export function ImageViewport({ api, source, selection, channels, projection = "
             }
           }
         }
+        if (state.resultGroupCentroids.length) {
+          context.save(); context.beginPath(); context.strokeStyle = "#ffd36a"; context.lineWidth = 2;
+          for (const centroid of state.resultGroupCentroids) {
+            const c = point(resultPoint(centroid));
+            if (c.x < -5 || c.y < -5 || c.x > state.size.width + 5 || c.y > state.size.height + 5) continue;
+            context.moveTo(c.x - 4, c.y); context.lineTo(c.x + 4, c.y);
+            context.moveTo(c.x, c.y - 4); context.lineTo(c.x, c.y + 4);
+          }
+          context.stroke(); context.restore();
+        }
         if (state.resultCentroid) {
           const c = point(resultPoint(state.resultCentroid));
           context.save();
@@ -588,7 +599,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     });
   }, [controlledCamera?.x, controlledCamera?.y, controlledCamera?.scale, extent, size, insets]);
   useLayoutEffect(draw, [camera, size, draw, annotations, draft, draftClosed, drawingMode,
-    regionDraft, showRegion, selection, resultDrawing, resultCentroid]);
+    regionDraft, showRegion, selection, resultDrawing, resultCentroid, resultGroupCentroids]);
 
   useLayoutEffect(() => {
     if (!resultOverlay || resultOverlayImage.current?.key !== resultOverlay.key)
@@ -857,6 +868,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   return <div className={`image-viewport ${fullscreen ? "is-fullscreen" : ""}`} ref={frame}
     tabIndex={0} aria-label={`Image viewer: ${source.name}`} data-viewer-source={source.id}
     data-result-overlay={resultOverlay?.key}
+    data-group-highlight-count={resultGroupCentroids.length}
     data-camera={JSON.stringify(camera)} data-auto-level={plan.level} data-cache-bytes={cache.current.bytes}
     data-prepared={isCurrentPlaneReady ? "true" : "false"}
     onContextMenu={(event) => event.preventDefault()}

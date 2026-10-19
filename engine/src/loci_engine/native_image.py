@@ -1523,33 +1523,6 @@ def _ome_details(
     )
 
 
-def _resolution_value(value: Any) -> float | None:
-    try:
-        numerator, denominator = value
-        result = float(numerator) / float(denominator)
-    except (TypeError, ValueError, ZeroDivisionError, OverflowError):
-        try:
-            result = float(value)
-        except (TypeError, ValueError, OverflowError):
-            return None
-    return result if math.isfinite(result) and result > 0 else None
-
-
-def _tiff_tag_calibration(page: tifffile.TiffPage) -> PhysicalCalibration | None:
-    x_tag = page.tags.get("XResolution")
-    y_tag = page.tags.get("YResolution")
-    unit_tag = page.tags.get("ResolutionUnit")
-    if x_tag is None or y_tag is None or unit_tag is None:
-        return None
-    x_ppu = _resolution_value(x_tag.value)
-    y_ppu = _resolution_value(y_tag.value)
-    unit_value = int(unit_tag.value)
-    micrometres = {2: 25_400.0, 3: 10_000.0}.get(unit_value)
-    if x_ppu is None or y_ppu is None or micrometres is None:
-        return None
-    return PhysicalCalibration("YX", (micrometres / y_ppu, micrometres / x_ppu), "µm")
-
-
 def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMetadata:
     try:
         with tifffile.TiffFile(path) as tif:
@@ -1577,10 +1550,9 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
                 plane_times,
                 acquisition_display,
             ) = _ome_details(tif, series_index, dimensions)
-            if calibration is None and dimensions.z == 1:
-                page = series.pages[0]
-                assert page is not None
-                calibration = _tiff_tag_calibration(_tiff_keyframe(page))
+            # TIFF resolution tags describe raster presentation density. They
+            # cannot establish specimen spacing, including in an OME-TIFF that
+            # has no PhysicalSize declaration. Keep such sources in pixels.
 
             native_levels: list[NativeLevel] = []
             any_tiled = tiled
