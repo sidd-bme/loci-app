@@ -59,13 +59,57 @@ def fixture(directory: Path) -> None:
     )
 
 
+def verify_correction(directory: Path, parent_id: str, child_id: str) -> None:
+    """Independent known-grid oracle; does not import the application engine."""
+    import sqlite3
+
+    import numpy as np
+
+    with sqlite3.connect(f"file:{directory / 'study.sqlite3'}?mode=ro", uri=True) as database:
+        records = [
+            json.loads(
+                database.execute("SELECT record FROM results WHERE id=?", (key,)).fetchone()[0]
+            )
+            for key in (parent_id, child_id)
+        ]
+    parent, child = records
+    assert child["parent_id"] == parent_id
+    labels = np.zeros((40, 40), dtype=np.uint32)
+    labels[4:12, 4:12] = 1
+    labels[20:28, 20:32] = 2
+    labels[32:38, 6:14] = 3
+    image = np.zeros((40, 40), dtype=np.uint16)
+    for label, intensity in ((1, 100), (2, 150), (3, 200)):
+        image[labels == label] = intensity
+    hashes = {}
+    for record, expected in ((parent, labels), (child, np.where(labels == 1, 0, labels))):
+        for name, expected_array in (("image", image), ("labels", expected)):
+            digest = record["arrays"][name]["sha256"]
+            file = directory / "artifacts" / (digest + ".npy")
+            assert hashlib.sha256(file.read_bytes()).hexdigest() == digest
+            np.testing.assert_array_equal(np.load(file, allow_pickle=False), expected_array)
+            hashes[f"{record['id']}:{name}"] = digest
+    rows = child["provenance"]["measurements"]
+    assert sorted(row["measure"] for row in rows) == [12, 24]
+    assert child["provenance"]["correction"]["operations"][0]["changed_voxels"] == 64
+    print(
+        json.dumps(
+            {
+                "parent_objects": 3,
+                "child_objects": 2,
+                "changed_pixels": 64,
+                "areas_um2": [12, 24],
+                "array_sha256": hashes,
+            }
+        )
+    )
+
+
 async def serve(worker: str, policy: str) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
-    parameters = StdioServerParameters(
-        command=worker, args=["--cli", "mcp", "--policy", policy]
-    )
+    parameters = StdioServerParameters(command=worker, args=["--cli", "mcp", "--policy", policy])
     async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
         await session.initialize()
         print(json.dumps({"ready": True}), flush=True)
@@ -75,9 +119,7 @@ async def serve(worker: str, policy: str) -> None:
                 tools = await session.list_tools()
                 output = {"tools": [item.name for item in tools.tools]}
             else:
-                response = await session.call_tool(
-                    request["name"], request.get("arguments", {})
-                )
+                response = await session.call_tool(request["name"], request.get("arguments", {}))
                 document = response.model_dump(by_alias=True)
                 content = []
                 for block in document["content"]:
@@ -110,8 +152,14 @@ if __name__ == "__main__":
     server = commands.add_parser("serve")
     server.add_argument("worker")
     server.add_argument("policy")
+    verify = commands.add_parser("verify-correction")
+    verify.add_argument("directory", type=Path)
+    verify.add_argument("parent_id")
+    verify.add_argument("child_id")
     args = parser.parse_args()
     if args.command == "fixture":
         fixture(args.directory)
+    elif args.command == "verify-correction":
+        verify_correction(args.directory, args.parent_id, args.child_id)
     else:
         asyncio.run(serve(args.worker, args.policy))

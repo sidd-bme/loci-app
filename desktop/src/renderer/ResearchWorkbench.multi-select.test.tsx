@@ -94,11 +94,12 @@ function createSnapshot(sourceCount = 5): ResearchSnapshot {
 function mockApi(snapshotToUse: ResearchSnapshot): ResearchDesktopApi {
   let currentSnapshot = snapshotToUse;
   const getSnapshot = vi.fn(async () => currentSnapshot);
-  const execute = vi.fn(async (op: string) => {
+  const execute = vi.fn(async (op: string, request: Record<string, unknown>) => {
+    const requested = currentSnapshot.sources.find(source => source.id === request.source_id) ?? currentSnapshot.sources[0];
     if (op === "viewer_defaults") {
       return {
-        source_id: snapshotToUse.sources[0]?.id,
-        source_sha256: snapshotToUse.sources[0]?.sha256,
+        source_id: requested?.id,
+        source_sha256: requested?.sha256,
         basis: "Source acquisition range",
         channels: [
           { channel: 0, low: 0, high: 255, gamma: 1, color: "#0000ff", opacity: 1, visible: true },
@@ -106,10 +107,10 @@ function mockApi(snapshotToUse: ResearchSnapshot): ResearchDesktopApi {
       };
     }
     if (op === "source_view") {
-      return { source_id: snapshotToUse.sources[0]?.id, revision: 0, state: null };
+      return { source_id: requested?.id, source_sha256: requested?.sha256, revision: 0, state: null };
     }
     if (op === "source_annotations") {
-      return { source_id: snapshotToUse.sources[0]?.id, revision: 0, annotations: [], can_undo: false, can_redo: false };
+      return { source_id: requested?.id, revision: 0, annotations: [], can_undo: false, can_redo: false };
     }
     return {};
   });
@@ -419,4 +420,28 @@ describe("ResearchWorkbench Left-Pane Multi-Select & Resizer", () => {
       "Image_3.tif",
     ]);
   });
+  it("keeps nested keyboard selection separate from activation and filtered range selection uses visible exact IDs", async () => {
+    const study = createSnapshot(4);
+    const paths = ["FBS/Preview.tif", "FBS/Second.tif", "FBS/Third.tif", "SFM/Preview.tif"];
+    study.sources = study.sources.map((source, index) => ({ ...source, name: paths[index].split("/").at(-1)!,
+      browser_location: { relative_path: paths[index], root: null } }));
+    const bridge = mockApi(study);
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    const leaf = (id: string) => container.querySelector<HTMLButtonElement>(`button[data-source-id="${id}"]`)!;
+    await waitFor(() => expect(leaf("src-4")).toBeInTheDocument());
+    fireEvent.keyDown(leaf("src-4"), { key: " " });
+    expect(leaf("src-1")).toHaveAttribute("aria-current", "true");
+    expect(leaf("src-4")).toHaveAttribute("aria-selected", "true");
+    expect(bridge.execute).not.toHaveBeenCalledWith("viewer_defaults", expect.objectContaining({ source_id: "src-4" }));
+    fireEvent.click(leaf("src-1"));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search images and folders" }), { target: { value: "FBS" } });
+    fireEvent.click(leaf("src-3"), { shiftKey: true });
+    expect(["src-1", "src-2", "src-3"].map(id => leaf(id).getAttribute("aria-selected"))).toEqual(["true", "true", "true"]);
+    fireEvent.click(screen.getByRole("button", { name: "Clear image search" }));
+    expect(leaf("src-4")).toHaveAttribute("aria-selected", "false");
+    expect(leaf("src-3")).toHaveAttribute("aria-current", "true");
+    expect(screen.getByLabelText("Current image path")).toHaveTextContent("FBS/Third.tif");
+    expect(bridge.reorderSources).not.toHaveBeenCalled();
+  });
+
 });

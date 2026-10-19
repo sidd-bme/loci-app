@@ -1,3 +1,4 @@
+import { PopulationGroups, type PopulationHighlight } from "./PopulationGroups";
 import { useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, Maximize2, SlidersHorizontal } from "lucide-react";
 import type { ResearchDesktopApi, ResearchResult } from "../shared/research-contracts";
@@ -28,6 +29,8 @@ export type ResearchPopulationExplorerProps = {
   api: ResearchDesktopApi; result: ResearchResult; selectedLabel: number | null;
   onSelect: (row: Record<string, unknown>) => void; onLocate: (row: Record<string, unknown>) => void;
   onEdit?: (target: { result_id: string; revision_hash: string; label: number }) => void;
+  onMeasureCompartments?: () => void;
+  onHighlight?: (membership: PopulationHighlight | null) => void;
   active?: boolean; focused?: boolean; onToggleFocus?: () => void;
 };
 type FilterDraft = { key: number; metric: string; min: string; max: string };
@@ -114,7 +117,7 @@ export function ResearchPopulationExplorer(props: ResearchPopulationExplorerProp
   return <PopulationExplorer key={`${result.id}:${result.revision_hash}:${result.source_id}:${result.source_sha256 ?? ""}`} {...props} />;
 }
 
-function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, onEdit, active = true, focused = false, onToggleFocus }: ResearchPopulationExplorerProps) {
+function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, onEdit, onHighlight, onMeasureCompartments, active = true, focused = false, onToggleFocus }: ResearchPopulationExplorerProps) {
   const [query, setQuery] = useState<PopulationQuery>(initialQuery);
   const [data, setData] = useState<PopulationResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -247,6 +250,10 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
         aria-label={focused ? "Return to image and statistics" : "Focus statistics workspace"}>
         {focused ? <ArrowLeft size={15} /> : <Maximize2 size={15} />}{focused ? "Show image" : "Focus statistics"}</button>}
     </header>
+    {onMeasureCompartments && <details className="population-measurement-guide"><summary>Raw channels &amp; compartments</summary>
+      <p className="population-note">Axes use the saved raw-channel measurements. Compartment results add whole-cell, nuclear-intersection and remaining-area measurements from declared compatible label revisions.</p>
+      <button type="button" onClick={onMeasureCompartments}>Connect nucleus &amp; cell results</button>
+    </details>}
     <div className="population-metrics">
       <label>X · Measurement<select aria-label="Population X metric" value={xMetric?.id ?? ""} disabled={!metrics.length || loading}
         onChange={(event) => update({ x_metric: event.target.value })}>{!metrics.length && <option value="">No numeric metrics</option>}{metrics.map((metric) => <option key={metric.id} value={metric.id}>{metricName(metric)}</option>)}</select></label>
@@ -305,7 +312,8 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
           onChange={(event) => update({ bins: Number(event.target.value) })}>{[8, 16, 32, 64].map((bins) => <option key={bins} value={bins}>{bins}</option>)}</select></label></div>
         <div className="population-charts">
           <PopulationChart {...chartProps("histogram")} onEnlarge={() => setEnlarged("histogram")} />
-          <PopulationChart {...chartProps("scatter")} onEnlarge={() => setEnlarged("scatter")} />
+          <PopulationGroups key={`${result.id}:${result.revision_hash}`} api={api} result={result} data={data} disabled={!ready || selectionPending}
+            selectedLabel={selectedLabel} onSelect={(label) => void selectLabel(label)} onBinChoose={binFilter} onHighlight={onHighlight} view={scatterView} onViewChange={setScatterView} onEnlarge={() => setEnlarged("scatter")} />
         </div>
         <PopulationFigureExport api={api} data={data} histogramView={histogramView} scatterView={scatterView} disabled={!ready || selectionPending} />
         <div className="population-section-heading"><h3>Objects</h3><span>{count ? `${query.offset + 1}–${Math.min(query.offset + data.rows.length, count)} of ${number(count)}` : "No matches"}</span></div>

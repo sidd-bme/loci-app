@@ -335,6 +335,9 @@ export async function qualifyExtendedWorkflows({
   assert.ok(!deniedPolicy.operations.includes("analysis_context"));
   await screenshot(page, "extended-agent-policy");
   // Opt in through the visible control, keeping names and geometry denied.
+  const permissions = page.locator('details.research-agent-custom');
+  if (!(await permissions.evaluate(element => element.open)))
+    await permissions.locator(':scope > summary').click();
   await page.getByLabel("Disclose agent_metadata").check();
   await app.evaluate(({ dialog }, destination) => {
     const previous = dialog.showSaveDialog;

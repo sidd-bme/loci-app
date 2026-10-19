@@ -25,6 +25,13 @@ const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epi
 
 /** Exercise the same task-group and search controls available to a researcher. */
 export async function selectWorkbenchTool(page, tool) {
+  // Clicking a different tool normally blurs and commits a numeric draft. Do
+  // that before Escape: sending Escape into a still-focused field discards it.
+  const editable = page.locator('input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus');
+  if (await editable.count()) await editable.press("Tab");
+  // Dismiss a tip or open chooser through the same keyboard route as a user.
+  // Long engine operations can leave the pointer over another control's help.
+  await page.keyboard.press("Escape");
   if (advancedLabel[tool]) {
     await page.getByRole("button", { name: "Search all tools", exact: true }).click();
     await page.getByRole("combobox", { name: "Search all tools", exact: true }).fill(advancedLabel[tool]);

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ResearchAgentAccessReceipt,
+  ResearchAgentAccessRequest,
   ResearchAgentInteractiveAccess,
   ResearchAgentDisclosure,
   ResearchDesktopApi,
   ResearchRecipe,
   ResearchSelection,
   ResearchSource,
+  ResearchSnapshot,
 } from "../shared/research-contracts";
 import "./ResearchAgentPanel.css";
 
@@ -88,12 +90,22 @@ function exactReceipt(
   disclosures: ResearchAgentDisclosure[],
   operations: string[],
   interactive: boolean,
+  delegation?: ResearchAgentAccessRequest["delegation"],
+  actions: string[] = [],
+  sources?: Array<{ id: string; sha256: string }>,
+  exportScope: "listed" | "directory" = "listed",
 ): ResearchAgentAccessReceipt {
   const receipt = value as ResearchAgentAccessReceipt;
   if (
     !receipt ||
-    receipt.schema !== (interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1") ||
-    (interactive && receipt.plugin_filename !== "plugin/plugin.json") ||
+    receipt.schema !== (delegation ? "loci.agent-policy/v4" : interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1") ||
+    ((interactive || delegation) && receipt.plugin_filename !== "plugin/plugin.json") ||
+    (delegation && (!receipt.delegation || !/^[a-f0-9]{32}$/.test(receipt.delegation.id) ||
+      !same({ client_id: receipt.delegation.client_id, expires_at: receipt.delegation.expires_at, result_scope: receipt.delegation.result_scope },
+        { client_id: delegation.client_id, expires_at: delegation.expires_at, result_scope: delegation.result_scope }))) ||
+    (delegation && (!same([...(receipt.actions ?? [])].sort(), [...actions].sort()) ||
+      !same([...(receipt.sources ?? [])].sort((a, b) => a.id.localeCompare(b.id)), [...(sources ?? [])].sort((a, b) => a.id.localeCompare(b.id))) ||
+      receipt.export_scope !== exportScope)) ||
     receipt.source_id !== sourceId ||
     !/^[0-9a-f]{64}$/.test(receipt.policy_sha256) ||
     !/^[0-9a-f]{32}$/.test(receipt.project_id) ||
@@ -122,6 +134,8 @@ function scopeSummary(selection: ResearchSelection): string {
 export function ResearchAgentPanel({
   api,
   source,
+  studySources,
+  operations,
   selection,
   recipe,
   report,
@@ -130,6 +144,8 @@ export function ResearchAgentPanel({
 }: {
   api: ResearchDesktopApi;
   source: ResearchSource;
+  studySources?: ResearchSource[];
+  operations?: ResearchSnapshot["operations"];
   selection: ResearchSelection;
   recipe: ResearchRecipe;
   report: Report;
@@ -137,8 +153,16 @@ export function ResearchAgentPanel({
   onBusyChange: (busy: boolean) => void;
 }): React.JSX.Element {
   const [allowPreview, setAllowPreview] = useState(false);
+  const [preset, setPreset] = useState("custom");
+  const [advanced, setAdvanced] = useState(false);
+  const [sourceMode, setSourceMode] = useState<"selected" | "study">("selected");
+  const [actionMode, setActionMode] = useState<"none" | "inspect" | "analyze">("none");
+  const [exportMode, setExportMode] = useState<"listed" | "directory">("listed");
   const [allowRun, setAllowRun] = useState(false);
   const [allowExport, setAllowExport] = useState(false);
+  const [allowReview, setAllowReview] = useState(false);
+  const [resultScope, setResultScope] = useState<"pinned-recipes" | "granted-sources">("pinned-recipes");
+  const [expiryHours, setExpiryHours] = useState("0");
   const [allowImage, setAllowImage] = useState(false);
   const [allowDisplay, setAllowDisplay] = useState(false);
   const [allowHandoff, setAllowHandoff] = useState(false);
@@ -156,6 +180,9 @@ export function ResearchAgentPanel({
   const [receipt, setReceipt] = useState<ResearchAgentAccessReceipt | null>(null);
   const [localBusy, setLocalBusy] = useState(false);
   const [client, setClient] = useState("codex");
+  const scopedSources = [...new Map((studySources ?? [source]).map(item => [item.id, item])).values()];
+  const actionChoices = Object.entries(operations ?? {}).filter(([, item]) => item.agent_execution);
+  const actions = actionMode === "none" ? [] : actionChoices.filter(([, item]) => actionMode === "analyze" || item.agent_execution === "read").map(([name]) => name).sort();
   const [validatedScope, setValidatedScope] = useState<string | null>(null);
   const validationGeneration = useRef(0);
   const creationGeneration = useRef(0);
@@ -171,6 +198,8 @@ export function ResearchAgentPanel({
     validationFingerprint, allowPreview, allowRun, allowExport, disclosures,
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
+    allowReview, resultScope, expiryHours, client,
+    sourceMode, actionMode, actions, exportMode, sourceMode === "study" ? scopedSources.map(item => [item.id, item.sha256]) : [],
   ]);
   const currentGrant = useRef(grantFingerprint);
   currentGrant.current = grantFingerprint;
@@ -188,8 +217,10 @@ export function ResearchAgentPanel({
   }, [grantFingerprint]);
   useEffect(() => {
     setAllowPreview(false);
+    setPreset("custom"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
     setAllowRun(false);
     setAllowExport(false);
+    setAllowReview(false); setResultScope("pinned-recipes"); setExpiryHours("0");
     setAllowImage(false); setAllowDisplay(false); setAllowHandoff(false);
     setDisplayChannels([]); setHandoffNameText(""); setExperiment(false);
     setThresholdRange(["", ""]); setSizeRange(["", ""]);
@@ -204,8 +235,11 @@ export function ResearchAgentPanel({
   const workers = validInteger(concurrency, 1, 64);
   const names = exportNames(exportNameText);
   const hasExportDisclosures = EXPORT_DISCLOSURES.every((item) => disclosures.includes(item));
-  const limitsValid = cpu !== null && memory !== null && workers !== null;
-  const exportValid = !allowExport || (allowRun && names !== null && hasExportDisclosures);
+  const limitsValid = cpu !== null && memory !== null && memory * MIB >= agentRecipe.working_bytes && workers !== null;
+  const delegated = allowReview || resultScope === "granted-sources" || actionMode !== "none" || sourceMode === "study";
+  const exportValid = !allowExport || ((allowRun || delegated) && (exportMode === "directory" || names !== null) && hasExportDisclosures);
+  const delegationValid = (!delegated || disclosures.includes("agent_metadata")) &&
+    (actionMode === "none" || (actions.length > 0 && resultScope === "granted-sources" && DISCLOSURES.every(item => disclosures.includes(item.id)) && (actionMode !== "analyze" || allowRun)));
   const operationValid = !allowPreview || disclosures.includes("previews");
   const imageScope = allowImage || allowDisplay || allowHandoff;
   const interactive = imageScope || experiment;
@@ -229,10 +263,10 @@ export function ResearchAgentPanel({
   const channelCount = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "") ? 1 : source.metadata.dimensions?.c ?? 1;
   const canCreate = Boolean(
     api.createAgentAccess && validation && validatedScope === validationFingerprint &&
-    limitsValid && exportValid && operationValid && interactiveValid && !busy && !localBusy,
+    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && !busy && !localBusy,
   );
 
-  const anticipatedOperations = [
+  const anticipatedOperations = [...new Set([
     "inspect_source",
     "validate_recipe",
     ...(disclosures.includes("agent_metadata") ? ["analysis_context"] : []),
@@ -243,7 +277,11 @@ export function ResearchAgentPanel({
     ...(allowImage ? ["source_image"] : []),
     ...(allowDisplay ? ["source_display", "set_source_display"] : []),
     ...(allowHandoff ? ["export_vision_handoff"] : []),
-  ];
+    ...(delegated ? ["review_history", "study_results", "result", ...(disclosures.includes("previews") ? ["result_view"] : [])] : []),
+    ...(allowReview ? ["review_result"] : []),
+    ...(actions.length ? ["validate_action", ...(actions.some(name => operations?.[name].agent_execution === "read") ? ["inspect_action"] : []),
+      ...(actions.some(name => operations?.[name].agent_execution === "task") ? ["submit_action", "job_status", "cancel_job"] : [])] : []),
+  ])];
 
   const validate = async () => {
     const generation = ++validationGeneration.current;
@@ -272,21 +310,48 @@ export function ResearchAgentPanel({
     }
   };
 
+  useEffect(() => {
+    if (preset !== "custom" && !hasReferences) void validate();
+  }, [preset, validationFingerprint]);
+
+  const applyPreset = (value: string) => {
+    setPreset(value);
+    setAdvanced(value === "custom");
+    if (value === "custom") return;
+    const analyze = value !== "inspect", full = value === "full";
+    setSourceMode(full ? "study" : "selected");
+    setResultScope("granted-sources");
+    setActionMode(analyze ? "analyze" : actionChoices.length ? "inspect" : "none");
+    setAllowPreview(analyze); setAllowRun(analyze); setAllowReview(full); setAllowExport(full);
+    setExportMode(full ? "directory" : "listed");
+    setAllowImage(true); setAllowDisplay(analyze); setAllowHandoff(false); setExperiment(false);
+    setDisplayChannels(Array.from({ length: Math.min(channelCount, 16) }, (_, index) => index));
+    setDisclosures(DISCLOSURES.map(item => item.id));
+  };
+
   const create = async () => {
     if (!canCreate || !validation || !api.createAgentAccess || cpu === null || memory === null || workers === null) return;
     const generation = ++creationGeneration.current;
     // The deliberate grant click authorizes this displayed policy, not later edits.
     const authorizedGrant = grantFingerprint;
-    const request = {
+    const request: ResearchAgentAccessRequest = {
       source_id: source.id,
       selection,
       recipe: agentRecipe,
       allow_preview: allowPreview,
       allow_run: allowRun,
       allow_export: allowExport,
-      export_names: allowExport ? names! : [],
+      export_names: allowExport && exportMode === "listed" ? names! : [],
       disclosures,
       limits: { cpu_seconds: cpu, memory_bytes: memory * MIB, concurrency: workers },
+      ...(delegated ? { delegation: {
+        client_id: client,
+        expires_at: expiryHours === "0" ? null : new Date(Date.now() + Number(expiryHours) * 3_600_000).toISOString(),
+        result_scope: resultScope,
+        allow_review: allowReview,
+      } } : {}),
+      ...(delegated ? { actions, export_scope: exportMode } : {}),
+      ...(sourceMode === "study" ? { source_scope: { mode: "study-sources", sources: scopedSources.map(item => ({ id: item.id, sha256: item.sha256 })) } } : {}),
       ...(interactive ? { interactive: {
         allow_image: allowImage, allow_display: allowDisplay, allow_handoff: allowHandoff,
         channels: imageScope ? [...displayChannels].sort((a, b) => a - b) : [],
@@ -306,6 +371,10 @@ export function ResearchAgentPanel({
           disclosures,
           anticipatedOperations,
           interactive,
+          request.delegation,
+          actions,
+          request.source_scope?.sources ?? [{ id: source.id, sha256: source.sha256 }],
+          exportMode,
         );
       }, "Could not create bounded local agent access.");
       if (output && generation === creationGeneration.current && currentGrant.current === authorizedGrant)
@@ -319,7 +388,7 @@ export function ResearchAgentPanel({
   return (
     <div className="research-panel research-agent">
       <h2>Connect an assistant</h2>
-      <p>Choose what an assistant may see and do in this study. Processing stays local.</p>
+      <p>Grant a scope once, then let your assistant work within it.</p>
       <label>Assistant client <select aria-label="Assistant client" value={client} onChange={(event) => setClient(event.target.value)}>
         <option value="codex">Codex</option><option value="claude">Claude Desktop</option>
         <option value="web">ChatGPT web / claude.ai</option></select></label>
@@ -327,14 +396,21 @@ export function ResearchAgentPanel({
         <p className="research-agent-client-help">{client === "claude" ? "The saved bundle includes a Claude-compatible MCP configuration." : "The saved bundle includes STDIO settings and Codex configuration. Interactive access also includes a local Loci plugin."} Connect it after reviewing the permissions below.</p>}
       <details><summary>Connection and safety details</summary><p>The local server has no shell, file browser, import, policy-editing or model-installation tool. Your assistant provider may receive the responses you allow.</p></details>
 
+      <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
+        <option value="custom">Custom permissions</option><option value="inspect">Inspect</option>
+        <option value="analyze" disabled={!actionChoices.length}>Analyze</option><option value="full" disabled={!actionChoices.length}>Full study</option>
+      </select></label>
+      {preset !== "custom" && <p className="research-agent-preset-summary">{preset === "inspect" ? "Read images, measurements and review history within the region shown." : preset === "analyze" ? "Inspect, run analyses, correct labels and remeasure within the region shown. Review decisions stay with you." : `Inspect and analyze all ${scopedSources.length} current sources, correct results, approve revisions as an agent, and export into your chosen folder.`} Your connected provider may receive these images and records.</p>}
+
       <section className="research-agent-card" aria-label="Exact agent source and scope">
         <h3>Source and scope</h3>
         <dl className="research-kv">
           <div><dt>Display name</dt><dd>{source.name}</dd></div>
-          <div><dt>Crop and axes</dt><dd>{scopeSummary(selection)}</dd></div>
-          <div><dt>Measurement channels</dt><dd>{agentRecipe.measurement_channels.join(", ")}</dd></div>
-          <div><dt>Working memory</dt><dd>{(agentRecipe.working_bytes / MIB).toLocaleString()} MiB</dd></div>
+          <div><dt>Crop and axes</dt><dd>{sourceMode === "study" ? `All pixels, channels, Z planes and timepoints in ${scopedSources.length} current sources` : scopeSummary(selection)}</dd></div>
+          <div><dt>Measurement channels</dt><dd>{sourceMode === "study" ? "All acquisition channels" : agentRecipe.measurement_channels.join(", ")}</dd></div>
+          <div><dt>Memory limit</dt><dd>{Number(memoryMiB).toLocaleString()} MiB per task</dd></div>
         </dl>
+        {sourceMode === "study" && <details><summary>Included sources ({scopedSources.length})</summary><ul>{scopedSources.map(item => <li key={item.id}>{item.name}</li>)}</ul><p>Sources added later require a new grant.</p></details>}
         <details><summary>Technical record</summary><dl className="research-kv">
           <div><dt>Source ID</dt><dd>{source.id}</dd></div>
           <div><dt>Source SHA-256</dt><dd>{source.sha256}</dd></div>
@@ -352,18 +428,46 @@ export function ResearchAgentPanel({
         </div>}
       </section>
 
+      <details className="research-agent-custom" open={advanced} onToggle={(event) => setAdvanced(event.currentTarget.open)} onChange={() => setPreset("custom")}><summary>Customize permissions</summary>
       <section className="research-agent-card" aria-label="Agent operation grants">
         <h3>Operation grants</h3>
         <label className="research-check"><input type="checkbox" checked={allowPreview} onChange={(event) => setAllowPreview(event.target.checked)} /> Allow display-only recipe previews</label>
         <label className="research-check"><input type="checkbox" checked={allowRun} onChange={(event) => {
           setAllowRun(event.target.checked);
-          if (!event.target.checked) setAllowExport(false);
+          if (!event.target.checked && !delegated) setAllowExport(false);
         }} /> Allow durable recipe runs and result reads</label>
-        <label className="research-check"><input type="checkbox" checked={allowExport} disabled={!allowRun} onChange={(event) => setAllowExport(event.target.checked)} /> Allow exact reviewed-result export</label>
+        <label className="research-check"><input type="checkbox" checked={allowExport} disabled={!allowRun && !delegated} onChange={(event) => setAllowExport(event.target.checked)} /> Allow exact reviewed-result export</label>
         <p><strong>Resulting tool scope:</strong> catalog and recipe_guide (static), {anticipatedOperations.join(", ")}</p>
         {allowPreview && !disclosures.includes("previews") && <p role="alert">Preview execution also requires the previews response disclosure.</p>}
       </section>
 
+      <section className="research-agent-card" aria-label="Delegated review grants">
+        <h3>Result access and review</h3>
+        <label>Source access<select aria-label="Agent source access" value={sourceMode} onChange={(event) => setSourceMode(event.target.value as typeof sourceMode)}>
+          <option value="selected">Selected source region</option><option value="study">All current study sources</option>
+        </select></label>
+        <label>Shared research actions<select aria-label="Agent research actions" value={actionMode} onChange={(event) => setActionMode(event.target.value as typeof actionMode)}>
+          <option value="none">Approved recipe only</option><option value="inspect" disabled={!actionChoices.length}>Inspect saved results</option>
+          <option value="analyze" disabled={!actionChoices.length}>Analyze, annotate and correct</option>
+        </select></label>
+        {actions.length > 0 && <details><summary>Included actions ({actions.length})</summary><ul>{actions.map(name => <li key={name}>{operations?.[name].summary}</li>)}</ul></details>}
+        <label>Results the assistant may inspect<select aria-label="Agent result scope" value={resultScope} onChange={(event) => {
+          setResultScope(event.target.value as typeof resultScope);
+          if (event.target.value === "pinned-recipes" && !allowRun && !allowReview) setAllowExport(false);
+        }}>
+          <option value="pinned-recipes">This approved recipe</option>
+          <option value="granted-sources">Any method within the granted source region and channels</option>
+        </select></label>
+        <label className="research-check"><input type="checkbox" checked={allowReview} onChange={(event) => setAllowReview(event.target.checked)} /> Allow the assistant to approve or exclude result revisions</label>
+        {allowReview && <p>Decisions are labelled Reviewed by agent. The assistant records its reason and coverage; your later decision keeps the earlier history.</p>}
+        {delegated && <>
+          <label>Access expires<select aria-label="Agent access expiry" value={expiryHours} onChange={(event) => setExpiryHours(event.target.value)}>
+            <option value="0">When revoked</option><option value="24">After 24 hours</option><option value="168">After 7 days</option>
+          </select></label>
+          <p>Client identity is declared as {client}; Loci does not authenticate the model behind the connection.</p>
+          {!delegationValid && <p role="alert">Shared research actions require access to any method in the granted sources, all response disclosures, and run permission for analysis or corrections. Review access requires analysis context disclosure.</p>}
+        </>}
+      </section>
 
       <section className="research-agent-card" aria-label="Interactive assistant grants">
         <h3>Images and display</h3>
@@ -372,11 +476,11 @@ export function ResearchAgentPanel({
         <label className="research-check"><input type="checkbox" checked={allowHandoff} onChange={(event) => setAllowHandoff(event.target.checked)} /> Allow local vision handoff export</label>
         {imageScope && <>
           <p>Image reads stay inside the approved region. Display changes apply to the selected channels across this source. The analysis channel ({selection.c + 1}) remains in the source scope. Channel numbers here start at 1; saved requests use zero-based indices.</p>
-          <div className="research-agent-channels">{Array.from({ length: Math.min(channelCount, 256) }, (_, channel) => <label className="research-check" key={channel}>
+          {sourceMode === "study" ? <p>All acquisition channels of the listed sources are included. Each image response can display up to 16 channels.</p> : <div className="research-agent-channels">{Array.from({ length: Math.min(channelCount, 256) }, (_, channel) => <label className="research-check" key={channel}>
             <input aria-label={`Grant display channel ${channel + 1}`} type="checkbox" checked={displayChannels.includes(channel)}
               disabled={!displayChannels.includes(channel) && displayChannels.length >= 16}
               onChange={(event) => setDisplayChannels((old) => event.target.checked ? [...old, channel] : old.filter((item) => item !== channel))} /> Channel {channel + 1}
-          </label>)}</div>
+          </label>)}</div>}
           {channelCount > 256 && <p>For channel indices above 256, create an explicit access request with the CLI.</p>}
           {!displayChannels.length && <p role="alert">Select at least one display channel.</p>}
         </>}
@@ -421,10 +525,16 @@ export function ResearchAgentPanel({
 
       {allowExport && <section className="research-agent-card" aria-label="Agent export grant">
         <h3>Reviewed-result export</h3>
+        {delegated && <label>Export names<select aria-label="Agent export scope" value={exportMode} onChange={(event) => setExportMode(event.target.value as typeof exportMode)}>
+          <option value="listed">Only the listed names</option><option value="directory">Any new name inside the chosen folder</option>
+        </select></label>}
+        {exportMode === "listed" && <>
         <label>Exact export directory names
           <input aria-label="Exact export names" value={exportNameText} onChange={(event) => setExportNameText(event.target.value)} placeholder="experiment-01-reviewed" />
         </label>
         <p>Use comma-separated, unique single-component names. After this form, a native dialog chooses one existing export root. The agent can only create these names and cannot overwrite them.</p>
+        </>}
+        {exportMode === "directory" && <p>Choose one existing export folder in the next dialog. Every export uses a new name; existing files are preserved.</p>}
         {!hasExportDisclosures && <p role="alert">Full research export requires geometry, source names, previews, measurements, and provenance disclosures.</p>}
       </section>}
 
@@ -437,6 +547,7 @@ export function ResearchAgentPanel({
         </div>
         {!limitsValid && <p role="alert">Use integer limits: 1–86,400 CPU seconds, 64–8,192 MiB, and concurrency 1–64.</p>}
       </section>
+      </details>
 
       <button className="research-primary" aria-label={`Grant selected access to ${source.name}`}
         disabled={!canCreate} onClick={() => void create()}>
@@ -444,7 +555,7 @@ export function ResearchAgentPanel({
       </button>
       {!api.createAgentAccess && <p role="alert">This desktop build does not provide the native policy-bundle creator.</p>}
       <details><summary>Access and review</summary><p>Choose a new access-bundle folder in the next dialog.
-        Exports require human review of the exact result revision. The built-in recipe runs locally on CPU.</p></details>
+        Exports require review of the exact result revision. {allowReview ? "This grant permits agent review." : "Review stays with the researcher."} The built-in recipe runs locally on CPU.</p></details>
 
       {receipt && <section className="research-agent-card research-agent-ready" aria-label="Created agent access receipt">
         <h3>Local agent access is ready</h3>

@@ -69,6 +69,8 @@ interface SourceAnnotationBinding {
 interface PickedResearchSources {
   paths: string[];
   relativePaths: string[];
+  /** Native-only picker grant; never returned to renderer state. */
+  importRoot?: string;
 }
 
 type DroppedResearchSelection =
@@ -197,6 +199,7 @@ export class ResearchBridge {
   private readonly worker = new EngineWorkerClient();
   private readonly control = new EngineWorkerClient();
   private viewer = new EngineWorkerClient();
+  private readonly compute = new EngineWorkerClient();
   private viewerQueue = this.createViewerQueue();
   private readonly sessions = new ManagedResearchSessionStore(app.getPath("userData"));
   private project: string | null = null;
@@ -352,7 +355,8 @@ export class ResearchBridge {
     if (picked.canceled || picked.filePaths.length === 0) return null;
     if (kind === "folder") {
       const paths = await collectImageFolder(picked.filePaths[0]);
-      return { paths, relativePaths: paths.map((item) => path.relative(picked.filePaths[0], item)) };
+      return { paths, importRoot: picked.filePaths[0], relativePaths: paths.map((item) =>
+        path.relative(picked.filePaths[0], item).split(path.sep).join("/")) };
     }
     return { paths: picked.filePaths, relativePaths: picked.filePaths.map((item) => path.basename(item)) };
   }
@@ -406,6 +410,7 @@ export class ResearchBridge {
         project,
         paths: picked.paths,
         relative_paths: picked.relativePaths,
+        ...(picked.importRoot ? { import_root: picked.importRoot } : {}),
         kind: kind === "dicom" ? "dicom" : kind === "ome_zarr" ? "ome_zarr" : "files",
       },
       0,
@@ -450,6 +455,7 @@ export class ResearchBridge {
         project,
         paths,
         relative_paths: relativePaths,
+        ...(picked.importRoot ? { import_root: picked.importRoot } : {}),
         kind: kind === "dicom" ? "dicom" : kind === "ome_zarr" ? "ome_zarr" : "files",
       },
       0,
@@ -497,7 +503,8 @@ export class ResearchBridge {
       const sources = await collectImageFolder(selected);
       return { route: "files", picked: {
         paths: sources,
-        relativePaths: sources.map((item) => path.relative(selected, item)),
+        importRoot: selected,
+        relativePaths: sources.map((item) => path.relative(selected, item).split(path.sep).join("/")),
       } };
     }
     if (lower.endsWith(".loci-project")) return { route: "legacy", path: selected };
@@ -552,16 +559,30 @@ export class ResearchBridge {
       throw new Error("Invalid research operation.");
     }
     let viewerLane = "default";
+    let taskKey: string | undefined;
     if (options !== undefined) {
-      if (!QUEUED_VIEW_OPERATIONS.has(operation) || !options || typeof options !== "object" ||
-          Array.isArray(options) || Object.keys(options).join(",") !== "viewer_lane")
-        throw new Error("Invalid viewer scheduling options.");
-      const lane = (options as Record<string, unknown>).viewer_lane;
-      if (typeof lane !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(lane))
-        throw new Error("Invalid viewer scheduling lane.");
-      viewerLane = lane;
+      const guided = ["exploration_preview", "exploration_compare", "exploration_run"].includes(operation);
+      if (guided && options && typeof options === "object" && !Array.isArray(options) && Object.keys(options).join(",") === "request_key") {
+        const key = (options as Record<string, unknown>).request_key;
+        if (typeof key !== "string" || !/^exploration:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(key)) throw new Error("Invalid exploration task key.");
+        taskKey = key;
+      } else {
+        if (!QUEUED_VIEW_OPERATIONS.has(operation) || !options || typeof options !== "object" ||
+            Array.isArray(options) || Object.keys(options).join(",") !== "viewer_lane")
+          throw new Error("Invalid viewer scheduling options.");
+        const lane = (options as Record<string, unknown>).viewer_lane;
+        if (typeof lane !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(lane)) throw new Error("Invalid viewer scheduling lane.");
+        viewerLane = lane;
+      }
     }
     assertResearchRequestBound(operation, request);
+    if (operation.startsWith("remote_")) {
+      const epoch = this.viewDocumentEpoch;
+      const output = await this.compute.request("research_execute", { project, operation, request }, 0);
+      if (this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The compute request belongs to a study that is no longer open. Its progress is saved in that study.");
+      return output;
+    }
     if (operation === "describe_result") {
       const binding = request as Record<string, unknown>;
       if (Object.keys(binding).sort().join(",") !== "result_id,revision_hash" ||
@@ -582,6 +603,9 @@ export class ResearchBridge {
     }
     const taskOperations = new Set([
       "workflow_run",
+      "exploration_preview",
+      "exploration_compare",
+      "exploration_run",
       "workflow_preview",
       "run_recipe",
       "large_components_run",
@@ -629,7 +653,7 @@ export class ResearchBridge {
         {
           project,
           request,
-          request_key: randomUUID(),
+          request_key: taskKey ?? randomUUID(),
           operation,
         },
       );
@@ -881,6 +905,42 @@ export class ResearchBridge {
     }
   }
 
+  private async exportReviewPackage(bindingsValue: unknown, optionsValue: unknown): Promise<unknown> {
+    if (this.running || this.switching)
+      throw new Error("Finish or cancel the active study operation first.");
+    const bindings = checkedBatchExportBindings(bindingsValue);
+    if (!optionsValue || typeof optionsValue !== "object" || Array.isArray(optionsValue) ||
+        Object.keys(optionsValue).join(",") !== "rootLabel")
+      throw new Error("Choose an explicit review package name.");
+    const label = (optionsValue as { rootLabel?: unknown }).rootLabel;
+    if (typeof label !== "string" || !label.trim() || label !== label.trim() ||
+        Buffer.byteLength(label, "utf8") > 120 || label.startsWith(".") || label.endsWith(".") ||
+        /[\u0000-\u001f\u007f/\\:<>"|?*]/u.test(label) || label.normalize("NFC") !== label ||
+        /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/iu.test(label))
+      throw new Error("Choose a portable review package name of 1-120 UTF-8 bytes.");
+    const project = this.requireProject();
+    const epoch = this.viewDocumentEpoch;
+    this.switching = true;
+    try {
+      const picked = await dialog.showOpenDialog({
+        title: "Choose a parent folder for the review package",
+        buttonLabel: "Export review package",
+        properties: ["openDirectory", "createDirectory"],
+      });
+      if (picked.canceled || !picked.filePaths[0]) return null;
+      if (!path.isAbsolute(picked.filePaths[0]) || this.project !== project ||
+          this.viewDocumentEpoch !== epoch)
+        throw new Error("The review package study or destination changed.");
+      return await this.control.request("research_review_package_export", {
+        project,
+        request: { bindings, root_label: label },
+        destination: path.join(picked.filePaths[0], label),
+      }, 0);
+    } finally {
+      this.switching = false;
+    }
+  }
+
   private async cancel(id: unknown): Promise<unknown> {
     if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id))
       throw new Error("Invalid job identity.");
@@ -991,6 +1051,24 @@ export class ResearchBridge {
       );
     };
     handle("recipe-resources", async () => recipeResources(totalmem()));
+    handle("compute-targets", async (operation, request) => {
+      if (typeof operation !== "string" ||
+          !["list", "import_ssh", "save", "test", "resources", "remember", "use", "forget"].includes(operation) ||
+          !request || typeof request !== "object" || Array.isArray(request))
+        throw new Error("Invalid compute settings request.");
+      assertResearchRequestBound("compute-targets", request);
+      if (this.switching) throw new Error("Wait for the study to finish opening.");
+      const project = this.project, epoch = this.viewDocumentEpoch;
+      if (["remember", "use"].includes(operation)) this.requireProject();
+      const output = await this.compute.request("research_compute_targets", {
+        directory: path.join(app.getPath("userData"), "compute-targets-v1.loci-study"),
+        operation, request, project,
+      }, 0);
+      if (["remember", "use", "list"].includes(operation) &&
+          (this.project !== project || this.viewDocumentEpoch !== epoch))
+        throw new Error("The study changed during compute setup. Reload the target list.");
+      return output;
+    });
     handle("create", () => this.choose(true));
     handle("open", () => this.choose(false));
     handle("snapshot", () => this.snapshot());
@@ -1507,6 +1585,7 @@ export class ResearchBridge {
     handle("batch-resume", (batchId) => this.prepareExistingBatch(batchId, "resume"));
     handle("batch-retry", (batchId) => this.prepareExistingBatch(batchId, "retry"));
     handle("batch-export", (bindings, options) => this.exportReviewedBatch(bindings, options));
+    handle("review-package-export", (bindings, options) => this.exportReviewPackage(bindings, options));
     handle("cancel", (id) => this.cancel(id));
     handle("review", (result_id, revision_hash, disposition) =>
       this.control.request("research_review", {
@@ -1687,7 +1766,7 @@ export class ResearchBridge {
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
     if (this.running && this.running.id !== "submitting")
       await this.cancel(this.running.id);
-    await Promise.all([this.worker.dispose(), this.control.dispose(), this.viewer.dispose()]);
+    await Promise.all([this.worker.dispose(), this.control.dispose(), this.viewer.dispose(), this.compute.dispose()]);
   }
 
   forceDispose(): void {
@@ -1695,5 +1774,6 @@ export class ResearchBridge {
     this.worker.forceDispose();
     this.control.forceDispose();
     this.viewer.forceDispose();
+    this.compute.forceDispose();
   }
 }

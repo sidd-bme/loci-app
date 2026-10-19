@@ -18,7 +18,9 @@ from loci_engine.research_jobs import cancel_job, reconcile_jobs, run_job, submi
 from loci_engine.research_large_exchange import adopt_large_result, create_exchange_grant
 from loci_engine.research_large_export import create_export_grant, export_large_result
 from loci_engine.research_project import ResearchProject, canonical_json
+from loci_engine.research_review import review_sha256
 from loci_engine.research_tiled_store import object_rows, read_region
+from loci_engine.source_browser_location import associate_import_root, prepare_import_root
 from loci_engine.workbench import Workbench
 
 ATOL = 1e-9
@@ -34,6 +36,14 @@ def _create_study_and_source(root_path, *, name="Study"):
     )
     workbench = Workbench(project)
     return workbench
+
+
+def _associate_folder(workbench, source, path):
+    plan = prepare_import_root(str(path.parent), [str(path)], [path.name])
+    associate_import_root(workbench.project, [source], plan)
+    public = workbench.project.public_source(workbench.project.source(source["id"]))
+    assert public["browser_location"]["root"] is not None
+    return public
 
 
 def _generate_synthetic_image(image_path):
@@ -131,6 +141,19 @@ def _rehash_bundle(bundle_dir, *, result_modifier=None, rows_modifier=None):
     result["revision_hash"] = hashlib.sha256(canonical_json(result).encode()).hexdigest()
     if receipt["review"] is not None:
         receipt["review"]["revision_hash"] = result["revision_hash"]
+    history_path = bundle_dir / "review-history.json"
+    if history_path.exists():
+        history = json.loads(history_path.read_text())
+        history["revision_hash"] = result["revision_hash"]
+        previous = None
+        for event in history["events"]:
+            event["revision_hash"] = result["revision_hash"]
+            if "previous_review_sha256" in event:
+                event["previous_review_sha256"] = review_sha256(previous)
+            previous = event
+        receipt["review"] = previous
+        history["current_sha256"] = review_sha256(previous)
+        history_path.write_text(canonical_json(history))
     (bundle_dir / "result.json").write_text(canonical_json(receipt))
 
     marker = json.loads((bundle_dir / "loci-export.json").read_text())
@@ -146,10 +169,45 @@ def _rehash_bundle(bundle_dir, *, result_modifier=None, rows_modifier=None):
     (bundle_dir / "manifest.json").write_text(canonical_json(manifest))
 
 
-def test_adopt_valid_export_bundle_into_fresh_study(tmp_path, shared_source):
+@pytest.mark.parametrize("attack", ["missing", "predecessor"])
+def test_exchange_grant_rejects_missing_or_altered_review_history(tmp_path, shared_source, attack):
+    origin = _create_study_and_source(tmp_path / "origin")
+    source = origin.import_native(str(shared_source))
+    result_id, _ = _publish_root_result(origin, source["id"])
+    result = origin.project.result(result_id)
+    origin.project.review(result_id, result["revision_hash"], "reviewed")
+    destination = tmp_path / "bundle"
+    export_large_result(origin.project, result_id, result["revision_hash"], destination)
+    history_path = destination / "review-history.json"
+    manifest = json.loads((destination / "manifest.json").read_text())
+    if attack == "missing":
+        history_path.unlink()
+        manifest["files"] = [
+            item for item in manifest["files"] if item["name"] != history_path.name
+        ]
+    else:
+        history = json.loads(history_path.read_text())
+        history["events"][0]["previous_review_sha256"] = "c" * 64
+        history_path.write_text(canonical_json(history))
+        entry = next(item for item in manifest["files"] if item["name"] == history_path.name)
+        entry.update(
+            sha256=hashlib.sha256(history_path.read_bytes()).hexdigest(),
+            size_bytes=history_path.stat().st_size,
+        )
+    (destination / "manifest.json").write_text(canonical_json(manifest))
+    recipient = _create_study_and_source(tmp_path / "recipient")
+    target_source = recipient.import_native(str(shared_source))
+    with pytest.raises(ValueError, match="history"):
+        create_exchange_grant(recipient.project, target_source["id"], str(destination))
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_adopt_valid_export_bundle_into_fresh_study(tmp_path, shared_source, durable):
     # 1. Produce and review in Origin study
     wb_origin = _create_study_and_source(tmp_path / "origin", name="Origin Study")
     src_origin = wb_origin.import_native(str(shared_source))
+    src_origin = _associate_folder(wb_origin, src_origin, shared_source)
+    stored_source = wb_origin.project.source(src_origin["id"])
     res_id, _ = _publish_root_result(wb_origin, src_origin["id"])
 
     res_origin = wb_origin.project.result(res_id)
@@ -161,28 +219,49 @@ def test_adopt_valid_export_bundle_into_fresh_study(tmp_path, shared_source):
     )
     assert receipt["result_id"] == res_id
     assert (export_dest / "manifest.json").is_file()
+    exported_source = json.loads((export_dest / "result.json").read_text())["source"]
+    assert set(exported_source) == {
+        "id",
+        "name",
+        "sha256",
+        "size_bytes",
+        "metadata",
+        "created_at",
+        "annotations",
+        "source_kind",
+        "identity_kind",
+    }
+    assert exported_source == {
+        key: value for key, value in src_origin.items() if key != "browser_location"
+    }
+    assert wb_origin.project.source(src_origin["id"]) == stored_source
 
     # 2. In Recipient study with the same source image
     wb_dest = _create_study_and_source(tmp_path / "recipient", name="Recipient Study")
     src_dest = wb_dest.import_native(str(shared_source))
+    src_dest = _associate_folder(wb_dest, src_dest, shared_source)
+    destination_source = wb_dest.project.source(src_dest["id"])
 
     # Grant creation
     grant = create_exchange_grant(wb_dest.project, src_dest["id"], str(export_dest))
     assert grant["grant_id"]
     assert grant["source_id"] == src_dest["id"]
 
-    # Durable adoption via job
+    # Both direct and durable adoption retain local browser metadata.
     adopt_request = {
         "source_id": src_dest["id"],
         "grant_id": grant["grant_id"],
         "manifest_sha256": grant["manifest_sha256"],
     }
-    job = submit_job(wb_dest, adopt_request, "adopt-job-1", operation="large_result_adopt")
-    run_job(wb_dest, job["id"])
-
-    finished_job = wb_dest.project.job(job["id"])
-    assert finished_job["state"] == "succeeded"
-    adopted_id = finished_job["result_ids"][0]
+    if durable:
+        job = submit_job(wb_dest, adopt_request, "adopt-job-1", operation="large_result_adopt")
+        run_job(wb_dest, job["id"])
+        finished_job = wb_dest.project.job(job["id"])
+        assert finished_job["state"] == "succeeded"
+        adopted_id = finished_job["result_ids"][0]
+    else:
+        adopted_id = adopt_large_result(wb_dest, adopt_request)["result"]["id"]
+    assert wb_dest.project.source(src_dest["id"]) == destination_source
 
     adopted_result = wb_dest.project.result(adopted_id)
     assert adopted_result["parent_id"] is None
@@ -845,6 +924,8 @@ def test_exchange_grant_creation_is_bounded_and_fast(tmp_path, shared_source, mo
         "unknown-selection",
         "forged-core",
         "mismatched-source",
+        "unknown-source-field",
+        "browser-source-field",
         "wrong-raw-tiff",
     ],
 )
@@ -885,6 +966,13 @@ def test_adoption_rejects_rehashed_semantic_forgeries(tmp_path, shared_source, c
             record["arrays"]["image"]["tiles"][0]["artifact"]["sha256"] = "1" * 64
         elif case == "mismatched-source":
             receipt["source"].update(id="fabricated-source", size_bytes=None)
+        elif case == "unknown-source-field":
+            receipt["source"]["unknown"] = {"identity": "unverified"}
+        elif case == "browser-source-field":
+            receipt["source"]["browser_location"] = {
+                "relative_path": "safe.tif",
+                "root": None,
+            }
 
     if case == "wrong-raw-tiff":
         raw_path = bundle / "image.ome.tif"
@@ -916,7 +1004,12 @@ def test_adoption_rejects_rehashed_semantic_forgeries(tmp_path, shared_source, c
     )
     recipient = _create_study_and_source(tmp_path / "recipient")
     local_source = recipient.import_native(str(shared_source))
-    with pytest.raises(ValueError):
+    expected_error = (
+        "Invalid or incomplete exported source fields"
+        if case in {"unknown-source-field", "browser-source-field"}
+        else None
+    )
+    with pytest.raises(ValueError, match=expected_error):
         grant = create_exchange_grant(recipient.project, local_source["id"], str(bundle))
         adopt_large_result(
             recipient, {key: grant[key] for key in ("source_id", "grant_id", "manifest_sha256")}

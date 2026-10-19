@@ -268,6 +268,7 @@ contextBridge.exposeInMainWorld("loci", api);
 const researchApi: ResearchDesktopApi = {
   labelsImportPreview: (binding) => ipcRenderer.invoke("loci-research:labels-import-preview", binding),
   recipeResources: () => ipcRenderer.invoke("loci-research:recipe-resources"),
+  computeTargets: (operation, request) => ipcRenderer.invoke("loci-research:compute-targets", operation, request),
   exportSourceView: (request) => ipcRenderer.invoke("loci-research:export-source-view", request),
   exportStatisticsFigure: (request) => ipcRenderer.invoke("loci-research:export-statistics-figure", request),
   exportVolumeFigure: (request) => ipcRenderer.invoke("loci-research:export-volume-figure", request),
@@ -319,6 +320,8 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:batch-retry", batchId),
   exportBatch: (bindings, options) =>
     ipcRenderer.invoke("loci-research:batch-export", bindings, options),
+  exportReviewPackage: (bindings, options) =>
+    ipcRenderer.invoke("loci-research:review-package-export", bindings, options),
   reviewResult: (id, revision, disposition) =>
     ipcRenderer.invoke("loci-research:review", id, revision, disposition),
   exportResult: (id, revision, workflowRunId) =>

@@ -3,6 +3,34 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "remote_analysis_cancel": {
+        "mutates": True,
+        "summary": "Cancel a remote analysis bound to the current study",
+    },
+    "remote_analysis_plan": {
+        "mutates": False,
+        "summary": "Inspect an exact normal-analysis transfer and compute plan",
+    },
+    "remote_analysis_start": {
+        "mutates": True,
+        "summary": "Start one authorized normal analysis on a saved compute target",
+    },
+    "remote_analysis_advance": {
+        "mutates": True,
+        "summary": "Recover or advance one authorized remote analysis step",
+    },
+    "action_guide": {
+        "mutates": False,
+        "summary": "Discover shared research action schemas and execution contracts",
+    },
+    "describe_result": {
+        "mutates": False,
+        "summary": "Inspect saved analysis context for an exact result revision",
+    },
+    "review_history": {
+        "mutates": False,
+        "summary": "Read the ordered revision-bound review decisions",
+    },
     "labels_import": {
         "mutates": True,
         "summary": "Adopt a checked external scalar TIFF label plane on its declared native grid",
@@ -254,9 +282,34 @@ for _remote_name, _remote_summary in {
     }
 
 
+for _name, _mutates, _summary in (
+    ("exploration_list", False, "List saved source-bound parameter comparisons"),
+    ("exploration_get", False, "Read an exact saved parameter comparison record"),
+    ("exploration_preview", False, "Preview bounded unsaved classical settings on an exact ROI"),
+    ("exploration_compare", True, "Compare bounded ROIs/settings and retain the context receipt"),
+    ("exploration_run", True, "Adopt exact preview settings as a provenance-bound result"),
+    (
+        "population_gate_evaluate",
+        False,
+        "Evaluate a rectangle or polygon against every measurement row",
+    ),
+    ("population_group_save", True, "Save immutable exact-revision population membership"),
+    ("population_group_list", False, "List durable population groups"),
+    ("population_group_get", False, "Verify exact saved population membership"),
+    ("population_group_export", False, "Export a saved group as exact server-canonical JSON"),
+    ("population_gate_export", False, "Export exact evaluated gate membership JSON"),
+    ("population_gate_apply", True, "Evaluate a saved gate on a compatible result as a new group"),
+    ("population_group_combine", True, "Save union, intersection or unclassified membership"),
+):
+    OPERATION_CATALOG[_name] = {"mutates": _mutates, "summary": _summary}
+
+
 TASK_OPERATIONS = frozenset(
     {
         "workflow_run",
+        "exploration_preview",
+        "exploration_compare",
+        "exploration_run",
         "workflow_preview",
         "run_recipe",
         "labels_import",
@@ -291,6 +344,8 @@ TASK_OPERATIONS = frozenset(
 )
 PREVIEW_OPERATIONS = frozenset(
     {
+        "exploration_preview",
+        "exploration_compare",
         "workflow_preview",
         "tissue_preview",
         "preview_recipe",

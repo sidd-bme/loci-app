@@ -19,6 +19,15 @@ from .workbench import geometry_from_dict
 from .working_result import _sha256_file_stable
 
 
+def export_source_record(source: dict[str, Any]) -> dict[str, Any]:
+    """Keep scientific export receipts independent of source-browser presentation."""
+    return {
+        key: value
+        for key, value in source.items()
+        if not key.startswith("private_") and key != "browser_location"
+    }
+
+
 def flat_measurements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for row in rows:
@@ -368,11 +377,17 @@ def export_research_result(
                 measurements_csv(flat_measurements(selected_rows)), encoding="utf-8"
             )
         (stage / "methods.md").write_text(methods_text(result), encoding="utf-8")
+        from .research_review import history_document
+
+        (stage / "review-history.json").write_text(
+            canonical_json(history_document(project, review)) + "\n",
+            encoding="utf-8",
+        )
         receipt = {
             "schema": "loci.research-export/v1",
             "result": result,
             "review": review,
-            "source": project.public_source(source),
+            "source": export_source_record(source),
             "geometry_authority": "result.provenance.geometry voxel-center XYZ-to-world affine",
             "raw_source_included": False,
             "artifact_files": artifact_files,

@@ -17,6 +17,11 @@ export interface ResearchSource {
   id: string;
   name: string;
   sha256: string;
+  /** Validated display hierarchy, never a filesystem locator or source grant. */
+  browser_location?: {
+    relative_path: string;
+    root: null | { id: string; name: string };
+  };
   size_bytes?: number;
   source_kind?: "native" | "whole_slide" | "ome_zarr" | "medical";
   locator_state?: "relink-required";
@@ -68,10 +73,25 @@ export interface ResearchResult {
   } | null;
   selection?: (ResearchSelection & { elapsed_time_s?: number }) | null;
   parent_id?: string | null;
-  review?: { disposition: string } | null;
+  review?: ResearchReview | null;
   working_bytes?: number;
   label_import?: ResearchLabelImportIdentity;
 }
+export type ResearchReview = {
+  disposition: string;
+  schema?: "loci.result-review/v2";
+  event_id?: string;
+  result_id?: string;
+  revision_hash?: string;
+  actor?: "human" | "agent";
+  actor_id?: string;
+  identity_assurance?: "declared";
+  reviewed_at?: string;
+  reason?: string;
+  coverage?: string;
+  previous_review_sha256?: string | null;
+  authority?: { kind: "policy-delegation"; policy_sha256: string; delegation_id: string; client_id: string } | null;
+};
 export interface ResearchResultContextField {
   name: string;
   value: string | number | boolean | null | Array<string | number | boolean | null>;
@@ -221,6 +241,15 @@ export interface ResearchAgentAccessRequest {
   selection: ResearchSelection;
   recipe: ResearchRecipe;
   interactive?: ResearchAgentInteractiveAccess;
+  delegation?: {
+    client_id: string;
+    expires_at: string | null;
+    result_scope: "pinned-recipes" | "granted-sources";
+    allow_review: boolean;
+  };
+  actions?: string[];
+  source_scope?: { mode: "study-sources"; sources: Array<{ id: string; sha256: string }> };
+  export_scope?: "listed" | "directory";
   allow_preview: boolean;
   allow_run: boolean;
   allow_export: boolean;
@@ -229,13 +258,17 @@ export interface ResearchAgentAccessRequest {
   limits: { cpu_seconds: number; memory_bytes: number; concurrency: number };
 }
 export interface ResearchAgentAccessReceipt {
-  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3";
+  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4";
   policy_sha256: string;
   project_id: string;
   recipe_sha256: string;
   policy_filename: string;
   config_filename: string;
   plugin_filename?: "plugin/plugin.json";
+  delegation?: { id: string; client_id: string; expires_at: string | null; result_scope: "pinned-recipes" | "granted-sources" };
+  actions?: string[];
+  sources?: Array<{ id: string; sha256: string }>;
+  export_scope?: "listed" | "directory";
   disclosures: ResearchAgentDisclosure[];
   operations: string[];
   source_id: string;
@@ -298,7 +331,7 @@ export interface ResearchSourceOrderChange {
   sources: Array<{ id: string; sha256: string }>;
 }
 export interface ResearchSnapshot {
-  project: { title: string; counts?: Record<string, number>; first_study?: {
+  project: { title: string; project_id?: string; counts?: Record<string, number>; first_study?: {
     example_id: string; source_id: string; source_sha256: string;
   } };
   sources: ResearchSource[];
@@ -324,7 +357,7 @@ export interface ResearchSnapshot {
     data: Record<string, unknown>;
   }>;
   jobs: ResearchJob[];
-  operations: Record<string, { mutates: boolean; summary: string }>;
+  operations: Record<string, { mutates: boolean; summary: string; agent_execution?: "read" | "task" }>;
 }
 export interface ResearchSelection {
   x: number;
@@ -578,11 +611,15 @@ export interface BatchChannelColorsResponse {
   previous_palettes: Record<string, BatchChannelColorPalette>;
   new_revisions: Record<string, number>;
 }
-export interface ResearchExecuteOptions {
+export type ResearchExecuteOptions =
   /** Stable identity of one renderer view; used only for main-process request scheduling. */
-  viewer_lane: string;
-}
+  { viewer_lane: string } |
+  /** Unique guided-exploration submission identity, used for exact cancellation ownership. */
+  { request_key: string };
 export interface ResearchDesktopApi {
+  /** Application-private targets; paths and credentials are never returned. */
+  computeTargets?(operation: "list" | "import_ssh" | "save" | "test" | "resources" | "remember" | "use" | "forget",
+    request: Record<string, unknown>): Promise<unknown>;
   /** Native TIFF picker; the external file path never enters renderer state. */
   labelsImportPreview?(binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview | null>;
   recipeResources?(): Promise<import("./recipe-resources").RecipeResources>;
@@ -666,6 +703,17 @@ export interface ResearchDesktopApi {
     mode: "bundles" | "bundles+summary" | "summary-only";
     manifestName: string;
     summaryName: string | null;
+  } | null>;
+  /** Provisional counts and native RGB outlines; never changes scientific review state. */
+  exportReviewPackage?(
+    bindings: Array<{
+      source_id: string; source_sha256: string; result_id: string; revision_hash: string;
+    }>,
+    options: { rootLabel: string },
+  ): Promise<{
+    schema: "loci.review-package-receipt/v1";
+    status: "provisional-review-material";
+    basename: string; image_count: number; manifest_sha256: string; summary_name: string;
   } | null>;
   reviewResult(
     resultId: string,

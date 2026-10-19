@@ -99,6 +99,15 @@ limits remain separate; choosing a larger recipe allowance does not bypass them.
   export per-image bundles, a formula-safe image/count summary, or both, with
   identity checks, mirrored relative folders and a final aggregate manifest.
 
+## Exploration, review and compute boundaries
+
+- Regional classical previews compare at most three settings across three native scalar ROIs, each at most 512 × 512 pixels on the same plane/level. Crop-local counts and clipped areas do not establish whole-image equivalence. Adoption verifies the exact receipt and creates an unreviewed result; saved comparisons are records only.
+- Population gates evaluate eligible measured rows, up to 100,000 objects, independently of scatter display sampling. Fixed groups bind exact revisions; reusable gates require compatible metric kinds and units. Log axes exclude nonpositive values and account for missing/non-finite rows. See [Exploration and groups](EXPLORATION_AND_GROUPS.md).
+- Folder tree, relative-path search and breadcrumbs organize imported sources. Batch folder selection includes descendants; browsing never changes scientific source identity or the analysis region.
+- Provisional review packages contain counts, provenance and boundary-outline PNGs for whole native uint8 RGB planes up to 16 megapixels. They may contain pending revisions and never grant review. Publication requires atomic no-replace directory support. Reviewed scientific exports retain their separate exact-revision gates.
+- Append-only review history distinguishes researcher and explicitly delegated agent decisions. A correction starts unreviewed; a researcher can supersede an agent event without erasing it. Legacy human receipts retain their semantics. Review is an assessment, not biological or clinical validation.
+- Saved compute targets support native classical and registered Cellpose tasks, with explicit whole-file transfer and a prepared runtime/model. Target edits affect future runs; existing runs retain their exact execution snapshot. No runtime/model installation or interactive password/MFA setup is provided. See [Remote workflow](REMOTE_WORKFLOW.md).
+
 ## What each source can do in the unified workspace
 
 | Source route | Inspect | View | Process or segment | Learned route | Correct and measure | Reviewed export |
@@ -118,7 +127,7 @@ Processing, segmentation, registration, model adoption, correction, annotation
 import, tracking, and remote attachment create immutable derived revisions.
 Raw annotation records are independent source-bound derived state. Label
 corrections and result ROI measurements operate on an exact adopted revision.
-Scientific result export requires an exact-revision human review receipt and
+Scientific result export requires an exact-revision authorized review receipt and
 rechecks source, reference, result and artifact identities before atomic
 publication.
 

@@ -28,7 +28,6 @@ from skimage.filters import threshold_otsu
 
 from .models import ENGINE_VERSION
 from .quantitative import (
-    DEFAULT_WORKING_BYTES,
     apply_marker_gates,
     measure_objects,
     process_scalar,
@@ -849,12 +848,11 @@ def _validate_task_record(
         else:
             validated = None
             working_bytes = task.cellpose["working_bytes"]
-            source_working_bytes = min(working_bytes, DEFAULT_WORKING_BYTES)
             selected = workbench.selection(local_source["id"], task.selection)
             local_array, local_geometry, selected = workbench.load_scalar(
                 local_source["id"],
                 selected,
-                working_bytes=source_working_bytes,
+                working_bytes=working_bytes,
                 allow_rgb=True,
             )
     except (OSError, RuntimeError, ValueError) as exc:
@@ -1143,7 +1141,6 @@ def _validate_measurements(
         measurement_channels = checked.request.cellpose["measurement_channels"]
         gates = checked.request.cellpose["gates"]
         working_bytes = checked.request.cellpose["working_bytes"]
-    source_working_bytes = min(working_bytes, DEFAULT_WORKING_BYTES)
     if not _values_match(segmentation, expected_segmentation):
         raise RemoteResultsError("Remote segmentation provenance disagrees with its recipe")
     channels: dict[str, np.ndarray] = {}
@@ -1154,7 +1151,7 @@ def _validate_measurements(
                 checked.local_source_id,
                 {**checked.request.selection, "c": channel},
                 strict=False,
-                working_bytes=source_working_bytes,
+                working_bytes=working_bytes,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             raise RemoteResultsError("A measurement channel cannot be verified locally") from exc

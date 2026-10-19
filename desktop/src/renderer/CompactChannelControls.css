@@ -1,0 +1,71 @@
+.compact-channel-controls {
+  container-type: inline-size;
+  min-width: 0;
+  padding: 4px 8px;
+  border-block-end: 1px solid var(--line);
+  background: var(--graphite-925);
+  color: var(--ink);
+  font-size: var(--type-md);
+}
+.compact-channel-controls > summary {
+  float: inline-start;
+  margin-inline-end: 8px;
+  min-height: 32px;
+  padding: 6px 4px;
+  cursor: pointer;
+  color: var(--ink-secondary);
+}
+.compact-channel-controls::after { content: ""; display: block; clear: both; }
+.compact-channel-body, .compact-channel-range, .compact-channel-lut-body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.compact-channel-body { overflow-wrap: anywhere; }
+.compact-channel-controls:not([open]) > .compact-channel-body { display: none; }
+.compact-channel-visibility {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 100%;
+}
+.compact-channel-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink-secondary);
+}
+.compact-channel-visibility label { min-height: 32px; padding: 2px 4px; cursor: pointer; }
+.compact-channel-visibility label span { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compact-channel-visibility input { width: 16px; height: 16px; margin: 0; }
+.compact-channel-visibility i { width: 8px; height: 8px; flex: 0 0 8px; border: 1px solid var(--line-strong); border-radius: 2px; }
+.compact-channel-controls button, .compact-channel-controls select, .compact-channel-controls input:not([type="checkbox"]),
+.compact-channel-lut > summary {
+  min-height: 32px;
+  border-radius: 6px;
+  font-size: inherit;
+}
+.compact-channel-controls button { padding: 4px 8px; }
+.compact-channel-controls button[aria-pressed="true"] { color: var(--mineral-bright); border-color: var(--mineral); }
+.compact-channel-controls select { width: auto; min-width: 7ch; max-width: 18ch; }
+.compact-channel-range input, .compact-channel-lut input:not([type]) { width: 9ch; font-variant-numeric: tabular-nums; }
+.compact-channel-range small { flex-basis: 100%; color: var(--error); }
+.compact-channel-lut { min-width: 0; }
+.compact-channel-lut > summary { cursor: pointer; padding: 6px 4px; color: var(--ink-secondary); }
+.compact-channel-lut[open] { flex-basis: 100%; }
+.compact-channel-lut-body { padding: 4px 0; }
+.compact-channel-lut input[type="color"] { width: 40px; padding: 2px; }
+.compact-channel-opacity { flex-wrap: wrap; }
+.compact-channel-opacity input { width: 100px; }
+.compact-channel-opacity output { font-variant-numeric: tabular-nums; }
+.compact-channel-empty, .compact-channel-lut small { color: var(--ink-muted); }
+.compact-channel-controls :is(button, input, select, summary):focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
+@container (max-width: 620px) {
+  .compact-channel-controls > summary { float: none; }
+  .compact-channel-visibility { flex-basis: 100%; }
+  .compact-channel-range { flex-wrap: wrap; }
+}

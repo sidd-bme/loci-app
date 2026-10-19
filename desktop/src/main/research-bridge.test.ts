@@ -273,6 +273,19 @@ describe("native research bridge", () => {
   const labelBinding = () => ({ source_id: "b".repeat(32), source_sha256: sha,
     selection: { x: 0, y: 0, width: 8, height: 4, t: 0, c: 1, z: 0, level: 0 }, working_bytes: 64 * 1024 ** 2 });
 
+  it("keeps compute settings in the main-owned application directory and restricts operations", async () => {
+    await call("compute-targets", "list", {});
+    expect(mocks.request).toHaveBeenCalledWith("research_compute_targets", {
+      directory: path.join(root, "compute-targets-v1.loci-study"), operation: "list", request: {}, project: null,
+    }, 0);
+    await expect(call("compute-targets", "use", { id: "a".repeat(32), revision: 1 })).rejects.toThrow("study first");
+    await expect(call("compute-targets", "shell", {})).rejects.toThrow("Invalid compute settings");
+    new ResearchBridge().register(() => { throw new Error("Untrusted sender"); });
+    mocks.request.mockClear();
+    await expect(call("compute-targets", "list", {})).rejects.toThrow("Untrusted sender");
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
   it("exports the exact correction receipt through a trusted native destination and returns only bounded fields", async () => {
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Effect.loci-study") });
     await call("create"); mocks.request.mockClear();
@@ -492,6 +505,43 @@ describe("native research bridge", () => {
       project,
       request,
     });
+  });
+
+  it("exports pending review material through a native parent picker without changing review", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const output = path.join(root, "outputs");
+    await fs.mkdir(output);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [output] });
+    const bindings = [{ source_id: "b".repeat(32), source_sha256: sha,
+      result_id: "c".repeat(32), revision_hash: "d".repeat(64) }];
+    const expected = { schema: "loci.review-package-receipt/v1", status: "provisional-review-material",
+      basename: "Synthetic RGB collection", image_count: 1, summary_name: "counts.csv", manifest_sha256: sha };
+    mocks.request.mockResolvedValueOnce(expected);
+    const receipt = await call("review-package-export", bindings, { rootLabel: expected.basename });
+    expect(receipt).toEqual(expected);
+    expect(mocks.request).toHaveBeenLastCalledWith("research_review_package_export", {
+      project, request: { bindings, root_label: expected.basename },
+      destination: path.join(output, expected.basename),
+    }, 0);
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_review")).toBe(false);
+    expect(JSON.stringify(receipt)).not.toContain(root);
+  });
+
+  it("rejects review package path injection before opening a destination picker", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const bindings = [{ source_id: "b".repeat(32), source_sha256: sha,
+      result_id: "c".repeat(32), revision_hash: "d".repeat(64) }];
+    for (const rootLabel of ["../escape", "/absolute", "a\\b", ".hidden", "CON", "bad "]) {
+      await expect(call("review-package-export", bindings, { rootLabel })).rejects.toThrow("portable");
+    }
+    await expect(call("review-package-export", bindings, {
+      rootLabel: "review", destination: "/renderer/path",
+    })).rejects.toThrow("explicit");
+    expect(mocks.open).not.toHaveBeenCalled();
   });
 
   it("exports exact reviewed revisions into mirrored bundles and commits aggregate metadata last", async () => {
@@ -980,6 +1030,8 @@ describe("native research bridge", () => {
     await call("open-images", "folder");
     expect(mocks.request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({
       paths: [first, second],
+      relative_paths: ["field-2/image-2.tif", "field-2/image-10.png"],
+      import_root: folder,
       kind: "files",
     }), 0);
   });
@@ -1415,7 +1467,24 @@ describe("native research bridge", () => {
     expect(control.forceDispose).not.toHaveBeenCalled();
 
     await call("execute", "view", { source_id: "b".repeat(32) });
-    expect(mocks.clients[3].request).toHaveBeenCalled();
+    expect(mocks.clients.at(-1)!.request).toHaveBeenCalled();
+  });
+
+  it("isolates remote transport from local control and rejects responses after a study switch", async () => {
+    const project = path.join(root, "Remote.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const control = mocks.clients[1], compute = mocks.clients[3];
+    let finish!: (value: unknown) => void;
+    compute.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = call("execute", "remote_analysis_start", { analysis: { project_id: "a".repeat(32) } });
+    const rejected = expect(pending).rejects.toThrow("study that is no longer open");
+    await vi.waitFor(() => expect(compute.request).toHaveBeenCalled());
+    await call("snapshot");
+    expect(control.request).toHaveBeenLastCalledWith("research_snapshot", { project });
+    await call("new-session");
+    finish({ run: { state: "submitted" } });
+    await rejected;
   });
 
   it("isolates large result decoding so control requests settle while a view is pending", async () => {
@@ -1433,6 +1502,19 @@ describe("native research bridge", () => {
     expect(control.request).not.toHaveBeenCalledWith("research_execute", expect.objectContaining({ operation: "large_result_view" }));
     finish({ image: "exact" });
     await expect(view).resolves.toEqual({ image: "exact" });
+  });
+
+  it("preserves a unique guided-exploration task key for exact cancellation", async () => {
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    mocks.request.mockImplementation(async (method: string) => method === "research_submit" ? { id: "b".repeat(32) } : {});
+    const request = { source_id: "a".repeat(32), source_sha256: "c".repeat(64) };
+    const requestKey = "exploration:12345678-1234-1234-1234-123456789abc";
+    await call("execute", "exploration_preview", request, { request_key: requestKey });
+    expect(mocks.clients[1].request).toHaveBeenCalledWith("research_submit", { project, request, request_key: requestKey, operation: "exploration_preview" });
+    await expect(call("execute", "exploration_preview", request, { request_key: "../unbounded" })).rejects.toThrow("Invalid exploration task key");
+    await expect(call("execute", "run_recipe", request, { request_key: requestKey })).rejects.toThrow("Invalid viewer scheduling options");
   });
 
   it("routes a local Cellpose run through the cancellable durable-job worker", async () => {
@@ -1805,7 +1887,7 @@ describe("native research bridge", () => {
     await fs.writeFile(image, "image");
     await call("open-dropped", [folder], "files");
     expect(mocks.request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({
-      paths: [image], relative_paths: [path.join("day-1", "field.tif")], kind: "files",
+      paths: [image], relative_paths: ["day-1/field.tif"], import_root: folder, kind: "files",
     }), 0);
 
     const zarr = path.join(root, "volume.zarr");
@@ -1814,6 +1896,8 @@ describe("native research bridge", () => {
     expect(mocks.request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({
       paths: [zarr], relative_paths: ["volume.zarr"], kind: "ome_zarr",
     }), 0);
+    const zarrImport = mocks.request.mock.calls.at(-1)![1] as Record<string, unknown>;
+    expect(zarrImport).not.toHaveProperty("import_root");
 
     const study = path.join(root, "Dropped.loci-study");
     await createEngineStudy(study);

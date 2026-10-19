@@ -7,6 +7,7 @@ import type {
   ResearchDesktopApi,
   ResearchRecipe,
   ResearchSelection,
+  ResearchSnapshot,
   ResearchSource,
 } from "../shared/research-contracts";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
@@ -75,10 +76,98 @@ function renderPanel(
     busy: false, onBusyChange: vi.fn(),
   };
   const rendered = render(<ResearchAgentPanel {...props} />);
+  fireEvent.click(screen.getByText("Customize permissions"));
   return { ...rendered, props };
 }
 
 describe("ResearchAgentPanel", () => {
+  it("grants the full explicit study snapshot and invalidates the receipt when it changes", async () => {
+    const second = { ...source, id: "2".repeat(32), sha256: "3".repeat(64), name: "Second source" };
+    const operations: ResearchSnapshot["operations"] = {
+      correction_info: { summary: "Inspect labels for correction", mutates: false, agent_execution: "read" },
+      correct_result: { summary: "Correct labels", mutates: true, agent_execution: "task" },
+    };
+    const createAgentAccess = vi.fn(async (request) => ({
+      ...receipt, schema: "loci.agent-policy/v4", plugin_filename: "plugin/plugin.json",
+      delegation: { id: "f".repeat(32), client_id: request.delegation.client_id,
+        expires_at: request.delegation.expires_at, result_scope: request.delegation.result_scope },
+      actions: request.actions, sources: request.source_scope.sources, export_scope: "directory",
+      disclosures: request.disclosures,
+      operations: ["inspect_source", "validate_recipe", "analysis_context", "preview_recipe", "submit_recipe",
+        "job_status", "cancel_job", "result", "result_view", "export_result", "source_image", "source_display",
+        "set_source_display", "review_history", "study_results", "review_result", "validate_action", "inspect_action", "submit_action"],
+    })) as NonNullable<ResearchDesktopApi["createAgentAccess"]>;
+    const api = bridge(vi.fn().mockResolvedValue(validation), createAgentAccess);
+    const props = { api, source, selection, recipe, operations, studySources: [source, second],
+      report: async <T,>(work: () => Promise<T>) => work(), busy: false, onBusyChange: vi.fn() };
+    const { rerender } = render(<ResearchAgentPanel {...props} />);
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "full" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    expect(createAgentAccess).not.toHaveBeenCalled();
+    expect(screen.getByText(/all 2 current sources/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      allow_run: true, allow_export: true, export_names: [], export_scope: "directory",
+      actions: ["correct_result", "correction_info"],
+      delegation: { client_id: "codex", expires_at: null, result_scope: "granted-sources", allow_review: true },
+      source_scope: { mode: "study-sources", sources: [source, second].map(({ id, sha256 }) => ({ id, sha256 })) },
+    }));
+    rerender(<ResearchAgentPanel {...props} studySources={[source, second, { ...second, id: "4".repeat(32) }]} />);
+    await waitFor(() => expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument());
+    expect(createAgentAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a full-study receipt that omits a granted source", async () => {
+    const second = { ...source, id: "2".repeat(32), sha256: "3".repeat(64) };
+    const errors: string[] = [];
+    const createAgentAccess = vi.fn(async (request) => ({
+      ...receipt, schema: "loci.agent-policy/v4", plugin_filename: "plugin/plugin.json",
+      delegation: { id: "f".repeat(32), client_id: "codex", expires_at: null, result_scope: "granted-sources" },
+      actions: request.actions, sources: [{ id: source.id, sha256: source.sha256 }], export_scope: "directory",
+      disclosures: request.disclosures,
+      operations: ["inspect_source", "validate_recipe", "analysis_context", "preview_recipe", "submit_recipe",
+        "job_status", "cancel_job", "result", "result_view", "export_result", "source_image", "source_display",
+        "set_source_display", "review_history", "study_results", "review_result", "validate_action", "inspect_action"],
+    })) as NonNullable<ResearchDesktopApi["createAgentAccess"]>;
+    render(<ResearchAgentPanel api={bridge(vi.fn().mockResolvedValue(validation), createAgentAccess)}
+      source={source} selection={selection} recipe={recipe} studySources={[source, second]}
+      operations={{ correction_info: { summary: "Inspect labels", mutates: false, agent_execution: "read" } }}
+      report={async <T,>(work: () => Promise<T>) => { try { return await work(); } catch (error) { errors.push(String(error)); return undefined; } }}
+      busy={false} onBusyChange={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "full" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(errors).toEqual([expect.stringContaining("receipt did not match")]));
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+
+  it("grants named agent approval independently of execution and verifies its receipt", async () => {
+    const createAgentAccess = vi.fn(async (request) => ({
+      ...receipt, schema: "loci.agent-policy/v4", plugin_filename: "plugin/plugin.json",
+      delegation: { id: "f".repeat(32), client_id: request.delegation.client_id,
+        expires_at: request.delegation.expires_at, result_scope: request.delegation.result_scope },
+      actions: [], sources: [{ id: source.id, sha256: source.sha256 }], export_scope: "listed",
+      disclosures: ["agent_metadata"],
+      operations: ["inspect_source", "validate_recipe", "analysis_context", "result", "review_history", "review_result", "study_results"],
+    })) as NonNullable<ResearchDesktopApi["createAgentAccess"]>;
+    renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
+    fireEvent.click(screen.getByLabelText("Allow the assistant to approve or exclude result revisions"));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Disclose agent_metadata"));
+    fireEvent.change(screen.getByLabelText("Agent access expiry"), { target: { value: "24" } });
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      allow_run: false,
+      delegation: { client_id: "codex", expires_at: expect.any(String), result_scope: "pinned-recipes", allow_review: true },
+    }));
+    fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "claude" } });
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+
   it("starts every disclosure and operation grant denied", () => {
     renderPanel(bridge(vi.fn()));
     for (const disclosure of ["geometry", "source_names", "previews", "measurements", "provenance", "agent_metadata"])

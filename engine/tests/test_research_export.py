@@ -2,6 +2,7 @@ import csv
 import hashlib
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -10,6 +11,7 @@ import tifffile
 
 from loci_engine.research_export import export_research_result
 from loci_engine.research_rpc import dispatch_research
+from loci_engine.source_browser_location import associate_import_root, prepare_import_root
 from loci_engine.study_analysis import measurements_csv
 
 
@@ -25,8 +27,17 @@ def reviewed(task):
     return workbench, result
 
 
-def test_export_preserves_values_hashes_provenance_and_never_overwrites(task, tmp_path):
+@pytest.mark.parametrize("rooted", [False, True])
+def test_export_preserves_values_hashes_provenance_and_never_overwrites(task, tmp_path, rooted):
     workbench, result = reviewed(task)
+    source = workbench.project.source(result["source_id"])
+    if rooted:
+        path = Path(source["private_path"])
+        plan = prepare_import_root(str(path.parent), [str(path)], [path.name])
+        associate_import_root(workbench.project, [source], plan)
+    source = workbench.project.source(result["source_id"])
+    public_source = workbench.project.public_source(source)
+    assert (public_source["browser_location"]["root"] is not None) == rooted
     target = tmp_path / "export"
     receipt = export_research_result(
         workbench.project, result["id"], result["revision_hash"], target
@@ -47,6 +58,22 @@ def test_export_preserves_values_hashes_provenance_and_never_overwrites(task, tm
     record = (target / "result.json").read_text()
     assert str(tmp_path) not in record
     assert json.loads(record)["result"]["revision_hash"] == result["revision_hash"]
+    exported_source = json.loads(record)["source"]
+    assert set(exported_source) == {
+        "id",
+        "name",
+        "sha256",
+        "size_bytes",
+        "metadata",
+        "created_at",
+        "annotations",
+        "source_kind",
+        "identity_kind",
+    }
+    assert exported_source == {
+        key: value for key, value in public_source.items() if key != "browser_location"
+    }
+    assert workbench.project.source(result["source_id"]) == source
     assert json.loads((target / "loci-export.json").read_text())["bundle_kind"] == "loci-export"
     with pytest.raises(ValueError, match="absent"):
         export_research_result(workbench.project, result["id"], result["revision_hash"], target)

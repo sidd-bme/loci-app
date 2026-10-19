@@ -7,15 +7,68 @@ import os
 import shlex
 import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
 from .agent_plugin import plugin_documents
-from .agent_policy import write_policy
+from .agent_policy import DISCLOSURES, write_policy
 from .export import _fsync_directory, _rename_noreplace
 from .quantitative import exact_keys, finite_number
 from .research_process import research_command
 from .workbench import Workbench, runtime_record
+
+
+def _whole_source_grants(workbench, scope, selected_source):
+    exact_keys(scope, {"mode", "sources"}, "agent source scope")
+    bindings = scope.get("sources")
+    if (
+        scope.get("mode") != "study-sources"
+        or not isinstance(bindings, list)
+        or not 1 <= len(bindings) <= 1000
+    ):
+        raise ValueError("Choose an explicit snapshot of 1-1000 study sources")
+    grants, seen = [], set()
+    for binding in bindings:
+        exact_keys(binding, {"id", "sha256"}, "source binding")
+        source = workbench.project.source(binding.get("id"), verify=True)
+        if source["id"] in seen or source["sha256"] != binding.get("sha256"):
+            raise ValueError("The chosen study source identities changed or are duplicated")
+        seen.add(source["id"])
+        if source.get("source_kind") in {"native", "whole_slide", "ome_zarr"}:
+            metadata = workbench.inspect(source["id"])["metadata"]
+            dimensions = metadata["dimensions"]
+            levels = len(metadata["levels"])
+        else:
+            shape = source["metadata"]["shape"]
+            dimensions = {
+                "x": shape[-1],
+                "y": shape[-2],
+                "z": shape[0] if len(shape) == 3 else 1,
+                "t": 1,
+                "c": 1,
+            }
+            levels = 1
+        if any(not 1 <= dimensions[axis] <= 4096 for axis in ("c", "z", "t")):
+            raise ValueError(
+                "Whole-source access supports at most 4096 indices per C/Z/T axis; "
+                "choose a bounded source region"
+            )
+        grants.append(
+            {
+                "id": source["id"],
+                "sha256": source["sha256"],
+                "crop": {"x": 0, "y": 0, "width": dimensions["x"], "height": dimensions["y"]},
+                "t": list(range(dimensions["t"])),
+                "c": list(range(dimensions["c"])),
+                "z": list(range(dimensions["z"])),
+                "level": list(range(levels)),
+                "measurement_channels": list(range(dimensions["c"])),
+            }
+        )
+    if selected_source not in seen:
+        raise ValueError("The selected analysis source must belong to the chosen study scope")
+    return grants
 
 
 def _interactive_grants(
@@ -126,8 +179,9 @@ def create_agent_access(
         "disclosures",
         "limits",
     }
-    exact_keys(request, expected | {"interactive"}, "agent access")
-    if set(request) - {"interactive"} != expected:
+    optional = {"interactive", "delegation", "actions", "source_scope", "export_scope"}
+    exact_keys(request, expected | optional, "agent access")
+    if set(request) - optional != expected:
         raise ValueError("Agent access requires every explicit permission and limit")
     for name in ("allow_preview", "allow_run", "allow_export"):
         if not isinstance(request[name], bool):
@@ -153,6 +207,41 @@ def create_agent_access(
     if request["allow_preview"] and "previews" not in disclosures:
         raise ValueError("Preview access requires explicit previews disclosure")
     interactive = _interactive_grants(workbench, request, validated)
+    delegation = request.get("delegation")
+    if "delegation" in request:
+        delegation_keys = {"client_id", "expires_at", "result_scope", "allow_review"}
+        exact_keys(delegation, delegation_keys, "agent delegation")
+        if set(delegation) != delegation_keys or type(delegation["allow_review"]) is not bool:
+            raise ValueError(
+                "Delegation requires a client, expiry, result scope and explicit review permission"
+            )
+        if "agent_metadata" not in disclosures:
+            raise ValueError("Delegation requires analysis context disclosure")
+    actions = request.get("actions", [])
+    if not isinstance(actions, list) or any(not isinstance(item, str) for item in actions):
+        raise ValueError("Research actions must be an explicit list")
+    if actions:
+        from .research_action_registry import ACTION_NAMES, TASK_ACTIONS
+
+        if len(set(actions)) != len(actions) or not set(actions) <= ACTION_NAMES:
+            raise ValueError("Choose unique supported research actions")
+        if (
+            delegation is None
+            or delegation["result_scope"] != "granted-sources"
+            or not set(disclosures) >= DISCLOSURES
+        ):
+            raise ValueError(
+                "Research actions require source-scoped delegation and all response disclosures"
+            )
+        if set(actions) & TASK_ACTIONS and not request["allow_run"]:
+            raise ValueError("Mutating research actions require explicit run permission")
+    export_mode = request.get("export_scope", "listed")
+    if export_mode not in {"listed", "directory"}:
+        raise ValueError("Choose listed names or new names within the selected export directory")
+    if export_mode == "directory" and (delegation is None or not request["allow_export"]):
+        raise ValueError("New export names require explicit delegated export permission")
+    if "source_scope" in request and delegation is None:
+        raise ValueError("Study source access requires an explicit delegation")
     allow_handoff = interactive is not None and interactive["allow_handoff"]
     if request["allow_export"]:
         required = {"geometry", "source_names", "previews", "measurements", "provenance"}
@@ -160,7 +249,7 @@ def create_agent_access(
             raise ValueError(
                 "Export requires all result disclosures and a chosen local export folder"
             )
-        if not request["allow_run"]:
+        if not request["allow_run"] and delegation is None:
             raise ValueError("Export requires the exact recipe run grant to authorize its result")
     elif request["export_names"]:
         raise ValueError("Export destinations require an explicit export grant")
@@ -188,6 +277,20 @@ def create_agent_access(
             operations.extend(["source_display", "set_source_display"])
         if allow_handoff:
             operations.append("export_vision_handoff")
+    if delegation is not None:
+        operations.extend(["review_history", "study_results"])
+        operations.extend(["result", *(["result_view"] if "previews" in disclosures else [])])
+        if delegation["allow_review"]:
+            operations.append("review_result")
+    if actions:
+        from .research_action_registry import READ_ACTIONS, TASK_ACTIONS
+
+        operations.append("validate_action")
+        if set(actions) & READ_ACTIONS:
+            operations.append("inspect_action")
+        if set(actions) & TASK_ACTIONS:
+            operations.extend(["submit_action", "job_status", "cancel_job"])
+    operations = sorted(set(operations))
     runtime = runtime_record()
     specification = {
         "sources": [
@@ -249,6 +352,21 @@ def create_agent_access(
             if interactive["parameters"]
             else []
         )
+    if delegation is not None:
+        specification.setdefault("remote_grants", [])
+        specification.setdefault("experimental_recipes", [])
+        specification["delegation"] = {
+            "id": uuid.uuid4().hex,
+            **{key: delegation[key] for key in ("client_id", "expires_at", "result_scope")},
+        }
+        specification["actions"] = actions
+        if specification["export"] is not None:
+            specification["export"]["filename_mode"] = export_mode
+        if "source_scope" in request:
+            specification["sources"] = _whole_source_grants(
+                workbench, request["source_scope"], source["id"]
+            )
+    include_plugin = interactive is not None or delegation is not None
     target = Path(destination).expanduser()
     if not target.is_absolute() or target.is_symlink() or target.exists():
         raise ValueError("Choose an absent absolute directory for the agent access bundle")
@@ -267,7 +385,7 @@ def create_agent_access(
         if "-m" in command:
             config["mcpServers"]["loci-research"]["cwd"] = str(Path(__file__).resolve().parents[2])
         stdio = config["mcpServers"]["loci-research"]
-        if interactive is not None:
+        if include_plugin:
             for name, body in plugin_documents(stdio, receipt["policy_sha256"]).items():
                 path = stage / name
                 missing = []
@@ -329,12 +447,14 @@ def create_agent_access(
             "and geometry still require their independent disclosures. Follow next_offset "
             "with the analysis_context tool for later pages. Use approved-request.json "
             "as the request argument for validate_recipe, preview_recipe or submit_recipe. "
-            "Only enabled operations are permitted. The CPU runtime, source scope and exact "
-            "recipe are pinned; parameter changes require an explicit experimental range grant.\n\n"
+            "Only enabled operations are permitted. The CPU runtime and source scope are pinned. "
+            "Without named action grants, changes require an explicit experimental recipe range. "
+            "For named study actions, consult action_guide and analysis_context; input scopes, "
+            "revision checks and resource limits still apply.\n\n"
             "These files are private local configuration. They contain local locations and "
             "selected analysis settings. Connecting a cloud client may disclose the enabled "
             "categories to that provider; processing remains local. Do not upload this folder "
-            "as a dataset. Review must be performed in Loci before reviewed result export. "
+            "as a dataset. Reviewed export requires a revision-bound review receipt. "
             "A permitted vision handoff exports image/context only and does not imply review.\n\n"
             "To revoke this access, remove agent-policy.json and disconnect the client. "
             "A changed policy or runtime fails closed; create a new bundle to authorize it. "
@@ -343,7 +463,22 @@ def create_agent_access(
             "https://learn.chatgpt.com/docs/extend/mcp\n"
             "https://developers.openai.com/plugins/build/plugins\n"
         )
-        if interactive is not None:
+        if delegation is not None:
+            instructions += (
+                "\nDelegated result access\n\n"
+                f"Declared client: {delegation['client_id']}. "
+                f"Result scope: {delegation['result_scope']}. "
+                f"Expiry: {delegation['expires_at'] or 'until revoked'}. "
+                + (
+                    "This policy explicitly permits agent review. Read the current history, "
+                    "inspect the exact result revision, and record your reason and actual "
+                    "coverage with its current review digest. Agent decisions remain labelled "
+                    "agent decisions; a researcher may supersede them without deleting history.\n"
+                    if delegation["allow_review"]
+                    else "Review history is readable, but this policy does not permit approval.\n"
+                )
+            )
+        if include_plugin:
             instructions += (
                 "\nLocal Loci analysis plugin\n\n"
                 "plugin/ contains a portable plugin manifest, stdio MCP configuration and "
@@ -372,7 +507,10 @@ def create_agent_access(
             stream.write(instructions)
             stream.flush()
             os.fsync(stream.fileno())
-        workbench.project.source(source["id"], verify=True)
+        for grant in specification["sources"]:
+            current_source = workbench.project.source(grant["id"], verify=True)
+            if current_source["sha256"] != grant["sha256"]:
+                raise ValueError("An authorized source changed before grant publication")
         for directory in sorted(bundle_directories, key=lambda path: len(path.parts), reverse=True):
             _fsync_directory(directory)
         current_parent = parent.lstat()
@@ -398,7 +536,20 @@ def create_agent_access(
             "operations": sorted(operations),
             "source_id": source["id"],
             "selection": selection,
-            **({"plugin_filename": "plugin/plugin.json"} if interactive is not None else {}),
+            **({"plugin_filename": "plugin/plugin.json"} if include_plugin else {}),
+            **({"delegation": specification["delegation"]} if delegation is not None else {}),
+            **(
+                {
+                    "actions": actions,
+                    "sources": [
+                        {"id": grant["id"], "sha256": grant["sha256"]}
+                        for grant in specification["sources"]
+                    ],
+                    "export_scope": export_mode,
+                }
+                if delegation is not None
+                else {}
+            ),
         }
     finally:
         if stage.exists() and not stage.is_symlink():

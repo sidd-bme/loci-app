@@ -290,13 +290,13 @@ def test_source_bound_preflight_does_not_execute_processing_filters(tmp_path, mo
 def test_preflight_uses_selected_pyramid_level_scale(tmp_path):
     path = tmp_path / "pyramid.tf8"
     image = np.arange(32 * 32, dtype=np.uint16).reshape(32, 32)
-    with tifffile.TiffWriter(path, bigtiff=True) as tif:
+    with tifffile.TiffWriter(path, bigtiff=True, ome=True) as tif:
         tif.write(
             image,
             subifds=1,
             resolution=(20000, 10000),
             resolutionunit="CENTIMETER",
-            metadata={"axes": "YX"},
+            metadata={"axes": "YX", "PhysicalSizeX": 0.5, "PhysicalSizeY": 1.0},
         )
         tif.write(
             image[::2, ::2], subfiletype=1, resolution=(10000, 5000), resolutionunit="CENTIMETER"

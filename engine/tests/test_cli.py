@@ -148,9 +148,15 @@ def test_operation_routes_come_from_task_and_preview_sets_not_mutates():
 
 def test_filtered_discovery_preserves_shared_catalog_and_no_query_protocol():
     from loci_engine.cli_support import discover
+    from loci_engine.research_action_registry import operation_catalog
     from loci_engine.research_operations import OPERATION_CATALOG
 
-    assert discover(None) == {"schema": "loci.operations/v1", "operations": OPERATION_CATALOG}
+    assert discover(None) == {"schema": "loci.operations/v1", "operations": operation_catalog()}
+    for name, original in OPERATION_CATALOG.items():
+        assert all(
+            discover(None)["operations"][name][key] == value for key, value in original.items()
+        )
+    assert discover(None)["operations"]["correct_result"]["agent_execution"] == "task"
     assert discover("PHYSICAL transform")["operations"] == {
         "registration_preview": OPERATION_CATALOG["registration_preview"]
     }

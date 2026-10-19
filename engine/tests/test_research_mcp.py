@@ -419,6 +419,32 @@ class ExitedProcess(FakeProcess):
         self.returncode = 1
 
 
+def test_terminal_job_reports_owned_worker_cleanup_and_preserves_capacity(tmp_path, monkeypatch):
+    from loci_engine.research_jobs import run_job
+
+    agent, workbench, _, request, _, _ = make_agent(tmp_path)
+    job = workbench.project.submit("run_recipe", request, "completed-with-live-worker")
+    run_job(workbench, job["id"])
+    process = FakeProcess([])
+    agent.supervisor._children[job["id"]] = process
+    monkeypatch.setattr(agent.supervisor, "_preview", lambda *_: {"preview": "permitted"})
+
+    status = agent.job_status(job["id"])["job"]
+    assert status["state"] == "succeeded"
+    assert status["owned_worker_active"] is True
+    assert "pid" not in status and str(process.pid) not in json.dumps(status)
+    with pytest.raises(PermissionError, match="concurrency"):
+        agent.supervisor.preview(workbench, request)
+    assert agent.policy.concurrency == 1
+
+    process.returncode = 0
+    settled = agent.job_status(job["id"])["job"]
+    assert settled["state"] == "succeeded"
+    assert settled["result_ids"] == status["result_ids"]
+    assert settled["owned_worker_active"] is False
+    assert agent.supervisor.preview(workbench, request) == {"preview": "permitted"}
+
+
 def test_cancel_signals_only_the_owned_process_with_matching_durable_pid(tmp_path):
     agent, workbench, _, request, path, _ = make_agent(tmp_path)
     process = None

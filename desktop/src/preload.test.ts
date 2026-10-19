@@ -57,6 +57,11 @@ describe("preload Cellpose bridge", () => {
     expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:recipe-resources");
   });
 
+  it("forwards bounded compute settings through its dedicated main-process channel", async () => {
+    await researchApi.computeTargets?.("use", { id: "a".repeat(32), revision: 3 });
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:compute-targets", "use", { id: "a".repeat(32), revision: 3 });
+  });
+
   it("forwards only a correction-effect receipt hash to the native export picker", async () => {
     await researchApi.exportCorrectionEffect?.("a".repeat(64));
     expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:export-correction-effect", "a".repeat(64));
@@ -388,6 +393,10 @@ describe("preload research batch bridge", () => {
     await researchApi.exportBatch!(bindings, { mode: "summary-only" });
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(
       "loci-research:batch-export", bindings, { mode: "summary-only" },
+    );
+    await researchApi.exportReviewPackage!(bindings, { rootLabel: "Synthetic RGB collection" });
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(
+      "loci-research:review-package-export", bindings, { rootLabel: "Synthetic RGB collection" },
     );
   });
 });

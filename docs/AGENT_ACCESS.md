@@ -174,10 +174,7 @@ and `provenance` as well as its destination grant.
 | `result_view` | Render one supplied, policy-verifiable result revision |
 | `export_result` | Export one exact reviewed revision to one authorized filename |
 
-There is no tool for file browsing, import, relink, policy creation or editing,
-human review, arbitrary project listing, shell execution, dynamic sampling, or
-unrestricted network egress. MCP cannot manufacture a `reviewed` receipt. A
-person must set review state through the local desktop or human CLI before export.
+There is no tool for file browsing, import, relink, policy creation or editing, arbitrary project listing, shell execution or unrestricted network egress. Legacy policies require local human review before export. V4 permits a separately authorized agent assessment as described below; existing policies are never widened automatically.
 
 ### Recipe guidance and analysis context
 
@@ -260,8 +257,75 @@ an installer.
 
 Export first builds and round-trip-checks an exact reviewed package in a private
 directory under the authorized root. Loci rechecks the pinned policy, source,
-result, recipe, revision, and human review immediately before an atomic
+result, recipe, revision, and current authorized review immediately before an atomic
 no-replace rename to the authorized filename.
+
+## V4: study actions and delegated review
+
+The desktop offers **Inspect**, **Analyze**, and **Full study** presets alongside
+custom permissions. Selecting a preset proposes and validates access; only
+**Grant selected access** creates a bundle after the native folder selection.
+Inspect permits image, table and review-history reads in the displayed region.
+Analyze additionally permits the currently registered native analysis/correction
+actions in that region. Full study pins all current source IDs and fingerprints,
+all their C/Z/T indices, and their full spatial bounds; later imports are excluded.
+Whole-source grants currently support at most 4096 indices per C/Z/T axis.
+Full study also delegates result review and exports to new names in the chosen
+folder. Every preset explicitly includes disclosure of image content and records
+to the connected provider. Loci cannot revoke copies already delivered to a
+provider or constrain other tools available in the client's host.
+
+V4 adds `delegation` and `actions` to the v3 policy. A delegation contains a
+generated ID, declared `client_id`, optional timezone-aware `expires_at`, and
+`result_scope` (`pinned-recipes` or `granted-sources`). Approval independently
+requires `review_result` in `operations`. A source-scoped result grant checks the
+exact selection, measurement channels, referenced sources, parent and specialist
+input revisions. It does not authorize executing an unlisted operation or model.
+Expiry and any change to the pinned policy revoke subsequent calls and guarded
+publication. Existing policies are never widened automatically.
+
+| Tool | Boundary |
+| --- | --- |
+| `action_guide` | Static `loci.action-registry/v1` request schemas, coordinates, effects and retry rules |
+| `study_results` | Only accessible revisions, paginated at up to 50 rows; optionally narrowed to a granted source |
+| `validate_action` | Check named action, input scopes, revisions and resource bounds; native execution still validates numerical settings |
+| `inspect_action` | Run an explicitly granted read action in a disposable bounded worker |
+| `submit_action` | Start an explicitly granted native task with an idempotency key; follow `job_status` |
+| `review_history` | Ordered review events, current digest and pagination; assessment text requires all result disclosures |
+| `review_result` | Append an agent decision for an exact revision and observed prior review digest |
+
+The initial registry covers recipes, result context, label/ROI correction,
+puncta, cell/nucleus association, colocalisation, tracking, population inspection,
+and bounded large-result inspection/deletion. The desktop operation catalogue
+marks each supported action as read or task. Named actions require all six
+response disclosures and a source-scoped delegation. They use the same native
+executors as the GUI and CLI. Read and task workers retain CPU, memory and shared
+concurrency limits, policy/source checks, and publication guards. There is no
+generic operation, shell or model-install escape hatch.
+
+Read `correction_info` before editing: `expected_input_sha256` is the label-array
+hash, not `revision_hash`. Corrections preserve the parent, remeasure the changed
+labels and start without review. Read `review_history` before `review_result`;
+pass its `current_review_sha256` as `expected_review_sha256`, together with
+`result_id`, `revision_hash`, disposition (`reviewed`, `excluded`, `pending`),
+reason and coverage. The server supplies actor and delegation fields. A stale
+decision cannot replace a newer one. The UI distinguishes agent and researcher
+reviews and lets the researcher supersede an agent decision without erasing it.
+Identity assurance is declared, not authenticated model/person identity.
+
+New reviews use `loci.result-review/v2` and append-only events. Existing legacy
+human receipts retain their original bytes and semantics. Exports contain hashed
+`review-history.json`; portable studies with new histories use
+`loci.study-interchange/v2`. Readers retain support for legacy bundles and reject
+missing or inconsistent new histories. Source/result revisions, chain digests
+and the exact current decision must agree. A review is an assessment record,
+not independent biological or clinical validation.
+
+V4 export policy chooses `filename_mode: listed` or `directory`. Directory mode
+permits a new single-component name (at most 80 characters) below the pinned
+export root; traversal, replacement and overwrite remain forbidden. An
+agent-reviewed export requires both review and export authority. `analysis_context`
+reports the mode and permitted names without disclosing the private root path.
 
 ## SDK clients
 

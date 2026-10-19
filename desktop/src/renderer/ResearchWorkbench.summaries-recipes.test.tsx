@@ -344,7 +344,7 @@ describe("Info Review & export rendered summary component", () => {
     source_id: "src-1",
     revision_hash: "abcd1234ef567890",
     method: "components",
-    review: { disposition: "pending" as const, reviewer: null, reviewed_at: null },
+    review: { disposition: "pending" as const },
     data: {},
   };
 
@@ -366,6 +366,19 @@ describe("Info Review & export rendered summary component", () => {
       exportResult: vi.fn(async () => {}),
       getSnapshot: vi.fn(async () => structuredClone(mockSnapshot)),
     }) as unknown as ResearchDesktopApi;
+
+  it("labels agent decisions and lets the researcher supersede them", async () => {
+    const api = createMockApi();
+    const result = { ...mockResult, kind: "segmentation", created_at: "2026-10-17T00:00:00Z", object_count: 2,
+      review: { disposition: "reviewed", schema: "loci.result-review/v2" as const, actor: "agent" as const, actor_id: "codex" } };
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={api} result={result} rows={[]}
+      selectedRow={null} onSelectRow={vi.fn()} onSave={vi.fn()} report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Reviewed by agent");
+    const button = screen.getByRole("button", { name: "Mark reviewed" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    await waitFor(() => expect(api.reviewResult).toHaveBeenCalledWith(result.id, result.revision_hash, "reviewed"));
+  });
 
   it("shows external input identity and unknown upstream settings independently of correction lineage", () => {
     const imported = { ...mockResult, kind: "corrected-labels", created_at: "now", object_count: 0, parent_id: "parent-exact-id",

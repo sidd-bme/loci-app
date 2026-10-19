@@ -42,7 +42,7 @@ The source stays in a separate app-owned directory when its managed study is dis
 
 ## Read the workspace
 
-The left column contains **Images**, then **Layers & results** for the selected image. Results show a short revision identifier and review state; hover for the full identity. Choose **Original image** to inspect source display, or select a result to inspect one exact derived revision. The centre is the image or volume viewport. The right inspector groups work under **View**, **Annotate**, **Analyze**, and **Results**. Each group remembers its last tool. Its selector includes advanced routes such as portability, vendor conversion, remote compute, and assistant connection. Search all tools by name; use arrow keys and Enter to choose, or Escape to return.
+The left column contains **Images**, then **Layers & results** for the selected image. Use **Folder tree** to browse nested imports or **Flat list** for the image list. **Find images or folders** searches relative paths; **Reveal current image** clears the search and opens its ancestors. The image breadcrumb identifies its relative location without exposing the source filesystem prefix. Arrow keys navigate the tree, Enter opens an image, and Space selects images. In **Study & batch**, folder selection includes its descendant images; check the selected image count before running. Results show a short revision identifier and review state; hover for the full identity. Choose **Original image** to inspect source display, or select a result to inspect one exact derived revision. The centre is the image or volume viewport. The right inspector groups work under **View**, **Annotate**, **Analyze**, and **Results**. Each group remembers its last tool. Its selector includes advanced routes such as portability, vendor conversion, remote compute, and assistant connection. Search all tools by name; use arrow keys and Enter to choose, or Escape to return.
 
 Native **File** commands open images, folders and studies in the active workspace.
 From detached image windows, these commands return to the main workspace first.
@@ -94,6 +94,8 @@ and discards its pending response without interrupting other views. An active
 decode may still finish. **Retry view** resumes that view after a stop or error.
 
 ### Scalar channels, RGB, and medical windows
+
+The compact **Channels** controls above the image provide visibility, solo and selected-channel range controls while you work. **More display** opens additional display controls. Selecting a display channel does not change the analysis channel. Exact native 2D result labels can overlay the source display; unsupported result grids retain the result viewer.
 
 For scalar sources, expand a channel under **Channels**. Set visibility, colour, **Low**, **High**, **Gamma**, and opacity. Low and high define the displayed range; gamma changes the mapping through it. **Auto** sets stable channel ranges from the selected source, T index, and Z plane. It does not calculate a range from a projection, current camera crop, or pan position. Selecting another plane or time point then pressing Auto deliberately gives a range for that selected plane.
 
@@ -197,6 +199,10 @@ image resolution or scientific settings. Decoder and export-artifact limits rema
 separate and can still reject oversized inputs/results. For cluster resources and
 current remote limitations, see [Remote workflow](REMOTE_WORKFLOW.md).
 
+Use **Try settings on regions** to compare bounded classical previews across representative ROIs before adopting an exact configuration. Previews save no result; adoption creates an unreviewed result. See [Exploration and groups](EXPLORATION_AND_GROUPS.md) for preview limits, comparison records and reusable population gates.
+
+Choose **Run on: This Mac** or a saved target for supported classical and Cellpose analyses. **Compute setup** opens **Settings → Compute** to import an already trusted SSH alias, specify a prepared Linux runtime and workspaces, and choose CPU or Single GPU resources. **Check runtime** records a dated check; it installs no runtime or model. Run authorizes the displayed whole-file transfer, execution, retrieval and attachment, even when analysis uses a smaller region. Job Center retains progress through connection loss and reopening. A cancellation request prevents attachment while scheduler confirmation is pending. See [Remote workflow](REMOTE_WORKFLOW.md).
+
 For the built-in baseline, select **Loci Adaptive Watershed**. It identifies its input as the selected scalar channel or RGB-derived grayscale, and shows selected Z/T. It works on one 2D plane; choose Classical methods for a supported volumetric segmentation. Its recommended profile is editable and resettable: Auto image mode and polarity, expected diameter 34 px, minimum area 80 px, sensitivity 0, smoothing 1.2 px, touching-object splitting enabled, and border exclusion disabled. The method normalizes the selected plane at the first and 99th percentiles. For scalar data, measurements use original scalar intensities; display ranges do not alter the method. Settings are recommendations, not an inference of cell type or validated parameters for a new assay.
 
 After either run, select the result under **Layers & results**. Inspect objects and measurements, then correct labels if needed. Open **Results → Review & export**, confirm the exact revision, and select **Mark reviewed** only after human review. **Export revision** is enabled for a reviewed revision. Review records a human decision for that immutable result; it is not an automatic claim of accuracy.
@@ -251,7 +257,7 @@ Use **Export PNG…** in the volume toolbar to save a `.loci-figure` directory a
 
 ## Review, batch, and export results
 
-**Review & export** is for exact derived results. Select a result, inspect its revision and review status, and use **Mark reviewed** after a person has assessed it. The review state binds to that revision. **Export revision** writes the scientific result package appropriate to the result: arrays, labels where applicable, measurements, method and provenance records, review information, and integrity material. It is distinct from a rendered display image.
+**Review & export** is for exact derived results. Select a result, inspect its revision and review status, and use **Mark reviewed** after a person has assessed it. The review state binds to that revision. Review history distinguishes researcher and explicitly delegated agent decisions, including their reason and coverage. A researcher can supersede an agent decision while retaining its event; label corrections create a new unreviewed revision. A review is an assessment record, not independent validation. **Export revision** writes the scientific result package appropriate to the result: arrays, labels where applicable, measurements, method and provenance records, review information, and integrity material. It is distinct from a rendered display image.
 
 Quantitative summaries in **Review & export** require homogeneous metric fields, declared measurement kinds, and compatible units across all rows. If a result contains mixed units (for example, micrometres and pixels), mixed measurement kinds (such as area and volume), or declared-versus-unspecified metadata, pooled statistics (mean and range) are withheld and a clear reason is displayed beside the table, while preserving all individual records, row selection, and review/export controls. Non-finite, missing, or null values are excluded from arithmetic calculations rather than counted as zero, and exclusions are disclosed beside the table. Missing unit metadata is explicitly labeled as unspecified rather than assuming calibration. The row count always includes every measurement record; the summary does not infer biological object identities.
 
@@ -262,6 +268,8 @@ plane and create ordinary correction revisions. From a corrected revision,
 **Show experiment effect** compares its direct parent with that child using the
 existing object-size endpoint and explicitly assigned biological replicates; see
 [Correction effects](CORRECTION_EFFECTS.md).
+
+For provisional inspection, select exact revisions in **Results → Study & batch**, name the package and choose **Export review package**. Supported whole native uint8 RGB planes up to 16 megapixels produce `counts.csv`, a provenance manifest and native-resolution boundary-outline PNGs, preserving nested relative paths. Pending results can be included; this action never marks them reviewed. Source RGB samples outside the recoloured label boundaries remain unchanged. Choose a destination supporting atomic no-replace publication, such as APFS; exFAT on macOS is unsupported for this operation.
 
 For batch publication, use the reviewed-export controls in the study workflow after every intended result is reviewed. Available choices include reviewed bundles, reviewed bundles with a summary CSV, and **Summary CSV only**. Loci validates exact revisions and planned destination names before publication. Summary-only exports contain the count CSV and manifest, not image or label bundles. Portable study export retains derived records while omitting private raw-source locations; source-dependent work after import requires exact local relinking.
 
@@ -312,9 +320,4 @@ and `--no-motion` support control-free output. The welcome animation and optiona
 `loci logo --animate` are bounded. Read the CLI guide for study paths, validation,
 stable retry keys, review/export requirements and bash/zsh/fish completion.
 
-In **Analyze → Agent**, validate the exact recipe and grant selected access to a
-local assistant. **Analysis context** explicitly shares permitted source IDs,
-fingerprints, recipe grants and resource limits; names, geometry and measurements
-each have separate choices. Assistants can read the static recipe guide without
-study disclosure. See [agent access](AGENT_ACCESS.md) for supported clients, policy
-scope and revocation.
+Open **Connect an assistant** under Analyze. **Inspect**, **Analyze**, and **Full study** propose explicit permissions; **Grant selected access** creates the bundle after destination selection. Inspect source, image disclosure, correction, compute, review and export permissions before granting. Full study pins current sources and may delegate exact-revision approval and exports to new names in the selected folder. Later imports are excluded. Agent decisions display **Reviewed by agent** and remain in review history when a researcher supersedes them. See [agent access](AGENT_ACCESS.md) for tool boundaries, client setup and revocation.

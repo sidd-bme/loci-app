@@ -31,8 +31,11 @@ const hash = async (file) => { const h = createHash('sha256'); for await (const 
 const json = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 const identity = async () => ({ executable: await hash(executablePath), asar: await hash(path.join(appPath, 'Contents/Resources/app.asar')), worker: await hash(worker) });
 const receipt = { status: 'running', started_at: new Date().toISOString(), app: appPath,
+  background_window: process.env.LOCI_QA_BACKGROUND === '1',
   source_commit: process.env.LOCI_QA_SOURCE_COMMIT ?? null, build: await identity(),
-  script_sha256: await hash(import.meta.filename), helper_sha256: await hash(helper), checks: [], calls: [], exports: [], screenshots: [] };
+  script_sha256: await hash(import.meta.filename), helper_sha256: await hash(helper),
+  navigation_helper_sha256: await hash(path.join(import.meta.dirname, 'workbench-qa-helpers.mjs')),
+  checks: [], calls: [], exports: [], screenshots: [] };
 const cli = async (...args) => JSON.parse((await exec(worker, ['--loci', '--json', ...args], { timeout: 30000, maxBuffer: 4 * 1024 ** 2 })).stdout);
 let app, client;
 const rendererErrors = [];
@@ -118,11 +121,39 @@ try {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [studyPath] });
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
   }, study);
+  if (receipt.background_window) await app.evaluate(({ app, BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) { window.setFocusable(false); window.blur(); }
+    app.hide();
+  });
   await page.getByRole('button', { name: 'Open study', exact: true }).click();
   await page.getByRole('main', { name: 'Research workspace' }).waitFor();
   const view = () => page.evaluate((id) => window.lociResearch.execute('source_view', { source_id: id }), source.id);
   await selectWorkbenchTool(page, 'Display');
-  for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['C', 'c']]) await setSelectionField(page, label, fixture.selection[key]);
+  await page.evaluate(() => {
+    window.__qaRegionEvents = [];
+    for (const kind of ['keydown', 'beforeinput', 'input', 'blur']) {
+      document.addEventListener(kind, event => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement) || !input.closest('.analysis-region-settings')) return;
+        window.__qaRegionEvents.push({ type: kind, label: input.getAttribute('aria-label'),
+          value: input.value, key: event.key ?? null, data: event.data ?? null,
+          inputType: event.inputType ?? null, trusted: event.isTrusted });
+      }, true);
+    }
+  });
+  receipt.selection_edit_trace = [];
+  for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['C', 'c']]) {
+    await setSelectionField(page, label, fixture.selection[key]);
+    const fields = await page.locator('.analysis-region-settings input').evaluateAll(inputs =>
+      inputs.map(input => ({ label: input.getAttribute('aria-label'), value: input.value,
+        invalid: input.getAttribute('aria-invalid'), hint: input.getAttribute('aria-description') })),
+    );
+    receipt.selection_edit_trace.push({ edited: label, fields });
+    receipt.selection_input_events = await page.evaluate(() => window.__qaRegionEvents);
+    const edited = fields.find(field => field.label === label);
+    assert.equal(edited?.invalid, 'false', `The ${label} edit must be accepted before granting access`);
+    assert.equal(Number(edited?.value), fixture.selection[key]);
+  }
   await selectWorkbenchTool(page, 'Analyze');
   await page.getByLabel('Segmentation model', { exact: true }).selectOption('classical');
   await page.getByLabel('Segmentation method', { exact: true }).selectOption('components');
@@ -131,6 +162,7 @@ try {
   await page.getByLabel('Minimum object measure', { exact: true }).press('Tab');
   await selectWorkbenchTool(page, 'Agent');
   const panel = page.locator('.research-agent');
+  await panel.getByText('Customize permissions', { exact: true }).click();
   const grant = panel.getByRole('button', { name: `Grant selected access to ${source.name}`, exact: true });
   assert.equal(await grant.isEnabled(), false);
   for (const checkbox of await panel.getByRole('checkbox').all()) assert.equal(await checkbox.isChecked(), false, 'All grants/disclosures start denied');
@@ -140,6 +172,8 @@ try {
   await panel.getByRole('button', { name: 'Validate exact scope and recipe', exact: true }).click();
   await panel.getByLabel('Exact recipe validation', { exact: true }).waitFor();
   const configureScope = async (checkContextGate = false) => {
+    const custom = panel.locator('details.research-agent-custom');
+    if (!(await custom.evaluate(element => element.open))) await custom.locator(':scope > summary').click();
     for (const label of ['Allow display-only recipe previews', 'Allow durable recipe runs and result reads', 'Allow exact reviewed-result export', 'Allow source images for vision analysis', 'Allow reversible channel display changes', 'Allow local vision handoff export', 'Allow bounded recipe exploration']) await panel.getByLabel(label, { exact: true }).check();
     await panel.getByLabel('Grant display channel 1', { exact: true }).check();
     assert.equal(await panel.getByLabel('Grant display channel 2', { exact: true }).isChecked(), false);
@@ -175,7 +209,7 @@ try {
   const marketplace = await json(path.join(access, '.agents/plugins/marketplace.json'));
   assert.equal(marketplace.name, `loci-local-${(await hash(policyPath)).slice(0, 12)}`);
   assert.deepEqual(marketplace.plugins[0].source, { source: 'local', path: './plugin' }); assert.deepEqual(marketplace.plugins[0].policy, { installation: 'AVAILABLE', authentication: 'ON_INSTALL' });
-  assert.match(await fs.readFile(path.join(access, 'plugin/skills/loci-analysis/SKILL.md'), 'utf8'), /Human review/);
+  assert.match(await fs.readFile(path.join(access, 'plugin/skills/loci-analysis/SKILL.md'), 'utf8'), /Without this grant, leave\s+approval to the researcher/);
   receipt.policy_sha256 = await hash(policyPath); receipt.checks.push('native-v3-policy-plugin-and-ranges');
   client = sdkClient(policyPath); assert.equal((await client.ready).ready, true);
   const tools = (await client.tools()).tools;
@@ -192,10 +226,12 @@ try {
   await page.waitForFunction(() => { const box = document.querySelector('.source-agent-controls input[type="checkbox"]'); return box?.checked && !box.disabled; });
   await selectWorkbenchTool(page, 'Display');
   await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === true);
-  assert.equal(await page.getByLabel('Channel 1 color', { exact: true }).isDisabled(), true);
+  const channelColors = page.getByLabel('Channel 1 color', { exact: true });
+  assert.equal(await channelColors.count(), 2, 'Compact and detailed channel controls are both present');
+  for (const control of await channelColors.all()) assert.equal(await control.isDisabled(), true);
   const savedBefore = await view();
   const changed = (await client.call('set_source_display', { source_id: source.id, source_sha256: source.sha256, expected_revision: savedBefore.revision, channels: [{ ...imageRequest.channels[0], color: '#ff00aa' }] })).structured_content;
-  await page.waitForFunction(() => document.querySelector('[aria-label="Channel 1 color"]')?.value === '#ff00aa');
+  await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="Channel 1 color"]')].length === 2 && [...document.querySelectorAll('[aria-label="Channel 1 color"]')].every((input) => input.value === '#ff00aa'));
   await page.waitForTimeout(1600); // More than one follower poll and the local autosave debounce.
   const adopted = await view(); assert.equal(adopted.revision, changed.revision); assert.equal(adopted.state.channels[0].color, '#ff00aa');
   assert.deepEqual(adopted.state.selection, savedBefore.state.selection); assert.deepEqual(adopted.state.camera, savedBefore.state.camera); assert.deepEqual(adopted.state.channels[1], savedBefore.state.channels[1]);
@@ -203,7 +239,8 @@ try {
   assert.deepEqual(await view(), adopted, 'A rejected stale display write must preserve the saved revision and state');
   await page.getByRole('button', { name: 'Take control', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('fieldset.source-display-local')?.disabled === false);
-  const color = page.getByLabel('Channel 1 color', { exact: true }); await color.locator('..').locator('..').locator('..').evaluate((element) => { if (element.tagName === 'DETAILS') element.open = true; });
+  for (const control of await channelColors.all()) assert.equal(await control.isEnabled(), true);
+  const color = page.locator('fieldset.source-display-local').getByLabel('Channel 1 color', { exact: true }); await color.locator('..').locator('..').locator('..').evaluate((element) => { if (element.tagName === 'DETAILS') element.open = true; });
   await color.fill('#00aaff');
   let local;
   const saveDeadline = Date.now() + 10000;
@@ -239,8 +276,8 @@ try {
   const submitted = (await client.call('submit_recipe', { request: ranged, request_key: 'agent-workbench-range' })).structured_content;
   let job;
   const deadline = Date.now() + 30000;
-  do { job = (await client.call('job_status', { job_id: submitted.job.id })).structured_content.job; if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state)) await page.waitForTimeout(100); assert.ok(Date.now() < deadline, 'Durable MCP job exceeded its bounded fixture deadline'); } while (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state));
-  assert.equal(job.state, 'succeeded'); assert.equal(job.result_ids.length, 1);
+  do { job = (await client.call('job_status', { job_id: submitted.job.id })).structured_content.job; if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) || job.owned_worker_active) await page.waitForTimeout(100); assert.ok(Date.now() < deadline, 'Durable MCP job exceeded its bounded fixture deadline'); } while (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(job.state) || job.owned_worker_active);
+  assert.equal(job.state, 'succeeded'); assert.equal(job.owned_worker_active, false); assert.equal(job.result_ids.length, 1);
   const result = (await client.call('result', { result_id: job.result_ids[0] })).structured_content;
   assert.equal(result.total_rows, fixture.expected_objects); assert.equal(result.measurements.length, fixture.expected_objects); assert.equal(result.result.review, null);
   await client.call('export_result', { result_id: result.result.id, revision_hash: result.result.revision_hash, filename: 'reviewed-result' }, true);
@@ -274,6 +311,131 @@ try {
   const revoked = await client.call('source_image', { request: imageRequest }, true);
   assert.equal(revoked.content.some((block) => block.type === 'image'), false);
   assert.equal(revoked.structured_content, null); receipt.checks.push('live-policy-revocation');
+  await client.close(); client = null;
+
+  // A separate, explicit full-study grant exercises the delegated actor path.
+  // Decisions here describe a numerical synthetic-fixture check, never biology.
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 960 }));
+  await selectWorkbenchTool(page, 'Agent');
+  await panel.getByLabel('Assistant access level', { exact: true }).selectOption('full');
+  const fullAccess = path.join(output, 'access-full');
+  await app.evaluate(({ dialog }, paths) => {
+    dialog.showOpenDialog = async options => {
+      if (options.title !== 'Choose the permitted agent export folder') throw new Error('Unexpected full-study open picker');
+      return { canceled: false, filePaths: [paths.exports] };
+    };
+    dialog.showSaveDialog = async options => {
+      if (options.title !== 'Create private MCP access bundle') throw new Error('Unexpected full-study save picker');
+      return { canceled: false, filePath: paths.access };
+    };
+  }, { exports, access: fullAccess });
+  await grant.click();
+  await panel.getByLabel('Created agent access receipt', { exact: true }).waitFor();
+  const fullPolicyPath = path.join(fullAccess, 'agent-policy.json');
+  const fullPolicy = await json(fullPolicyPath);
+  assert.equal(fullPolicy.schema, 'loci.agent-policy/v4');
+  assert.equal(fullPolicy.delegation.result_scope, 'granted-sources');
+  assert.ok(fullPolicy.operations.includes('review_result'));
+  assert.equal(fullPolicy.export.filename_mode, 'directory');
+  assert.deepEqual(fullPolicy.sources[0].c, [0, 1]);
+  assert.deepEqual(fullPolicy.sources[0].crop, { x: 0, y: 0, width: 64, height: 64 });
+  await page.screenshot({ path: path.join(output, '02-full-study-access.png') }); receipt.screenshots.push('02-full-study-access.png');
+  client = sdkClient(fullPolicyPath); assert.equal((await client.ready).ready, true);
+  const fullTools = (await client.tools()).tools;
+  for (const name of ['action_guide', 'study_results', 'inspect_action', 'submit_action', 'review_result', 'review_history']) assert.ok(fullTools.includes(name));
+  const guide = (await client.call('action_guide', { operation: 'correct_result' })).structured_content;
+  assert.equal(guide.actions[0].operation, 'correct_result');
+  const listed = (await client.call('study_results', {})).structured_content;
+  assert.ok(listed.results.some(item => item.id === result.result.id));
+  const parent = (await cli('execute', '--project', study, 'result', '--request', JSON.stringify({ result_id: result.result.id }))).result;
+  const beforeLabels = await hash(path.join(study, 'artifacts', `${parent.arrays.labels.sha256}.npy`));
+  const correctionInfo = (await client.call('inspect_action', { operation: 'correction_info', request: { result_id: parent.id, revision_hash: parent.revision_hash } })).structured_content;
+  assert.deepEqual(correctionInfo.label_ids, [1, 2, 3]);
+  const correctionRequest = { result_id: parent.id, revision_hash: parent.revision_hash,
+    operations: [{ op: 'delete', label: 1, expected_input_sha256: correctionInfo.label_sha256 }], working_bytes: 64 * 1024 ** 2 };
+  assert.equal((await client.call('validate_action', { operation: 'correct_result', request: correctionRequest })).structured_content.authorized, true);
+  const correctionJob = (await client.call('submit_action', { operation: 'correct_result', request: correctionRequest, request_key: 'agent-full-correction' })).structured_content.job;
+  const correctionDeadline = Date.now() + 30000;
+  let correctedJob;
+  do {
+    correctedJob = (await client.call('job_status', { job_id: correctionJob.id })).structured_content.job;
+    if (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(correctedJob.state) || correctedJob.owned_worker_active) await page.waitForTimeout(100);
+    assert.ok(Date.now() < correctionDeadline, 'Bounded synthetic correction deadline');
+  } while (!['succeeded', 'failed', 'cancelled', 'interrupted'].includes(correctedJob.state) || correctedJob.owned_worker_active);
+  assert.equal(correctedJob.state, 'succeeded'); assert.equal(correctedJob.owned_worker_active, false); assert.equal(correctedJob.result_ids.length, 1);
+  const child = (await client.call('result', { result_id: correctedJob.result_ids[0] })).structured_content;
+  assert.equal(child.result.parent_id, parent.id); assert.equal(child.total_rows, 2); assert.equal(child.result.review, null);
+  assert.equal(await hash(path.join(study, 'artifacts', `${parent.arrays.labels.sha256}.npy`)), beforeLabels);
+  assert.equal((await client.call('submit_action', { operation: 'correct_result', request: correctionRequest, request_key: 'agent-full-correction' })).structured_content.job.id, correctionJob.id);
+  nativeImage(await client.call('result_view', { result_id: child.result.id, labels: false }));
+  nativeImage(await client.call('result_view', { result_id: child.result.id, labels: true }));
+  receipt.correction_oracle = JSON.parse((await exec(python, [helper, 'verify-correction', study, parent.id, child.result.id], { timeout: 30000 })).stdout);
+  const history = (await client.call('review_history', { result_id: child.result.id })).structured_content;
+  assert.equal(history.total_events, 0); assert.equal(history.current_review_sha256, null);
+  const decision = { result_id: child.result.id, revision_hash: child.result.revision_hash, disposition: 'reviewed',
+    reason: 'Automated synthetic-fixture check: deleting label 1 changes exactly 64 pixels and leaves two regions with areas 12 and 24 square micrometres. No biological assessment.',
+    coverage: 'Entire 40 by 40 selected synthetic grid; raw image and label arrays checked independently against the known fixture.', expected_review_sha256: null };
+  await client.call('review_result', { request: { ...decision, actor: 'human' } }, true);
+  const reviewed = (await client.call('review_result', { request: decision })).structured_content.review;
+  assert.equal(reviewed.actor, 'agent'); assert.equal(reviewed.authority.policy_sha256, await hash(fullPolicyPath));
+  await client.call('export_result', { result_id: child.result.id, revision_hash: child.result.revision_hash, filename: 'agent-corrected-reviewed' });
+  const fullExport = path.join(exports, 'agent-corrected-reviewed');
+  const exportedHistory = await json(path.join(fullExport, 'review-history.json'));
+  assert.deepEqual(exportedHistory.events, [reviewed]);
+  assert.equal((await json(path.join(fullExport, 'result.json'))).result.parent_id, parent.id);
+  await client.call('export_result', { result_id: child.result.id, revision_hash: child.result.revision_hash, filename: 'agent-corrected-reviewed' }, true);
+  receipt.checks.push('full-study-native-preset-v4', 'real-mcp-correction-known-grid-oracle-parent-immutability-idempotency', 'explicit-agent-review-no-human-impersonation-and-directory-export');
+
+  // Cold reopen exposes the actor and allows a researcher decision to supersede
+  // the agent event through the real UI. This is a test of that UI route.
+  await app.close(); app = null;
+  app = await electron.launch({ executablePath, args: [`--user-data-dir=${path.join(output, 'reopen-user-data')}`], timeout: 120000 });
+  const reopened = await app.firstWindow(); reopened.on('pageerror', error => rendererErrors.push(error.message));
+  await app.evaluate(({ dialog, BrowserWindow }, studyPath) => {
+    BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 960 });
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [studyPath] });
+    dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
+  }, study);
+  if (receipt.background_window) await app.evaluate(({ app, BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) { window.setFocusable(false); window.blur(); }
+    app.hide();
+  });
+  await reopened.getByRole('button', { name: 'Open study', exact: true }).click();
+  await reopened.locator(`.research-sources [data-result-id="${child.result.id}"]`).click();
+  await selectWorkbenchTool(reopened, 'Info');
+  await reopened.getByRole('status').filter({ hasText: 'Reviewed by agent' }).waitFor();
+  const humanReview = reopened.getByRole('button', { name: 'Mark reviewed', exact: true });
+  await reopened.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Mark reviewed' && !button.disabled));
+  assert.equal(await humanReview.isEnabled(), true);
+  await reopened.getByText('Review history', { exact: true }).click();
+  await reopened.getByText(decision.reason, { exact: true }).waitFor();
+  await reopened.screenshot({ path: path.join(output, '03-agent-reviewed-correction.png') }); receipt.screenshots.push('03-agent-reviewed-correction.png');
+  await humanReview.click();
+  await reopened.getByRole('status').filter({ hasText: 'Reviewed by researcher' }).waitFor();
+  const superseded = (await client.call('review_history', { result_id: child.result.id })).structured_content;
+  assert.equal(superseded.total_events, 2); assert.deepEqual(superseded.events[0], reviewed); assert.equal(superseded.events[1].actor, 'human');
+  await client.call('review_result', { request: decision }, true);
+  assert.deepEqual((await client.call('review_history', { result_id: child.result.id })).structured_content.events, superseded.events);
+  await reopened.screenshot({ path: path.join(output, '04-researcher-supersession.png') }); receipt.screenshots.push('04-researcher-supersession.png');
+  const portable = path.join(output, 'delegated-history.loci-study.zip');
+  await app.evaluate(({ dialog }, archive) => {
+    dialog.showSaveDialog = async options => {
+      if (options.title !== 'Export portable study with derived results') throw new Error('Unexpected archive picker');
+      return { canceled: false, filePath: archive };
+    };
+  }, portable);
+  await selectWorkbenchTool(reopened, 'Portability');
+  await reopened.getByRole('button', { name: 'Export portable study', exact: true }).click();
+  const archiveDeadline = Date.now() + 10000;
+  while (!(await fs.stat(portable).catch(() => null))?.size) {
+    assert.ok(Date.now() < archiveDeadline, 'Portable history export deadline'); await reopened.waitForTimeout(50);
+  }
+  const portableHistory = JSON.parse((await exec(python, ['-c', 'import json,sys,zipfile\nwith zipfile.ZipFile(sys.argv[1]) as z: print(z.read("review-history/"+sys.argv[2]+".json").decode())', portable, child.result.id], { timeout: 30000 })).stdout);
+  assert.deepEqual(portableHistory, superseded.events);
+  receipt.review_history = superseded; receipt.portable_sha256 = await hash(portable);
+  receipt.checks.push('cold-reopen-actor-display-human-ui-supersession-history-stale-write-rejection-portable-export');
+  await fs.rename(fullPolicyPath, path.join(fullAccess, 'agent-policy.revoked.json'));
+  await client.call('review_result', { request: { ...decision, expected_review_sha256: superseded.current_review_sha256 } }, true);
   await client.close(); client = null;
   assert.deepEqual(rendererErrors, []); assert.deepEqual(await identity(), receipt.build); assert.equal(await hash(fixture.source), fixture.sha256);
   receipt.status = 'passed';

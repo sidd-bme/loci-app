@@ -104,6 +104,9 @@ class SubprocessRunner:
                 completed = subprocess.run(
                     command,
                     input=input_bytes,
+                    # The parent may be a JSON-RPC worker. SSH must never
+                    # inherit that input pipe and consume another app request.
+                    stdin=subprocess.DEVNULL if input_bytes is None else None,
                     stdout=stdout,
                     stderr=stderr,
                     check=False,
@@ -159,6 +162,16 @@ def _token(value: str, name: str) -> str:
     return value
 
 
+def _known_hosts_option(path: Path) -> str:
+    # -o values are parsed again by OpenSSH; an argv element alone does not
+    # preserve a space-containing path (notably macOS Application Support).
+    value = str(path)
+    if any(ord(character) < 32 or ord(character) == 127 for character in value) or "${" in value:
+        raise ValueError("known_hosts_file contains unsupported OpenSSH path characters")
+    value = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    return f'UserKnownHostsFile="{value}"'
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionProfile:
     alias: str
@@ -187,6 +200,7 @@ class ConnectionProfile:
             raise ValueError("known_hosts_file must be an existing absolute plain file")
         if self.known_hosts_file.is_symlink():
             raise ValueError("known_hosts_file cannot be a symlink")
+        _known_hosts_option(self.known_hosts_file)
         if not _HOST_FINGERPRINT.fullmatch(self.host_key_sha256):
             raise ValueError("host_key_sha256 must be an OpenSSH SHA256 fingerprint")
         _plain_absolute_path(self.runtime_python, "runtime_python")
@@ -836,6 +850,57 @@ def _parse_json(
         raise RemoteComputeError("Remote JSON is malformed") from exc
 
 
+_DISCOVERY_SCRIPT = r"""
+import json,os,select,signal,subprocess,sys,time
+runtime,scheduler,scheduler_binary,*roots=sys.argv[1:]
+if scheduler not in {'direct','pbs','pbspro','slurm'} or not 2<=len(roots)<=18:
+ raise SystemExit('Remote discovery arguments are invalid')
+def version(command,label):
+ try:
+  process=subprocess.Popen(command,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,
+   stderr=subprocess.PIPE,start_new_session=True)
+ except OSError: raise SystemExit(label+' readiness probe failed')
+ streams={process.stdout:bytearray(),process.stderr:bytearray()}; complete=False
+ deadline=time.monotonic()+10
+ try:
+  pending=list(streams)
+  while pending:
+   remaining=deadline-time.monotonic()
+   if remaining<=0: raise ValueError('deadline')
+   readable,_,_=select.select(pending,[],[],remaining)
+   if not readable: raise ValueError('deadline')
+   for stream in readable:
+    data=streams[stream]; chunk=os.read(stream.fileno(),4097-len(data))
+    if not chunk: pending.remove(stream); continue
+    data.extend(chunk)
+    if len(data)>4096: raise ValueError('output limit')
+  code=process.wait(timeout=max(0.001,deadline-time.monotonic())); complete=True
+ except (OSError,ValueError,subprocess.TimeoutExpired):
+  raise SystemExit(label+' readiness probe exceeded its output or time bound')
+ finally:
+  if not complete:
+   try: os.killpg(process.pid,signal.SIGKILL)
+   except ProcessLookupError: pass
+   process.wait()
+  for stream in streams: stream.close()
+ stdout,stderr=(bytes(data) for data in streams.values())
+ if code: raise SystemExit(label+' readiness probe failed')
+ text=(stdout or stderr).decode('utf-8',errors='replace').strip()
+ if not text: raise SystemExit(label+' readiness probe returned no version')
+ return text
+operating_system=version(['uname','-s'],'Operating system')
+if operating_system!='Linux': raise SystemExit('The remote worker currently requires Linux')
+runtime_version=version([runtime,'--version'],'Python runtime')
+scheduler_version=None
+if scheduler!='direct':
+ scheduler_version=version([scheduler_binary,'--version'],'Scheduler')
+for root in roots:
+ if not os.path.isdir(root): raise SystemExit('An approved remote root is not a directory')
+print(json.dumps({'schema':'loci.remote-discovery/v1','operating_system':operating_system,
+ 'runtime_version':runtime_version,'scheduler':scheduler,'scheduler_version':scheduler_version,
+ 'verified_root_count':len(roots)},sort_keys=True,separators=(',',':')))
+""".strip()
+
 _SETUP_SCRIPT = r"""
 import os,stat,sys
 project_root,*roots=sys.argv[1:]
@@ -1250,7 +1315,7 @@ class RemoteComputeClient:
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
-            f"UserKnownHostsFile={profile.known_hosts_file}",
+            _known_hosts_option(profile.known_hosts_file),
             "-o",
             f"ConnectTimeout={profile.connect_timeout_seconds}",
         ]
@@ -1269,7 +1334,7 @@ class RemoteComputeClient:
             "-o",
             "StrictHostKeyChecking=yes",
             "-o",
-            f"UserKnownHostsFile={profile.known_hosts_file}",
+            _known_hosts_option(profile.known_hosts_file),
             "-o",
             f"ConnectTimeout={profile.connect_timeout_seconds}",
         ]
@@ -1320,6 +1385,8 @@ class RemoteComputeClient:
         hostname = values.get("hostname", "")
         port = values.get("port", "22")
         host_key_alias = values.get("hostkeyalias", "")
+        if host_key_alias.lower() == "none":
+            host_key_alias = ""
         if not hostname or not port.isdecimal() or not 1 <= int(port) <= 65_535:
             raise RemoteComputeError("OpenSSH returned an invalid alias destination")
         lookup = host_key_alias if host_key_alias.lower() not in {"", "none"} else hostname
@@ -1350,36 +1417,71 @@ class RemoteComputeClient:
         return self.profile.host_key_sha256
 
     def discover(self) -> ConnectionReceipt:
+        self._connection_receipt = None
         fingerprint = self.verify_host_identity()
-        operating_system = self._ssh(("uname", "-s"), output_limit=4096).stdout.strip()
-        if operating_system != "Linux":
-            raise RemoteComputeError("The remote worker currently requires Linux")
-        runtime = self._ssh((self.profile.runtime_python, "--version"), output_limit=4096)
-        runtime_version = (runtime.stdout or runtime.stderr).strip()
-        scheduler_version: str | None = None
-        if self.profile.scheduler in {"pbs", "pbspro"}:
-            result = self._ssh(
-                (self.profile.binary("qstat"), "--version"),
-                output_limit=4096,
-                check=False,
+        roots = (
+            self.profile.remote_project_root,
+            self.profile.remote_output_root,
+            *self.profile.remote_input_roots,
+        )
+        scheduler_binary = (
+            self.profile.binary("qstat")
+            if self.profile.scheduler in {"pbs", "pbspro"}
+            else self.profile.binary("sinfo")
+            if self.profile.scheduler == "slurm"
+            else ""
+        )
+        # Every operation still verifies the pinned destination and current remote
+        # facts. One fixed read-only probe avoids paying SSH startup for each fact.
+        result = self._ssh(
+            (
+                self.profile.runtime_python,
+                "-c",
+                _DISCOVERY_SCRIPT,
+                self.profile.runtime_python,
+                self.profile.scheduler,
+                scheduler_binary,
+                *roots,
+            ),
+            timeout=30,
+            output_limit=64 * 1024,
+        )
+        record = _parse_json(result.stdout, maximum=64 * 1024, name="Remote discovery receipt")
+        if (
+            not isinstance(record, dict)
+            or set(record)
+            != {
+                "schema",
+                "operating_system",
+                "runtime_version",
+                "scheduler",
+                "scheduler_version",
+                "verified_root_count",
+            }
+            or record["schema"] != "loci.remote-discovery/v1"
+            or record["operating_system"] != "Linux"
+            or record["scheduler"] != self.profile.scheduler
+            or type(record["verified_root_count"]) is not int
+            or record["verified_root_count"] != len(roots)
+            or not isinstance(record["runtime_version"], str)
+            or not 1 <= len(record["runtime_version"].encode()) <= 4096
+            or (self.profile.scheduler == "direct" and record["scheduler_version"] is not None)
+            or (
+                self.profile.scheduler != "direct"
+                and (
+                    not isinstance(record["scheduler_version"], str)
+                    or not 1 <= len(record["scheduler_version"].encode()) <= 4096
+                )
             )
-            scheduler_version = (result.stdout or result.stderr).strip()
-            if result.returncode != 0 or not scheduler_version:
-                raise RemoteComputeError("PBS qstat readiness probe failed")
-        elif self.profile.scheduler == "slurm":
-            result = self._ssh((self.profile.binary("sinfo"), "--version"), output_limit=4096)
-            scheduler_version = (result.stdout or result.stderr).strip()
-        self._ssh(("test", "-d", self.profile.remote_project_root), output_limit=1024)
-        self._ssh(("test", "-d", self.profile.remote_output_root), output_limit=1024)
-        for remote_input_root in self.profile.remote_input_roots:
-            self._ssh(("test", "-d", remote_input_root), output_limit=1024)
+        ):
+            raise RemoteComputeError("Remote discovery receipt is incomplete or mismatched")
         receipt = ConnectionReceipt(
             self.profile.alias,
             fingerprint,
-            operating_system,
-            runtime_version,
+            record["operating_system"],
+            record["runtime_version"],
             self.profile.scheduler,
-            scheduler_version,
+            record["scheduler_version"],
         )
         self._connection_receipt = receipt
         return receipt
@@ -1763,6 +1865,9 @@ class RemoteComputeClient:
                 "C": "finished",
             }
             state = mapping.get(match.group(1), "unknown") if match else "unknown"
+            exit_status = re.search(r"\bExit_status\s*=\s*(-?\d+)\b", detail)
+            if state == "finished" and exit_status and int(exit_status.group(1)) != 0:
+                state = "failed"
         elif identity.scheduler == "slurm":
             result = self._ssh(
                 (

@@ -2,7 +2,7 @@
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { useLayoutEffect } from "react";
+import { useLayoutEffect, useState } from "react";
 import type {
   CellposeProfileId,
   CellposeSettings,
@@ -194,6 +194,46 @@ function renderPanel({
 }
 
 describe("ResearchCellposePanel", () => {
+  it("labels an in-progress remote start as preparation rather than running inference", async () => {
+    installNative();
+    let finish!: () => void;
+    const start = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const onResult = vi.fn();
+    const api = researchApi();
+    function Harness() {
+      const [busy, setBusy] = useState(false);
+      return <ResearchCellposePanel api={api} source={source} selection={selection} profileId="cellpose-sam-v2"
+        busy={busy} onBusy={value => setBusy(value !== null)} onError={vi.fn()} onResult={onResult}
+        remoteTarget={{ alias: "vanda", device: "cuda", start }} />;
+    }
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "Segment on vanda" }));
+    expect(await screen.findByRole("button", { name: "Preparing remote run…" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Running…" })).not.toBeInTheDocument();
+    await act(async () => { finish(); });
+    expect(screen.getByRole("button", { name: "Segment on vanda" })).toBeEnabled();
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  it("runs the same settings on a remote GPU without requiring a local checkpoint", async () => {
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)) });
+    const start = vi.fn().mockResolvedValue(undefined), onResult = vi.fn(), onBatchConfiguration = vi.fn();
+    const api = researchApi();
+    render(<ResearchCellposePanel api={api} source={source} selection={selection} profileId="cellpose-sam-v2"
+      busy={false} onBusy={vi.fn()} onError={vi.fn()} onResult={onResult} onBatchConfiguration={onBatchConfiguration}
+      remoteTarget={{ alias: "vanda", device: "cuda", start }} />);
+    const button = await screen.findByRole("button", { name: "Segment on vanda" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Import checkpoint…" })).not.toBeInTheDocument();
+    fireEvent.click(button);
+    await waitFor(() => expect(start).toHaveBeenCalledWith([{ operation: "cellpose_run",
+      source: { id: source.id, sha256: source.sha256 }, request: { source_id: source.id, selection,
+        profile_id: "cellpose-sam-v2", settings: { ...recommended, device: "cuda" }, measurement_channels: [1], working_bytes: 512 * 1024 ** 2 } }]));
+    expect(api.execute).not.toHaveBeenCalledWith("cellpose_run", expect.anything());
+    expect(onResult).not.toHaveBeenCalled();
+    expect(onBatchConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({ settings: { ...recommended, device: "cuda" } }));
+  });
+
   it("loads the exact profile and readiness without silently importing a model", async () => {
     const native = installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)) });
     renderPanel();

@@ -1,0 +1,11 @@
+.research-compute { display: grid; gap: 8px; margin-block: 10px 14px; min-inline-size: 0; }
+.segmentation-family + .research-compute { margin-inline: 14px; }
+.research-compute__choice { display: flex; align-items: end; gap: 8px; min-inline-size: 0; }
+.research-compute__choice label { flex: 1; min-inline-size: 0; }
+.research-compute label { display: grid; gap: 4px; font-size: var(--type-md); color: var(--ink-secondary); }
+.research-compute select { min-inline-size: 0; max-inline-size: 100%; color: var(--ink); background: var(--graphite-900); border: 1px solid var(--line-strong); border-radius: 4px; padding: 6px; }
+.research-compute__choice button { font-size: var(--type-md); white-space: normal; }
+.research-compute__scope { border-inline-start: 2px solid var(--line-strong); padding-inline-start: 10px; color: var(--ink-secondary); font-size: var(--type-md); overflow-wrap: anywhere; }
+.research-compute__scope p { margin-block: 0 6px; }
+.workbench-jobs__row.workbench-jobs__row--remote { grid-template-columns: minmax(0, 1fr); }
+.workbench-jobs__row--remote .workbench-jobs__heading { flex-wrap: wrap; }

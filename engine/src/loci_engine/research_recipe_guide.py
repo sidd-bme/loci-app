@@ -188,7 +188,8 @@ def recipe_guide(*, experimental: bool = False) -> dict[str, Any]:
             "MCP rejects non-empty references; flat-field and dark-field references require "
             "the human workbench, not this agent guide.",
             "MCP cannot import, browse files, change policy, provision models or create human "
-            "review. Export requires human review of the exact result revision.",
+            "review. Export requires a review of the exact result revision. A v4 policy "
+            "may explicitly delegate agent approval, recorded separately from human review.",
         ],
         "examples": examples,
     }

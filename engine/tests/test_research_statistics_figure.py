@@ -517,7 +517,9 @@ def test_source_scope_metadata_change_at_publication_fails_closed(tmp_path, monk
         return original(params, reverify)
 
     monkeypatch.setattr(figure, "publish_statistics_figure", mutate)
-    with pytest.raises(ValueError, match="changed before publication"):
+    # The source-verification guard now catches the invalid saved spacing before
+    # the figure's broader scope-comparison guard; publication must still stop.
+    with pytest.raises(ValueError, match="Saved specimen calibration cannot be verified"):
         figure.export_statistics_figure(
             project, request, str(tmp_path / "stale-scope.loci-figure"), "test"
         )

@@ -2,11 +2,11 @@
 
 The current development beta is for **Apple Silicon Macs**.
 
-1. Download **`Loci-0.2.0-beta.1-darwin-arm64.zip`** from the [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.1).
+1. Download **`Loci-0.2.0-beta.2-darwin-arm64.zip`** from the [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2).
 2. Download `SHA256SUMS.txt` to the same folder. To check the archive in Terminal, run:
 
    ```sh
-   shasum -a 256 Loci-0.2.0-beta.1-darwin-arm64.zip
+   shasum -a 256 Loci-0.2.0-beta.2-darwin-arm64.zip
    ```
 
    Compare the result with the matching entry in `SHA256SUMS.txt`.

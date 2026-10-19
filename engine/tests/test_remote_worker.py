@@ -41,16 +41,24 @@ def _write_marker(root: Path, digest: str) -> None:
     )
 
 
-def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, object]]:
+def _fixture(
+    tmp_path: Path, *, shape: tuple[int, int] = (16, 16), rgb: bool = False
+) -> tuple[Path, Path, Path, dict[str, object]]:
     staging = tmp_path / "project" / ".loci-runs" / KEY
     output = tmp_path / "output" / ".loci-runs" / KEY
     (staging / "inputs").mkdir(parents=True)
     output.mkdir(parents=True)
-    image = np.zeros((16, 16), dtype=np.uint16)
+    image = np.zeros((*shape, 3) if rgb else shape, dtype=np.uint8 if rgb else np.uint16)
     image[2:5, 2:5] = 100
     image[10:13, 10:13] = 200
     source = staging / "inputs" / "synthetic.ome.tif"
-    tifffile.imwrite(source, image, ome=True, metadata={"axes": "YX"})
+    tifffile.imwrite(
+        source,
+        image,
+        ome=True,
+        photometric="rgb" if rgb else "minisblack",
+        metadata={"axes": "YXS" if rgb else "YX"},
+    )
     source_bytes = source.read_bytes()
     document: dict[str, object] = {
         "schema": "loci.remote-worker-request/v1",
@@ -74,8 +82,8 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, object]]:
                 "selection": {
                     "x": 0,
                     "y": 0,
-                    "width": 16,
-                    "height": 16,
+                    "width": shape[1],
+                    "height": shape[0],
                     "t": 0,
                     "c": 0,
                     "z": 0,
@@ -141,7 +149,9 @@ def _as_cellpose_request(document: dict[str, object], *, allow_fallback: bool) -
     ]
 
 
-def _fake_cellpose_runtime(monkeypatch: pytest.MonkeyPatch, *, resolved: str) -> None:
+def _fake_cellpose_runtime(
+    monkeypatch: pytest.MonkeyPatch, *, resolved: str, shape: tuple[int, int] = (16, 16)
+) -> None:
     from loci_engine import cellpose_backend
 
     spec = resolve_cellpose_model_spec("cellpose-sam-v2")
@@ -156,7 +166,7 @@ def _fake_cellpose_runtime(monkeypatch: pytest.MonkeyPatch, *, resolved: str) ->
         ),
     )
     fallback = "CUDA unavailable; Loci used CPU." if resolved == "cpu" else None
-    labels = np.zeros((16, 16), dtype=np.int32)
+    labels = np.zeros(shape, dtype=np.int32)
     labels[2:5, 2:5] = 1
     monkeypatch.setattr(
         cellpose_backend,
@@ -164,7 +174,7 @@ def _fake_cellpose_runtime(monkeypatch: pytest.MonkeyPatch, *, resolved: str) ->
         lambda _image, _settings, _profile: types.SimpleNamespace(
             output=types.SimpleNamespace(
                 labels=labels,
-                normalized=np.zeros((16, 16), dtype=np.float64),
+                normalized=np.zeros(shape, dtype=np.float64),
                 count=1,
             ),
             runtime={
@@ -287,10 +297,12 @@ def test_run_manifest_publishes_exact_cellpose_runtime_and_rights(
     assert result["provenance"]["measurements"][0]["label"] == 1
 
 
-def test_run_manifest_bounds_source_loading_below_cellpose_task_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("working_bytes", [512 * 1024**2, 2 * 1024**3])
+def test_run_manifest_uses_declared_cellpose_budget_for_full_rgb_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, working_bytes: int
 ) -> None:
-    request, _source, output, document = _fixture(tmp_path)
+    shape = (2160, 3840)
+    request, source, output, document = _fixture(tmp_path, shape=shape, rgb=True)
     _as_cellpose_request(document, allow_fallback=False)
     document["resources"] = {
         "cpus": 2,
@@ -298,14 +310,30 @@ def test_run_manifest_bounds_source_loading_below_cellpose_task_budget(
         "wall_minutes": 5,
         "gpus": 1,
     }
-    document["tasks"][0]["cellpose"]["working_bytes"] = 2 * 1024**3  # type: ignore[index]
+    document["tasks"][0]["cellpose"].update(  # type: ignore[index]
+        working_bytes=working_bytes, measurement_channels=[]
+    )
     _rewrite_request(request, output, document)
-    _fake_cellpose_runtime(monkeypatch, resolved="cuda")
+    _fake_cellpose_runtime(monkeypatch, resolved="cuda", shape=shape)
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    if working_bytes < shape[0] * shape[1] * 96:
+        with pytest.raises(RemoteWorkerError, match="selection could not be loaded") as failure:
+            run_manifest(request)
+        assert "796262400 bytes" in str(failure.value.__cause__)
+        assert not (output / "output-manifest.json").exists()
+        assert not (output / "results.zip").exists()
+        return
 
     run_manifest(request)
 
     assert (output / "output-manifest.json").is_file()
     assert (output / "results.zip").is_file()
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha256
+    with zipfile.ZipFile(output / "results.zip") as archive:
+        result = json.loads(archive.read(f"results/{TASK_ID}/result.json"))["result"]
+    assert result["provenance"]["cellpose"]["working_bytes"] == working_bytes
+    assert result["provenance"]["measurements"][0]["voxel_count"] == 9
 
 
 def test_run_manifest_rejects_unauthorized_cellpose_cpu_fallback(

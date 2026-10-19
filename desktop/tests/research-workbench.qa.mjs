@@ -194,6 +194,10 @@ async function launch() {
     timeout: 120_000,
   });
   await instance.firstWindow();
+  if (process.env.LOCI_QA_BACKGROUND === "1") await instance.evaluate(({ app, BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) { window.setFocusable(false); window.blur(); }
+    app.hide();
+  });
   await instance.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 720 });
   });

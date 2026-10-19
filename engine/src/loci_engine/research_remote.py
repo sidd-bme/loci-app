@@ -50,6 +50,10 @@ _REMOTE_JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,127}$")
 _SAFE_SUFFIX = re.compile(r"^(?:\.[A-Za-z0-9]{1,12}){1,2}$")
 
 REMOTE_OPERATION_CATALOG = {
+    "analysis_cancel": {
+        "mutates": True,
+        "summary": "Cancel a remote analysis bound to the current study",
+    },
     "profile_save": {"mutates": True, "summary": "Save one fixed private SSH profile"},
     "profile_list": {"mutates": False, "summary": "List redacted saved profiles"},
     "profile_test": {"mutates": True, "summary": "Test and record pinned host readiness"},
@@ -63,6 +67,18 @@ REMOTE_OPERATION_CATALOG = {
     "attach": {"mutates": True, "summary": "Strictly attach retrieved remote results"},
     "logs": {"mutates": False, "summary": "Read one bounded redacted owned job log"},
     "remove_owned": {"mutates": True, "summary": "Remove verified owned remote run data"},
+    "analysis_plan": {
+        "mutates": False,
+        "summary": "Inspect an exact normal-analysis transfer and compute plan",
+    },
+    "analysis_start": {
+        "mutates": True,
+        "summary": "Start the authorized analysis, retrieval and attachment journey",
+    },
+    "analysis_advance": {
+        "mutates": True,
+        "summary": "Recover or advance one authorized remote analysis step",
+    },
 }
 
 _PROFILE_SAVE_KEYS = {
@@ -294,6 +310,16 @@ def _public_profile(envelope: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _app_target(value: object) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    target = _exact(value, {"id", "revision"}, "Application compute target")
+    checked_id(target["id"])
+    if type(target["revision"]) is not int or target["revision"] < 1:
+        raise ResearchRemoteError("Application compute target revision is invalid")
+    return dict(target)
+
+
 def _public_run(envelope: dict[str, Any]) -> dict[str, Any]:
     data = envelope["data"]
     return {
@@ -327,6 +353,8 @@ def _public_run(envelope: dict[str, Any]) -> dict[str, Any]:
         "remote_cleanup": data["remote_cleanup"],
         "created_at": data["created_at"],
         "updated_at": data["updated_at"],
+        "automatic": data.get("automation") is not None,
+        "app_target": _app_target(data.get("app_target")),
     }
 
 
@@ -433,8 +461,16 @@ def _tested_client(profile_envelope: dict[str, Any]) -> tuple[RemoteComputeClien
     return client, asdict(receipt)
 
 
-def _test_profile(workbench: Workbench, request: dict[str, Any], *, ready: bool) -> dict[str, Any]:
+def _test_profile(
+    workbench: Workbench,
+    request: dict[str, Any],
+    *,
+    ready: bool,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
     envelope = _load_profile(workbench.project, _alias_request(request))
+    if expected_revision is not None and envelope["revision"] != expected_revision:
+        raise ResearchRemoteError("Remote profile changed; reload before testing")
     client, receipt = _tested_client(envelope)
     runtime_ready = False
     if ready:
@@ -744,6 +780,31 @@ def _require_profile_binding(data: dict[str, Any], profile_envelope: dict[str, A
         raise ResearchRemoteError("Saved profile changed after this remote run was prepared")
 
 
+def _profile_for_run(project: ResearchProject, data: dict[str, Any]) -> dict[str, Any]:
+    """Recover the immutable private target of a normal analysis.
+
+    Legacy/manual runs retain their existing profile-binding requirement. A
+    snapshot never enters public run payloads or portable study archives.
+    """
+    if data.get("interchange_state") is not None:
+        raise ResearchRemoteError("An imported historical remote run cannot reconnect")
+    snapshot = data.get("private_profile_snapshot")
+    if snapshot is None:
+        envelope = _load_profile(project, data["alias"])
+    else:
+        _exact(
+            snapshot,
+            {"alias", "scheduler", "resources", "private_profile"},
+            "Remote execution snapshot",
+        )
+        if any(snapshot[key] != data[key] for key in ("alias", "scheduler", "resources")):
+            raise ResearchRemoteError("The remote execution snapshot has a different identity")
+        envelope = {"revision": data["profile_revision"], "data": snapshot}
+    _require_profile_binding(data, envelope)
+    _profile_from_data(envelope["data"])
+    return envelope
+
+
 def _run_request(request: dict[str, Any]) -> tuple[str, str]:
     values = _exact(request, {"alias", "request_key"}, "Remote run request")
     if not isinstance(values["alias"], str) or not isinstance(values["request_key"], str):
@@ -751,14 +812,10 @@ def _run_request(request: dict[str, Any]) -> tuple[str, str]:
     return values["alias"], values["request_key"]
 
 
-def _stage(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
+def _stage(
+    workbench: Workbench, request: dict[str, Any], *, automation=None, expected_profile_sha256=None
+) -> dict[str, Any]:
     values = _exact(request, _STAGE_KEYS, "Remote stage request")
-    profile_envelope = _load_profile(workbench.project, values["alias"])
-    profile = _profile_from_data(profile_envelope["data"])
-    resources = _resource(profile_envelope["data"]["resources"])
-    remote_request, _worker, encoded, entries, source_ids = _build_remote_request(
-        workbench, profile, resources, values
-    )
     existing = [
         item
         for item in _runs(workbench.project)
@@ -766,6 +823,21 @@ def _stage(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     ]
     if len(existing) > 1:
         raise ResearchRemoteError("Remote request key is ambiguous in this study")
+    profile_envelope = (
+        _profile_for_run(workbench.project, existing[0]["data"])
+        if existing and automation is not None
+        else _load_profile(workbench.project, values["alias"])
+    )
+    if (
+        expected_profile_sha256 is not None
+        and _profile_sha256(profile_envelope) != expected_profile_sha256
+    ):
+        raise ResearchRemoteError("The compute target changed after analysis authorization")
+    profile = _profile_from_data(profile_envelope["data"])
+    resources = _resource(profile_envelope["data"]["resources"])
+    remote_request, _worker, encoded, entries, source_ids = _build_remote_request(
+        workbench, profile, resources, values
+    )
     task_ids = [item["task_id"] for item in values["tasks"]]
     binding = {
         "alias": profile.alias,
@@ -782,6 +854,14 @@ def _stage(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     }
     if existing:
         current = existing[0]
+        if (
+            automation is not None
+            and (current["data"].get("automation") or {}).get("plan_sha256")
+            != automation["plan_sha256"]
+        ):
+            raise ResearchRemoteError(
+                "The run key already has different automatic analysis authority"
+            )
         if any(
             current["data"].get(key) != value
             for key, value in binding.items()
@@ -798,6 +878,7 @@ def _stage(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         data = {
             "schema": RUN_SCHEMA,
             **binding,
+            "app_target": _app_target(profile_envelope["data"].get("app_target")),
             "private_request_b64": base64.b64encode(encoded).decode("ascii"),
             "state": "prepared",
             "remote_job_id": None,
@@ -816,6 +897,21 @@ def _stage(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
             "retrieval_authorized_at": None,
             "created_at": now,
             "updated_at": now,
+            **({"automation": automation} if automation is not None else {}),
+            **(
+                {
+                    "private_profile_snapshot": parse_json(
+                        canonical_json(
+                            {
+                                key: profile_envelope["data"][key]
+                                for key in ("alias", "scheduler", "resources", "private_profile")
+                            }
+                        )
+                    )
+                }
+                if automation is not None
+                else {}
+            ),
         }
         prepared = _new_document(workbench.project, _run_id(values["request_key"]), data)
     if prepared["data"]["state"] == "staged":
@@ -855,8 +951,7 @@ def _submit(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         return {"run": _public_run(envelope)}
     if data["state"] != "staged":
         raise ResearchRemoteError("Remote run must be fully staged before submission")
-    profile_envelope = _load_profile(workbench.project, alias)
-    _require_profile_binding(data, profile_envelope)
+    profile_envelope = _profile_for_run(workbench.project, data)
     profile = _profile_from_data(profile_envelope["data"])
     client = _reconnect(profile_envelope)
     identity = client.submit(_remote_request_from_run(data, profile))
@@ -891,8 +986,7 @@ def _status(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         raise ResearchRemoteError("Remote run belongs to another saved profile")
     if data["state"] == "cleaned":
         return {"run": _public_run(envelope)}
-    profile_envelope = _load_profile(workbench.project, alias)
-    _require_profile_binding(data, profile_envelope)
+    profile_envelope = _profile_for_run(workbench.project, data)
     client = _reconnect(profile_envelope)
     status = client.status(_identity_from_run(data))
     if not isinstance(status, RemoteJobStatus):
@@ -933,10 +1027,9 @@ def _cancel(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         raise ResearchRemoteError("Remote run belongs to another saved profile")
     if data["state"] in {"retrieved", "attached"}:
         raise ResearchRemoteError("Published remote results cannot be cancelled")
-    profile_envelope = _load_profile(workbench.project, alias)
-    _require_profile_binding(data, profile_envelope)
-    client = _reconnect(profile_envelope)
-    client.cancel(_identity_from_run(data))
+    profile_envelope = _profile_for_run(workbench.project, data)
+    # Persist the user's intent before a connection or response can be lost.
+    # Attachment checks this flag at its atomic publication boundary.
     updated = _put(
         workbench.project,
         envelope,
@@ -946,6 +1039,14 @@ def _cancel(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
             "cancel_requested": True,
             "updated_at": timestamp(),
         },
+    )
+    client = _reconnect(profile_envelope)
+    client.cancel(_identity_from_run(data))
+    current = _load_run(workbench.project, request_key)
+    updated = _put(
+        workbench.project,
+        current,
+        {**current["data"], "cancel_sent_at": timestamp(), "updated_at": timestamp()},
     )
     return {"run": _public_run(updated)}
 
@@ -1004,8 +1105,7 @@ def _retrieve(
         raise ResearchRemoteError("Cancelled remote runs cannot publish retrieved results")
     if data["state"] not in {"finished", "retrieved"}:
         raise ResearchRemoteError("Remote run must finish before output retrieval")
-    profile_envelope = _load_profile(workbench.project, alias)
-    _require_profile_binding(data, profile_envelope)
+    profile_envelope = _profile_for_run(workbench.project, data)
     client = _reconnect(profile_envelope)
     identity = _identity_from_run(data)
     manifest = client.fetch_output_manifest(identity)
@@ -1129,6 +1229,16 @@ def _attach(
     directory = Path(data["private_retrieval_directory"])
     archive = directory / "results.zip"
     source_mapping = {source_id: source_id for source_id in data["source_ids"]}
+
+    def attachment_guard():
+        guard()
+        current = _load_run(workbench.project, request_key)["data"]
+        if current["cancel_requested"] or current["request_sha256"] != data["request_sha256"]:
+            raise ResearchRemoteError(
+                "Remote attachment was cancelled or changed before publication"
+            )
+        _profile_for_run(workbench.project, current)
+
     receipt = attach_remote_results(
         workbench.project,
         encoded,
@@ -1137,7 +1247,7 @@ def _attach(
         outer_manifest=manifest,
         local_source_mapping=source_mapping,
         local_job_id=values.get("local_job_id"),
-        publication_guard=publication_guard,
+        publication_guard=attachment_guard,
         max_decoded_bytes=max_decoded_bytes,
     )
     guard()
@@ -1170,8 +1280,7 @@ def _logs(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     data = envelope["data"]
     if data["alias"] != values["alias"] or data["state"] == "cleaned":
         raise ResearchRemoteError("Remote log request does not identify an available owned run")
-    profile_envelope = _load_profile(workbench.project, values["alias"])
-    _require_profile_binding(data, profile_envelope)
+    profile_envelope = _profile_for_run(workbench.project, data)
     profile = _profile_from_data(profile_envelope["data"])
     text = _reconnect(profile_envelope).logs(
         _identity_from_run(data), stderr=values["stderr"], limit=limit
@@ -1209,8 +1318,7 @@ def _remove_owned(workbench: Workbench, request: dict[str, Any]) -> dict[str, An
     )["attachment"]
     if attachment != data["attachment"]:
         raise ResearchRemoteError("Local attachment receipt no longer verifies")
-    profile_envelope = _load_profile(workbench.project, values["alias"])
-    _require_profile_binding(data, profile_envelope)
+    profile_envelope = _profile_for_run(workbench.project, data)
     client = _reconnect(profile_envelope)
     identity = _identity_from_run(data)
     if data["cleanup_prepared_at"] is None:
@@ -1259,6 +1367,10 @@ def execute_remote(workbench: Workbench, operation: str, request: dict[str, Any]
 
     if not isinstance(workbench, Workbench) or not isinstance(request, dict):
         raise ResearchRemoteError("Remote execution requires an open workbench and object request")
+    if operation in {"analysis_plan", "analysis_start", "analysis_advance", "analysis_cancel"}:
+        from .research_compute import execute_compute
+
+        return execute_compute(workbench, operation, request)
     operations = {
         "profile_save": _save_profile,
         "profile_list": _list_profiles,

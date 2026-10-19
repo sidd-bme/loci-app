@@ -27,6 +27,21 @@ establish a passing workflow or authorize release. Keep logs, images and bundles
 out of source Git; include portable identities, results and limitations in the
 review or release evidence.
 
+The combined source and five core packaged journeys can be run sequentially:
+
+```bash
+node scripts/run-core-regressions.mjs --mode=source
+node scripts/run-core-regressions.mjs --mode=packaged --app=/absolute/path/to/Loci.app
+```
+
+For the exploration, folder-browser and provisional review-package workflows,
+run `desktop/tests/exploration-groups.qa.mjs`,
+`desktop/tests/folder-browser-workflow.qa.mjs` and
+`desktop/tests/review-package-workflow.qa.mjs` against that same app. The latter
+journeys require an explicitly created evidence directory on the internal home
+volume, because their synthetic study publication uses atomic directory rename.
+Keep all heavy source/build checks sequential with native UI timing checks.
+
 ## Development
 
 The desktop shell and analysis worker are separate processes.

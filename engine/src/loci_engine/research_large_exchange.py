@@ -29,6 +29,7 @@ from .research_project import (
     parse_json,
     timestamp,
 )
+from .research_review import REVIEW_SCHEMA, validate_history_document, validate_review
 from .research_tiled_store import (
     TiledArrayWriter,
     _open_table,
@@ -268,11 +269,7 @@ def _validate_producer_records(receipt: dict[str, Any], result: dict[str, Any]) 
     if prov["measurement_basis"] != "raw-selected-channel-values-on-result-grid":
         raise ValueError("Unsupported measurement basis")
     review = receipt["review"]
-    _require_exact(
-        review,
-        {"actor", "disposition", "result_id", "reviewed_at", "revision_hash"},
-        "exported review",
-    )
+    validate_review(review, result_id=result["id"], revision_hash=result["revision_hash"])
     if (
         review["result_id"] != result["id"]
         or review["revision_hash"] != result["revision_hash"]
@@ -309,7 +306,10 @@ def _read_bounded_bytes(path: Path, max_bytes: int = MAX_TEXT_SIZE) -> bytes:
         os.close(fd)
     after = path.lstat()
     if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (
-        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+        before.st_mtime_ns,
     ):
         raise ValueError("Bundle metadata changed during reading")
     return raw
@@ -346,7 +346,7 @@ def validate_export_bundle_metadata(
             raise ValueError(f"Bundle entry {entry.name} is a symlink")
         if entry.is_dir():
             raise ValueError(f"Bundle contains unexpected directory {entry.name}")
-        if entry.name not in ALLOWED_BUNDLE_FILES:
+        if entry.name not in ALLOWED_BUNDLE_FILES | {"review-history.json"}:
             raise ValueError(f"Bundle contains unexpected file {entry.name}")
 
     if not ALLOWED_BUNDLE_FILES.issubset(names):
@@ -369,7 +369,7 @@ def validate_export_bundle_metadata(
     checked_text(manifest["revision_hash"], "Manifest revision hash", 64)
 
     files_list = manifest["files"]
-    if not isinstance(files_list, list) or len(files_list) != len(ALLOWED_BUNDLE_FILES) - 1:
+    if not isinstance(files_list, list) or len(files_list) != len(names) - 1:
         raise ValueError("Manifest file count does not match bundle content")
 
     manifest_files_map: dict[str, dict[str, Any]] = {}
@@ -383,7 +383,7 @@ def validate_export_bundle_metadata(
         checked_text(item["sha256"], f"SHA-256 for {name}", 64)
         manifest_files_map[name] = item
 
-    expected_other_names = ALLOWED_BUNDLE_FILES - {"manifest.json"}
+    expected_other_names = names - {"manifest.json"}
     if set(manifest_files_map) != expected_other_names:
         raise ValueError("Manifest entries disagree with required bundle files")
 
@@ -424,6 +424,14 @@ def validate_export_bundle_metadata(
         raise ValueError("Export receipt array inclusion flags are invalid")
     if receipt["correction_ancestors"] != []:
         raise ValueError("Remote exchange only supports uncorrected root results without ancestors")
+    validate_review(receipt["review"])
+    if receipt["review"].get("schema") == REVIEW_SCHEMA and "review-history.json" not in names:
+        raise ValueError("An event review requires its complete exported decision history")
+    if "review-history.json" in names:
+        validate_history_document(
+            _read_bounded_json(directory / "review-history.json"),
+            receipt["review"],
+        )
 
     result = receipt["result"]
     exact_keys(
@@ -480,7 +488,7 @@ def validate_export_bundle_directory(
     receipt = meta["receipt"]
     result = meta["result"]
 
-    expected_other_names = ALLOWED_BUNDLE_FILES - {"manifest.json"}
+    expected_other_names = set(manifest_files_map)
     for name in sorted(expected_other_names):
         if check is not None:
             check()
