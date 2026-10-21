@@ -1,3 +1,6 @@
+import { ExperimentIntensityPanel } from "./ExperimentIntensityPanel";
+import { SampleSheetPanel } from "./SampleSheetPanel";
+import { ScientificDataExportPanel, type ScientificDataExportDraft, type ScientificDataExportDraftControl } from "./ScientificDataExportPanel";
 import { GroupCentroidOverlay } from "./GroupCentroidOverlay";
 import type { PopulationHighlight } from "./PopulationGroups";
 import { CompactChannelControls } from "./CompactChannelControls";
@@ -941,6 +944,13 @@ export default function ResearchWorkbench({
   const projectionSourceLocatorState = useRef<string | null>(null);
   const [documentEpoch, setDocumentEpoch] = useState(0);
   const [studyEpoch, setStudyEpoch] = useState(0);
+  const [scientificExportDraft, setScientificExportDraft] = useState<{ study: string; draft: ScientificDataExportDraft } | null>(null);
+  const exportDraftStudy = JSON.stringify([snapshot?.project.project_id ?? null, studyEpoch]);
+  const [intensitySeed, setIntensitySeed] = useState<{ study: string; result: ResearchResult; serial: number } | null>(null);
+  const scientificExportDraftControl: ScientificDataExportDraftControl = {
+    draft: scientificExportDraft?.study === exportDraftStudy ? scientificExportDraft.draft : null,
+    onDraftChange: (draft) => setScientificExportDraft({ study: exportDraftStudy, draft }),
+  };
   useEffect(() => { setCorrectionEffectSeed(null); }, [studyEpoch]);
   const [documentSwitching, setDocumentSwitching] = useState(false);
   const initialStudyRestore = useRef<Promise<unknown>>(Promise.resolve());
@@ -1027,6 +1037,9 @@ export default function ResearchWorkbench({
       switchDocument(() => desktopApi.exportSourceView!(request), false) } : {}),
     ...(desktopApi.exportVolumeFigure ? { exportVolumeFigure: (request) =>
       switchDocument(() => desktopApi.exportVolumeFigure!(request), false) } : {}),
+    ...(desktopApi.planDataExport ? { planDataExport: (request, key) => desktopApi.planDataExport!(request, key) } : {}),
+    ...(desktopApi.exportDataPackage ? { exportDataPackage: (planJson, key) => desktopApi.exportDataPackage!(planJson, key) } : {}),
+    ...(desktopApi.cancelDataExport ? { cancelDataExport: (key) => desktopApi.cancelDataExport!(key) } : {}),
     exportResult: (id, revisionHash, runId) =>
       switchDocument(() => desktopApi.exportResult(id, revisionHash, runId), false),
     ...(desktopApi.exportBatch ? { exportBatch: (bindings, options) =>
@@ -2766,7 +2779,14 @@ export default function ResearchWorkbench({
             onClick={() => { largeNavigationIntent.current++; largeSelectionIntent.current++; objectPickToken.current++; setPopulationObject(null); setSelectedRow(null); setResultId(null); setResultView(null); setImage(null); }}>Original image</button>}
           {snapshot.results
             .filter((item) => item.source_id === sourceId)
-            .map((item) => (
+            .map((item) => {
+              const isSavedSelection = snapshot.selections.some(
+                (sel) => sel.id === sourceId && sel.data?.result_id === item.id && sel.data?.revision_hash === item.revision_hash,
+              );
+              const parentResult = item.parent_id && !item.label_import
+                ? snapshot.results.find((candidate) => candidate.id === item.parent_id)
+                : null;
+              return (
               <button
                 key={item.id}
                 disabled={sourceIsChanging}
@@ -2784,10 +2804,12 @@ export default function ResearchWorkbench({
                 }}
               >
                 <span className="research-result-kind">{resultTitle(item)}</span>
-                <small className="research-result-meta">{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {reviewLabel(item.review)}</small>
+                <small className="research-result-meta">{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
+                {parentResult && <small className="research-result-meta">Edited from {resultTitle(parentResult)} ({parentResult.object_count.toLocaleString()} {parentResult.object_count === 1 ? "object" : "objects"})</small>}
                 {item.label_import && <small className="research-result-meta">{item.parent_id ? "Corrected from " : "Imported "}{item.label_import.file_name} · {item.label_import.producer?.name ?? "Unknown producer"}</small>}
               </button>
-            ))}
+              );
+            })}
           <WorkspaceRecordActions key={studyEpoch} api={api} snapshot={snapshot} source={source}
             busy={busy !== null} onBusy={setBusy} onError={setError} onChange={(next) => {
               if (resultId && !next.results.some((item) => item.id === resultId)) {
@@ -3450,6 +3472,9 @@ export default function ResearchWorkbench({
             onHistologyRun={runHistology}
             snapshotRecipes={snapshot.recipes}
             onRestoreRecipe={restoreRecipePreset}
+            activeResult={selectedResult && selectedResult.source_id === source.id ? selectedResult : null}
+            onOpenPopulation={() => openWorkbenchTab("Population")}
+            onOpenReviewExport={() => openWorkbenchTab("Info")}
           /> : segmentationFamily === "adaptive" ? <ResearchAdaptivePanel api={api} source={source} selection={shownSelection}
             busy={busy !== null} onBusy={(message) => { if (message) setError(null); setBusy(message); }} onError={setError} onBatchConfiguration={setAdaptiveBatchConfiguration}
             workingBytes={recipe.working_bytes}
@@ -3464,6 +3489,18 @@ export default function ResearchWorkbench({
           {!["classical", "stain", "large-components"].includes(segmentationFamily) && rows.length > 0 && (
             <div className="research-panel-section" style={{ marginTop: 12 }}>
               <h3>Segmented objects ({selectedResult?.object_count ?? rows.length})</h3>
+              {selectedResult && selectedResult.source_id === source.id && (
+                <div className="research-result-workflow-bar" role="group" aria-label="Selected result workflow">
+                  <div className="research-result-workflow-summary">
+                    <strong>{resultTitle(selectedResult)}</strong>
+                    <span>{selectedResult.object_count.toLocaleString()} {selectedResult.object_count === 1 ? "object" : "objects"} · {reviewLabel(selectedResult.review)} · rev {selectedResult.revision_hash.slice(0, 8)}</span>
+                  </div>
+                  <div className="research-actions">
+                    <button type="button" onClick={() => openWorkbenchTab("Population")}>Inspect in Statistics &amp; objects</button>
+                    <button type="button" onClick={() => openWorkbenchTab("Info")}>Proceed to Review &amp; export</button>
+                  </div>
+                </div>
+              )}
               {selectedResult && selectedResult.object_count > rows.length && <p>Showing the first {rows.length} objects. Statistics & objects shows the full population.</p>}
               <ResultTable rows={rows} selected={selectedRow} onSelect={(index) => void selectObject(index)} />
             </div>
@@ -3494,6 +3531,7 @@ export default function ResearchWorkbench({
         {populationOpened && selectedResult && (<div className="population-workspace-host" hidden={tab !== "Population"}>
           <ResearchPopulationExplorer key={`${selectedResult.id}:${selectedResult.revision_hash}`} api={api} result={selectedResult}
             onMeasureCompartments={source && !isRgb ? () => { setQuantificationEntry("association"); openWorkbenchTab("Quantify"); } : undefined}
+            onOpenReviewExport={() => openWorkbenchTab("Info")}
             onHighlight={setPopulationHighlight}
             active={tab === "Population"} focused={statisticsFocused} onToggleFocus={() => setStatisticsFocused((value) => !value)}
             selectedLabel={Number((isLargeResult(selectedResult) ? largeObject : populationObject)?.label) || null}
@@ -3697,6 +3735,12 @@ export default function ResearchWorkbench({
               await navigateExactResult(exact); openWorkbenchTab("Info");
             }} />
         )}
+        <div hidden={tab !== "Study"}>
+          <SampleSheetPanel key={`samples:${exportDraftStudy}`} api={api} snapshot={snapshot} busy={busy !== null || documentSwitching} onSnapshot={adopt} />
+          <ExperimentIntensityPanel key={`intensity:${exportDraftStudy}`} api={api} snapshot={snapshot} active={tab === "Study"}
+            busy={busy !== null || documentSwitching} seed={intensitySeed?.study === exportDraftStudy ? intensitySeed : null}
+            onSnapshot={adopt} onInspect={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
+        </div>
         {source && dimensions && tab === "Study" && (
           <StudyPanel
             compute={compute}
@@ -3796,8 +3840,21 @@ export default function ResearchWorkbench({
             onRefresh={async () => adopt(await api.getSnapshot())}
             onUndo={() => void moveRevision("undo")} onRedo={() => void moveRevision("redo")} canRedo={Boolean(redoTargetId)} />
         )}
+        {selectedResult && isLargeResult(selectedResult) && tab === "Info" && <button type="button" disabled={busy !== null || documentSwitching}
+          onClick={() => { setIntensitySeed((old) => ({ study: exportDraftStudy, result: selectedResult, serial: (old?.serial ?? 0) + 1 })); openWorkbenchTab("Study"); }}>Compare intensity in Study &amp; batch</button>}
+        {selectedResult && isLargeResult(selectedResult) && tab === "Info" && api.planDataExport && (
+          <ScientificDataExportPanel key={exportDraftStudy} api={api} snapshot={snapshot} result={selectedResult} draftControl={scientificExportDraftControl}
+            busy={busy !== null} onSnapshot={adopt}
+            onSelectResult={(target) => void navigateExactResult(target)}
+            onOpenPopulation={() => openWorkbenchTab("Population")} />
+        )}
         {source && tab === "Info" && !isLargeResult(selectedResult) && (
-          <Info
+          <Info key={exportDraftStudy}
+            scientificExportDraftControl={scientificExportDraftControl}
+            onCompareIntensity={() => {
+              if (!selectedResult) return;
+              setIntensitySeed((old) => ({ study: exportDraftStudy, result: selectedResult, serial: (old?.serial ?? 0) + 1 })); openWorkbenchTab("Study");
+            }}
             source={source}
             snapshot={snapshot}
             api={api}
@@ -3811,6 +3868,8 @@ export default function ResearchWorkbench({
             report={report}
             busy={busy !== null}
             onSnapshot={adopt}
+            onSelectResult={(target) => void navigateExactResult(target)}
+            onOpenPopulation={() => openWorkbenchTab("Population")}
           />
         )}
       </aside>
@@ -4001,6 +4060,9 @@ function Analyze({
   onHistologyRun,
   snapshotRecipes,
   onRestoreRecipe,
+  activeResult,
+  onOpenPopulation,
+  onOpenReviewExport,
 }: NumericFormProps & {
   recipe: typeof DEFAULT_RECIPE;
   channelCount: number;
@@ -4026,6 +4088,9 @@ function Analyze({
   ) => void;
   snapshotRecipes?: ResearchSnapshot["recipes"];
   onRestoreRecipe?: (item: unknown) => void;
+  activeResult?: ResearchResult | null;
+  onOpenPopulation?: () => void;
+  onOpenReviewExport?: () => void;
 }) {
   const numbers = useNumericValidity(onNumberValidity);
   const [basis, setBasis] = useState<"H&E" | "H-DAB">("H&E");
@@ -4342,6 +4407,18 @@ function Analyze({
             <Play /> {busy ? "Running…" : "Run recipe"}
           </button>
         </>
+      )}
+      {activeResult && (
+        <div className="research-result-workflow-bar" role="group" aria-label="Selected result workflow">
+          <div className="research-result-workflow-summary">
+            <strong>{resultTitle(activeResult)}</strong>
+            <span>{activeResult.object_count.toLocaleString()} {activeResult.object_count === 1 ? "object" : "objects"} · {reviewLabel(activeResult.review)} · rev {activeResult.revision_hash.slice(0, 8)}</span>
+          </div>
+          <div className="research-actions">
+            {onOpenPopulation && <button type="button" onClick={onOpenPopulation}>Inspect in Statistics &amp; objects</button>}
+            {onOpenReviewExport && <button type="button" onClick={onOpenReviewExport}>Proceed to Review &amp; export</button>}
+          </div>
+        </div>
       )}
       <ResultTable rows={rows} selected={selected} onSelect={onSelect} />
     </div>
@@ -5919,6 +5996,10 @@ export function Info({
   report,
   busy,
   onSnapshot,
+  onSelectResult,
+  onOpenPopulation,
+  scientificExportDraftControl,
+  onCompareIntensity,
 }: {
   source: ResearchSource;
   snapshot: ResearchSnapshot;
@@ -5934,6 +6015,10 @@ export function Info({
   ) => Promise<T | undefined>;
   busy: boolean;
   onSnapshot: (next: ResearchSnapshot | null) => void;
+  onSelectResult?: (result: ResearchResult) => void;
+  onOpenPopulation?: () => void;
+  scientificExportDraftControl?: ScientificDataExportDraftControl;
+  onCompareIntensity?: () => void;
 }) {
   const [reviewPending, setReviewPending] = useState(false);
   const reviewPendingRef = useRef(false);
@@ -5971,14 +6056,40 @@ export function Info({
     }
   };
   const stats = useMemo(() => computeResultStats(rows), [rows]);
+  const sourceResults = snapshot.results.filter((item) => item.source_id === source.id);
 
   return (
     <div className="research-panel">
       <h2>Review & export</h2>
+      {!result && onSelectResult && sourceResults.length > 0 && (
+        <div className="research-result-recovery-card" role="group" aria-label="Results on this image">
+          <h3>Results on this image ({sourceResults.length})</h3>
+          <p>Select a saved revision on {source.name} to inspect its measurements, review status, or export:</p>
+          <div className="research-result-recovery-list">
+            {sourceResults.map((item) => {
+              const isSavedSelection = snapshot.selections.some(
+                (sel) => sel.id === source.id && sel.data?.result_id === item.id && sel.data?.revision_hash === item.revision_hash,
+              );
+              return (
+                <div key={`${item.id}:${item.revision_hash}`} className="research-result-recovery-row">
+                  <div>
+                    <strong>{resultTitle(item)}</strong>
+                    <small>{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
+                  </div>
+                  <button type="button" disabled={busy || reviewPending} onClick={() => onSelectResult(item)}>
+                    Select rev {item.revision_hash.slice(0, 8)}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {!result && api.planDataExport && <ScientificDataExportPanel draftControl={scientificExportDraftControl} api={api} snapshot={snapshot} result={null} busy={busy || reviewPending} onSnapshot={onSnapshot} onSelectResult={onSelectResult} onOpenPopulation={onOpenPopulation} />}
       {result ? (
         <>
           <h3 className="research-result-title">{resultTitle(result)}</h3>
-          <p>{result.object_count?.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · <span role="status">{reviewStatus}</span></p>
+          <p>{result.object_count?.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · <span role="status">{reviewStatus}</span>{result.revision_hash ? ` · rev ${result.revision_hash.slice(0, 8)}` : ""}</p>
           {result.label_import && <details><summary>Imported label details</summary><dl className="research-label-import-metadata" aria-label="Label import identity">
             <div><dt>Label file</dt><dd>{result.label_import.file_name}</dd></div>
             <div><dt>Producer</dt><dd>{result.label_import.producer ? `${result.label_import.producer.name}${result.label_import.producer.version ? ` · ${result.label_import.producer.version}` : " · version unknown"} (declared)` : "Unknown"}</dd></div>
@@ -5988,6 +6099,7 @@ export function Info({
             {result.parent_id && <div><dt>Correction parent</dt><dd>{result.parent_id}</dd></div>}
           </dl></details>}
           <div className="research-actions">
+          {onCompareIntensity && <button type="button" disabled={busy || reviewPending} onClick={onCompareIntensity}>Compare intensity in Study &amp; batch</button>}
           <button
             disabled={busy || reviewPending || researcherReviewed(result)}
             onClick={() => void markReviewed()}
@@ -6006,11 +6118,19 @@ export function Info({
             Export result
           </button>
           </div>
+          {api.planDataExport && <ScientificDataExportPanel draftControl={scientificExportDraftControl} api={api} snapshot={snapshot} result={result} busy={busy || reviewPending} onSnapshot={onSnapshot} onSelectResult={onSelectResult} onOpenPopulation={onOpenPopulation} />}
           <ResearchReviewHistory api={api} result={result} />
           <ResultContextPanel api={api} result={result} />
           {rows.length > 0 && (
             <div className="research-result-summary-card">
-              <h3>Quantitative summary</h3>
+              <div className="research-result-summary-header">
+                <h3>Quantitative summary</h3>
+                {onOpenPopulation && (
+                  <button type="button" disabled={busy || reviewPending} onClick={onOpenPopulation}>
+                    Explore in Statistics &amp; objects
+                  </button>
+                )}
+              </div>
               {result && result.object_count > rows.length && <p>Summary of the first {rows.length} of {result.object_count} objects. Use Statistics & objects for the full population.</p>}
               <div className="research-stat-grid">
                 <div className="research-stat-item">

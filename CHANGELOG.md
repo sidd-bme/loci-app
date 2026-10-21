@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Local packages identify themselves as numbered unreleased development builds with their own source revision; the compatibility version and published beta.2 download remain unchanged.
+
+### Added
+
+- Scientific data packages with exact stored measurements, review and sample metadata, complete group memberships, provenance, and standalone Python/R readers.
+- Transactional sample-sheet import and raw mean intensity reports that preserve image, declared replicate and condition aggregation, exact saved revisions, and atomic package export.
+- Study and export navigation that retains explicit result scope and provides recovery actions for missing review or groups.
+
+These are source changes. The published download remains **v0.2.0-beta.2**; no new release assets are included.
+
 ## [v0.2.0-beta.2] - 2026-10-19
 
 ### Added

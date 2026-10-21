@@ -102,6 +102,19 @@ def parser() -> argparse.ArgumentParser:
     export.add_argument("--result", required=True)
     export.add_argument("--revision", required=True)
     export.add_argument("--destination", required=True)
+    data_plan = sub.add_parser(
+        "plan-data-export", help="Preview exact scientific CSV package scope and counts"
+    )
+    data_plan.add_argument("--project", required=True)
+    data_plan.add_argument("--request", required=True, help="JSON, @file.json or - for stdin")
+    data_export = sub.add_parser(
+        "export-data", help="Atomically publish a prepared scientific CSV package"
+    )
+    data_export.add_argument("--project", required=True)
+    data_export.add_argument(
+        "--plan", required=True, help="Exact plan response JSON, @file.json or - for stdin"
+    )
+    data_export.add_argument("--destination", required=True)
     effect_export = sub.add_parser(
         "export-correction-effect",
         help="Atomically export an exact reviewed correction-effect receipt",
@@ -356,6 +369,17 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
             return project.review(args.result, args.revision, args.disposition)
         if args.command == "relink":
             return project.relink(args.source, args.candidate)
+        if args.command == "plan-data-export":
+            from .research_data_export import plan_export
+
+            return plan_export(project, _request(args.request))
+        if args.command == "export-data":
+            from .research_data_export import export_data_package
+
+            response = _request(args.plan, maximum=8 * 1024**2)
+            if set(response) != {"plan", "plan_json"} or not isinstance(response["plan_json"], str):
+                raise ValueError("Use the exact response from plan-data-export")
+            return export_data_package(project, response["plan_json"], args.destination)
         if args.command == "export-correction-effect":
             from .research_correction_effect import export_effect
 

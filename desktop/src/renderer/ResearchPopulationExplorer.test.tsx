@@ -62,11 +62,15 @@ function mount(desktopApi = api(), selectedLabel: number | null = null, exactRes
   const view = render(<ResearchPopulationExplorer api={desktopApi} result={exactResult} selectedLabel={selectedLabel} onSelect={onSelect} onLocate={onLocate} />);
   return { ...view, desktopApi, onSelect, onLocate };
 }
-it("hands a sparse object beyond the first page to correction with the exact result revision", async () => {
+  it("hands a sparse object beyond the first page to correction with the exact result revision", async () => {
   const sparse = { ...objects[999], label: 0xffffffff };
   const desktopApi = api((request) => Promise.resolve(response(request, [...objects.slice(0, 999), sparse])));
   const onEdit = vi.fn();
-  render(<ResearchPopulationExplorer api={desktopApi} result={result} selectedLabel={sparse.label} onSelect={vi.fn()} onLocate={vi.fn()} onEdit={onEdit} />);
+  const onOpenReviewExport = vi.fn();
+  render(<ResearchPopulationExplorer api={desktopApi} result={result} selectedLabel={sparse.label} onSelect={vi.fn()} onLocate={vi.fn()} onEdit={onEdit} onOpenReviewExport={onOpenReviewExport} />);
+  expect(screen.getByText(/Segmentation · 1,000 objects · To review · rev aaaaaaaa/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Review & export result" }));
+  expect(onOpenReviewExport).toHaveBeenCalledTimes(1);
   await screen.findByLabelText("Selected population object");
   fireEvent.click(controls(".population-selected").getByRole("button", { name: "Edit selected object" }));
   expect(onEdit).toHaveBeenCalledWith({ result_id: result.id, revision_hash: result.revision_hash, label: sparse.label });

@@ -73,6 +73,7 @@ _RECORD_KINDS = frozenset(
         "workflow_export",
         "population_group",
         "exploration",
+        "intensity_report",
     }
 )
 _MEMBER_PATTERN = re.compile(
@@ -559,6 +560,8 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
         if envelope["kind"] in (
             "large_exchange_grant",
             "large_export_grant",
+            "data_export_grant",
+            "intensity_export_grant",
             "labels_import_grant",
         ):
             continue
@@ -572,6 +575,10 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
                 {item["id"]: item for item in snapshot["sources"]},
                 {item["id"]: item for item in snapshot["results"]},
             )
+        if envelope["kind"] == "intensity_report":
+            from .research_intensity_reports import references
+
+            references(project, envelope["data"])
         if envelope["kind"] == "population_group":
             from .research_groups import validate_group_document
 
@@ -861,6 +868,12 @@ def _validate_document(record: Any, kind: str, expected_id: str) -> dict[str, An
     ):
         raise ValueError("Interchanged document envelope is invalid")
     _reject_absolute_strings(record, "document record")
+    if kind == "intensity_report":
+        from .experiment_intensity import validate_report
+
+        report = validate_report(record["data"])
+        if record["revision"] != 1 or expected_id != report["report_hash"][:32]:
+            raise ValueError("Intensity report document identity is invalid")
     if kind == "model" and record["data"].get("interchange_state") != "model-package-not-included":
         raise ValueError("Interchanged managed model must declare its unavailable package")
     if kind == "policy" and record["data"].get("interchange_state") != (
@@ -1064,6 +1077,10 @@ def _validate_document_crossrefs(
             raise ValueError("Recipe document source reference is missing")
     if kind == "comparison":
         _validate_comparison_document(document, results)
+    if kind == "intensity_report":
+        from .experiment_intensity import validate_references
+
+        validate_references(data, results, sources)
 
 
 def _validate_comparison_document(
@@ -1516,6 +1533,17 @@ def import_project(
             from .research_correction_effect import validate_document as validate_effect_document
 
             for document in documents:
+                if document["kind"] == "intensity_report":
+                    from .research_intensity_reports import validate_reviews
+
+                    validate_reviews(
+                        document["data"],
+                        {
+                            result_id: review_histories.get(result_id)
+                            or [review_by_result.get(result_id)]
+                            for result_id in document["data"]["result_ids"]
+                        },
+                    )
                 if document["kind"] == "comparison" and (
                     document["data"].get("receipt", {}).get("schema")
                     == "loci.study-correction-effect/v1"

@@ -1,3 +1,4 @@
+import type { ScientificExportRequest, ScientificExportPreview, ScientificExportReceipt } from "./scientific-export-contracts";
 import type { StatisticsFigureExportRequest, StatisticsFigureExportReceipt } from "./statistics-figure-contracts";
 /** Renderer-safe records for the native research workbench bridge. */
 export interface ResearchDimensions {
@@ -720,6 +721,12 @@ export interface ResearchDesktopApi {
     revisionHash: string,
     disposition: "reviewed" | "excluded" | "pending",
   ): Promise<unknown>;
+  planDataExport?(request: ScientificExportRequest, requestKey: string): Promise<ScientificExportPreview>;
+  planIntensityExport?(reportId: string, requestKey: string): Promise<import("./intensity-contracts").IntensityExportPlan>;
+  exportIntensityReport?(reportId: string, planHash: string, requestKey: string): Promise<import("./intensity-contracts").IntensityExportReceipt | null>;
+  exportDataPackage?(planJson: string, requestKey: string): Promise<ScientificExportReceipt | null>;
+  /** True acknowledges a cancellation request; consult the durable job/destination for publication status. */
+  cancelDataExport?(requestKey: string): Promise<{ cancelled: boolean }>;
   exportResult(resultId: string, revisionHash: string, workflowRunId?: string): Promise<unknown>;
   cancelJob(jobId: string): Promise<unknown>;
 }

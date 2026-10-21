@@ -139,6 +139,7 @@ export async function packageLocalMac({
   const logName = `package-local-${identity.startedAt.replaceAll(":", "-")}-${identity.token}.log`;
   const logPath = path.join(paths.logs, logName);
   const previousSignMode = env.LOCI_MAC_SIGN_MODE;
+  const previousBuildChannel = env.LOCI_BUILD_CHANNEL;
   try {
     await ensureDirectoryNoSymlink(paths.logs);
     await appendFile(logPath, `started ${JSON.stringify(identity)}\n`);
@@ -148,6 +149,7 @@ export async function packageLocalMac({
       );
     }
     env.LOCI_MAC_SIGN_MODE = "adhoc-local";
+    env.LOCI_BUILD_CHANNEL ??= "development";
     if (typeof packageApi !== "function") {
       ({ api: { package: packageApi } } = await import("@electron-forge/core"));
     }
@@ -167,6 +169,8 @@ export async function packageLocalMac({
   } finally {
     if (previousSignMode === undefined) delete env.LOCI_MAC_SIGN_MODE;
     else env.LOCI_MAC_SIGN_MODE = previousSignMode;
+    if (previousBuildChannel === undefined) delete env.LOCI_BUILD_CHANNEL;
+    else env.LOCI_BUILD_CHANNEL = previousBuildChannel;
     await releasePackageLock(paths, identity);
   }
 }

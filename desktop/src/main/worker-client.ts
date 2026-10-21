@@ -42,7 +42,7 @@ export type WorkerInvalidationListener = (event: WorkerInvalidationEvent) => voi
 // Cancellation is implemented by terminating the isolated engine process. Keep
 // this allowlist deliberately narrow: methods that publish durable output must
 // be allowed to finish so they cannot leave an unrecorded or incomplete batch.
-const CANCELLABLE_METHODS = new Set(["segment", "research_run"]);
+const CANCELLABLE_METHODS = new Set(["segment", "research_run", "research_data_export_plan"]);
 const DURABLE_METHODS = new Set([
   "research_vendor_convert",
   "research_agent_access",
@@ -55,6 +55,7 @@ const DURABLE_METHODS = new Set([
   "research_source_annotations_import",
   "research_source_rendered_export",
   "research_review_package_export",
+  "research_data_export_grant",
   "research_import_legacy_project",
   "research_relink",
   "research_export",

@@ -141,6 +141,11 @@ class ResearchProject:
             if self.meta.get("schema") != f"loci.study/v{version}":
                 raise ValueError("Study project schema identity is invalid")
             self.schema_version = version
+        # Saved comparisons are scientific snapshots, including on native reopen.
+        from .research_intensity_reports import load as load_intensity_report
+
+        for document in self.documents("intensity_report"):
+            load_intensity_report(self, document["id"])
 
     @classmethod
     def create(
@@ -553,6 +558,7 @@ class ResearchProject:
         if actual != source["sha256"] or size != source["size_bytes"]:
             raise ValueError("Relink rejected: selected bytes do not exactly match the source")
         source.update(updated)
+        source.pop("locator_state", None)
         source["relinked_at"] = timestamp()
         with self.connection() as connection:
             connection.execute(
@@ -584,15 +590,24 @@ class ResearchProject:
             "workspace",
             "large_exchange_grant",
             "large_export_grant",
+            "data_export_grant",
             "labels_import_grant",
             "workflow",
             "workflow_run",
             "workflow_export",
             "population_group",
             "exploration",
+            "intensity_report",
+            "intensity_export_grant",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
+        if kind == "intensity_report":
+            from .experiment_intensity import validate_report
+
+            validate_report(record)
+            if expected_revision != 0 or document_id != record["report_hash"][:32]:
+                raise ValueError("Intensity reports are immutable; create a new report")
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)
@@ -624,13 +639,16 @@ class ResearchProject:
                 publication_guard()
         return envelope
 
-    def documents(self, kind: str) -> list[dict[str, Any]]:
+    def documents(self, kind: str, *, document_id: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT record FROM documents WHERE kind=?"
+        parameters = (kind,)
+        if document_id is not None:
+            query += " AND id=?"
+            parameters += (checked_id(document_id),)
         with self.connection() as connection:
             return [
                 parse_json(row[0])
-                for row in connection.execute(
-                    "SELECT record FROM documents WHERE kind=? ORDER BY rowid", (kind,)
-                )
+                for row in connection.execute(query + " ORDER BY rowid", parameters)
             ]
 
     def store_array(self, array: np.ndarray) -> dict[str, Any]:

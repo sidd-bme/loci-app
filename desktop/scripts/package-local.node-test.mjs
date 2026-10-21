@@ -62,6 +62,7 @@ test("passes the canonical arm64 request and ad-hoc signing mode to Forge", asyn
     packageApi: async (value) => {
       request = value;
       assert.equal(env.LOCI_MAC_SIGN_MODE, "adhoc-local");
+      assert.equal(env.LOCI_BUILD_CHANNEL, "development");
       await mkdir(value.outDir, { recursive: true });
       return forgeResult;
     },
@@ -74,6 +75,7 @@ test("passes the canonical arm64 request and ad-hoc signing mode to Forge", asyn
     outDir: paths.staging,
   });
   assert.equal(env.LOCI_MAC_SIGN_MODE, undefined);
+  assert.equal(env.LOCI_BUILD_CHANNEL, undefined);
 });
 
 const runNode = promisify(execFile);
@@ -82,9 +84,124 @@ const forgeConfigUrl = new URL("../forge.config.ts", import.meta.url).href;
 async function inspectForgeConfig(code, signMode = "adhoc-local", extraEnv = {}) {
   return runNode(process.execPath, ["--input-type=module", "--eval", code], {
     cwd: path.resolve(import.meta.dirname, ".."),
-    env: { ...process.env, LOCI_MAC_SIGN_MODE: signMode, LOCI_WINDOWS_PACKAGE_MODE: "", npm_lifecycle_event: "test:packaging", ...extraEnv },
+    env: { ...process.env, LOCI_MAC_SIGN_MODE: signMode, LOCI_WINDOWS_PACKAGE_MODE: "", LOCI_BUILD_CHANNEL: "release", npm_lifecycle_event: "test:packaging", ...extraEnv },
   });
 }
+
+test("development identity has a separate numeric build version and packaged marker; release is unchanged", async () => {
+  const inspect = `
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    const expected = JSON.parse(fs.readFileSync(new URL(${JSON.stringify(new URL("../development-build.json", import.meta.url).href)}), 'utf8'));
+    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    const source = {version: '0.2.0', name: 'Loci'};
+    const packaged = config.packagerConfig.sanitizePackageJson[0](source);
+    if (process.env.LOCI_BUILD_CHANNEL === 'development') {
+      assert.equal(config.packagerConfig.buildVersion, expected.buildNumber + '.0.0');
+      assert.equal(packaged.lociBuildIdentity, 'loci.development-build/v1');
+    } else {
+      assert.equal(config.packagerConfig.buildVersion, undefined);
+      assert.deepEqual(packaged, source);
+    }
+    assert.equal(packaged.version, '0.2.0');
+    assert.equal(config.packagerConfig.appVersion, undefined);
+    assert.equal(source.lociBuildIdentity, undefined);
+    assert.throws(() => config.packagerConfig.sanitizePackageJson[0]({...source, lociBuildIdentity: 'stale'}), /already has/);
+  `;
+  await inspectForgeConfig(inspect, "adhoc-local", { LOCI_BUILD_CHANNEL: "development" });
+  await inspectForgeConfig(inspect, "", { LOCI_BUILD_CHANNEL: "release" });
+  await assert.rejects(inspectForgeConfig(inspect, "", { LOCI_BUILD_CHANNEL: "development" }), /explicit local/);
+  await assert.rejects(inspectForgeConfig(inspect, "adhoc-local", { LOCI_BUILD_CHANNEL: "beta" }), /Unsupported LOCI_BUILD_CHANNEL/);
+});
+
+test("captures real Git revision/tree/dirty state, excludes private metadata, and refuses missing Git or occupied identity", async (t) => {
+  const { root } = await fixture(t);
+  const { stdout } = await inspectForgeConfig(`
+    import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
+    import {execFileSync} from 'node:child_process';
+    import {captureDevelopmentBuildIdentity, selectBuildChannel, writeDevelopmentBuildIdentity} from ${JSON.stringify(new URL("../build-identity.ts", import.meta.url).href)};
+    const root = ${JSON.stringify(root)};
+    const config = {schema: 'loci.development-build-config/v1', channel: 'development', buildNumber: 1};
+    assert.throws(() => captureDevelopmentBuildIdentity(root, config, '0.2.0'), /valid HEAD/);
+    const git = (...args) => execFileSync('git', ['-C', root, ...args], {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+    git('init'); git('config', 'user.email', 'build-test@example.invalid'); git('config', 'user.name', 'Build test');
+    fs.writeFileSync(path.join(root, 'source.txt'), 'committed fixture');
+    fs.writeFileSync(path.join(root, '.gitignore'), 'ignored.txt\\n');
+    git('add', 'source.txt', '.gitignore'); git('commit', '-m', 'Synthetic build fixture');
+    const clean = captureDevelopmentBuildIdentity(root, config, '0.2.0');
+    assert.equal(clean.sourceRevision, git('rev-parse', 'HEAD'));
+    assert.equal(clean.sourceTree, git('rev-parse', 'HEAD^{tree}'));
+    assert.equal(clean.sourceDirty, false);
+    fs.writeFileSync(path.join(root, 'ignored.txt'), 'ignored output');
+    assert.equal(captureDevelopmentBuildIdentity(root, config, '0.2.0').sourceDirty, false);
+    fs.writeFileSync(path.join(root, 'untracked.txt'), 'untracked fixture');
+    assert.equal(captureDevelopmentBuildIdentity(root, config, '0.2.0').sourceDirty, true);
+    fs.unlinkSync(path.join(root, 'untracked.txt'));
+    fs.writeFileSync(path.join(root, 'source.txt'), 'modified fixture');
+    const modified = captureDevelopmentBuildIdentity(root, config, '0.2.0');
+    assert.equal(modified.sourceDirty, true);
+    assert.equal(modified.sourceTree, clean.sourceTree);
+    assert.deepEqual(Object.keys(modified).sort(), ['schema', 'channel', 'buildNumber', 'bundleVersion', 'compatibilityVersion', 'sourceRevision', 'sourceTree', 'sourceDirty'].sort());
+    const resources = path.join(root, 'resources'); fs.mkdirSync(resources);
+    writeDevelopmentBuildIdentity(resources, modified);
+    const file = path.join(resources, 'loci-build-identity.json'), bytes = fs.readFileSync(file, 'utf8');
+    assert.deepEqual(JSON.parse(bytes), modified);
+    assert.equal(bytes.includes(root), false);
+    assert.throws(() => writeDevelopmentBuildIdentity(resources, clean), /EEXIST/);
+    assert.equal(fs.readFileSync(file, 'utf8'), bytes);
+    assert.throws(() => writeDevelopmentBuildIdentity(resources, {...clean, sourceRevision: 'unknown'}), /Malformed/);
+    for (const [env, local, expected] of [[{}, false, 'release'], [{}, true, 'development'], [{LOCI_BUILD_CHANNEL:'release'}, true, 'release']]) {
+      assert.equal(selectBuildChannel(env, local), expected);
+    }
+    console.log('Source-bound development identity verified');
+  `);
+  assert.match(stdout, /Source-bound development identity verified/);
+});
+
+test("the real resource hook writes development identity before signing and leaves release packages unmarked", async (t) => {
+  const { root } = await fixture(t);
+  const source = path.join(root, "loci-engine");
+  await mkdir(source);
+  // Structural AMD64 fixture only; no worker or application is executed.
+  const pe = Buffer.alloc(128);
+  pe.write("MZ"); pe.writeUInt32LE(64, 0x3c); pe.write("PE\0\0", 64); pe.writeUInt16LE(0x8664, 68);
+  await writeFile(path.join(source, "loci-engine.exe"), pe);
+  for (const channel of ["development", "release"]) {
+    const buildPath = path.join(root, channel);
+    const resources = path.join(buildPath, "resources");
+    await mkdir(path.join(resources, "loci-engine"), { recursive: true });
+    await writeFile(path.join(resources, "loci-engine", "loci-engine.exe"), pe);
+    await writeFile(path.join(buildPath, "LICENSE"), "Synthetic Electron notice");
+    await writeFile(path.join(buildPath, "LICENSES.chromium.html"), "Synthetic Chromium notice");
+    await inspectForgeConfig(`
+      import assert from 'node:assert/strict';
+      import fs from 'node:fs';
+      import path from 'node:path';
+      import {execFileSync} from 'node:child_process';
+      process.argv.push('package', '--platform=win32');
+      const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+      const buildPath = ${JSON.stringify(buildPath)};
+      await config.packagerConfig.afterCopyExtraResources[0]({buildPath, platform: 'win32', arch: 'x64', electronVersion: '44.0.0'});
+      const file = path.join(buildPath, 'resources', 'loci-build-identity.json');
+      const marked = config.packagerConfig.sanitizePackageJson[0]({version: '0.2.0'});
+      if (process.env.LOCI_BUILD_CHANNEL === 'development') {
+        const expected = JSON.parse(fs.readFileSync(new URL(${JSON.stringify(new URL("../development-build.json", import.meta.url).href)}), 'utf8'));
+        const identity = JSON.parse(fs.readFileSync(file, 'utf8'));
+        assert.equal(identity.schema, marked.lociBuildIdentity);
+        assert.equal(identity.buildNumber, expected.buildNumber);
+        assert.equal(identity.bundleVersion, config.packagerConfig.buildVersion);
+        assert.equal(identity.compatibilityVersion, marked.version);
+        assert.equal(identity.sourceRevision, execFileSync('git', ['rev-parse', 'HEAD'], {encoding:'utf8'}).trim());
+        assert.equal(typeof identity.sourceDirty, 'boolean');
+      } else {
+        assert.equal(fs.existsSync(file), false);
+        assert.equal(marked.lociBuildIdentity, undefined);
+      }
+    `, "", { LOCI_WINDOWS_PACKAGE_MODE: "unsigned-local", LOCI_BUILD_CHANNEL: channel, LOCI_ENGINE_RESOURCE: source });
+  }
+});
 
 test("loads the ESM Forge config with fail-closed ad-hoc signing options", async () => {
   const { stdout } = await inspectForgeConfig(`

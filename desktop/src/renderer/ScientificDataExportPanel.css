@@ -1,0 +1,91 @@
+.scientific-data-export {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.scientific-data-export > h3 { margin-top: 0; color: var(--ink); }
+.scientific-data-export h4 {
+  margin: 16px 0 8px;
+  font-size: var(--type-md);
+  font-weight: 600;
+  color: var(--ink);
+}
+.scientific-data-export__identity code {
+  display: block;
+  max-width: 100%;
+  font-size: var(--type-xs, 11px);
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-block: 3px;
+}
+.scientific-data-export .scientific-data-export__choices {
+  max-height: 260px;
+  overflow: auto;
+  scrollbar-color: var(--line-strong) transparent;
+}
+.scientific-data-export legend { max-inline-size: 100%; overflow-wrap: anywhere; }
+.scientific-data-export__choice-row {
+  display: grid;
+  gap: 3px;
+  margin: 4px 0;
+  min-width: 0;
+}
+.scientific-data-export .scientific-data-export__choice {
+  display: flex;
+  align-items: flex-start;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 8px;
+  min-height: 28px;
+  margin: 0;
+  padding-block: 2px;
+  cursor: pointer;
+}
+.scientific-data-export__choice input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--mineral); }
+.scientific-data-export__choice > span { min-width: 0; }
+.scientific-data-export__choice code {
+  display: block;
+  max-width: 100%;
+  font-size: var(--type-xs, 11px);
+  color: var(--ink-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+.scientific-data-export__inspect-btn {
+  justify-self: start;
+  margin-left: 22px;
+  min-height: 24px;
+  padding: 2px 8px;
+  font-size: var(--type-xs, 11px);
+  white-space: nowrap;
+}
+.scientific-data-export__recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.scientific-data-export__recovery button {
+  font-size: var(--type-sm);
+  min-height: 28px;
+  padding: 3px 10px;
+}
+.scientific-data-export__preview { margin-top: 16px; border-top: 1px solid var(--line); }
+.scientific-data-export__counts { margin: 8px 0; font-size: var(--type-sm); }
+.scientific-data-export__counts > div { display: flex; justify-content: space-between; gap: 12px; padding-block: 4px; }
+.scientific-data-export__counts dt { color: var(--ink-secondary); }
+.scientific-data-export__counts dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
+.scientific-data-export .scientific-data-export__caution { color: var(--warning); }
+.scientific-data-export .scientific-data-export__notice { color: var(--ink); }
+.scientific-data-export [role="alert"] { color: var(--error); }
+.scientific-data-export__table { max-width: 100%; overflow: auto; scrollbar-color: var(--line-strong) transparent; }
+.scientific-data-export table { width: 100%; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.scientific-data-export caption { color: var(--ink-secondary); text-align: left; padding-block: 8px; }
+.scientific-data-export th, .scientific-data-export td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+.scientific-data-export th { color: var(--ink-secondary); font-weight: 600; }
+.scientific-data-export td { color: var(--ink); }
+.scientific-data-export progress { width: 100%; accent-color: var(--mineral); }
+.scientific-data-export :is(button, input, select, [tabindex]):focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }

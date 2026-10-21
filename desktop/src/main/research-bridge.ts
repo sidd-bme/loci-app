@@ -1,3 +1,4 @@
+import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
 import { app, dialog, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
@@ -206,6 +207,7 @@ export class ResearchBridge {
   private sessionId: string | null = null;
   private running: { id: string; project: string } | null = null;
   private switching = false;
+  private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
   private readonly viewDocumentListeners = new Set<() => void>();
   private vendorGrants = new Map<string, {
@@ -548,7 +550,11 @@ export class ResearchBridge {
     options?: unknown,
   ): Promise<unknown> {
     const project = this.requireProject();
-    if (this.switching)
+    // The export picker pins this same study; display-only autosaves retain their
+    // normal source fingerprint/revision checks and do not change scientific data.
+    const exportViewSave = operation === "save_source_view" &&
+      this.dataExportActive?.stage === "export" && this.dataExportActive.project === project;
+    if (this.switching && !exportViewSave)
       throw new Error("Wait for the study to finish opening.");
     if (
       typeof operation !== "string" ||
@@ -941,16 +947,180 @@ export class ResearchBridge {
     }
   }
 
-  private async cancel(id: unknown): Promise<unknown> {
+  private dataExportKey(value: unknown): string {
+    if (typeof value !== "string" || !/^scientific-export:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(value))
+      throw new Error("Choose a unique scientific export request key.");
+    return value;
+  }
+
+  private beginDataExport(key: string, project: string, stage: "plan" | "export"): NonNullable<ResearchBridge["dataExportActive"]> {
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const active = { key, project, stage, cancelled: false, finished, finish };
+    this.dataExportActive = active;
+    return active;
+  }
+
+  async planDataExport(request: unknown, keyValue: unknown): Promise<ScientificExportPreview> {
+    const key = this.dataExportKey(keyValue);
+    if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    const active = this.beginDataExport(key, project, "plan");
+    this.running = { id: "scientific-data-plan", project };
+    try {
+      const response = await this.worker.request<ScientificExportPreview>("research_data_export_plan", { project, request }, 0);
+      if (active.cancelled) throw new Error("Scientific export preparation cancelled.");
+      if (this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The study changed during export preparation.");
+      if (!response || typeof response.plan_json !== "string" || response.plan_json.length > 8 * 1024 ** 2 ||
+          !response.plan || !/^[0-9a-f]{64}$/u.test(response.plan.plan_sha256))
+        throw new Error("The engine returned an invalid scientific export plan.");
+      return response;
+    } catch (error) {
+      if (active.cancelled) throw new Error("Scientific export preparation cancelled.");
+      throw error;
+    } finally {
+      if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; }
+      active.finish();
+    }
+  }
+
+  async exportDataPackage(planJson: unknown, keyValue: unknown): Promise<ScientificExportReceipt | null> {
+    const key = this.dataExportKey(keyValue);
+    if (typeof planJson !== "string" || !planJson || Buffer.byteLength(planJson, "utf8") > 8 * 1024 ** 2)
+      throw new Error("Prepare a current scientific export plan first.");
+    if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    const active = this.beginDataExport(key, project, "export");
+    this.running = { id: "scientific-data-export", project };
+    this.switching = true;
+    try {
+      const picked = await dialog.showSaveDialog({ title: "Export scientific data package", defaultPath: "Loci-data", buttonLabel: "Export data" });
+      if (active.cancelled) throw new Error("Scientific data export cancelled.");
+      if (picked.canceled || !picked.filePath) return null;
+      if (!path.isAbsolute(picked.filePath) || this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The export study or destination changed.");
+      const grant = await this.control.request<{ grant_id: string; plan_sha256: string; source_id: string; export_name: string }>(
+        "research_data_export_grant", { project, plan_json: planJson, destination: picked.filePath }, 0);
+      if (active.cancelled) throw new Error("Scientific data export cancelled before submission.");
+      const job = await this.control.request<{ id: string }>("research_submit", {
+        project, operation: "scientific_data_export", request: { grant_id: grant.grant_id, plan_sha256: grant.plan_sha256 }, request_key: key,
+      });
+      active.jobId = job.id;
+      this.running.id = job.id;
+      this.switching = false;
+      if (active.cancelled) { await this.cancel(job.id); throw new Error("Scientific data export cancelled before execution."); }
+      const receipt = await this.worker.request<ScientificExportReceipt>("research_run", { project, job_id: job.id }, 0);
+      if (receipt.basename !== grant.export_name || !/^[0-9a-f]{64}$/u.test(receipt.manifest_sha256))
+        throw new Error("The engine returned an invalid scientific export receipt.");
+      // Private native paths and the grant never cross into renderer state.
+      return { schema: receipt.schema, basename: receipt.basename, purpose: receipt.purpose,
+        manifest_sha256: receipt.manifest_sha256, result_count: receipt.result_count,
+        source_count: receipt.source_count, selected_count: receipt.selected_count };
+    } finally {
+      if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; this.switching = false; }
+      active.finish();
+    }
+  }
+
+  async cancelDataExport(keyValue: unknown): Promise<{ cancelled: boolean }> {
+    const key = this.dataExportKey(keyValue), active = this.dataExportActive;
+    if (!active || active.key !== key || active.project !== this.project) return { cancelled: false };
+    if (active.jobId) {
+      const job = await this.cancel(active.jobId);
+      // A completed publication must retain its receipt even if Cancel arrives late.
+      if (!job.cancel_requested || !["running", "cancelled"].includes(job.state)) return { cancelled: false };
+      active.cancelled = true;
+      // The bounded exporter polls this durable flag and removes its owned stage.
+      // Killing the worker would prevent that cleanup or lose a published receipt.
+    } else {
+      active.cancelled = true;
+      if (active.stage === "plan") this.worker.cancelCurrent();
+    }
+    return { cancelled: true };
+  }
+
+  async planIntensityExport(reportId: unknown, keyValue: unknown): Promise<unknown> {
+    const key = this.dataExportKey(keyValue);
+    if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId))
+      throw new Error("Choose an exact saved intensity comparison.");
+    if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    const active = this.beginDataExport(key, project, "plan");
+    this.running = { id: "intensity-report-plan", project };
+    try {
+      const response = await this.worker.request<import("../shared/intensity-contracts").IntensityExportPlan>("research_intensity_export_plan", { project, report_id: reportId }, 0);
+      if (active.cancelled) throw new Error("Intensity export preparation cancelled.");
+      if (this.project !== project || this.viewDocumentEpoch !== epoch) throw new Error("The study changed during preparation.");
+      if (!response || response.schema !== "loci.intensity-export-plan/v1" ||
+          response.report_id !== reportId || typeof response.report_hash !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(response.report_hash) || response.report_hash.slice(0, 32) !== reportId ||
+          typeof response.plan_hash !== "string" || !/^[a-f0-9]{64}$/u.test(response.plan_hash) ||
+          !response.status || typeof response.status.current !== "boolean" ||
+          !Array.isArray(response.status.changes) || response.status.changes.length > 100 ||
+          response.status.changes.some(row => !row || typeof row.result_id !== "string" ||
+            !/^[a-f0-9]{32}$/u.test(row.result_id) || typeof row.reason !== "string" || row.reason.length > 2048))
+        throw new Error("The engine returned an invalid intensity export preview.");
+      return { schema: response.schema, report_id: response.report_id, report_hash: response.report_hash,
+        plan_hash: response.plan_hash, status: { current: response.status.current,
+          changes: response.status.changes.map(row => ({ result_id: row.result_id, reason: row.reason })) } };
+    } finally {
+      if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; }
+      active.finish();
+    }
+  }
+
+  async exportIntensityReport(reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    const key = this.dataExportKey(keyValue);
+    if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId) ||
+        typeof planHash !== "string" || !/^[a-f0-9]{64}$/u.test(planHash))
+      throw new Error("Preview an exact saved comparison before exporting.");
+    if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    const active = this.beginDataExport(key, project, "export");
+    this.running = { id: "intensity-report-export", project }; this.switching = true;
+    try {
+      const picked = await dialog.showSaveDialog({ title: "Export intensity comparison", defaultPath: "Loci-intensity", buttonLabel: "Export report" });
+      if (active.cancelled) throw new Error("Intensity report export cancelled.");
+      if (picked.canceled || !picked.filePath) return null;
+      if (!path.isAbsolute(picked.filePath) || this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The report study or destination changed.");
+      const grant = await this.control.request<{ grant_id: string; plan_hash: string; basename: string }>(
+        "research_intensity_export_grant", { project, report_id: reportId, plan_hash: planHash, destination: picked.filePath }, 0);
+      if (active.cancelled) throw new Error("Intensity report export cancelled before submission.");
+      const job = await this.control.request<{ id: string }>("research_submit", {
+        project, operation: "intensity_export", request: { grant_id: grant.grant_id, plan_hash: grant.plan_hash }, request_key: key,
+      });
+      active.jobId = job.id; this.running.id = job.id; this.switching = false;
+      if (active.cancelled) { await this.cancel(job.id); throw new Error("Intensity report export cancelled before execution."); }
+      const receipt = await this.worker.request<{ schema: string; basename: string; report_hash: string; manifest_sha256: string }>("research_run", { project, job_id: job.id }, 0);
+      if (receipt.schema !== "loci.intensity-export-receipt/v1" || receipt.basename !== grant.basename ||
+          !/^[a-f0-9]{64}$/u.test(receipt.manifest_sha256) || typeof receipt.report_hash !== "string" ||
+          !/^[a-f0-9]{64}$/u.test(receipt.report_hash) || receipt.report_hash.slice(0, 32) !== reportId)
+        throw new Error("The engine returned an invalid intensity export receipt.");
+      return { schema: receipt.schema, basename: receipt.basename, report_hash: receipt.report_hash, manifest_sha256: receipt.manifest_sha256 };
+    } finally {
+      if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; this.switching = false; }
+      active.finish();
+    }
+  }
+
+  private async cancel(id: unknown): Promise<ResearchJob> {
     if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id))
       throw new Error("Invalid job identity.");
     const project = this.requireProject();
-    const result = await this.control.request("research_cancel", {
+    const result = await this.control.request<ResearchJob>("research_cancel", {
       project,
       job_id: id,
     });
-    if (this.running?.id === id && this.running.project === project)
+    const active = this.dataExportActive;
+    if (active?.jobId === id && active.project === project) {
+      // Every job entrypoint must let export cleanup and receipt recording finish.
+      if (result.cancel_requested && ["running", "cancelled"].includes(result.state))
+        active.cancelled = true;
+    } else if (this.running?.id === id && this.running.project === project) {
       this.worker.cancelCurrent();
+    }
     return result;
   }
 
@@ -1586,6 +1756,11 @@ export class ResearchBridge {
     handle("batch-retry", (batchId) => this.prepareExistingBatch(batchId, "retry"));
     handle("batch-export", (bindings, options) => this.exportReviewedBatch(bindings, options));
     handle("review-package-export", (bindings, options) => this.exportReviewPackage(bindings, options));
+    handle("data-export-plan", (request, key) => this.planDataExport(request, key));
+    handle("data-export-package", (planJson, key) => this.exportDataPackage(planJson, key));
+    handle("data-export-cancel", (key) => this.cancelDataExport(key));
+    handle("intensity-export-plan", (reportId, key) => this.planIntensityExport(reportId, key));
+    handle("intensity-export-package", (reportId, planHash, key) => this.exportIntensityReport(reportId, planHash, key));
     handle("cancel", (id) => this.cancel(id));
     handle("review", (result_id, revision_hash, disposition) =>
       this.control.request("research_review", {
@@ -1764,8 +1939,15 @@ export class ResearchBridge {
 
   async dispose(): Promise<void> {
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
-    if (this.running && this.running.id !== "submitting")
+    const active = this.dataExportActive;
+    if (active) {
+      await this.cancelDataExport(active.key);
+      // research_run also serves interruptible analyses. Drain this export here,
+      // before disposing its worker/control, including picker/submission races.
+      await active.finished;
+    } else if (this.running && this.running.id !== "submitting") {
       await this.cancel(this.running.id);
+    }
     await Promise.all([this.worker.dispose(), this.control.dispose(), this.viewer.dispose(), this.compute.dispose()]);
   }
 

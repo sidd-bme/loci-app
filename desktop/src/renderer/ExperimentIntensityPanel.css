@@ -1,0 +1,49 @@
+.experiment-intensity, .sample-sheet { min-width: 0; overflow-wrap: anywhere; }
+.experiment-intensity h2, .sample-sheet h2 { margin-top: 0; }
+.experiment-intensity h3 { margin: 20px 0 8px; }
+.experiment-intensity p, .sample-sheet p { max-width: 72ch; }
+.experiment-intensity label, .sample-sheet label { min-width: 0; }
+.experiment-intensity :is(input:not([type="checkbox"]), select, textarea), .sample-sheet :is(input, textarea) { width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.experiment-intensity textarea, .sample-sheet textarea { resize: vertical; min-height: 64px; font: inherit; line-height: 1.5; background: var(--graphite-925); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.sample-sheet textarea { font-family: var(--font-mono, monospace); font-size: var(--type-sm); }
+.intensity-setup { min-width: 0; margin: 12px 0; padding: 0; border: 0; }
+.intensity-setup > legend { font-weight: 600; color: var(--ink); }
+.intensity-result-choices { display: grid; gap: 8px; max-height: 280px; overflow: auto; margin-block: 12px; scrollbar-color: var(--line-strong) transparent; }
+.experiment-intensity .intensity-result-choice { display: flex; align-items: flex-start; gap: 8px; margin: 0; min-width: 0; }
+.intensity-result-choice input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--mineral); }
+.intensity-result-choice span { min-width: 0; }
+.intensity-result-choice small { display: block; font-size: var(--type-sm); color: var(--ink-secondary); margin-top: 3px; }
+.experiment-intensity .intensity-hint, .sample-sheet .intensity-hint { color: var(--ink-secondary); }
+.experiment-intensity .intensity-caution, .sample-sheet .intensity-caution { color: var(--warning); }
+.experiment-intensity [role="alert"], .sample-sheet [role="alert"] { color: var(--error); }
+.intensity-table { max-width: 100%; overflow: auto; margin-block: 12px; scrollbar-color: var(--line-strong) transparent; container-type: inline-size; }
+.intensity-table table { width: 100%; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.intensity-table caption { text-align: left; color: var(--ink-secondary); padding-block: 8px; inline-size: 100cqi; max-inline-size: 100cqi; box-sizing: border-box; position: sticky; left: 0; }
+.intensity-table :is(td, th) { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; min-width: 88px; overflow-wrap: normal; word-break: normal; }
+.intensity-table tbody td, .intensity-table code, .intensity-table button { white-space: nowrap; }
+.intensity-table thead th { color: var(--ink-secondary); font-weight: 600; }
+.intensity-table code { display: block; font-size: var(--type-xs); margin-top: 4px; }
+.intensity-table button { margin-top: 8px; }
+.intensity-details { margin-top: 16px; }
+.intensity-details summary { cursor: pointer; min-height: 28px; padding-block: 4px; color: var(--ink); }
+.intensity-details pre { max-width: 100%; max-height: 320px; overflow: auto; font-size: var(--type-xs); white-space: pre; background: var(--graphite-925); padding: 8px; scrollbar-color: var(--line-strong) transparent; }
+.intensity-hash { display: block; overflow-wrap: anywhere; font-size: var(--type-xs); }
+.intensity-report { margin-top: 16px; border-top: 1px solid var(--line); }
+.intensity-declaration, .sample-sheet-values { margin: 8px 0; }
+.intensity-declaration dt, .sample-sheet-values dt { font-size: var(--type-sm); color: var(--ink-secondary); }
+.intensity-declaration dd, .sample-sheet-values dd { margin: 2px 0 10px; white-space: pre-wrap; }
+.intensity-plot { max-width: 100%; min-width: 0; margin-block: 16px; }
+.intensity-plot-row { display: grid; grid-template-columns: minmax(64px, 28%) minmax(0, 1fr); gap: 12px; align-items: center; min-height: 52px; }
+.intensity-plot-label { min-width: 0; font-size: var(--type-sm); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.intensity-plot-lane { position: relative; height: 40px; min-width: 0; }
+.intensity-plot-lane::before { content: ""; position: absolute; inset: 20px 0 auto; border-top: 1px solid var(--line-strong); }
+.intensity-plot-point { position: absolute; width: 7px; height: 7px; box-sizing: border-box; border-radius: 50%; background: var(--mineral); border: 1px solid var(--ink); transform: translate(-50%, -50%); }
+.intensity-plot-mean { position: absolute; top: 5px; height: 30px; border-left: 2px solid var(--ink); transform: translateX(-50%); }
+.intensity-plot-range { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 16px; padding-left: calc(28% + 12px); color: var(--ink-secondary); font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
+.intensity-plot-range span { white-space: nowrap; }
+.experiment-intensity .intensity-axis-label { font-size: var(--type-sm); margin-block: 8px; color: var(--ink-secondary); }
+.intensity-report-list { margin: 8px 0; padding-left: 20px; }
+.intensity-report-list li { padding-block: 6px; }
+.intensity-report-list span { display: block; margin-bottom: 6px; }
+.experiment-intensity progress { width: 100%; accent-color: var(--mineral); }
+.experiment-intensity :is(button, input, textarea, select, summary, [tabindex]):focus-visible, .sample-sheet :is(button, input, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }

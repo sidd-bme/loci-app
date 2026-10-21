@@ -322,6 +322,11 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:batch-export", bindings, options),
   exportReviewPackage: (bindings, options) =>
     ipcRenderer.invoke("loci-research:review-package-export", bindings, options),
+  planDataExport: (request, key) => ipcRenderer.invoke("loci-research:data-export-plan", request, key),
+  planIntensityExport: (reportId, key) => ipcRenderer.invoke("loci-research:intensity-export-plan", reportId, key),
+  exportIntensityReport: (reportId, planHash, key) => ipcRenderer.invoke("loci-research:intensity-export-package", reportId, planHash, key),
+  exportDataPackage: (planJson, key) => ipcRenderer.invoke("loci-research:data-export-package", planJson, key),
+  cancelDataExport: (key) => ipcRenderer.invoke("loci-research:data-export-cancel", key),
   reviewResult: (id, revision, disposition) =>
     ipcRenderer.invoke("loci-research:review", id, revision, disposition),
   exportResult: (id, revision, workflowRunId) =>

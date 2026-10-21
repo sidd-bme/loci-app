@@ -23,6 +23,8 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
+import type { ScientificExportRequest, ScientificExportPreview } from "../shared/scientific-export-contracts";
+
 let canvasContext: Record<string, ReturnType<typeof vi.fn>>;
 beforeEach(() => {
   vi.stubGlobal(
@@ -396,6 +398,134 @@ async function openAdvancedTool(tool: string) {
   fireEvent.click(await screen.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
 }
 describe("ResearchWorkbench", () => {
+  function exportDraftFixture(indexed = false, excluded = false) {
+    const sourceB = { ...snapshot.sources[0], id: "e".repeat(32), sha256: "f".repeat(64), name: "Second specimen" };
+    const resultA = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256, review: { disposition: "reviewed" as const } };
+    const resultB = { ...resultA, id: "1".repeat(32), revision_hash: "2".repeat(64), source_id: sourceB.id, source_sha256: sourceB.sha256,
+      review: { disposition: excluded ? "excluded" as const : "reviewed" as const },
+      ...(indexed ? { schema: "loci.research-result/v2" as const, arrays: { image: { shape: [48, 64] } } } : {}) };
+    const study = { ...snapshot, project: { ...snapshot.project, project_id: "draft-study" }, sources: [snapshot.sources[0], sourceB], results: [resultA, resultB] };
+    const groups = study.results.filter((entry) => !excluded || entry.id === resultA.id).map((entry, index) => ({
+      id: `group-${entry.id}`, name: `Group ${index === 0 ? "A" : "B"}`, result_id: entry.id, revision_hash: entry.revision_hash,
+      source_id: entry.source_id, source_sha256: entry.source_sha256, included_count: 1,
+    }));
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      const exact = study.results.find((entry) => entry.id === request.result_id) ?? resultA;
+      if (operation === "view") return { image: "data:image/png;base64,view" };
+      if (operation === "result") return resultPage(request, study.results, [{ label: 1, area: 22 }]);
+      if (operation === "result_view") return resultView(exact);
+      if (operation === "population_group_list") return { groups: groups.filter((entry) => !request.result_id || entry.result_id === request.result_id) };
+      if (operation === "population_query") {
+        const summary = { metric: "measure", count: 1, missing_count: 0, min: 22, max: 22, mean: 22, median: 22 };
+        return { schema: "loci.population/v1", result_id: exact.id, revision_hash: exact.revision_hash, source_id: exact.source_id,
+          source_sha256: exact.source_sha256, metrics: [{ id: "measure", label: "Area", kind: "area", unit: "um^2" }],
+          query: { ...request, x_metric: "measure", y_metric: "measure", sort: null }, total_count: 1, filtered_count: 1,
+          accounting: { filter_excluded_count: 0, filter_missing_count: 0, scatter_missing_count: 0, metric_missing_counts: { measure: 0 } },
+          rows: [{ label: 1, values: { measure: 22 }, centroid_index: [2, 3], index_axes: "YX" }], selected: null,
+          scatter: { points: [{ label: 1, x: 22, y: 22 }], total_count: 1, displayed_count: 1, sampled: false, sampling: "all" },
+          histogram: { metric: "measure", edges: [22, 22], counts: [1], finite_count: 1, missing_count: 0, endpoints: "left-closed-right-open-last-closed" },
+          summaries: { x: summary, y: summary }, membership_sha256: "4".repeat(64), query_sha256: "5".repeat(64) };
+      }
+      if (operation === "large_result_view") return { result_id: exact.id, revision_hash: exact.revision_hash,
+        image: "data:image/png;base64,result", region: request.region, shape: [48, 64], image_shape: [48, 64], step: 1 };
+      return {};
+    });
+    const planDataExport = vi.fn(async (request: ScientificExportRequest): Promise<ScientificExportPreview> => ({ plan_json: JSON.stringify(request), plan: {
+      schema: "loci.data-export-plan/v1", plan_sha256: "3".repeat(64), request, purpose: request.purpose,
+      source_count: request.bindings.length, result_count: request.bindings.length, total_count: request.bindings.length,
+      selected_count: request.bindings.length, measurement_count: request.bindings.length, group_count: groups.length, membership_count: groups.length,
+      declared_replicate_count: 0, unassigned_source_count: request.bindings.length, mixed_units: false, units: [],
+      results: request.bindings.map((binding) => ({ result_id: binding.result_id, revision_hash: binding.revision_hash, source_id: binding.source_id,
+        name: binding.result_id === resultA.id ? "Result A" : "Result B", review_status: binding.result_id === resultB.id && excluded ? "excluded" : "reviewed",
+        total_count: 1, selected_count: 1, measurement_count: 1, group_count: binding.group_ids.length, preview: [] })),
+    } }));
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(study), execute, planDataExport,
+      exportDataPackage: vi.fn(), cancelDataExport: vi.fn().mockResolvedValue({ cancelled: true }) });
+    return { bridge, study, resultA, resultB, execute, planDataExport };
+  }
+  const exportChoice = (name: string, value: string) => fireEvent.change(screen.getByRole("combobox", { name }), { target: { value } });
+  const exportPanel = () => within(screen.getByRole("region", { name: "Export scientific data" }));
+  const exactExportChoices = () => within(screen.getByRole("group", { name: "Exact result revisions" }));
+
+  it.each([false, true])("preserves export draft through cross-source inspection, null recovery and tab return (indexed %s)", async (indexed) => {
+    const { bridge, resultA, resultB, planDataExport, execute } = exportDraftFixture(indexed);
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Results", "Info");
+    exportChoice("Data export result scope", "study");
+    fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
+    exportChoice("Data export purpose", "provisional");
+    exportChoice("Data export object scope", "groups");
+    for (const letter of ["A", "B"]) fireEvent.click(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` }));
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    fireEvent.click(exactExportChoices().getByRole("button", { name: `Inspect rev ${resultB.revision_hash.slice(0, 8)}` }));
+    await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    expect(document.querySelector(`[data-result-id="${resultA.id}"]`)).toBeNull();
+    expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id }));
+    const assertDraft = async () => {
+      expect(screen.getByRole("combobox", { name: "Data export result scope" })).toHaveValue("study");
+      expect(screen.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
+      expect(screen.getByRole("combobox", { name: "Data export object scope" })).toHaveValue("groups");
+      for (const input of exactExportChoices().getAllByRole("checkbox")) expect(input).toBeChecked();
+      for (const letter of ["A", "B"]) expect(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` })).toBeChecked();
+    };
+    await assertDraft();
+    expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Original image" }));
+    await screen.findByRole("group", { name: "Results on this image" });
+    await assertDraft();
+    fireEvent.click(screen.getByRole("button", { name: `Select rev ${resultB.revision_hash.slice(0, 8)}` }));
+    await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    await assertDraft();
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    expect(planDataExport.mock.calls.at(-1)![0]).toEqual({ purpose: "provisional", bindings: [resultA, resultB].map((entry) => ({
+      result_id: entry.id, revision_hash: entry.revision_hash, source_id: entry.source_id, source_sha256: entry.source_sha256,
+      subset: "groups", group_ids: [`group-${entry.id}`],
+    })) });
+    await openTool("View", "Display");
+    await openTool("Results", "Info");
+    await assertDraft();
+    expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    expect(bridge.exportDataPackage).not.toHaveBeenCalled();
+  });
+
+  it("keeps excluded review state during explicit provisional recovery and group creation navigation", async () => {
+    const { bridge, resultB, study } = exportDraftFixture(false, true);
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Results", "Info");
+    exportChoice("Data export result scope", "study");
+    fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    await exportPanel().findByRole("alert");
+    expect(exportPanel().getByRole("button", { name: `Inspect unreviewed rev ${resultB.revision_hash.slice(0, 8)}` })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Inspect pending/ })).not.toBeInTheDocument();
+    fireEvent.click(exportPanel().getByRole("button", { name: "Use Provisional data for review" }));
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    expect(exportPanel().getByRole("heading", { name: "Result B · excluded" })).toBeVisible();
+    expect(bridge.planDataExport).toHaveBeenLastCalledWith(expect.objectContaining({ purpose: "provisional" }), expect.any(String));
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    fireEvent.click(exactExportChoices().getByRole("button", { name: `Inspect rev ${resultB.revision_hash.slice(0, 8)}` }));
+    await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    exportChoice("Data export object scope", "groups");
+    fireEvent.click(await exportPanel().findByRole("checkbox", { name: "Group A · 1 objects" }));
+    fireEvent.click(await exportPanel().findByRole("button", { name: "Create group in Statistics & objects" }));
+    await screen.findByRole("table", { name: "Population object table" });
+    fireEvent.click(screen.getByRole("button", { name: "Review & export result" }));
+    expect(screen.getByRole("combobox", { name: "Data export result scope" })).toHaveValue("study");
+    expect(screen.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
+    expect(screen.getByRole("combobox", { name: "Data export object scope" })).toHaveValue("groups");
+    for (const input of exactExportChoices().getAllByRole("checkbox")) expect(input).toBeChecked();
+    expect(await exportPanel().findByRole("checkbox", { name: "Group A · 1 objects" })).toBeChecked();
+    expect(await exportPanel().findByRole("button", { name: "Create group in Statistics & objects" })).toBeEnabled();
+    expect(study.results[1].review?.disposition).toBe("excluded");
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+  });
+
   it("opens Study from the selected correction and sends only its exact direct parent/child pair", async () => {
     const parent = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256,
       arrays: { labels: { sha256: "1".repeat(64), shape: [3, 48, 64], dtype: "uint32" } } };
