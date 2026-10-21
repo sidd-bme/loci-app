@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Local packages identify themselves as numbered unreleased development builds with their own source revision; the compatibility version and published beta.2 download remain unchanged.
+
 ### Added
 
 - Scientific data packages with exact stored measurements, review and sample metadata, complete group memberships, provenance, and standalone Python/R readers.

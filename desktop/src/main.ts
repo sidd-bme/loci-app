@@ -1,4 +1,5 @@
 import { isLociManualLink } from "./main/manual-links";
+import { nativeAboutIdentity } from "./main/about-identity";
 import { BrowserWindow, Menu, app, dialog, ipcMain, session, shell } from "electron";
 import type {
   IpcMainEvent,
@@ -4411,6 +4412,15 @@ if (ownsSingleInstanceLock) {
 
 app.whenReady().then(async () => {
   if (!ownsSingleInstanceLock) return;
+  try {
+    const about = nativeAboutIdentity({ isPackaged: app.isPackaged, appPath: app.getAppPath(),
+      resourcesPath: process.resourcesPath, compatibilityVersion: app.getVersion() });
+    if (about) app.setAboutPanelOptions(about);
+  } catch {
+    dialog.showErrorBox("Loci build identity is invalid", "This packaged build has missing or inconsistent identity metadata. Rebuild or use a verified application bundle.");
+    app.exit(1);
+    return;
+  }
   installContentSecurityPolicy();
   workingResultRetentionStore = await openWorkingResultRetentionStore(
     path.join(app.getPath("userData"), "working-results"),

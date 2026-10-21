@@ -27,6 +27,8 @@ import { AutoUnpackNativesPlugin } from "@electron-forge/plugin-auto-unpack-nati
 import { VitePlugin } from "@electron-forge/plugin-vite";
 import type { HookFunctionArgs, PackagerOsxSignOptions } from "@electron/packager";
 import type { ForgeConfig } from "@electron-forge/shared-types";
+import { captureDevelopmentBuildIdentity, readDevelopmentBuildConfig, selectBuildChannel, writeDevelopmentBuildIdentity } from "./build-identity.ts";
+import { BUILD_IDENTITY_SCHEMA } from "./src/main/build-identity.ts";
 
 type FailClosedOsxSignOptions = PackagerOsxSignOptions & {
   continueOnError: false;
@@ -99,6 +101,13 @@ const windowsPackageMode = process.env.LOCI_WINDOWS_PACKAGE_MODE;
 const lifecycleEvent = process.env.npm_lifecycle_event ?? "";
 const windowsUnsignedLocal =
   windowsPackageMode === "unsigned-local" || /^(?:package|make):windows:local$/.test(lifecycleEvent);
+const localPackaging = macSignMode === "adhoc-local" || windowsUnsignedLocal;
+const buildChannel = selectBuildChannel(process.env, localPackaging);
+const developmentBuildConfig = buildChannel === "development" ? readDevelopmentBuildConfig(configDirectory) : undefined;
+const developmentIdentity = packagingRequested && developmentBuildConfig
+  ? captureDevelopmentBuildIdentity(path.resolve(configDirectory, ".."), developmentBuildConfig,
+      JSON.parse(readFileSync(path.join(configDirectory, "package.json"), "utf8")).version)
+  : undefined;
 
 if (macSignMode && macSignMode !== "adhoc-local") {
   throw new Error(`Unsupported LOCI_MAC_SIGN_MODE: ${macSignMode}`);
@@ -362,6 +371,10 @@ function hardenPackagedResources({ buildPath, platform, arch }: HookFunctionArgs
         ? path.join(buildPath, `${productName}.app`, "Contents", "Resources")
         : path.join(buildPath, "resources");
     const noticesDirectory = path.join(resourcesDirectory, "notices");
+    if (developmentBuildConfig) {
+      if (!developmentIdentity) throw new Error("Requested development package identity was not captured.");
+      writeDevelopmentBuildIdentity(resourcesDirectory, developmentIdentity);
+    }
     if (platform === "darwin" || platform === "mas") {
       // macOS volumes commonly fold case: MacOS/loci would replace MacOS/Loci.
       const desktopExecutable = path.join(resourcesDirectory, "..", "MacOS", productName);
@@ -411,6 +424,12 @@ const config: ForgeConfig = {
     // qualification package uses Electron's default icon until an ICO is added.
     icon: packagingPlatform === "win32" ? undefined : path.resolve(configDirectory, "assets", "Loci"),
     name: productName,
+    // CFBundleVersion is a numeric development counter; appVersion stays 0.2.0.
+    buildVersion: developmentBuildConfig ? `${developmentBuildConfig.buildNumber}.0.0` : undefined,
+    sanitizePackageJson: [(packageJson) => {
+      if (packageJson.lociBuildIdentity !== undefined) throw new Error("Source package already has a build identity marker.");
+      return developmentBuildConfig ? { ...packageJson, lociBuildIdentity: BUILD_IDENTITY_SCHEMA } : packageJson;
+    }],
     osxSign: macSignMode === "adhoc-local" ? localAdHocSign : undefined,
     // Packager 20's native copy resolves relative symlinks to source paths.
     // An empty list still executes its resource hooks; own this exact copy.
