@@ -49,10 +49,12 @@
 @media (max-width: 760px) { .population-explorer .population-metrics { grid-template-columns: minmax(0, 1fr); gap: 0; } }
 
 .population-explorer { padding: 18px; border-bottom: 0; }
-.population-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.population-heading { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
 .population-heading h2 { margin: 0; font-size: 18px; letter-spacing: -0.025em; }
-.population-heading > button { flex-shrink: 0; }
+.population-heading > button, .population-heading-actions { flex-shrink: 0; }
+.population-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .population-scope { margin: 5px 0 0; color: var(--ink-secondary); font-size: var(--type-sm); }
+.population-explorer .population-binding { margin: 3px 0 0; color: var(--ink-secondary); font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
 .population-explorer button, .population-chart-dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .population-filter-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
 .population-filters { padding: 2px 10px 10px; border: 1px solid var(--line); border-radius: 6px; }

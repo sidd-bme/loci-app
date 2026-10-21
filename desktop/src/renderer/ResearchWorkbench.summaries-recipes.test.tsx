@@ -604,6 +604,68 @@ describe("Info Review & export rendered summary component", () => {
     expect(table.textContent).not.toContain('"std_population"');
     expect(rows).toEqual([original]);
   });
+
+  it("lets returning researchers pick a source revision in Review & export when no result is active and jump to Statistics & objects", () => {
+    const api = createMockApi();
+    const onSelectResult = vi.fn();
+    const onOpenPopulation = vi.fn();
+    const secondResult = {
+      ...mockResult,
+      id: "res-2",
+      revision_hash: "9988776655443322",
+      method_label: "Watershed",
+      object_count: 14,
+      review: { disposition: "reviewed" as const },
+    };
+    const multiSnapshot: ResearchSnapshot = {
+      ...mockSnapshot,
+      results: [{ ...mockResult, object_count: 5 } as any, secondResult as any],
+    };
+
+    const view = render(
+      <Info
+        source={mockSource as any}
+        snapshot={multiSnapshot}
+        api={api}
+        result={null}
+        rows={[]}
+        selectedRow={null}
+        onSelectRow={vi.fn()}
+        onSave={vi.fn()}
+        report={async (w) => await w()}
+        busy={false}
+        onSnapshot={vi.fn()}
+        onSelectResult={onSelectResult}
+        onOpenPopulation={onOpenPopulation}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Results on this image" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Select rev 99887766" }));
+    expect(onSelectResult).toHaveBeenCalledWith(secondResult);
+
+    view.rerender(
+      <Info
+        source={mockSource as any}
+        snapshot={multiSnapshot}
+        api={api}
+        result={secondResult as any}
+        rows={[{ label: 1, measure: 42, measure_kind: "area", measure_unit: "µm²" }]}
+        selectedRow={null}
+        onSelectRow={vi.fn()}
+        onSave={vi.fn()}
+        report={async (w) => await w()}
+        busy={false}
+        onSnapshot={vi.fn()}
+        onSelectResult={onSelectResult}
+        onOpenPopulation={onOpenPopulation}
+      />,
+    );
+
+    expect(screen.getByText(/rev 99887766/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Explore in Statistics & objects" }));
+    expect(onOpenPopulation).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("Recipe restoration validation (WP B2)", () => {

@@ -51,6 +51,12 @@ Bring your own model and keep the rest of your workflow in one place. Use a [com
 - **Build a repeatable workflow.** Save recipes, run batches, and use the command line or local MCP connection for supported automation.
 - **Share the result.** Export tables, rendered figures and portable studies.
 
+Current source also includes [scientific data packages](docs/SCIENTIFIC_DATA_EXPORT.md)
+with exact stored measurements, provenance and Python/R readers, plus
+[sample sheets and raw mean intensity comparisons](docs/EXPERIMENT_INTENSITY.md)
+that retain image and declared replicate grouping. These additions are available
+when building from source; the published download remains **v0.2.0-beta.2**.
+
 ## Work your way
 
 Use the desktop for exploration and the command line for repeatable work. Discover commands, inspect a study and run supported operations from a local terminal.

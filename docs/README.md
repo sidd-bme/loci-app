@@ -26,6 +26,7 @@ Guides for working with images, understanding results and developing Loci.
 - **Analysis:** [quantification](QUANTIFICATION.md), [counting policy](COUNTING_POLICY.md), [Cellpose setup and compatibility](CELLPOSE_COMPATIBILITY.md), [model packages](MODEL_PACKAGE_FORMAT.md).
 - **Explore settings and groups:** [regional previews, ROI comparisons and population gates](EXPLORATION_AND_GROUPS.md).
 - **Explore results:** [object populations and statistics](OBJECT_POPULATIONS.md), [external labels](EXTERNAL_LABELS.md), [correction effects](CORRECTION_EFFECTS.md), [visual workflows](WORKFLOWS.md).
+- **Compare and export study data:** [sample sheets and raw mean intensity](EXPERIMENT_INTENSITY.md), [scientific data packages and Python/R readers](SCIENTIFIC_DATA_EXPORT.md). These workflows are available in current source; see the release record for the published download.
 - **Automation:** [command line](CLI.md), [local agents and MCP](AGENT_ACCESS.md).
 - **Sharing and compute:** [study interchange](RESEARCH_INTERCHANGE.md), [annotation interchange](ANNOTATION_INTERCHANGE.md), [remote workflow](REMOTE_WORKFLOW.md).
 

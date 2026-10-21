@@ -28,17 +28,29 @@ def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -
         grant = next(
             (
                 doc["data"]
-                for doc in project.documents("large_export_grant")
-                if doc["id"] == grant_id
+                for doc in project.documents(
+                    "intensity_export_grant"
+                    if job["operation"] == "intensity_export"
+                    else "data_export_grant"
+                    if job["operation"] == "scientific_data_export"
+                    else "large_export_grant",
+                    document_id=grant_id,
+                )
             ),
             None,
         )
     except (OSError, ValueError, KeyError, TypeError):
         return "Export publication status is unknown; inspect the destination before retrying."
-    if (
-        not grant
-        or grant.get("result_id") != request.get("result_id")
-        or grant.get("revision_hash") != request.get("revision_hash")
+    if job["operation"] == "intensity_export":
+        if not grant or grant.get("plan", {}).get("plan_hash") != request.get("plan_hash"):
+            return "Export publication status is unknown; inspect the destination before retrying."
+    elif not grant or (
+        grant.get("plan_sha256") != request.get("plan_sha256")
+        if job["operation"] == "scientific_data_export"
+        else (
+            grant.get("result_id") != request.get("result_id")
+            or grant.get("revision_hash") != request.get("revision_hash")
+        )
     ):
         return "Export publication status is unknown; inspect the destination before retrying."
     destination = grant.get("destination")
@@ -65,7 +77,11 @@ def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
         if not alive:
             try:
                 error = "Execution stopped before publication; submit a new key to retry."
-                if job.get("operation") == "large_result_export":
+                if job.get("operation") in {
+                    "large_result_export",
+                    "scientific_data_export",
+                    "intensity_export",
+                }:
                     error = "Execution stopped. " + _export_interruption_detail(project, job)
                 project.update_job(
                     job["id"],
@@ -166,6 +182,14 @@ def submit_job(
             if parent["revision_hash"] != observed.get("revision_hash"):
                 raise ValueError("Tracking input revision is stale")
             source_id = parent["source_id"]
+        elif operation == "scientific_data_export":
+            from .research_data_export import export_task_source
+
+            source_id = export_task_source(workbench.project, request)
+        elif operation == "intensity_export":
+            from .research_intensity_export import task_source
+
+            source_id = task_source(workbench.project, request)
         elif operation == "exploration_run":
             from .research_exploration import adoption_receipt
 
@@ -288,7 +312,11 @@ def run_job(
         current = project.job(job_id)
         if current["state"] == "running":
             err_msg = f"{type(exc).__name__}: execution stopped before publication."
-            if job["operation"] == "large_result_export":
+            if job["operation"] in {
+                "large_result_export",
+                "scientific_data_export",
+                "intensity_export",
+            }:
                 err_msg = f"{type(exc).__name__}: " + _export_interruption_detail(project, job)
             project.update_job(
                 job_id,

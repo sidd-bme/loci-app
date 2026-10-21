@@ -54,6 +54,7 @@ const call = (name: string, ...args: unknown[]) =>
   mocks.handlers.get(`loci-research:${name}`)!({}, ...args);
 const sha = "a".repeat(64);
 let root: string;
+let bridge: ResearchBridge;
 
 function figurePngChunk(kind: string, data = Buffer.alloc(0)): Buffer {
   const output = Buffer.alloc(12 + data.byteLength);
@@ -262,7 +263,8 @@ describe("native research bridge", () => {
       }
       return {};
     });
-    new ResearchBridge().register(() => {});
+    bridge = new ResearchBridge();
+    bridge.register(() => {});
   });
 
   afterEach(async () => {
@@ -1948,4 +1950,225 @@ describe("native research bridge", () => {
     const restored = await call("recovery-keep", idleEntry!.sessionId) as ResearchSnapshot;
     expect(restored).toBeDefined();
   });
+  it("preserves opaque data plans and only cancels their exact active request key", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    let finish!: (value: unknown) => void;
+    mocks.request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const payload = { purpose: "provisional", bindings: [] };
+    const pending = call("data-export-plan", payload, key);
+    expect(await call("data-export-cancel", "scientific-export:22222222-2222-4222-8222-222222222222")).toEqual({ cancelled: false });
+    expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    const response = { plan: { plan_sha256: sha }, plan_json: '{"exact_float":64.0}' };
+    finish(response);
+    expect(await pending).toEqual(response);
+    expect(mocks.request).toHaveBeenCalledWith("research_data_export_plan", { project: path.join(root, "Data.loci-study"), request: payload }, 0);
+    expect(await call("data-export-cancel", key)).toEqual({ cancelled: false });
+  });
+
+  it("discards a cancelled data preparation even if its worker response arrives", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    let finish!: (value: unknown) => void;
+    mocks.request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = call("data-export-plan", { purpose: "provisional", bindings: [] }, key);
+    expect(await call("data-export-cancel", key)).toEqual({ cancelled: true });
+    expect(mocks.clients[0].cancelCurrent).toHaveBeenCalledOnce();
+    finish({ plan: { plan_sha256: sha }, plan_json: '{"exact_float":64.0}' });
+    await expect(pending).rejects.toThrow(/preparation cancelled/);
+    await expect(call("data-export-plan", {}, "not a key")).rejects.toThrow(/unique/);
+  });
+
+  it("validates and minimizes an intensity export plan at the native boundary", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Intensity.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const reportHash = "a".repeat(64), key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const plan = { schema: "loci.intensity-export-plan/v1", report_id: reportHash.slice(0, 32), report_hash: reportHash,
+      plan_hash: sha, status: { current: true, changes: [] } };
+    mocks.request.mockResolvedValueOnce({ ...plan, private_path: "/private/secret" });
+    expect(await call("intensity-export-plan", plan.report_id, key)).toEqual(plan);
+    mocks.request.mockResolvedValueOnce({ ...plan, report_hash: "b".repeat(64) });
+    await expect(call("intensity-export-plan", plan.report_id, key)).rejects.toThrow(/invalid intensity export preview/);
+  });
+
+  it("publishes an exact saved intensity report with a native destination and strips private receipt fields", async () => {
+    const project = path.join(root, "Intensity.loci-study"), destination = path.join(root, "Intensity report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const reportHash = "a".repeat(64), reportId = reportHash.slice(0, 32);
+    const grant = { grant_id: "b".repeat(32), plan_hash: sha, basename: "Intensity report" };
+    const receipt = { schema: "loci.intensity-export-receipt/v1", basename: grant.basename, report_hash: reportHash, manifest_sha256: sha };
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockResolvedValueOnce({ ...receipt, destination, private_path: "/private/secret", grant_id: grant.grant_id });
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    expect(await call("intensity-export-package", reportId, sha, key)).toEqual(receipt);
+    expect(mocks.request).toHaveBeenCalledWith("research_intensity_export_grant", { project, report_id: reportId, plan_hash: sha, destination }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", { project, operation: "intensity_export", request: { grant_id: grant.grant_id, plan_hash: sha }, request_key: key });
+    await expect(call("intensity-export-package", "bad", sha, key)).rejects.toThrow(/exact saved/);
+  });
+
+  it.each(["panel", "jobs", "shutdown"])("drains cooperative intensity export cancellation from %s", async (route) => {
+    const project = path.join(root, "Intensity.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Intensity report") });
+    let fail!: (reason: Error) => void;
+    mocks.request.mockResolvedValueOnce({ grant_id: "b".repeat(32), plan_hash: sha, basename: "Intensity report" })
+      .mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("intensity-export-package", "a".repeat(32), sha, key);
+    await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0));
+    mocks.request.mockResolvedValueOnce({ state: "running", cancel_requested: true });
+    const shutdown = route === "shutdown" ? bridge.dispose() : null;
+    if (route === "panel") expect(await call("data-export-cancel", key)).toEqual({ cancelled: true });
+    if (route === "jobs") await call("cancel", "d".repeat(32));
+    if (shutdown) await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_cancel", { project, job_id: "d".repeat(32) }));
+    expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    expect(mocks.clients[0].dispose).not.toHaveBeenCalled();
+    const rejected = expect(pending).rejects.toThrow(/cancelled before publication/);
+    fail(new Error("Intensity export cancelled before publication"));
+    await rejected;
+    if (shutdown) await shutdown;
+  });
+
+  it("uses a main-owned data destination and removes paths from the returned receipt", async () => {
+    const project = path.join(root, "Data.loci-study"), destination = path.join(root, "Scientific data");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const grant = { grant_id: "b".repeat(32), source_id: "c".repeat(32), plan_sha256: sha, export_name: "Scientific data" };
+    const receipt = { schema: "loci.data-export-receipt/v1", basename: "Scientific data", purpose: "provisional", manifest_sha256: sha, result_count: 1, source_count: 1, selected_count: 3 };
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockResolvedValueOnce({ ...receipt, destination, grant_id: grant.grant_id, private_path: "/private/secret" });
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111", planJson = '{"exact_float":64.0}';
+    expect(await call("data-export-package", planJson, key)).toEqual(receipt);
+    expect(mocks.request).toHaveBeenCalledWith("research_data_export_grant", { project, plan_json: planJson, destination }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", { project, operation: "scientific_data_export", request: { grant_id: grant.grant_id, plan_sha256: sha }, request_key: key });
+    expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0);
+  });
+
+  it("cancels a data export picker before any destination grant is written", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let finish!: (value: unknown) => void;
+    mocks.save.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("data-export-package", "{}", key);
+    expect(await call("data-export-cancel", key)).toEqual({ cancelled: true });
+    finish({ canceled: false, filePath: path.join(root, "Never written") });
+    await expect(pending).rejects.toThrow(/cancelled/);
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it.each(["panel", "jobs", "shutdown"])("preserves the receipt when %s cancellation arrives after publication", async (route) => {
+    const project = path.join(root, "Data.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Scientific data") });
+    const grant = { grant_id: "b".repeat(32), source_id: "c".repeat(32), plan_sha256: sha, export_name: "Scientific data" };
+    let finish!: (value: unknown) => void;
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("data-export-package", "{}", key);
+    await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0));
+    mocks.request.mockResolvedValueOnce({ state: "succeeded", cancel_requested: false });
+    const shutdown = route === "shutdown" ? bridge.dispose() : null;
+    if (route === "panel") expect(await call("data-export-cancel", key)).toEqual({ cancelled: false });
+    if (route === "jobs") expect(await call("cancel", "d".repeat(32))).toEqual({ state: "succeeded", cancel_requested: false });
+    if (shutdown) {
+      await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_cancel", { project, job_id: "d".repeat(32) }));
+      expect(mocks.clients[0].dispose).not.toHaveBeenCalled();
+    }
+    expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    const receipt = { schema: "loci.data-export-receipt/v1", basename: grant.export_name, purpose: "provisional", manifest_sha256: sha, result_count: 1, source_count: 1, selected_count: 3 };
+    finish(receipt);
+    expect(await pending).toEqual(receipt);
+    if (shutdown) await shutdown;
+  });
+
+  it.each(["panel", "jobs", "shutdown"])("requests cooperative data cancellation from %s so the exporter can clean its stage", async (route) => {
+    const project = path.join(root, "Data.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Scientific data") });
+    let fail!: (reason: Error) => void;
+    mocks.request.mockResolvedValueOnce({ grant_id: "b".repeat(32), source_id: "c".repeat(32), plan_sha256: sha, export_name: "Scientific data" })
+      .mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("data-export-package", "{}", key);
+    await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0));
+    mocks.request.mockResolvedValueOnce({ state: "running", cancel_requested: true });
+    const shutdown = route === "shutdown" ? bridge.dispose() : null;
+    if (route === "panel") expect(await call("data-export-cancel", key)).toEqual({ cancelled: true });
+    if (route === "jobs") expect(await call("cancel", "d".repeat(32))).toEqual({ state: "running", cancel_requested: true });
+    if (shutdown) {
+      await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_cancel", { project, job_id: "d".repeat(32) }));
+      expect(mocks.clients[0].dispose).not.toHaveBeenCalled();
+    }
+    expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    const rejected = expect(pending).rejects.toThrow("cancelled before publication");
+    fail(new Error("Data export cancelled before publication"));
+    await rejected;
+    if (shutdown) await shutdown;
+  });
+
+  it.each(["plan", "picker"])("drains %s cancellation before disposing export workers", async (stage) => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let finish!: (value: unknown) => void;
+    const response = new Promise(resolve => { finish = resolve; });
+    if (stage === "plan") mocks.request.mockReturnValueOnce(response);
+    else mocks.save.mockReturnValueOnce(response);
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = stage === "plan" ? call("data-export-plan", {}, key) : call("data-export-package", "{}", key);
+    const rejected = expect(pending).rejects.toThrow(/cancelled/);
+    const shutdown = bridge.dispose();
+    await Promise.resolve();
+    expect(mocks.clients[0].dispose).not.toHaveBeenCalled();
+    expect(mocks.clients[0].cancelCurrent).toHaveBeenCalledTimes(stage === "plan" ? 1 : 0);
+    finish(stage === "plan" ? { plan: { plan_sha256: sha }, plan_json: "{}" } : { canceled: false, filePath: path.join(root, "Never written") });
+    await rejected; await shutdown;
+    expect(mocks.clients[0].dispose).toHaveBeenCalledOnce();
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_cancel" || method === "research_data_export_grant")).toBe(false);
+  });
+
+  it("keeps hard cancellation for an unrelated analysis job", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let finish!: (value: unknown) => void;
+    mocks.request.mockResolvedValueOnce({ id: "d".repeat(32) }).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = call("execute", "cellpose_run", { source_id: "c".repeat(32) });
+    await vi.waitFor(() => expect(mocks.request.mock.calls.some(([method]) => method === "research_run")).toBe(true));
+    mocks.request.mockResolvedValueOnce({ state: "running", cancel_requested: true });
+    await call("cancel", "d".repeat(32));
+    expect(mocks.clients[0].cancelCurrent).toHaveBeenCalledOnce();
+    finish({}); await pending;
+  });
+
+  it("preserves bound view autosaves during an export picker while keeping document guards", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Data.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let closePicker!: (value: unknown) => void;
+    mocks.save.mockReturnValueOnce(new Promise(resolve => { closePicker = resolve; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("data-export-package", "{}", key);
+    const view = { source_id: "b".repeat(32), source_sha256: sha, expected_revision: 0, state: {} };
+    await expect(call("execute", "save_source_view", view)).resolves.toEqual({});
+    expect(mocks.request).toHaveBeenCalledWith("research_execute", { project: path.join(root, "Data.loci-study"), operation: "save_source_view", request: view });
+    await expect(call("execute", "cellpose_run", { source_id: "b".repeat(32) })).rejects.toThrow("finish opening");
+    await expect(call("open")).rejects.toThrow("active study operation");
+    closePicker({ canceled: true }); await pending;
+    let closeOpen!: (value: unknown) => void;
+    mocks.open.mockReturnValueOnce(new Promise(resolve => { closeOpen = resolve; }));
+    const opening = call("open");
+    await expect(call("execute", "save_source_view", view)).rejects.toThrow("finish opening");
+    closeOpen({ canceled: true, filePaths: [] }); await opening;
+  });
+
 });

@@ -5,6 +5,8 @@ import type { ResearchDesktopApi, ResearchResult } from "../shared/research-cont
 import PopulationChart, { populationMetricName, populationDisplayUnit } from "./PopulationChart";
 import PopulationChartDialog from "./PopulationChartDialog";
 import PopulationFigureExport from "./PopulationFigureExport";
+import { reviewLabel } from "./ResearchReviewHistory";
+import { resultTitle } from "./result-title";
 import { fullChartView, populationNumber, type ChartView } from "./population-chart-view";
 import "./ResearchPopulationExplorer.css";
 
@@ -30,6 +32,7 @@ export type ResearchPopulationExplorerProps = {
   onSelect: (row: Record<string, unknown>) => void; onLocate: (row: Record<string, unknown>) => void;
   onEdit?: (target: { result_id: string; revision_hash: string; label: number }) => void;
   onMeasureCompartments?: () => void;
+  onOpenReviewExport?: () => void;
   onHighlight?: (membership: PopulationHighlight | null) => void;
   active?: boolean; focused?: boolean; onToggleFocus?: () => void;
 };
@@ -117,7 +120,7 @@ export function ResearchPopulationExplorer(props: ResearchPopulationExplorerProp
   return <PopulationExplorer key={`${result.id}:${result.revision_hash}:${result.source_id}:${result.source_sha256 ?? ""}`} {...props} />;
 }
 
-function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, onEdit, onHighlight, onMeasureCompartments, active = true, focused = false, onToggleFocus }: ResearchPopulationExplorerProps) {
+function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, onEdit, onHighlight, onMeasureCompartments, onOpenReviewExport, active = true, focused = false, onToggleFocus }: ResearchPopulationExplorerProps) {
   const [query, setQuery] = useState<PopulationQuery>(initialQuery);
   const [data, setData] = useState<PopulationResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -245,10 +248,14 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
   });
   return <section className="research-panel population-explorer" aria-label="Object population explorer" aria-busy={loading || selectionPending}>
     <header className="population-heading"><div><h2>Statistics &amp; objects</h2>
-      <p className="population-scope">{result.selection ? `T ${result.selection.t + 1} · Z ${result.selection.z + 1}${result.selection.z_stop === undefined ? "" : `–${result.selection.z_stop}`}` : "Source plane scope unavailable"} · {result.arrays?.labels?.shape?.length === 3 || result.arrays?.image?.shape?.length === 3 ? "3D objects" : "2D objects"}</p></div>
-      {onToggleFocus && <button type="button" onClick={onToggleFocus} aria-pressed={focused}
-        aria-label={focused ? "Return to image and statistics" : "Focus statistics workspace"}>
-        {focused ? <ArrowLeft size={15} /> : <Maximize2 size={15} />}{focused ? "Show image" : "Focus statistics"}</button>}
+      <p className="population-scope">{result.selection ? `T ${result.selection.t + 1} · Z ${result.selection.z + 1}${result.selection.z_stop === undefined ? "" : `–${result.selection.z_stop}`}` : "Source plane scope unavailable"} · {result.arrays?.labels?.shape?.length === 3 || result.arrays?.image?.shape?.length === 3 ? "3D objects" : "2D objects"}</p>
+      <p className="population-binding">{resultTitle(result)} · {result.object_count.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · {reviewLabel(result.review)} · rev {result.revision_hash.slice(0, 8)}</p></div>
+      <div className="population-heading-actions">
+        {onOpenReviewExport && <button type="button" onClick={onOpenReviewExport}>Review &amp; export result</button>}
+        {onToggleFocus && <button type="button" onClick={onToggleFocus} aria-pressed={focused}
+          aria-label={focused ? "Return to image and statistics" : "Focus statistics workspace"}>
+          {focused ? <ArrowLeft size={15} /> : <Maximize2 size={15} />}{focused ? "Show image" : "Focus statistics"}</button>}
+      </div>
     </header>
     {onMeasureCompartments && <details className="population-measurement-guide"><summary>Raw channels &amp; compartments</summary>
       <p className="population-note">Axes use the saved raw-channel measurements. Compartment results add whole-cell, nuclear-intersection and remaining-area measurements from declared compatible label revisions.</p>

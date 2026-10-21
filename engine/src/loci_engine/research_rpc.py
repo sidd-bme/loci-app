@@ -8,7 +8,7 @@ from typing import Any
 from .export import sanitize_basename
 from .quantitative import exact_keys
 from .research_jobs import TASK_OPERATIONS, cancel_job, reconcile_jobs, run_job, submit_job
-from .research_project import ResearchProject
+from .research_project import ResearchProject, parse_json
 from .workbench import Workbench
 
 _ACTIVE: Workbench | None = None
@@ -24,6 +24,20 @@ def _research_export_basename(filename: str) -> str:
 
 def _open(path: str) -> Workbench:
     global _ACTIVE
+    requested = Path(path).expanduser()
+    if _ACTIVE is not None and requested == _ACTIVE.project.root:
+        project = _ACTIVE.project
+        if requested.resolve(strict=True) != requested:
+            raise ValueError("Active study location became linked")
+        # A warm RPC is not a native reopen. Reuse the already-open project so
+        # cancellation is not queued behind revalidation of every saved report.
+        # Connections retain directory/layout/schema guards; report read/save/
+        # export operations still validate their exact snapshots and references.
+        with project.connection() as connection:
+            row = connection.execute("SELECT value FROM metadata WHERE key='project'").fetchone()
+            if row is None or parse_json(row[0]).get("project_id") != project.meta["project_id"]:
+                raise ValueError("Active study project identity changed")
+        return _ACTIVE
     project = ResearchProject(path)
     if _ACTIVE is not None and _ACTIVE.project.root != project.root:
         _ACTIVE.close()
@@ -34,6 +48,33 @@ def _open(path: str) -> Workbench:
 
 
 def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "research_intensity_export_plan":
+        from .research_intensity_export import plan
+
+        exact_keys(params, {"project", "report_id"}, method)
+        return plan(_open(params["project"]).project, params["report_id"])
+    if method == "research_intensity_export_grant":
+        from .research_intensity_export import grant
+
+        exact_keys(params, {"project", "report_id", "plan_hash", "destination"}, method)
+        return grant(
+            _open(params["project"]).project,
+            params["report_id"],
+            params["plan_hash"],
+            params["destination"],
+        )
+    if method == "research_data_export_plan":
+        from .research_data_export import plan_export
+
+        exact_keys(params, {"project", "request"}, method)
+        return plan_export(_open(params["project"]).project, params["request"])
+    if method == "research_data_export_grant":
+        from .research_data_export import create_export_grant
+
+        exact_keys(params, {"project", "plan_json", "destination"}, method)
+        return create_export_grant(
+            _open(params["project"]).project, params["plan_json"], params["destination"]
+        )
     if method == "research_review_package_export":
         from .research_review_package import export_review_package
 

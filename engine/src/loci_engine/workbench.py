@@ -1454,6 +1454,35 @@ class Workbench:
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if operation == "scientific_data_export":
+            from .research_data_export import execute_export_task
+
+            return execute_export_task(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "intensity_export":
+            from .research_intensity_export import execute
+
+            return execute(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation.startswith("intensity_"):
+            from .research_intensity_reports import execute
+
+            return execute(self.project, operation, request, check=publication_guard)
+        if operation.startswith("sample_sheet_"):
+            from . import research_sample_sheet
+
+            if operation == "sample_sheet_template":
+                exact_keys(request, set(), operation)
+                return research_sample_sheet.template(self.project)
+            if operation == "sample_sheet_preview":
+                exact_keys(request, {"csv_text"}, operation)
+                return research_sample_sheet.preview(self.project, request.get("csv_text"))
+            if operation == "sample_sheet_apply":
+                exact_keys(request, {"preview"}, operation)
+                return research_sample_sheet.apply(
+                    self.project, request.get("preview"), publication_guard=publication_guard
+                )
+            raise ValueError("Unknown sample sheet operation")
         if operation == "labels_import":
             from .research_labels_import import import_labels
 

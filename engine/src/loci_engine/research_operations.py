@@ -3,6 +3,36 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "sample_sheet_template": {
+        "mutates": False,
+        "summary": "Inspect a stable source-ID sample CSV template",
+    },
+    "sample_sheet_preview": {
+        "mutates": False,
+        "summary": "Validate exact sample CSV changes before applying",
+    },
+    "sample_sheet_apply": {
+        "mutates": True,
+        "summary": "Apply one current sample CSV preview atomically",
+    },
+    "intensity_catalog": {
+        "mutates": False,
+        "summary": "Inspect stored raw mean-intensity endpoints",
+    },
+    "intensity_preview": {
+        "mutates": False,
+        "summary": "Preview equal image and declared replicate intensity means",
+    },
+    "intensity_save": {"mutates": True, "summary": "Save an immutable exact intensity comparison"},
+    "intensity_get": {
+        "mutates": False,
+        "summary": "Reopen a saved intensity comparison without recomputation",
+    },
+    "intensity_list": {"mutates": False, "summary": "List saved intensity comparisons"},
+    "intensity_export": {
+        "mutates": False,
+        "summary": "Publish a saved intensity report through a private grant",
+    },
     "remote_analysis_cancel": {
         "mutates": True,
         "summary": "Cancel a remote analysis bound to the current study",
@@ -227,6 +257,10 @@ OPERATION_CATALOG = {
         "mutates": True,
         "summary": "Verify and adopt an uncorrected large-components result bundle",
     },
+    "scientific_data_export": {
+        "mutates": False,
+        "summary": "Publish a planned scientific CSV package through a private destination grant",
+    },
     "large_result_export": {
         "mutates": False,
         "summary": "Stream reviewed large result to an absent destination directory",
@@ -317,6 +351,8 @@ TASK_OPERATIONS = frozenset(
         "large_result_delete",
         "large_result_adopt",
         "large_result_export",
+        "scientific_data_export",
+        "intensity_export",
         "preview_recipe",
         "histology_run",
         "histology_preview",

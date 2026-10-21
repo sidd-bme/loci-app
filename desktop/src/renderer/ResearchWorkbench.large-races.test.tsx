@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
 import type { ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
+import type { ScientificExportRequest } from "../shared/scientific-export-contracts";
 
 const ID_A = "a".repeat(32);
 const ID_B = "b".repeat(32);
@@ -140,6 +141,70 @@ async function sourceButton(name: string) {
   fireEvent.click(button);
   await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent(name));
 }
+
+it("exports the selected v2 revision and group union from Review & export independently of its object page", async () => {
+  const state = harness(true);
+  const selected: ResearchResult = { ...result, object_count: 10000, review: { disposition: "reviewed" } };
+  state.current().results[0] = selected;
+  const groupId = "3".repeat(32);
+  const execute = state.execute.getMockImplementation()!;
+  state.execute.mockImplementation(async (operation, request) => {
+    if (operation === "population_group_list") return { groups: [{
+      id: groupId, name: "Selected population", result_id: selected.id,
+      revision_hash: selected.revision_hash, source_id: ID_A, source_sha256: SHA_A,
+      included_count: 2, source_available: true,
+    }] };
+    return execute(operation, request);
+  });
+  state.api.planDataExport = vi.fn(async (request: ScientificExportRequest) => ({
+    plan_json: "opaque exact v2 export plan",
+    plan: {
+      schema: "loci.data-export-plan/v1", purpose: request.purpose, request,
+      plan_sha256: "4".repeat(64), source_count: 1, result_count: 1,
+      total_count: 10000, selected_count: 2, measurement_count: 8, group_count: 1,
+      membership_count: 2, declared_replicate_count: 0, unassigned_source_count: 1,
+      mixed_units: false, units: [], results: [{
+        result_id: selected.id, revision_hash: selected.revision_hash, source_id: ID_A,
+        name: "Source A", review_status: "reviewed", total_count: 10000,
+        selected_count: 2, measurement_count: 8, group_count: 1,
+        preview: [{ label: "4294967295", measure: "0.12345678901234568", measure_unit: "um^2" }],
+      }],
+    },
+  }));
+  state.api.exportDataPackage = vi.fn();
+  state.api.cancelDataExport = vi.fn().mockResolvedValue({ cancelled: true });
+  render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
+  await screen.findByRole("main", { name: "Research workspace" });
+  const history = await screen.findByRole("button", { name: /Threshold segmentation.*10000 objects/i });
+  await waitFor(() => expect(history).toBeEnabled());
+  fireEvent.click(history);
+  await chooseInfo();
+  const inspector = await screen.findByRole("region", { name: "Large result objects" });
+  expect(await within(inspector).findByRole("button", { name: "#1" })).toBeVisible();
+  // The inspector has loaded just one object; export uses server-validated scope.
+  expect(within(inspector).getByRole("status")).toHaveTextContent("1–1");
+  const panel = await screen.findByRole("region", { name: "Export scientific data" });
+  expect(screen.getAllByRole("region", { name: "Export scientific data" })).toHaveLength(1);
+  fireEvent.change(within(panel).getByRole("combobox", { name: "Data export object scope" }), { target: { value: "groups" } });
+  const group = await within(panel).findByRole("checkbox", { name: "Selected population · 2 objects" });
+  expect(state.execute).toHaveBeenCalledWith("population_group_list", {
+    result_id: selected.id, revision_hash: selected.revision_hash,
+  });
+  expect(within(panel).getByRole("button", { name: "Preview data" })).toBeDisabled();
+  fireEvent.click(group);
+  fireEvent.click(within(panel).getByRole("button", { name: "Preview data" }));
+  await waitFor(() => expect(state.api.planDataExport).toHaveBeenCalledExactlyOnceWith({
+    purpose: "reviewed", bindings: [{
+      source_id: ID_A, source_sha256: SHA_A, result_id: selected.id,
+      revision_hash: selected.revision_hash, subset: "groups", group_ids: [groupId],
+    }],
+  }, expect.stringMatching(/^scientific-export:/)));
+  expect(within(panel).getByText("Objects in revisions", { selector: "dt" }).nextElementSibling).toHaveTextContent("10000");
+  expect(within(panel).getByText("Objects to export", { selector: "dt" }).nextElementSibling).toHaveTextContent("2");
+  expect(within(panel).getByRole("cell", { name: "4294967295" })).toBeVisible();
+  expect(within(panel).getByRole("button", { name: "Export data package…" })).toBeEnabled();
+  expect(state.api.exportResult).not.toHaveBeenCalled();
+});
 
 it("keeps a completed A run in history without replacing B after A to B to A navigation", async () => {
   const state = harness();

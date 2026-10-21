@@ -311,3 +311,43 @@ def test_linked_database_artifact_directory_and_source_are_rejected(study, tmp_p
 def test_ambiguous_or_nonfinite_json_rejected(value):
     with pytest.raises(ValueError):
         parse_json(value)
+
+
+def test_exact_document_lookup_does_not_decode_unrelated_private_grants(study, monkeypatch):
+    requested_id = "a" * 32
+    requested = study.put_document(
+        "data_export_grant", requested_id, {"plan_json": "private opaque plan"}, expected_revision=0
+    )
+    second = study.put_document(
+        "data_export_grant", "b" * 32, {"plan_json": "second opaque plan"}, expected_revision=0
+    )
+    assert study.documents("data_export_grant") == [requested, second]
+    malformed = '{"private_path":"/private/unrelated-study", invalid'
+    with study.connection() as connection:
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?)",
+            ("data_export_grant", "c" * 32, 1, malformed),
+        )
+        # The same requested ID in another kind must also remain unread.
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?)", ("sample", requested_id, 1, malformed)
+        )
+    decoded = []
+    real_parse = project_module.parse_json
+
+    def parse(record):
+        assert record != malformed, "unrelated private document reached the JSON decoder"
+        parsed = real_parse(record)
+        # Opening a project connection also verifies its small metadata record.
+        if isinstance(parsed, dict) and parsed.get("kind") == "data_export_grant":
+            decoded.append(record)
+        return parsed
+
+    monkeypatch.setattr(project_module, "parse_json", parse)
+    assert study.documents("data_export_grant", document_id=requested_id) == [requested]
+    assert len(decoded) == 1
+    assert study.documents("data_export_grant", document_id="d" * 32) == []
+    assert len(decoded) == 1
+    with pytest.raises(ValueError, match="identity"):
+        study.documents("data_export_grant", document_id="' OR 1=1 --")
+    assert len(decoded) == 1

@@ -13,4 +13,19 @@ describe("research request byte limits", () => {
     expect(JSON.stringify(request).length).toBeLessThan(1024 ** 2);
     expect(() => assertResearchRequestBound("run_recipe", request)).toThrow("1 MiB");
   });
+  it("bounds report snapshots and sample previews without widening ordinary operation requests", () => {
+    const report = { report: "a".repeat(6 * 1024 ** 2) };
+    expect(() => assertResearchRequestBound("intensity_save", report)).not.toThrow();
+    expect(() => assertResearchRequestBound("run_recipe", report)).toThrow("1 MiB");
+    expect(() => assertResearchRequestBound("intensity_save", { report: "a".repeat(9 * 1024 ** 2) })).toThrow(/byte limit/);
+    expect(() => assertResearchRequestBound("sample_sheet_apply", { preview: "a".repeat(4 * 1024 ** 2) })).toThrow(/byte limit/);
+  });
+  it("bounds decoded report text separately from its escaped transport envelope", () => {
+    const escaped = { report_json: '"'.repeat(6 * 1024 ** 2) };
+    expect(() => assertResearchRequestBound("intensity_save", escaped)).not.toThrow();
+    expect(() => assertResearchRequestBound("run_recipe", escaped)).toThrow("1 MiB");
+    expect(() => assertResearchRequestBound("intensity_save", { report_json: '"'.repeat(8 * 1024 ** 2 + 1) })).toThrow("8 MiB");
+    expect(() => assertResearchRequestBound("intensity_save", { report_json: "界".repeat(3 * 1024 ** 2) })).toThrow("8 MiB");
+    expect(() => assertResearchRequestBound("intensity_save", { report_json: {} })).toThrow("8 MiB");
+  });
 });

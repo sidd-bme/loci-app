@@ -2084,3 +2084,86 @@
 .image-first-workbench .research-canvas:has(> .research-view-toolbar) { grid-template-rows: auto minmax(0, 1fr) auto; }
 .research-view-toolbar { min-width: 0; }
 .research-view-toolbar .research-canvas-toolbar { min-height: 36px; box-sizing: border-box; }
+.image-first-workbench .research-canvas-toolbar > span.source-browser-breadcrumb { flex: 0 1 auto; }
+.image-first-workbench .research-canvas-toolbar > span:not(.source-browser-breadcrumb):not(.result-source-count) { flex: 1 0 auto; }
+.image-first-workbench .research-canvas-toolbar > span.result-source-count { flex: 0 0 auto; }
+
+.research-result-workflow-bar,
+.research-result-recovery-card {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--graphite-850);
+}
+.research-result-workflow-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.research-result-workflow-summary strong {
+  color: var(--ink);
+  font-size: var(--type-sm);
+}
+.research-result-workflow-summary span {
+  color: var(--ink-secondary);
+  font-size: var(--type-xs, 11px);
+  font-variant-numeric: tabular-nums;
+}
+.research-result-recovery-card > h3 {
+  margin-top: 0;
+}
+.research-result-recovery-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.research-result-recovery-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.research-result-recovery-row > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.research-result-recovery-row strong {
+  color: var(--ink);
+  font-size: var(--type-sm);
+  overflow-wrap: anywhere;
+}
+.research-result-recovery-row small {
+  color: var(--ink-secondary);
+  font-size: var(--type-xs, 11px);
+  font-variant-numeric: tabular-nums;
+}
+.research-result-recovery-row button {
+  flex: 0 0 auto;
+  font-size: var(--type-xs, 11px);
+  min-height: 28px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+.research-result-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.research-result-summary-header h3 {
+  margin: 0;
+}
+.research-result-summary-header button {
+  font-size: var(--type-xs, 11px);
+  min-height: 26px;
+  padding: 2px 8px;
+}
