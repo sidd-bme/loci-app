@@ -153,8 +153,23 @@ async function selectResult(id) {
   assert.ok(result, "The requested result is not in this study");
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
-  const sourceButton = page.locator(researchSourceButtonSelector).filter({ has: page.getByText(resultSource.name, { exact: true }) });
+  const browser = page.locator('.research-sources .source-browser');
+  await browser.getByRole('searchbox', { name: 'Search images and folders', exact: true }).fill('');
+  const tree = browser.getByRole('tree', { name: 'Study images', exact: true });
+  if (await tree.count()) {
+    // Reveal folder leaves through the ordinary keyboard disclosures; hidden
+    // descendants are intentionally not mounted in the source browser.
+    while (await tree.locator('[role="treeitem"][aria-expanded="false"]').count()) {
+      const folderId = await tree.locator('[role="treeitem"][aria-expanded="false"]').first().getAttribute('data-folder-id');
+      assert.ok(folderId);
+      const folder = tree.locator(`[role="treeitem"][data-folder-id=${JSON.stringify(folderId)}]`);
+      await folder.focus(); await folder.press('ArrowRight');
+      await until(() => folder.getAttribute('aria-expanded'), value => value === 'true', 'visible source folder expansion', 30_000);
+    }
+  }
+  const sourceButton = page.locator(`${researchSourceButtonSelector}[data-source-id="${resultSource.id}"]`);
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
+  await until(() => sourceButton.getAttribute('aria-current'), value => value === 'true', 'exact result source activation');
   await page.locator(`button[data-result-id="${id}"]`).click();
   await page.locator(`button[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
