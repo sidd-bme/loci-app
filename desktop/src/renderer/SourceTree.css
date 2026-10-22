@@ -7,8 +7,8 @@
 .source-browser__search input::selection { background: var(--mineral-wash); }
 .source-browser__search input { caret-color: var(--mineral-bright); }
 .source-browser__search button { display: grid; place-items: center; min-width: 24px; min-height: 24px; padding: 2px; border: 0; background: transparent; }
-.source-browser__toolbar { display: flex; justify-content: space-between; gap: 4px; align-items: center; margin-block: 6px; }
-.source-browser__toolbar > div { display: flex; min-width: 0; gap: 2px; }
+.source-browser__toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px; align-items: center; margin-block: 6px; }
+.source-browser__toolbar > div { display: flex; flex-wrap: wrap; min-width: 0; gap: 2px; }
 .source-browser__toolbar button { min-height: 28px; padding: 3px 6px; border-color: transparent; background: transparent; color: var(--ink-muted); font-size: var(--type-sm); white-space: nowrap; }
 .source-browser__toolbar button[aria-pressed="true"] { color: var(--ink); background: var(--graphite-800); }
 .source-browser__toolbar > button { display: grid; place-items: center; min-width: 28px; padding: 4px; }

@@ -63,12 +63,14 @@ function mount(setup = fixture(), activeSnapshot = snapshot) {
   const props = { api: setup.api, snapshot: activeSnapshot, onInspect: setup.onInspect, onSnapshot: setup.onSnapshot };
   return { ...render(<ExperimentIntensityPanel {...props} />), ...setup, props };
 }
-const choose = (name: string, value: string) => fireEvent.change(screen.getByRole("combobox", { name }), { target: { value } });
+const resultCheckbox = (id: string) => within(screen.getByText(id, { selector: ".intensity-identity dd" }).closest<HTMLElement>(".intensity-result-row")!).getByRole("checkbox");
+const channelName = /^Intensity channel for Image A · segmentation(?: · result \d+)?$/;
+const choose = (name: string | RegExp, value: string) => fireEvent.change(screen.getByRole("combobox", { name }), { target: { value } });
 async function configure() {
-  fireEvent.click(screen.getByRole("checkbox", { name: `Intensity result ${result.id}` }));
+  fireEvent.click(resultCheckbox(result.id));
   await screen.findByRole("option", { name: "Object mean" });
   choose("Intensity compartment", "object");
-  choose(`Intensity channel for ${result.id}`, descriptor.id);
+  choose(channelName, descriptor.id);
   for (const [label, value] of [["Shared channel declaration", declaration.channel], ["Acquisition context", declaration.acquisition_context], ["Comparability rationale", declaration.rationale]])
     fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
 }
@@ -77,15 +79,54 @@ async function prepare() {
   await screen.findByRole("region", { name: "Intensity comparison preview" });
 }
 async function openSaved(stored = report()) {
-  const details = screen.getByText(/Saved intensity reports \(/).closest("details")!;
+  const details = screen.getByText(/Saved intensity reports \(/).closest<HTMLDetailsElement>("details")!;
   details.open = true;
-  fireEvent.click(await screen.findByRole("button", { name: `Open intensity report ${stored.report_hash.slice(0, 32)}` }));
+  const identity = await screen.findByText(stored.report_hash.slice(0, 32), { selector: "code" });
+  const open = within(identity.closest<HTMLElement>("li")!).getByRole("button", { name: /^Open saved intensity report 1:/ });
+  expect(open.getAttribute("aria-label")).not.toContain(stored.created_at);
+  fireEvent.click(open);
   await screen.findByRole("region", { name: "Saved intensity report" });
   await waitFor(() => expect(screen.getByRole("button", { name: "Recompute as new preview" })).toBeEnabled());
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((yes) => { resolve = yes; }); return { promise, resolve }; }
 
 describe("ExperimentIntensityPanel", () => {
+  it("uses concise human method labels and retains unique exact identities when names and methods repeat", () => {
+    const duplicate = { ...result, id: "2".repeat(32), revision_hash: "3".repeat(64), created_at: "2026-10-22T01:02:03Z" };
+    mount(fixture(), { ...snapshot, results: [result, duplicate] });
+    const first = resultCheckbox(result.id), second = resultCheckbox(duplicate.id);
+    expect(first).toHaveAccessibleName("Intensity result: Image A · segmentation · result 1 · Reviewed");
+    expect(second).toHaveAccessibleName("Intensity result: Image A · segmentation · result 2 · Reviewed");
+    expect(second.closest<HTMLElement>(".intensity-result-row")).toHaveAttribute("data-intensity-result-id", duplicate.id);
+    expect(second.closest<HTMLElement>(".intensity-result-row")).toHaveAttribute("data-revision-hash", duplicate.revision_hash);
+    const disclosure = second.closest<HTMLElement>(".intensity-result-row")!.querySelector("summary")!;
+    disclosure.focus(); expect(disclosure).toHaveFocus(); fireEvent.click(disclosure);
+    expect(screen.getByText(duplicate.id, { selector: "dd" })).toBeVisible();
+    expect(screen.getByText(duplicate.revision_hash, { selector: "dd" })).toBeVisible();
+    expect(within(second.closest<HTMLElement>(".intensity-result-row")!).getByText(duplicate.created_at, { selector: "dd" })).toBeVisible();
+    expect(second.closest("label")).not.toHaveTextContent(duplicate.created_at);
+    expect(second.closest("label")).not.toHaveTextContent("Eligible reviewed revision");
+  });
+  it("describes stale saved evidence from its binding rather than relabeling a result ID as a revision or reading live labels", async () => {
+    const status = { current: false, changes: [{ result_id: result.id, reason: "changed: sample_document" }] };
+    mount(fixture({ status: () => status }), { ...snapshot, sources: [{ ...source, name: "Later source label" }],
+      results: [{ ...result, method_label: "Later method label" }] });
+    await openSaved();
+    const current = screen.getByText("Current inputs differ. Saved values remain unchanged.").closest('[role="status"]')!;
+    expect(current).toHaveTextContent("Image A · Raw α mean · Changed: sample metadata");
+    expect(current).not.toHaveTextContent("Later source label");
+    expect(current).not.toHaveTextContent("Later method label");
+    expect(current).not.toHaveTextContent(`Revision ${result.id.slice(0, 8)}`);
+    const statusDetails = screen.getByText("Current input status details");
+    statusDetails.focus(); expect(statusDetails).toHaveFocus(); fireEvent.click(statusDetails);
+    expect(within(statusDetails.closest<HTMLDetailsElement>("details")!).getByText(result.id, { selector: "dd" })).toBeVisible();
+    expect(within(statusDetails.closest<HTMLDetailsElement>("details")!).getByText(result.revision_hash, { selector: "dd" })).toBeVisible();
+    expect(screen.getByText(declaration.rationale, { selector: "dd" })).not.toBeVisible();
+    expect(screen.getByText("Object raw-channel mean")).toBeVisible();
+    expect(screen.getByText("Equal weight at each step: objects → images → declared replicates → conditions.")).toBeVisible();
+    fireEvent.click(screen.getByText("Channel declaration & method"));
+    expect(screen.getByText(declaration.rationale, { selector: "dd" })).toBeVisible();
+  });
   it("clears an obsolete catalog load when selection returns to cached exact evidence", async () => {
     const pending = deferred<unknown>();
     const other = { ...result, id: "2".repeat(32), source_id: "3".repeat(32) };
@@ -94,7 +135,7 @@ describe("ExperimentIntensityPanel", () => {
     mount(setup, { ...snapshot, sources: [...snapshot.sources, { ...source, id: other.source_id }], results: [result, other] });
     await configure();
     expect(screen.getByRole("button", { name: "Preview intensity comparison" })).toBeEnabled();
-    const box = screen.getByRole("checkbox", { name: `Intensity result ${other.id}` });
+    const box = resultCheckbox(other.id);
     fireEvent.click(box);
     await screen.findByText("Reading the actual stored intensity measurements…");
     fireEvent.click(box);
@@ -106,7 +147,7 @@ describe("ExperimentIntensityPanel", () => {
     const original = wire(report(request, "e", -0)).report_json.replaceAll('"mean":0', '"mean":-0.0').replace('"value":0', '"value":-0.0');
     const view = mount(fixture({ execute: async operation => operation === "intensity_preview" ? { report_json: original } : undefined }));
     await configure(); await prepare();
-    expect(screen.getByRole("table", { name: "Condition means · exact values" })).toHaveTextContent("-0");
+    expect(screen.getByRole("table", { name: "Condition means · source-intensity units" })).toHaveTextContent("-0");
     fireEvent.click(screen.getByRole("button", { name: "Save intensity report" }));
     await waitFor(() => expect(view.execute).toHaveBeenCalledWith("intensity_save", { report_json: original }));
   });
@@ -117,11 +158,14 @@ describe("ExperimentIntensityPanel", () => {
     expect(screen.queryByRole("option", { name: "Nuclear intersection mean" })).not.toBeInTheDocument();
     await prepare();
     expect(view.execute).toHaveBeenCalledWith("intensity_preview", request);
-    const conditions = screen.getByRole("table", { name: "Condition means · exact values" });
-    expect(within(conditions).getByRole("cell", { name: "-0.12345678901234568" })).toBeVisible();
+    const conditions = screen.getByRole("table", { name: "Condition means · source-intensity units" });
+    const approximate = within(conditions).getByText("≈ -0.123457", { selector: "summary" });
+    approximate.focus(); expect(approximate).toHaveFocus();
+    fireEvent.click(approximate);
+    expect(within(conditions).getByText("-0.12345678901234568", { selector: "code" })).toBeVisible();
     expect(screen.getByRole("img", { name: "Declared replicate means by condition" })).toBeVisible();
-    screen.getByText(/Image means & inclusion reasons/).closest("details")!.open = true;
-    fireEvent.click(screen.getByRole("button", { name: `Inspect rev ${result.revision_hash.slice(0, 8)}` }));
+    screen.getByText(/Image means & inclusion reasons/).closest<HTMLDetailsElement>("details")!.open = true;
+    fireEvent.click(screen.getByRole("button", { name: "Inspect result: Image A · Raw α mean" }));
     expect(view.onInspect).toHaveBeenCalledWith(result);
     view.rerender(<ExperimentIntensityPanel {...view.props} active={false} />);
     view.rerender(<ExperimentIntensityPanel {...view.props} active />);
@@ -140,8 +184,8 @@ describe("ExperimentIntensityPanel", () => {
     } : undefined });
     const view = mount(setup); await configure();
     choose("Intensity compartment", part);
-    expect(screen.getByRole("combobox", { name: `Intensity channel for ${result.id}` })).toHaveValue("");
-    choose(`Intensity channel for ${result.id}`, literalId); await prepare();
+    expect(screen.getByRole("combobox", { name: channelName })).toHaveValue("");
+    choose(channelName, literalId); await prepare();
     expect(view.execute).toHaveBeenCalledWith("intensity_preview", { ...request,
       endpoint: { ...request.endpoint, compartment: part }, metric_ids: { [result.id]: literalId } });
     expect(view.api.reviewResult).not.toHaveBeenCalled();
@@ -151,11 +195,11 @@ describe("ExperimentIntensityPanel", () => {
     const indexed = { ...result, id: "4".repeat(32), schema: "loci.research-result/v2" as const };
     const duplicate = { ...result, id: "5".repeat(32), revision_hash: "6".repeat(64) };
     mount(fixture(), { ...snapshot, results: [result, pending, indexed, duplicate] });
-    expect(screen.getByRole("checkbox", { name: `Intensity result ${pending.id}` })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: `Intensity result ${indexed.id}` })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: `Intensity result ${result.id}` }));
-    expect(screen.getByRole("checkbox", { name: `Intensity result ${duplicate.id}` })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: `Intensity result ${duplicate.id}` }).closest("label")).toHaveTextContent("Clear the other selected revision on this source first");
+    expect(resultCheckbox(pending.id)).toBeDisabled();
+    expect(resultCheckbox(indexed.id)).toBeDisabled();
+    fireEvent.click(resultCheckbox(result.id));
+    expect(resultCheckbox(duplicate.id)).toBeDisabled();
+    expect(resultCheckbox(duplicate.id).closest("label")).toHaveTextContent("Clear the other selected revision on this source first");
     expect(screen.getByRole("button", { name: "Preview intensity comparison" })).toBeDisabled();
   });
   it("reopens saved values unchanged, distinguishes current status, and explicitly recomputes a new save", async () => {
@@ -170,11 +214,11 @@ describe("ExperimentIntensityPanel", () => {
     view.rerender(<ExperimentIntensityPanel {...view.props} snapshot={{ ...snapshot, samples: [{ ...snapshot.samples[0], revision: 2 }] }} />);
     await screen.findByText("Current inputs differ. Saved values remain unchanged.");
     expect(screen.getByText(/Changed: sample metadata, review decision, stored measurements/)).toBeVisible();
-    expect(screen.getByRole("table", { name: "Condition means · exact values" })).toHaveTextContent("-0.12345678901234568");
+    expect(screen.getByRole("table", { name: "Condition means · source-intensity units" })).toHaveTextContent("-0.12345678901234568");
     expect(JSON.stringify(old)).toBe(unchanged);
     fireEvent.click(screen.getByRole("button", { name: "Recompute as new preview" }));
     await screen.findByRole("region", { name: "Intensity comparison preview" });
-    expect(screen.getByRole("table", { name: "Condition means · exact values" })).toHaveTextContent("42");
+    expect(screen.getByRole("table", { name: "Condition means · source-intensity units" })).toHaveTextContent("42");
     fireEvent.click(screen.getByRole("button", { name: "Save intensity report" }));
     await waitFor(() => expect(view.execute).toHaveBeenCalledWith("intensity_save", wire(fresh)));
     expect(JSON.stringify(old)).toBe(unchanged);
@@ -208,10 +252,10 @@ describe("ExperimentIntensityPanel", () => {
       if (operation === "intensity_preview") return late.promise;
       return undefined;
     } }));
-    fireEvent.click(screen.getByRole("checkbox", { name: `Intensity result ${result.id}` }));
+    fireEvent.click(resultCheckbox(result.id));
     fireEvent.click(await screen.findByRole("button", { name: "Retry stored measurements" }));
     await screen.findByRole("option", { name: "Object mean" });
-    choose("Intensity compartment", "object"); choose(`Intensity channel for ${result.id}`, descriptor.id);
+    choose("Intensity compartment", "object"); choose(channelName, descriptor.id);
     for (const [label, value] of [["Shared channel declaration", declaration.channel], ["Acquisition context", declaration.acquisition_context], ["Comparability rationale", declaration.rationale]])
       fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
     fireEvent.click(screen.getByRole("button", { name: "Preview intensity comparison" }));

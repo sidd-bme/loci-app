@@ -6,6 +6,12 @@
 .population-explorer .population-section-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 18px 0 8px; }
 .population-explorer .population-section-heading h3 { margin: 0; color: var(--ink); }
 .population-explorer .population-section-heading span { color: var(--ink-secondary); font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.population-navigation { display: flex; align-items: end; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.population-label-search { flex: 1 1 180px; max-width: 320px; }
+.population-label-search label { display: block; margin-bottom: 6px; }
+.population-label-search > div, .population-object-steps { display: flex; align-items: center; gap: 6px; }
+.population-label-search input { width: 100%; min-width: 0; box-sizing: border-box; font-variant-numeric: tabular-nums; }
+.population-object-steps { flex-wrap: wrap; }
 .population-explorer .population-filter { border-top: 1px solid var(--line); padding: 4px 0 8px; }
 .population-explorer .population-range-inputs { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 8px; }
 .population-explorer .population-range-inputs input { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; }
@@ -42,6 +48,7 @@
 .population-explorer .population-selected h3 { margin: 0; color: var(--ink); }
 .population-explorer .population-receipt { margin-top: 16px; font-size: var(--type-sm); }
 .population-explorer .population-receipt dl { margin-bottom: 0; }
+.population-explorer .population-receipt p { overflow-wrap: anywhere; }
 .population-explorer .population-receipt dt { margin-top: 8px; color: var(--ink-secondary); }
 .population-explorer .population-receipt dd { margin: 4px 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .population-explorer input::selection, .population-explorer ::selection { background: var(--mineral-wash); color: var(--ink); }

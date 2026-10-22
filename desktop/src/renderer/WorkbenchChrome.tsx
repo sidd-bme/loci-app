@@ -409,15 +409,6 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [tipIndex, setTipIndex] = useState(0);
-  const [tipsPaused, setTipsPaused] = useState(false);
-
-  useEffect(() => {
-    if (tipsPaused || busy) return;
-    const interval = window.setInterval(() => {
-      setTipIndex((index) => (index + 1) % WELCOME_TIPS.length);
-    }, 7000);
-    return () => window.clearInterval(interval);
-  }, [tipsPaused, busy]);
 
   useEffect(() => {
     void api.recoveryList?.().then(setRecent).catch((error) => onError(error.message));
@@ -434,15 +425,6 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
     else onOpen(kind);
   };
   const visibleRecent = showAllRecent ? recent : recent.slice(0, 5);
-  const formatShortcuts: Array<{ label: string; title: string; action: () => void }> = [
-    { label: "TIFF", title: "Open TIFF or BigTIFF images", action: () => onOpen() },
-    { label: "OME-TIFF", title: "Open OME-TIFF images", action: () => onOpen() },
-    { label: "PNG", title: "Open PNG images", action: () => onOpen() },
-    { label: "JPEG", title: "Open JPEG images", action: () => onOpen() },
-    { label: "DICOM", title: "Open a conventional CT or MR DICOM series", action: () => onOpen("dicom") },
-    { label: "OME-Zarr", title: "Open a local OME-NGFF 0.4 Zarr v2 store", action: () => onOpen("ome_zarr") },
-    ...(onConvert ? [{ label: "Convert", title: "Convert proprietary vendor formats (CZI, ND2, LIF) to OME-TIFF / OME-Zarr", action: () => onConvert() }] : []),
-  ];
   return <div className={`image-welcome${dragActive ? " is-drag-active" : ""}`} aria-busy={busy || undefined}>
     <div className="welcome-heading"><WelcomeEmblem /></div>
     <h1>{dragActive ? "Drop to open" : "Open data"}</h1>
@@ -487,10 +469,6 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
           </div>)}</div>}
       </section>
       <section className="welcome-tips" role="region" aria-label="Research tips" tabIndex={0}
-        onPointerEnter={() => setTipsPaused(true)}
-        onPointerLeave={() => setTipsPaused(false)}
-        onFocusCapture={() => setTipsPaused(true)}
-        onBlurCapture={() => setTipsPaused(false)}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") { event.preventDefault(); showTip(-1); }
           if (event.key === "ArrowRight") { event.preventDefault(); showTip(1); }
@@ -499,7 +477,6 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
         }}>
         <header><h2><Lightbulb /> Research tip</h2><div><span>{tipIndex + 1} / {WELCOME_TIPS.length}</span><button aria-label="Previous tip" onClick={() => showTip(-1)}><ChevronLeft /></button><button aria-label="Next tip" onClick={() => showTip(1)}><ChevronRight /></button></div></header>
         <div className="welcome-tip-content" aria-live="polite"><strong>{WELCOME_TIPS[tipIndex].title}</strong><p>{WELCOME_TIPS[tipIndex].detail}</p><button disabled={busy} onClick={useTip}>{WELCOME_TIPS[tipIndex].action}</button></div>
-        <div className="welcome-format-shortcuts" aria-label="Supported source shortcuts">{formatShortcuts.map((format) => <button key={format.label} disabled={busy} title={format.title} onClick={format.action}>{format.label}</button>)}</div>
       </section>
     </div>
     {undo && <div role="status">Session discarded. <button disabled={busy} onClick={() => {

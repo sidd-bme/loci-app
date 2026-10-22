@@ -123,7 +123,13 @@ def create(directory):
                 # One B cell has an empty nuclear intersection.
                 if name != "Bnegative" or index == 0:
                     raw[2, y, x] = 100
-            source_path = inputs / (name + ".ome.tif")
+            # Exercise real filename wrapping; labels and numerical oracle stay identical.
+            basename = (
+                name + "_native-grid_float64_declared-raw-channel_replicate-R1_long-source-name"
+                if name == "A100"
+                else name
+            )
+            source_path = inputs / (basename + ".ome.tif")
             tifffile.imwrite(
                 source_path,
                 raw,

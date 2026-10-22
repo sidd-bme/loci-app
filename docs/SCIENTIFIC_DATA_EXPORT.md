@@ -1,7 +1,12 @@
 # Scientific data packages
 
-In **Results → Review & export → Export scientific data**, select the current result
-or explicitly choose study result revisions. **Reviewed data** requires every
+In **Results → Review & export**, ordinary results open in **Review** with their
+quantitative summary and review controls. Choose **Export → Export scientific
+data** to select the current result or explicit study result revisions. Indexed
+large results keep their dedicated inspector and export panel.
+
+Editable export choices survive a Review/Export roundtrip and tool navigation.
+Prepared plans require a fresh preview when the panel is reopened. **Reviewed data** requires every
 requested revision to be reviewed. **Provisional data for review** preserves
 pending and excluded statuses; it does not approve results. Existing result,
 image, figure and study exports remain available in their existing workflows.

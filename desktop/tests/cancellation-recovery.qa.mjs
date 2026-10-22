@@ -470,7 +470,7 @@ try {
   }
   await reopenedPage.screenshot({ path: path.join(screenshotsPath, "reopened-job-states.png") });
   await reopenedPage.getByRole("button", { name: "Close Job Center", exact: true }).click();
-  const reopenedResult = reopenedPage.locator(`[data-result-id="${durable.results[0].id}"]`);
+  const reopenedResult = reopenedPage.locator(`button[data-result-id="${durable.results[0].id}"]`);
   await reopenedResult.waitFor({ state: "visible" });
   await reopenedResult.click();
   await reopenedPage.waitForFunction(

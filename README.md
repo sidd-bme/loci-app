@@ -54,8 +54,11 @@ Bring your own model and keep the rest of your workflow in one place. Use a [com
 Current source also includes [scientific data packages](docs/SCIENTIFIC_DATA_EXPORT.md)
 with exact stored measurements, provenance and Python/R readers, plus
 [sample sheets and raw mean intensity comparisons](docs/EXPERIMENT_INTENSITY.md)
-that retain image and declared replicate grouping. These additions are available
-when building from source; the published download remains **v0.2.0-beta.2**.
+that retain image and declared replicate grouping. The study workspace separates
+samples, intensity, batches and correction comparisons; result review and export
+have their own sections. Inspect exact result identities, object labels and stored
+values when you need them. These additions are available when building from source;
+the published download remains **v0.2.0-beta.2**.
 
 ## Work your way
 

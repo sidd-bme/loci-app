@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createEmptyStudy, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, createEmptyStudy, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, createReadStream, promises as fs } from "node:fs";
@@ -717,6 +717,7 @@ try {
   );
 
   await selectWorkbenchTool(page, "Info");
+  await selectResultSection(page, "Review");
   await page
     .getByRole("button", { name: "Mark reviewed", exact: true })
     .click();
@@ -731,6 +732,7 @@ try {
       ),
     "SIMULATED automated review of useful model result",
   );
+  await selectResultSection(page, "Export");
   await page
     .getByRole("button", { name: "Export result", exact: true })
     .click();

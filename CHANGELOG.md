@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scientific data packages with exact stored measurements, review and sample metadata, complete group memberships, provenance, and standalone Python/R readers.
 - Transactional sample-sheet import and raw mean intensity reports that preserve image, declared replicate and condition aggregation, exact saved revisions, and atomic package export.
 - Study and export navigation that retains explicit result scope and provides recovery actions for missing review or groups.
+- Study tabs for Samples, Intensity, Batch and available Corrections, with a searchable Sources & samples table and exact result inspection.
+- Direct object-label navigation across filtered pages, expandable exact intensity values, and saved annotation measurements and coordinates.
+
+### Changed
+
+- Ordinary results open in Review; Export contains result and scientific data exports. Editable data-export choices survive navigation; reopening requires a fresh preview.
+- Classical scalar analysis names the segmentation input separately from raw measurement and display channels, with one-based T/Z scope labels.
 
 These are source changes. The published download remains **v0.2.0-beta.2**; no new release assets are included.
 

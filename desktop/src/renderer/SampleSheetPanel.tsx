@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { StudySampleNavigator, type StudySampleNavigation } from "./StudySampleNavigator";
 import type { ResearchDesktopApi, ResearchSampleData, ResearchSnapshot } from "../shared/research-contracts";
 import type { SampleSheetPreview } from "../shared/intensity-contracts";
 import "./ExperimentIntensityPanel.css";
@@ -29,7 +30,7 @@ async function fileBytes(file: File): Promise<ArrayBuffer> {
     reader.readAsArrayBuffer(file);
   });
 }
-export function SampleSheetPanel({ api, snapshot, busy = false, onSnapshot }: {
+export function SampleSheetPanel({ api, snapshot, busy = false, onSnapshot, onInspectResult, onEditMetadata }: StudySampleNavigation & {
   api: ResearchDesktopApi; snapshot: ResearchSnapshot; busy?: boolean;
   onSnapshot: (snapshot: ResearchSnapshot | null) => void;
 }) {
@@ -86,6 +87,7 @@ export function SampleSheetPanel({ api, snapshot, busy = false, onSnapshot }: {
     if (current()) { onSnapshot(next); setPreview(null); setStale(false); setNotice(`Applied sample metadata for ${currentPreview.rows.length} images.`); }
   });
   return <section className="research-panel sample-sheet" aria-label="Sample sheet" aria-busy={Boolean(pending)}>
+    <StudySampleNavigator snapshot={snapshot} busy={blocked} onInspectResult={onInspectResult} onEditMetadata={onEditMetadata} />
     <h2>Sample sheet</h2>
     <p>Assign samples by exact source ID. Manual editing remains in Review &amp; export.</p>
     <div className="research-actions"><button type="button" disabled={blocked || !snapshot.sources.length} onClick={() => void loadTemplate()}>Load sample sheet template</button>
@@ -106,7 +108,10 @@ export function SampleSheetPanel({ api, snapshot, busy = false, onSnapshot }: {
     }} /></label>
     <label>CSV text<textarea aria-label="Sample sheet CSV" rows={6} spellCheck={false} value={csv} disabled={blocked}
       onChange={(event) => { setCsv(event.target.value); setError(""); setNotice(""); }} /></label>
-    <p>Columns: source_id, study, sample, condition, biological_replicate, plate, well. Up to 1,000 rows and 1 MiB.</p>
+    <p className="intensity-hint">UTF-8 CSV · up to 1,000 rows and 1 MiB. Preview validates every row before applying.</p>
+    <details className="intensity-details"><summary>CSV columns &amp; source matching</summary>
+      <p>Columns: source_id, study, sample, condition, biological_replicate, plate, well. Match each image by its exact source_id from the template.</p>
+    </details>
     {reason && <p className="intensity-hint">{reason}</p>}
     {stale && <p className="intensity-caution">CSV or study metadata changed. Preview the sample sheet again before applying.</p>}
     <div className="research-actions"><button type="button" disabled={blocked || Boolean(reason)} onClick={() => void prepare()}>Preview sample sheet</button>

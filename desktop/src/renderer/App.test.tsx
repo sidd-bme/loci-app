@@ -712,11 +712,16 @@ describe("Loci renderer", () => {
     window.lociResearch = {} as ResearchDesktopApi;
     const target = { sourceId: "source-a" } as ImageWindowState["target"];
     const state = { role: "control", target, views: [{ target }], pinned: false } as ImageWindowState;
+    let finishInitialization!: (value: ImageWindowState) => void;
+    const initialState = new Promise<ImageWindowState>((resolve) => { finishInitialization = resolve; });
     let finishReturn!: () => void;
     const closeAll = vi.fn(() => new Promise<void>((resolve) => { finishReturn = resolve; }));
-    window.lociImageWindows = { state: vi.fn().mockResolvedValue(state),
+    window.lociImageWindows = { state: vi.fn().mockReturnValue(initialState),
       onState: vi.fn().mockReturnValue(() => undefined), closeAll } as unknown as ImageWindowApi;
     render(<App />);
+    // The DOM can commit before native-command subscriptions are refreshed.
+    // Settle the authored window-state RPC and its effects before sending File commands.
+    await act(async () => finishInitialization(state));
     await screen.findByRole("main", { name: "Detached controls" });
     const callback = vi.mocked(window.loci![method]).mock.calls.at(-1)![0];
     act(() => callback());

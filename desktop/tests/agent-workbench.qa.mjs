@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
-import { selectWorkbenchTool, setSelectionField } from './workbench-qa-helpers.mjs';
+import { selectResultSection, selectWorkbenchTool, setSelectionField } from './workbench-qa-helpers.mjs';
 
 const exec = promisify(execFile);
 const appPath = process.env.LOCI_PACKAGED_APP ? path.resolve(process.env.LOCI_PACKAGED_APP) : null;
@@ -404,6 +404,7 @@ try {
   await reopened.locator(`.research-sources [data-result-id="${child.result.id}"]`).click();
   await selectWorkbenchTool(reopened, 'Info');
   await reopened.getByRole('status').filter({ hasText: 'Reviewed by agent' }).waitFor();
+  await selectResultSection(reopened, "Review");
   const humanReview = reopened.getByRole('button', { name: 'Mark reviewed', exact: true });
   await reopened.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Mark reviewed' && !button.disabled));
   assert.equal(await humanReview.isEnabled(), true);

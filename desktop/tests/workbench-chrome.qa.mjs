@@ -346,6 +346,7 @@ try {
               await focusVisible(threshold, `${key}/scrollIntoView`, true);
             }
             if (tool === "Info") {
+              await page.locator("details.research-preview-rows > summary").click();
               const table = page.getByRole("region", {
                 name: "Result measurements",
                 exact: true,

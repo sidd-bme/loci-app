@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 // Mutations use real visible controls and native picker interception only.
 // Read-only APIs and an independent rectangle oracle verify their consequences.
@@ -196,16 +196,17 @@ try {
   const corrected = (await until(snapshot, (value) => value.results.length === 2, "deliberate correction")).results.find((result) => result.parent_id === parent.id);
   assert.equal(corrected.object_count, 2);
   oracle((await inspect(corrected.id)).measurements, [2, 3]);
-  await page.locator(`[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
   await page.getByRole("button", { name: "Undo revision", exact: true }).click();
-  await page.locator(`[data-result-id="${parent.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${parent.id}"][aria-pressed="true"]`).waitFor();
   await page.getByRole("button", { name: "Redo revision", exact: true }).click();
-  await page.locator(`[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
   await selectWorkbenchTool(page, "Info");
+  await selectResultSection(page, "Export");
   assert.equal(await page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), false);
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await until(snapshot, (value) => value.results.find((result) => result.id === corrected.id)?.review?.disposition === "reviewed", "visible human-only review control");
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await until(() => fs.stat(path.join(exported, "manifest.json")).catch(() => null), (value) => value?.isFile(), "atomic reviewed export");
   const resultJson = JSON.parse(await fs.readFile(path.join(exported, "result.json"), "utf8"));
   assert.equal(resultJson.result.revision_hash, corrected.revision_hash);
@@ -224,10 +225,11 @@ print(json.dumps({'raw_exact':True,'corrected_labels_exact':True,'shape':[256,25
   await fileMenuAction(page, "Save as study…");
   await until(() => page.locator(".session-save-state").textContent(), (text) => text === "Saved locally", "Save As completion");
   const beforeClose = await snapshot();
-  await page.locator(`[data-result-id="${corrected.id}"]`).click();
-  await page.locator(`[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${corrected.id}"]`).click();
+  await page.locator(`button[data-result-id="${corrected.id}"][aria-pressed="true"]`).waitFor();
   await selectWorkbenchTool(page, "Info");
   assert.equal(beforeClose.results.find((result) => result.id === corrected.id).review.disposition, "reviewed");
+  await selectResultSection(page, "Export");
   await until(() => page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), Boolean, "selected reviewed revision after Save As");
   report.checks.saved_capture = { selected_result_id: corrected.id, revision_hash: corrected.revision_hash, review: "reviewed" };
   await shot("04-reviewed-saved");

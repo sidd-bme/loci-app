@@ -3,18 +3,70 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import type { AnnotationTool, EpidermalTransectMetadata, ImageAnnotation, ImagePoint } from "./ImageViewport";
 import { DEFAULT_ANNOTATION_DRAFT_FIELDS, type AnnotationDraftControl, type AnnotationDraftFields } from "./annotation-draft";
+import { scientificNumber } from "./ScientificNumber";
 import "./SourceAnnotationPanel.css";
 
 export type { AnnotationTool } from "./ImageViewport";
 
 type MeasuredAnnotation = ImageAnnotation & {
   length: number | null; area: number | null; unit: string;
+  world_xyz?: number[][];
 };
 type Receipt = {
   source_id: string; source_sha256: string; revision: number;
   annotations: MeasuredAnnotation[];
+  geometry?: { axes: string; frame: string };
   can_undo: boolean; can_redo: boolean;
 };
+const ANNOTATION_TOOLS = [
+  ["navigate", "Navigate", MousePointer2], ["point", "Point", PlusPoint],
+  ["line", "Distance", Ruler], ["transect", "Epidermal Transect", BetweenHorizontalStart],
+  ["rectangle", "Rectangle", Square], ["polygon", "Polygon", Pentagon],
+  ["freehand", "Freehand region", Lasso],
+] as const;
+const COORDINATE_PAGE_SIZE = 100;
+
+function AnnotationMeasurements({ annotation, geometry }: {
+  annotation: MeasuredAnnotation; geometry: Receipt["geometry"];
+}) {
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState(0);
+  useEffect(() => setPage(0), [annotation]);
+  const lastPage = Math.max(0, Math.ceil(annotation.points.length / COORDINATE_PAGE_SIZE) - 1);
+  const currentPage = Math.min(page, lastPage);
+  const start = currentPage * COORDINATE_PAGE_SIZE;
+  const end = Math.min(start + COORDINATE_PAGE_SIZE, annotation.points.length);
+  const exact = (value: number) => scientificNumber(value).exact;
+  return <details className="annotation-measurements" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary>Measurements & coordinates</summary>
+    {open && <>
+    <dl>
+      {annotation.length !== null && <div><dt>{annotation.area !== null ? "Perimeter" : "Length"}</dt><dd><code>{exact(annotation.length)}</code> {annotation.unit}</dd></div>}
+      {annotation.area !== null && <div><dt>Area</dt><dd><code>{exact(annotation.area)}</code> {annotation.unit}²</dd></div>}
+      <div><dt>Plane indices</dt><dd>Z <code>{exact(annotation.z)}</code> · T <code>{exact(annotation.t)}</code> (zero-based)</dd></div>
+      {geometry && <div><dt>Geometry array axes</dt><dd><code>{geometry.axes}</code></dd></div>}
+    </dl>
+    <p>X is the column axis; Y is the row axis. Points use level-0 pixel-edge coordinates, not array row/column order.</p>
+    <div className="annotation-coordinate-table" role="region" aria-label="Exact annotation coordinates" tabIndex={0}>
+      <table>
+        <caption>Stored points · level0-pixel-edges</caption>
+        <thead><tr><th scope="col">Point</th><th scope="col">X (px)</th><th scope="col">Y (px)</th></tr></thead>
+        <tbody>{annotation.points.slice(start, end).map((point, index) => <tr key={index}><th scope="row">{start + index + 1}</th><td><code>{exact(point.x)}</code></td><td><code>{exact(point.y)}</code></td></tr>)}</tbody>
+      </table>
+      {annotation.world_xyz && <table>
+        <caption>World coordinates · XYZ · {annotation.unit}{geometry?.frame ? ` · ${geometry.frame}` : ""}</caption>
+        <thead><tr><th scope="col">Point</th><th scope="col">X</th><th scope="col">Y</th><th scope="col">Z</th></tr></thead>
+        <tbody>{annotation.world_xyz.slice(start, end).map((point, index) => <tr key={index}><th scope="row">{start + index + 1}</th>{point.map((value, axis) => <td key={axis}><code>{exact(value)}</code></td>)}</tr>)}</tbody>
+      </table>}
+    </div>
+    {lastPage > 0 && <div className="annotation-coordinate-pages" role="group" aria-label="Coordinate pages">
+      <button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous points</button>
+      <span aria-live="polite">Points {start + 1}–{end} of {annotation.points.length}</span>
+      <button disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}>Next points</button>
+    </div>}
+    </>}
+  </details>;
+}
 type TransectDetails = Omit<EpidermalTransectMetadata, "schema"> & {
   metadata_status: "structured" | "legacy-unverified";
 };
@@ -197,15 +249,11 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
     <h2>{measurementMode === "epidermis" ? "Epidermal thickness" : "Annotate"}</h2>
     {measurementMode === "epidermis" && <p className="annotation-workflow-intro">Define the boundaries, draw across the epidermis, then review and save each transect. Rete ridges and spaces between them remain separate measurement classes.</p>}
     <div className={`annotation-tools${measurementMode === "general" ? " annotation-tools-icons" : ""}`} aria-label="Annotation tools">
-      {([
-        ["navigate", "Navigate", MousePointer2], ["point", "Point", PlusPoint],
-        ["line", "Distance", Ruler], ["transect", "Epidermal Transect", BetweenHorizontalStart],
-        ["rectangle", "Rectangle", Square], ["polygon", "Polygon", Pentagon],
-        ["freehand", "Freehand region", Lasso],
-      ] as const).filter(([value]) => measurementMode !== "epidermis" || value === "navigate" || value === "transect").map(([value, title, Icon]) => <button key={value} title={title} aria-label={title}
+      {ANNOTATION_TOOLS.filter(([value]) => measurementMode !== "epidermis" || value === "navigate" || value === "transect").map(([value, title, Icon]) => <button key={value} title={title} aria-label={title}
         aria-pressed={tool === value} className={tool === value ? "active" : ""}
         disabled={busy} onClick={() => { onTool(value); if (!draftsManaged) onPoints([]); }}><Icon />{measurementMode === "epidermis" ? (value === "navigate" ? "Navigate" : "Draw transect") : null}</button>)}
     </div>
+    {measurementMode === "general" && <p className="annotation-current-tool" aria-label="Current annotation tool" aria-live="polite">{ANNOTATION_TOOLS.find(([value]) => value === tool)?.[1]}</p>}
     {tool !== "navigate" && <>
       {draftsManaged && points.length > 0 && <p className="annotation-draft-binding">Unfinished draft · Z {selection.z + 1} · T {selection.t + 1}</p>}
       {draftControl?.notice && <p role="alert">{draftControl.notice}</p>}
@@ -253,7 +301,9 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
           {source.metadata.dimensions && source.metadata.dimensions.z > 1 ? ` · Z ${item.z + 1}` : ""}
           {source.metadata.dimensions && source.metadata.dimensions.t > 1 ? ` · T ${item.t + 1}` : ""}
           {transectDetails(item)?.metadata_status === "legacy-unverified" ? " · Legacy protocol metadata unavailable; unverified" : item.transect?.review.status === "approved" ? ` · Approved by ${item.transect.review.reviewer}` : item.transect ? " · Unverified" : ""}
-        </small></div>
+        </small>
+        <AnnotationMeasurements annotation={item} geometry={receipt.geometry} />
+        </div>
         <button title="Remove this annotation (undo available)" aria-label={`Remove ${item.label || item.kind}`} disabled={busy} onClick={() => void change("remove", item.id)}><Trash2 /></button>
       </li>)}
     </ol>

@@ -5,19 +5,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ManagedSessionState, ResearchDesktopApi, ResearchSource } from "../shared/research-contracts";
 import { ImageWelcome, WorkbenchTools } from "./WorkbenchChrome";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function welcome(recent: Array<Record<string, unknown>> = [],
   presentation: { dragActive?: boolean; busy?: boolean } = {}) {
-  const onExample = vi.fn(), onOpen = vi.fn(), onStudy = vi.fn(), onLegacy = vi.fn(), onEmptyStudy = vi.fn(), onRecovery = vi.fn();
+  const onExample = vi.fn(), onOpen = vi.fn(), onStudy = vi.fn(), onLegacy = vi.fn(), onEmptyStudy = vi.fn(), onConvert = vi.fn(), onRecovery = vi.fn();
   const api = {
     recoveryList: vi.fn(async () => recent),
     recoveryKeep: vi.fn(),
   } as unknown as ResearchDesktopApi;
   const view = render(<ImageWelcome api={api} state={{ status: "empty" } as ManagedSessionState}
-    onOpen={onOpen} onStudy={onStudy} onLegacy={onLegacy} onEmptyStudy={onEmptyStudy}
+    onOpen={onOpen} onStudy={onStudy} onLegacy={onLegacy} onEmptyStudy={onEmptyStudy} onConvert={onConvert}
     onError={vi.fn()} onRecovery={onRecovery} onExample={onExample} {...presentation} />);
-  return { ...view, onOpen, onStudy, onLegacy, onEmptyStudy, onRecovery, onExample, api };
+  return { ...view, onOpen, onStudy, onLegacy, onEmptyStudy, onRecovery, onExample, onConvert, api };
 }
 
 describe("image-first welcome", () => {
@@ -30,7 +30,7 @@ describe("image-first welcome", () => {
   });
 
   it("keeps the main entry and reveals optional formats without remounting it", async () => {
-    const { onOpen, onStudy, onLegacy, onEmptyStudy, api } = welcome();
+    const { onOpen, onStudy, onLegacy, onEmptyStudy, onConvert, api } = welcome();
     await waitFor(() => expect(api.recoveryList).toHaveBeenCalled());
     const primary = screen.getByRole("button", { name: "Open images" });
     const options = screen.getByRole("button", { name: "More opening options" });
@@ -50,6 +50,8 @@ describe("image-first welcome", () => {
     expect(onOpen).toHaveBeenLastCalledWith("dicom");
     fireEvent.click(screen.getByRole("button", { name: "OME-Zarr store" }));
     expect(onOpen).toHaveBeenLastCalledWith("ome_zarr");
+    fireEvent.click(screen.getByRole("button", { name: "Convert vendor image format" }));
+    expect(onConvert).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "Open .loci-project" }));
     expect(onLegacy).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: "New empty study" }));
@@ -174,14 +176,30 @@ describe("image-first welcome", () => {
     expect(screen.getByText("Drag and drop to open")).toBeVisible();
   });
 
-  it("binds supported-format shortcuts to the matching explicit picker", () => {
-    const { onOpen } = welcome();
-    fireEvent.click(screen.getByRole("button", { name: "TIFF" }));
-    expect(onOpen).toHaveBeenLastCalledWith();
-    fireEvent.click(screen.getByRole("button", { name: "DICOM" }));
-    expect(onOpen).toHaveBeenLastCalledWith("dicom");
-    fireEvent.click(screen.getByRole("button", { name: "OME-Zarr" }));
-    expect(onOpen).toHaveBeenLastCalledWith("ome_zarr");
+  it("keeps tips on the chosen page until manual navigation, including after focus leaves", async () => {
+    vi.useFakeTimers();
+    welcome();
+    await act(async () => { await Promise.resolve(); });
+    act(() => vi.advanceTimersByTime(21000));
+    expect(screen.getByText("Drag and drop to open")).toBeVisible();
+    const next = screen.getByRole("button", { name: "Next tip" });
+    next.focus();
+    fireEvent.click(next);
+    expect(next).toHaveFocus();
+    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
+    screen.getByRole("button", { name: "Open images" }).focus();
+    fireEvent.pointerLeave(screen.getByRole("region", { name: "Research tips" }));
+    act(() => vi.advanceTimersByTime(21000));
+    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open images" })).toHaveFocus();
+  });
+
+  it("states common formats without redundant generic picker buttons", () => {
+    welcome();
+    expect(screen.getByText("TIFF, OME-TIFF, PNG or JPEG")).toBeVisible();
+    for (const name of ["TIFF", "OME-TIFF", "PNG", "JPEG"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
   });
 });
 

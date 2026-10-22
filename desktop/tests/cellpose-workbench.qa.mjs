@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 // A bounded learned-model journey uses the source receipt's explicit device.
 // Each device has its own pinned label reference; this is not CPU/MPS equality.
@@ -213,7 +213,7 @@ try {
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
   await screenshot("02-learned-result.png");
   await selectWorkbenchTool(page, "Info");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await waitFor(snapshot, (value) => value.results[0]?.review?.disposition === "reviewed", "review exact result");
   await fileMenuAction(page, "Save as study…");
   await waitFor(() => fs.stat(project).catch(() => null), (value) => value?.isDirectory(), "save managed session as a study");
@@ -227,7 +227,7 @@ try {
   // The clone makes a new document. Explicitly select its retained result.
   await page.locator(`.research-sources [data-result-id="${summary.id}"]`).click();
   await selectWorkbenchTool(page, "Info");
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitFor(() => fs.stat(path.join(exportDirectory, "manifest.json")).catch(() => null),
     (value) => value?.isFile(), "atomic reviewed export");
   const exported = JSON.parse(await fs.readFile(path.join(exportDirectory, "result.json"), "utf8"));

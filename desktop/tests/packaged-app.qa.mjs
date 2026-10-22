@@ -7,7 +7,7 @@ import os from "node:os";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { researchSourceButtonSelector, reopenStudyFromEmptyState } from "./public-hardening-qa-helpers.mjs";
-import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { verifyResearchBatchExports } from "./research-batch-qa-helpers.mjs";
 
 // Core image-first regression. The learned model has its own pinned full-array
@@ -155,18 +155,18 @@ async function selectResult(id) {
   assert.ok(resultSource, "The result's source is not open");
   const sourceButton = page.locator(researchSourceButtonSelector).filter({ has: page.getByText(resultSource.name, { exact: true }) });
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
-  await page.locator(`[data-result-id="${id}"]`).click();
-  await page.locator(`[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${id}"]`).click();
+  await page.locator(`button[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
 }
 async function latestResult() {
-  const id = await page.locator('[data-result-id][aria-pressed="true"]').getAttribute("data-result-id");
+  const id = await page.locator('button[data-result-id][aria-pressed="true"]').getAttribute("data-result-id");
   return (await snapshot()).results.find((r) => r.id === id);
 }
 async function changedFrom(parent, label) {
   const next = await until(async () => { const s = await snapshot(); return s.results.find((r) => r.parent_id === parent.id); },
     (r) => r?.revision_hash !== parent.revision_hash && r?.object_count !== undefined, label);
-  await page.locator(`[data-result-id="${next.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${next.id}"][aria-pressed="true"]`).waitFor();
   await until(() => page.getByLabel("Correction tool", { exact: true }).isEnabled(), Boolean, label + " correction readiness");
   await viewerReady();
   await moveNavigationAway();
@@ -174,11 +174,13 @@ async function changedFrom(parent, label) {
 }
 async function reviewAndExport(result, destination) {
   await selectResult(result.id); await selectWorkbenchTool(page, "Info");
-  if (!(await snapshot()).results.find((r) => r.id === result.id)?.review)
+  if (!(await snapshot()).results.find((r) => r.id === result.id)?.review) {
+    await selectResultSection(page, "Review");
     await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  }
   await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "exact review");
   picker.export = destination; await installPickers();
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await until(() => fs.stat(path.join(destination, "manifest.json")).catch(() => null), (s) => s?.isFile(), "reviewed export");
   const exported = JSON.parse(await fs.readFile(path.join(destination, "result.json"), "utf8"));
   const manifest = JSON.parse(await fs.readFile(path.join(destination, "manifest.json"), "utf8"));
@@ -412,7 +414,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   assert.ok(exportedResults.every((r) => r?.object_count === expectedCount));
   // Export every exact reviewed item; aggregate/export schema checks are shared
   // with the batch writer's own qualification helper below.
-  for (const result of exportedResults) { await selectResult(result.id); await selectWorkbenchTool(page, "Info"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click(); await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "review each batch result"); }
+  for (const result of exportedResults) { await selectResult(result.id); await selectWorkbenchTool(page, "Info"); await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click(); await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "review each batch result"); }
   receipts.batch.reviewed_result_ids = exportedResults.map((r) => r.id);
   await selectWorkbenchTool(page, "Study");
   for (const r of (await snapshot()).results) await page.getByLabel(`Compare ${r.id}`, { exact: true }).setChecked(exportedResults.some((item) => item.id === r.id));
@@ -442,7 +444,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   const formulaResults = formulaComplete.results.filter((r) => !beforeIds.has(r.id));
   assert.ok(formulaResults.every((r) => r.object_count === expectedCount));
   for (const r of formulaResults) {
-    await selectResult(r.id); await selectWorkbenchTool(page, "Info"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+    await selectResult(r.id); await selectWorkbenchTool(page, "Info"); await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
     await until(snapshot, (s) => s.results.find((item) => item.id === r.id)?.review?.disposition === 'reviewed', "review summary source");
   }
   await selectWorkbenchTool(page, "Study");

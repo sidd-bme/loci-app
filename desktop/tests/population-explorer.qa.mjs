@@ -53,7 +53,7 @@ try {
   assert.ok(result.object_count > 25, 'Real workflow must exercise paging.');
   const source = snapshot.sources.find((item) => item.id === result.source_id);
   await page.locator('.research-sources').getByRole('button', { name: new RegExp(source.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).click();
-  await page.locator(`[data-result-id="${result.id}"]`).click();
+  await page.locator(`button[data-result-id="${result.id}"]`).click();
   await selectWorkbenchTool(page, 'Population');
   const panel = page.getByRole('region', { name: 'Object population explorer', exact: true });
   await panel.getByText(`${result.object_count} of ${result.object_count} objects match.`, { exact: true }).waitFor();
@@ -147,7 +147,7 @@ try {
   await panel.locator(`tr[data-label="${reversed.rows[0].label}"]`).waitFor();
   const revision = snapshot.results.find((item) => item.source_id === source.id && item.id !== result.id);
   assert.ok(revision, 'Compare independently segmented results of the same real field.');
-  await page.locator(`[data-result-id="${revision.id}"]`).click();
+  await page.locator(`button[data-result-id="${revision.id}"]`).click();
   await panel.getByText(`${revision.object_count} of ${revision.object_count} objects match.`, { exact: true }).waitFor();
   assert.equal(await panel.getByLabel('Selected population object').count(), 0);
   assert.equal(await panel.getByLabel('Population sort metric').inputValue(), 'label');

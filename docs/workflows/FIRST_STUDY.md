@@ -9,12 +9,12 @@ The source contains three authored rectangles, not cells. Its 0.5 µm X/Y pixel 
 ## Declare and run
 
 1. Open **View → Image & channels**. In **Analysis region**, verify the scope: X = 0, Y = 0, Width = 256, Height = 256; C, Z and T = 0, native level 0. The camera and display settings do not define analysis scope.
-2. Open **Analyze → Segment & measure**. Choose **Whole image**, then **Classical methods**, **Components**, **Threshold** 50, **Above threshold**, and **Minimum object area** 1. Leave preprocessing empty and **Exclude border objects** unchecked. Use **Channel 1 (native C=0)** for raw measurement.
+2. Open **Analyze → Segment & measure**. Choose **Whole image**, then **Classical methods**, **Components**, **Threshold** 50, **Above threshold**, and **Minimum object area** 1. Leave preprocessing empty and **Exclude border objects** unchecked. Set both **Segmentation input** and **Raw measurement channel** to **1: Synthetic scalar intensity**. The adjacent segmentation scope shows T 1 and Z 1; these are the same zero-based T/Z = 0 inputs.
 3. Choose **Run recipe**. Expect three objects. The threshold operates on raw uint16 values; display brightness does not change their measurements.
 
 ## Inspect the exact result
 
-Select an object row and inspect the corresponding label in the image. With the complete native scope and recipe above, component IDs follow first pixels in row-major order. Index centroids below are **Y, X**; physical centroids are **X, Y** with authored zero origin and 0.5 µm spacing.
+Open **Results → Statistics & objects**, enter **Go to object label** 1 and choose **Go**. Inspect the selected row; use **Locate selected object** to move the image to it. **Next object** and **Previous object** follow the filtered table order without moving the image. With the complete native scope and recipe above, component IDs follow first pixels in row-major order. Index centroids below are **Y, X**; physical centroids are **X, Y** with authored zero origin and 0.5 µm spacing.
 
 | Label | Native rows Y | Native columns X | Pixels | Area (µm²) | Index centroid (Y, X) | Physical centroid (X, Y), µm | Mean intensity | Intensity sum |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -28,8 +28,10 @@ These values follow rectangle height × width, area = pixels × 0.5 × 0.5, and 
 
 1. Open **Annotate → Edit labels & ROIs**. Select **Correction label** 1 and choose **Delete selected label**. This deliberate practice edit creates a new revision with labels 2 and 3, two objects, and total area 320 µm². The source and parent result stay intact; survivor IDs do not renumber.
 2. Choose **Undo revision** to inspect the three-object parent, then **Redo revision** to inspect the two-object correction. Review is bound to the exact revision, so a correction does not inherit a parent's approval.
-3. Open **Results → Review & export**. Inspect the measurements and selected revision, then choose **Mark reviewed** yourself. The example never performs this human decision automatically.
-4. Choose **Export revision** and a new destination. Export requires the reviewed revision and publishes its bundle atomically. Inspect the manifest, result/provenance records, labels and measurement table. Existing destinations are never overwritten.
+3. Open **Results → Review & export → Review**. Inspect the measurements and **Technical identity** for the selected revision, then choose **Mark reviewed** yourself. The example never performs this human decision automatically.
+4. Choose **Export → Export result** and a new destination. Export requires the reviewed revision and publishes its bundle atomically. Inspect the manifest, result/provenance records, labels and measurement table. Existing destinations are never overwritten.
+
+To browse the study’s source/result bindings, open **Results → Study & batch → Samples**. Expand **Results** in **Sources & samples**, then choose **Inspect result** for the intended revision. **Technical result identity** shows its complete IDs; inspection does not grant review.
 
 ## Save, reopen and recover
 

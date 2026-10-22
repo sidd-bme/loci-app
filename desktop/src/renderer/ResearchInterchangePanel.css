@@ -22,7 +22,16 @@
 
 .research-interchange-binding code {
   color: var(--ink-secondary);
+  user-select: text;
+  font-size: inherit;
 }
+
+.research-interchange-binding dl { margin-block: 8px; }
+.research-interchange-binding dl > div { margin-block: 8px; }
+.research-interchange-binding dt { color: var(--ink-muted); }
+.research-interchange-binding dd { margin: 3px 0 0; }
+.research-interchange-binding > summary:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }
+.research-interchange-context { color: var(--ink-secondary); font-size: var(--type-sm); overflow-wrap: anywhere; }
 
 .research-interchange .research-check {
   display: grid;

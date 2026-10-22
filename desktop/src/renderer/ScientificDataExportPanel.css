@@ -9,16 +9,14 @@
   font-weight: 600;
   color: var(--ink);
 }
-.scientific-data-export__identity code {
-  display: block;
-  max-width: 100%;
-  font-size: var(--type-xs, 11px);
-  color: var(--ink-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-block: 3px;
-}
+.scientific-data-export__technical { margin-block: 8px; }
+.scientific-data-export__technical summary { cursor: pointer; min-height: 28px; color: var(--ink-secondary); font-size: var(--type-sm); }
+.scientific-data-export__technical-fields { margin-block: 8px; }
+.scientific-data-export__technical-fields dt { color: var(--ink-secondary); font-size: var(--type-sm); }
+.scientific-data-export__technical-fields dd { margin: 2px 0 10px; overflow-wrap: anywhere; user-select: text; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.scientific-data-export__technical pre { max-width: 100%; max-height: 280px; overflow: auto; padding: 8px; background: var(--graphite-925); font-size: var(--type-xs); scrollbar-color: var(--line-strong) transparent; }
+.scientific-data-export__choice-identity { margin: 0 0 0 22px; }
+.scientific-data-export__method { color: var(--ink-secondary); margin-block: 4px 8px; }
 .scientific-data-export .scientific-data-export__choices {
   max-height: 260px;
   overflow: auto;
@@ -44,16 +42,6 @@
 }
 .scientific-data-export__choice input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--mineral); }
 .scientific-data-export__choice > span { min-width: 0; }
-.scientific-data-export__choice code {
-  display: block;
-  max-width: 100%;
-  font-size: var(--type-xs, 11px);
-  color: var(--ink-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-}
 .scientific-data-export__inspect-btn {
   justify-self: start;
   margin-left: 22px;
@@ -88,4 +76,4 @@
 .scientific-data-export th { color: var(--ink-secondary); font-weight: 600; }
 .scientific-data-export td { color: var(--ink); }
 .scientific-data-export progress { width: 100%; accent-color: var(--mineral); }
-.scientific-data-export :is(button, input, select, [tabindex]):focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }
+.scientific-data-export :is(button, input, select, summary, [tabindex]):focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }

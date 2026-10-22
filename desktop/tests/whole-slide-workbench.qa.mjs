@@ -1,4 +1,4 @@
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -207,7 +207,7 @@ async function verifyExportManifest(destination, result) {
 
 async function waitSelectedResult(page, id, label) {
   await waitForValue(
-    () => page.locator(`[data-result-id="${id}"]`).getAttribute("class"),
+    () => page.locator(`button[data-result-id="${id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"),
     label,
   );
@@ -458,13 +458,13 @@ async function qualifyStainRule(page, report, sourceFixture, selection, destinat
   );
   report.screenshots.push(await screenshot(page, `${path.basename(sourceFixture.file)}-stain-rule`));
   await selectTool(page, "Results", "Info");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await waitForValue(
     () => snapshot(page),
     (state) => state.results.find((item) => item.id === result.id)?.review?.disposition === "reviewed",
     "the reviewed exact stain-rule revision",
   );
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitForValue(
     () => fs.readdir(destination).catch(() => []),
     (files) => ["labels.npy", "image.npy", "labels.ome.tif", "result.json", "objects.csv", "manifest.json"].every((name) => files.includes(name)),
@@ -518,8 +518,8 @@ print(json.dumps({'objects':len(positive),'positive_rules':sum(float(stain[compa
   assert.deepEqual(reopened.provenance, inspected.provenance);
   assert.equal(reopened.result.review.disposition, "reviewed");
   await selectedSource(page, path.basename(sourceFixture.file));
-  await waitForValue(() => page.locator(`[data-result-id="${result.id}"]`).isEnabled(), Boolean, "the reopened classified result control");
-  await page.locator(`[data-result-id="${result.id}"]`).click();
+  await waitForValue(() => page.locator(`button[data-result-id="${result.id}"]`).isEnabled(), Boolean, "the reopened classified result control");
+  await page.locator(`button[data-result-id="${result.id}"]`).click();
   await waitSelectedResult(page, result.id, "the reopened classified result");
   await selectTool(page, "Analyze", "Analyze");
   await waitForValue(() => page.locator(".research-result-table tbody tr").count(), (count) => count === expectedCount, "the reopened classification table");
@@ -763,7 +763,7 @@ try {
     "the exact WSI mask object table",
   );
   await selectTool(page, "Results", "Info");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   const reviewedSnapshot = await waitForValue(
     () => snapshot(page),
     (state) => state.results.some(
@@ -773,7 +773,7 @@ try {
   );
   const reviewedResult = reviewedSnapshot.results.find((item) => item.id === roiResult.id);
   assert.ok(reviewedResult, "The reviewed WSI ROI revision is absent");
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   const exportFiles = await waitForValue(
     () => fs.readdir(roiExportPath).catch(() => []),
     (names) => [
@@ -816,7 +816,7 @@ try {
   assert.deepEqual(reopenedRecord.provenance.selection, tissueRecord.provenance.selection);
   assert.deepEqual(reopenedRecord.measurements, roiRecord.measurements);
   await selectedSource(page, svsReport.file);
-  const reopenedButton = page.locator(`[data-result-id="${roiResult.id}"]`);
+  const reopenedButton = page.locator(`button[data-result-id="${roiResult.id}"]`);
   await waitForValue(
     () => reopenedButton.isEnabled(),
     Boolean,

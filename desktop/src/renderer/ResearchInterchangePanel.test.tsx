@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -86,6 +87,73 @@ function file(
 }
 
 describe("ResearchInterchangePanel", () => {
+  it("keeps method and review visible with the full exact target in a selectable disclosure", async () => {
+    const target = { ...parent, method_label: "Classical segmentation" };
+    render(<ResearchInterchangePanel api={api(vi.fn(async () => info))} result={target}
+      report={report} busy={false} onBusyChange={vi.fn()} onResult={vi.fn()} />);
+    await screen.findByText("DAPI");
+    expect(screen.getByText("Classical segmentation · reviewed")).toBeVisible();
+    const summary = screen.getByText("Technical identity", { selector: "summary" });
+    expect(screen.getByText(parent.revision_hash)).not.toBeVisible();
+    expect(screen.getByText(parent.source_id)).not.toBeVisible();
+    summary.focus();
+    expect(summary).toHaveFocus();
+    fireEvent.click(summary);
+    for (const value of [parent.id, parent.revision_hash, parent.source_id, parent.source_sha256!]) {
+      const code = screen.getByText(value, { selector: "code" });
+      expect(code).toBeVisible();
+      expect(code.textContent).toBe(value);
+    }
+    expect(screen.getByText(/must match this source, result revision/)).toBeVisible();
+    expect(screen.getByText(/Review the new revision before/)).toBeVisible();
+  });
+
+  it.each([
+    { ...info, result_id: "0".repeat(32) },
+    { ...info, revision_hash: "0".repeat(64) },
+  ])("rejects channels whose exact target binding is stale: %j", async (staleInfo) => {
+    const execute = vi.fn(async () => staleInfo);
+    render(<ResearchInterchangePanel api={api(execute)} result={parent}
+      report={report} busy={false} onBusyChange={vi.fn()} onResult={vi.fn()} />);
+    expect(await screen.findByRole("status")).toHaveTextContent("Could not bind annotation import to this exact revision.");
+    fireEvent.change(screen.getByLabelText("Annotation file"), { target: { files: [file("region.geojson", "{}")] } });
+    expect(screen.queryByLabelText("Measure DAPI")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import into new revision" })).toBeDisabled();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the previous target's file and ignores its late channels before importing into the new exact target", async () => {
+    let resolvePrevious!: (value: typeof info) => void;
+    const previousInfo = new Promise<typeof info>((resolve) => { resolvePrevious = resolve; });
+    const next = { ...parent, id: "1".repeat(32), source_id: "2".repeat(32), source_sha256: "3".repeat(64), revision_hash: "4".repeat(64), review: null };
+    const nextChild = { ...next, id: "5".repeat(32), parent_id: next.id, revision_hash: "6".repeat(64) };
+    const execute = vi.fn((operation: string, request: Record<string, unknown>) => {
+      if (operation === "correction_info") return request.result_id === parent.id ? previousInfo : Promise.resolve({
+        result_id: next.id, revision_hash: next.revision_hash,
+        measurement_channels: [{ index: 2, name: "New source channel", basis: "raw-source-channel-values" }],
+      });
+      return Promise.resolve({ result: nextChild });
+    });
+    const bridge = api(execute);
+    const onResult = vi.fn();
+    const properties = { api: bridge, report, busy: false, onBusyChange: vi.fn(), onResult };
+    const { rerender } = render(<ResearchInterchangePanel {...properties} result={parent} />);
+    fireEvent.change(screen.getByLabelText("Annotation file"), { target: { files: [file("old.geojson", "old payload")] } });
+    rerender(<ResearchInterchangePanel {...properties} result={next} />);
+    await screen.findByText("New source channel");
+    await act(async () => { resolvePrevious(info); await previousInfo; });
+    expect(screen.queryByLabelText("Measure DAPI")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import into new revision" })).toBeDisabled();
+    expect(screen.getByText(next.revision_hash, { selector: "code" }).textContent).toBe(next.revision_hash);
+    expect(screen.queryByText(parent.revision_hash, { selector: "code" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Annotation file"), { target: { files: [file("new.geojson", "new payload")] } });
+    fireEvent.click(screen.getByRole("button", { name: "Import into new revision" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("roi_import", {
+      result_id: next.id, revision_hash: next.revision_hash, format: "geojson", payload: "new payload", measurement_channels: [2],
+    }));
+    expect(onResult).toHaveBeenCalledWith(nextChild);
+  });
+
   it("imports exact GeoJSON text with explicit measurement channels", async () => {
     const execute = vi.fn((operation: string) =>
       Promise.resolve(

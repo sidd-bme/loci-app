@@ -1,0 +1,4 @@
+.scientific-number { font-variant-numeric: tabular-nums; }
+.scientific-number summary { cursor: pointer; white-space: nowrap; min-height: 24px; }
+.scientific-number code { display: block; white-space: nowrap; user-select: text; font-size: inherit; margin-top: 4px; }
+.scientific-number summary:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }

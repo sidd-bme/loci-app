@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDesktopApi,
@@ -92,6 +92,115 @@ function ControlledDraftPanel({ api, source = sources[0], plane = selection }: {
 }
 
 describe("SourceAnnotationPanel interchange", () => {
+  it.each(["Navigate", "Point", "Distance", "Epidermal Transect", "Rectangle", "Polygon", "Freehand region"])("shows %s as the selected icon tool", async (name) => {
+    render(<ControlledDraftPanel api={bridge()} />);
+    const button = await screen.findByRole("button", { name });
+    fireEvent.click(button);
+    expect(screen.getByLabelText("Current annotation tool")).toBeVisible();
+    expect(screen.getByLabelText("Current annotation tool").textContent).toBe(name);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(button.textContent).toBe("");
+    const selected = screen.getAllByRole("button", { pressed: true });
+    expect(selected).toHaveLength(1);
+    expect(selected[0]).toBe(button);
+    if (name === "Distance") expect(screen.getByText(/Click the start and end/)).toBeVisible();
+    if (name === "Polygon") expect(screen.getByText(/Click around the region/)).toBeVisible();
+  });
+
+  it("discloses exact receipt measurements, signed world coordinates and plane semantics without changing the receipt", async () => {
+    const polygon = {
+      id: "precise-region", kind: "polygon", label: "Precise region", color: "#ffd36a",
+      points: [{ x: -0, y: 1.123456789012345 }, { x: 2.234567890123456, y: 1.123456789012345 }, { x: 2.234567890123456, y: 3.345678901234567 }],
+      world_xyz: [[-0.123456789012345, 1.123456789012345, -0], [1.5, 1.123456789012345, -0], [1.5, 3.345678901234567, -0]],
+      length: 6.789012345678901, area: 2.345678901234567, unit: "um", z: 2, t: 3,
+    };
+    const line = { ...polygon, id: "precise-line", label: "Precise line", kind: "line", area: null,
+      length: 0.000000123456789012345, points: polygon.points.slice(0, 2), world_xyz: polygon.world_xyz.slice(0, 2) };
+    const point = { ...polygon, id: "precise-point", label: "Precise point", kind: "point", area: null, length: null,
+      points: [polygon.points[0]], world_xyz: [polygon.world_xyz[0]] };
+    const source = { ...sources[0], metadata: { dimensions: { t: 5, c: 1, z: 4, y: 48, x: 64 } } };
+    const value = { ...receipt(source, 4, [polygon, line, point]), geometry: { axes: "ZYX", frame: "stage" } };
+    const execute = vi.fn(async () => value);
+    const handlers = { onPoints: vi.fn(), onAnnotations: vi.fn(), onError: vi.fn() };
+    render(panel(bridge({ execute }), source, handlers));
+    const regionRow = (await screen.findByText("Precise region")).closest("li")!;
+    const details = within(regionRow).getByText("Measurements & coordinates").closest("details")!;
+    expect(details).not.toHaveAttribute("open");
+    expect(within(regionRow).getByText("2.3457 um² · Z 3 · T 4")).toBeVisible();
+    fireEvent.click(within(details).getByText("Measurements & coordinates"));
+    await within(details).findByText(String(polygon.area));
+    expect(details).toHaveAttribute("open");
+    expect(within(details).getByText(String(polygon.area))).toBeVisible();
+    expect(within(details).getByText(String(polygon.length))).toBeVisible();
+    expect(within(details).getByText("Perimeter")).toBeVisible();
+    expect(within(details).getByText("ZYX")).toBeVisible();
+    expect(within(details).getByText(/Z.*T.*zero-based/)).toHaveTextContent("Z 2 · T 3 (zero-based)");
+    expect(within(details).getByText(/X is the column axis; Y is the row axis/)).toBeVisible();
+    const points = within(details).getByRole("table", { name: "Stored points · level0-pixel-edges" });
+    expect(within(points).getByText("-0")).toBeVisible();
+    expect(within(points).getAllByText("1.123456789012345")).toHaveLength(2);
+    expect(within(points).getByText("3.345678901234567")).toBeVisible();
+    const world = within(details).getByRole("table", { name: "World coordinates · XYZ · um · stage" });
+    expect(within(world).getByText("-0.123456789012345")).toBeVisible();
+    const lineRow = screen.getByText("Precise line").closest("li")!;
+    fireEvent.click(within(lineRow).getByText("Measurements & coordinates"));
+    expect(await within(lineRow).findByText(String(line.length))).toBeVisible();
+    expect(within(lineRow).getByText("Length")).toBeVisible();
+    const pointRow = screen.getByText("Precise point").closest("li")!;
+    fireEvent.click(within(pointRow).getByText("Measurements & coordinates"));
+    expect(await within(pointRow).findByText("-0.123456789012345")).toBeVisible();
+    expect(handlers.onAnnotations).toHaveBeenCalledWith(value.annotations);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(value.annotations[0]).toBe(polygon);
+    expect(Object.is(polygon.points[0].x, -0)).toBe(true);
+    expect(polygon.area).toBe(2.345678901234567);
+  });
+
+  it("mounts at most 100 points per coordinate table while open, pages both tables exactly, and resets changed geometry", async () => {
+    const points = Array.from({ length: 205 }, (_, index) => ({ x: index / 10 + 0.123456789012345, y: index / 20 + 0.234567890123456 }));
+    const annotation = { id: "large-region", kind: "polygon", label: "Large region", color: "#ffd36a", z: 0, t: 0,
+      points, world_xyz: points.map((point) => [-point.x, point.y, 0]), length: 123.456789012345, area: 45.678901234567, unit: "um" };
+    const changedPoints = points.map((point) => ({ x: point.x + 1, y: point.y + 1 }));
+    const changed = { ...annotation, points: changedPoints, world_xyz: changedPoints.map((point) => [-point.x, point.y, 0]) };
+    const initial = { ...receipt(sources[0], 4, [annotation]), can_undo: true };
+    const execute = vi.fn(async (operation: string) => operation === "source_annotations" ? initial : receipt(sources[0], 5, [changed]));
+    render(panel(bridge({ execute })));
+    const row = (await screen.findByText("Large region")).closest("li")!;
+    const summary = within(row).getByText("Measurements & coordinates");
+    expect(within(row).queryByRole("table")).not.toBeInTheDocument();
+    expect(row.querySelectorAll("tbody tr")).toHaveLength(0);
+    fireEvent.click(summary);
+    await within(row).findByRole("table", { name: "Stored points · level0-pixel-edges" });
+    const tables = within(row).getAllByRole("table");
+    expect(tables).toHaveLength(2);
+    for (const table of tables) expect(within(table).getAllByRole("row")).toHaveLength(101);
+    expect(within(row).getByText("Points 1–100 of 205")).toBeVisible();
+    expect(within(row).getByRole("button", { name: "Previous points" })).toBeDisabled();
+    fireEvent.click(within(row).getByRole("button", { name: "Next points" }));
+    expect(within(row).getByText("Points 101–200 of 205")).toBeVisible();
+    for (const table of tables) {
+      expect(within(table).getAllByRole("row")).toHaveLength(101);
+      expect(within(table).getByRole("rowheader", { name: "101" })).toBeVisible();
+      expect(within(table).queryByRole("rowheader", { name: "1" })).not.toBeInTheDocument();
+    }
+    expect(within(tables[0]).getByText(String(points[100].x))).toBeVisible();
+    expect(within(tables[1]).getByText(String(-points[100].x))).toBeVisible();
+    fireEvent.click(within(row).getByRole("button", { name: "Next points" }));
+    expect(within(row).getByText("Points 201–205 of 205")).toBeVisible();
+    for (const table of tables) expect(within(table).getAllByRole("row")).toHaveLength(6);
+    expect(within(tables[0]).getByText(String(points[204].x))).toBeVisible();
+    expect(within(tables[1]).getByRole("rowheader", { name: "205" })).toBeVisible();
+    expect(within(row).getByRole("button", { name: "Next points" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Undo annotation" }));
+    await within(row).findByText("Points 1–100 of 205");
+    expect(within(tables[0]).getByText(String(changedPoints[0].x))).toBeVisible();
+    expect(within(tables[1]).getByText(String(-changedPoints[0].x))).toBeVisible();
+    fireEvent.click(summary);
+    await waitFor(() => expect(row.querySelectorAll("tbody tr")).toHaveLength(0));
+    expect(within(row).queryByRole("table")).not.toBeInTheDocument();
+    expect(within(row).queryByRole("group", { name: "Coordinate pages" })).not.toBeInTheDocument();
+  });
+
   it("preserves separate controlled draft geometry and labels when drawing tools change", async () => {
     render(<ControlledDraftPanel api={bridge()} />);
     await screen.findByText("0 saved");

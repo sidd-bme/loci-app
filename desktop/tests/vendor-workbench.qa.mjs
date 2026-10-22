@@ -419,7 +419,7 @@ try {
   );
   await visible(
     page,
-    page.locator(`[data-result-id="${resultSummary.id}"]`),
+    page.locator(`button[data-result-id="${resultSummary.id}"]`),
     "published result revision",
   );
   await screenshot(page, "05-classical-threshold-result");

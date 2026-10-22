@@ -636,7 +636,7 @@ try {
   const reopenedSelection = reopened.selections.find((entry) => entry.id === originalSource.id);
   assert.equal(reopenedSelection.data.result_id, correctedResult.id);
   assert.equal(reopenedSelection.data.revision_hash, correctedResult.revision_hash);
-  await page.locator(`[data-result-id="${correctedResult.id}"]`).click();
+  await page.locator(`button[data-result-id="${correctedResult.id}"]`).click();
   await selectedViewportReady();
   const reopenedPage = await resultPage(reopenedResult.id);
   assert.equal(reopenedPage.total_rows, EXPECTED_COUNT - 1);

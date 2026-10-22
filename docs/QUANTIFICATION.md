@@ -13,6 +13,17 @@ and conservative interpretation. Publication rechecks source identities and,
 for label association, every array artifact in both input results after output
 artifacts have been staged.
 
+## Classical scalar input in the workbench
+
+The classical Analyze panel exposes **Segmentation input** using the recorded
+source channel name and its numbered index. The adjacent T/Z scope is displayed
+one-based, including the end plane for a selected Z range. Submitted channel,
+plane and range indices retain the existing zero-based selection contract.
+**Display channel** and **Solo** control presentation; **Measurement channel**
+chooses raw measurement input independently. Source transitions, unresolved view
+defaults and active work disable segmentation input changes and submission.
+This control does not infer stain identity or change the segmentation method.
+
 ## Bright puncta-like maxima
 
 `puncta_preview` and `puncta_run` accept one source ID and scalar selection plus
@@ -20,6 +31,13 @@ explicit `sigma`, `response_threshold`, `raw_threshold`, `minimum_distance`,
 `aperture_radius`, `exclude_border`, and `control` values. `working_bytes` is
 optional and bounded. The preview returns a real raw-plane overlay (a maximum
 intensity projection for a 3D selection), but creates no result.
+
+The UI labels LoG sigma, minimum peak separation and aperture radius with the
+selected source level's resolved length unit. Explicitly uncalibrated sources use
+pixels; incomplete or unsupported calibration displays an unverified-unit label.
+It does not borrow a result's calibration or convert submitted parameter values.
+Raw-threshold controls are labelled as source values. Acquisition channel names
+remain literal, with numbered fallbacks only when a recorded name is unavailable.
 
 The run performs one physical-scale, bright-on-dark Laplacian of Gaussian (LoG)
 operation. For array axis `a`, it uses `sigma_a = sigma / spacing_a` and sums

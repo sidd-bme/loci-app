@@ -23,6 +23,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 
+import type { IntensityReport, SampleSheetPreview } from "../shared/intensity-contracts";
 import type { ScientificExportRequest, ScientificExportPreview } from "../shared/scientific-export-contracts";
 
 let canvasContext: Record<string, ReturnType<typeof vi.fn>>;
@@ -379,6 +380,7 @@ async function selectHistoryResult(name = /^Segmentation,/i) {
 async function openTool(
   group: "View" | "Annotate" | "Analyze" | "Results",
   tool: string,
+  studySection: "samples" | "intensity" | "batch" = "batch",
 ) {
   fireEvent.click(await screen.findByRole("button", { name: group }));
   const labels: Record<string, string> = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
@@ -386,6 +388,7 @@ async function openTool(
     Temporal: "Track over time", Registration: "Register & resample", Info: "Review & export", Study: "Study & batch" };
   fireEvent.click(await screen.findByRole("combobox", { name: `${group} tool` }));
   fireEvent.click(await screen.findByRole("option", { name: labels[tool] }));
+  if (tool === "Study") fireEvent.click(screen.getByRole("tab", { name: { samples: "Samples", intensity: "Intensity", batch: "Batch" }[studySection] }));
   if (tool === "Study") for (const details of document.querySelectorAll<HTMLDetailsElement>("details.study-analysis-section")) {
     details.open = true; fireEvent(details, new Event("toggle"));
   }
@@ -452,6 +455,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Results", "Info");
+    if (screen.queryByRole("button", { name: "Export" })) fireEvent.click(screen.getByRole("button", { name: "Export" }));
     exportChoice("Data export result scope", "study");
     fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
     exportChoice("Data export purpose", "provisional");
@@ -459,7 +463,7 @@ describe("ResearchWorkbench", () => {
     for (const letter of ["A", "B"]) fireEvent.click(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` }));
     fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
     await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
-    fireEvent.click(exactExportChoices().getByRole("button", { name: `Inspect rev ${resultB.revision_hash.slice(0, 8)}` }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Exact result revisions" }).querySelector<HTMLElement>(`[data-export-result-id="${resultB.id}"][data-revision-hash="${resultB.revision_hash}"]`)!).getByRole("button", { name: /^Inspect result:/ }));
     await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
     expect(document.querySelector(`[data-result-id="${resultA.id}"]`)).toBeNull();
     expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id }));
@@ -471,6 +475,13 @@ describe("ResearchWorkbench", () => {
       for (const letter of ["A", "B"]) expect(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` })).toBeChecked();
     };
     await assertDraft();
+    if (!indexed) {
+      fireEvent.click(screen.getByRole("button", { name: "Review" }));
+      expect(screen.getByText("Quantitative summary")).toBeVisible();
+      expect(screen.queryByRole("region", { name: "Export scientific data" })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Export" }));
+      await assertDraft();
+    }
     expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Original image" }));
     await screen.findByRole("group", { name: "Results on this image" });
@@ -492,16 +503,79 @@ describe("ResearchWorkbench", () => {
     expect(bridge.exportDataPackage).not.toHaveBeenCalled();
   });
 
+  it("withholds the old quantitative preview while loading another exact revision", async () => {
+    const active = structuredClone(snapshot);
+    const second = { ...active.results[0], id: "9".repeat(32), revision_hash: "0".repeat(64), object_count: 9 };
+    active.results.push(second);
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+    const original = bridge.execute;
+    let releaseRows!: () => void;
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "result" && request.result_id === second.id) return new Promise((resolve) => {
+        releaseRows = () => resolve({ result: second, measurements: [{ label: 9, measure: 99, measure_kind: "area", measure_unit: "µm²" }] });
+      });
+      if (operation === "result_view" && request.result_id === second.id) return resultView(second);
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await selectHistoryResult(/^Segmentation, 1 object,/i);
+    await openTool("Results", "Info");
+    expect(screen.getByText("Quantitative summary")).toBeVisible();
+    fireEvent.click(document.querySelector<HTMLButtonElement>(`button[data-result-id="${second.id}"]`)!);
+    await waitFor(() => expect(releaseRows).toBeDefined());
+    expect(screen.queryByText("Quantitative summary")).not.toBeInTheDocument();
+    const review=within(screen.getByRole("region", { name: "Review result" }));
+    expect(within(review.getByText("Technical identity").closest("details")!).getByText(second.revision_hash)).toBeInTheDocument();
+    await act(async () => releaseRows());
+    expect(await screen.findByText("Quantitative summary")).toBeVisible();
+    expect(screen.getByText(/first 1 of 9 objects/)).toBeVisible();
+    expect(screen.getByText("Mean Area")).toBeVisible();
+    expect(screen.getByText("99", { selector: ".research-stat-value" })).toBeVisible();
+  });
+
+  it("retains export choices after a failed preview, retries exact bindings and returns new history selections to Review", async () => {
+    const { bridge, resultA, resultB, planDataExport } = exportDraftFixture();
+    planDataExport.mockRejectedValueOnce(new Error("Synthetic preview unavailable"));
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Results", "Info");
+    expect(screen.getByText("Quantitative summary")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Export scientific data" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    exportChoice("Data export result scope", "study");
+    fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
+    exportChoice("Data export purpose", "provisional");
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    expect(await exportPanel().findByRole("alert")).toHaveTextContent("Synthetic preview unavailable");
+    expect(screen.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
+    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    expect(planDataExport).toHaveBeenLastCalledWith({ purpose: "provisional", bindings: [resultA, resultB].map((entry) => ({
+      result_id: entry.id, revision_hash: entry.revision_hash, source_id: entry.source_id, source_sha256: entry.source_sha256,
+      subset: "all", group_ids: [],
+    })) }, expect.any(String));
+    // A direct history selection is a new review task, even after preparing an export.
+    fireEvent.click(document.querySelector<HTMLButtonElement>(`button[data-result-id="${resultA.id}"]`)!);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByText("Quantitative summary")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(screen.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
+    expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    expect(bridge.exportDataPackage).not.toHaveBeenCalled();
+  });
+
   it("keeps excluded review state during explicit provisional recovery and group creation navigation", async () => {
     const { bridge, resultB, study } = exportDraftFixture(false, true);
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await selectHistoryResult();
     await openTool("Results", "Info");
+    if (screen.queryByRole("button", { name: "Export" })) fireEvent.click(screen.getByRole("button", { name: "Export" }));
     exportChoice("Data export result scope", "study");
     fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
     fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
     await exportPanel().findByRole("alert");
-    expect(exportPanel().getByRole("button", { name: `Inspect unreviewed rev ${resultB.revision_hash.slice(0, 8)}` })).toBeEnabled();
+    expect(exportPanel().getByRole("button", { name: /^Inspect unreviewed result: Second specimen/ })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /Inspect pending/ })).not.toBeInTheDocument();
     fireEvent.click(exportPanel().getByRole("button", { name: "Use Provisional data for review" }));
     fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
@@ -509,7 +583,7 @@ describe("ResearchWorkbench", () => {
     expect(exportPanel().getByRole("heading", { name: "Result B · excluded" })).toBeVisible();
     expect(bridge.planDataExport).toHaveBeenLastCalledWith(expect.objectContaining({ purpose: "provisional" }), expect.any(String));
     expect(bridge.reviewResult).not.toHaveBeenCalled();
-    fireEvent.click(exactExportChoices().getByRole("button", { name: `Inspect rev ${resultB.revision_hash.slice(0, 8)}` }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Exact result revisions" }).querySelector<HTMLElement>(`[data-export-result-id="${resultB.id}"][data-revision-hash="${resultB.revision_hash}"]`)!).getByRole("button", { name: /^Inspect result:/ }));
     await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
     exportChoice("Data export object scope", "groups");
     fireEvent.click(await exportPanel().findByRole("checkbox", { name: "Group A · 1 objects" }));
@@ -523,6 +597,271 @@ describe("ResearchWorkbench", () => {
     expect(await exportPanel().findByRole("checkbox", { name: "Group A · 1 objects" })).toBeChecked();
     expect(await exportPanel().findByRole("button", { name: "Create group in Statistics & objects" })).toBeEnabled();
     expect(study.results[1].review?.disposition).toBe("excluded");
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+  });
+
+  it("navigates Samples to an explicit cross-source revision, preserves CSV drafts, and invalidates Apply after metadata changes", async () => {
+    const first = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256 };
+    const secondSource = { ...snapshot.sources[0], id: "7".repeat(32), sha256: "8".repeat(64), name: "Second specimen" };
+    const parent = { ...first, id: "1".repeat(32), revision_hash: "2".repeat(64), source_id: secondSource.id,
+      source_sha256: secondSource.sha256, created_at: "2026-10-22T00:00:00Z", review: { disposition: "reviewed" } };
+    const child = { ...parent, id: "3".repeat(32), revision_hash: "4".repeat(64), parent_id: parent.id,
+      kind: "corrected-labels", review: { disposition: "pending" } };
+    const initialSample = { study: "Study", sample: "Field B", condition: "Control", biological_replicate: "R1" };
+    let current: ResearchSnapshot = { ...snapshot, project: { project_id: "9".repeat(32), title: "Study" },
+      sources: [...snapshot.sources, secondSource], results: [first, parent, child],
+      samples: [{ id: secondSource.id, revision: 1, data: initialSample }] };
+    const csv = `source_id,study,sample,condition\n${secondSource.id},Study,Field B,Treatment\n`;
+    const preview: SampleSheetPreview = { schema: "loci.sample-sheet-preview/v1", study_id: current.project.project_id!, csv_text: csv,
+      preview_sha256: "a".repeat(64), bindings: {}, errors: [], can_apply: true,
+      rows: [{ row_number: 2, source_id: secondSource.id, before: initialSample, after: { ...initialSample, condition: "Treatment" }, match: "matched", issues: [] }] };
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return { image: "data:image/png;base64,view" };
+      if (operation === "sample_sheet_preview") return preview;
+      if (operation === "result") return resultPage(request, current.results);
+      if (operation === "result_view") return resultView(current.results.find((row) => row.id === request.result_id)!);
+      if (operation === "sample") {
+        current = { ...current, samples: [{ id: secondSource.id, revision: 2, data: request.data as typeof initialSample }] };
+        return {};
+      }
+      return {};
+    });
+    const bridge = api({ getSnapshot: vi.fn(async () => current), execute });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study", "samples");
+    const editor = screen.getByRole("textbox", { name: "Sample sheet CSV" });
+    fireEvent.change(editor, { target: { value: csv } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview sample sheet" }));
+    await screen.findByRole("region", { name: "Sample sheet before and after" });
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeEnabled();
+    const sourceRow = container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${secondSource.id}"]`)!;
+    const resultDetails = within(sourceRow).getByText("Results (2)").closest("details")!;
+    resultDetails.open = true; fireEvent(resultDetails, new Event("toggle"));
+    const target = sourceRow.querySelector<HTMLElement>(`li[data-result-id="${child.id}"]`)!;
+    fireEvent.click(within(target).getByRole("button", { name: "Inspect result" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: child.id })));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("result_view", expect.objectContaining({ result_id: child.id })));
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(secondSource.name);
+    await waitFor(() => expect(container.querySelector(`button[data-result-id="${child.id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    expect(execute).not.toHaveBeenCalledWith("result", expect.objectContaining({ result_id: parent.id }));
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    for (const operation of ["sample", "run_recipe", "sample_sheet_apply", "intensity_preview", "intensity_save", "study_correction_effect"])
+      expect(execute.mock.calls.map(([name]) => name)).not.toContain(operation);
+    await openTool("Results", "Study", "samples");
+    expect(screen.getByRole("textbox", { name: "Sample sheet CSV" })).toBe(editor); expect(editor).toHaveValue(csv);
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeEnabled();
+    fireEvent.click(within(sourceRow).getByRole("button", { name: "Edit metadata" }));
+    expect(await screen.findByText("Select a result to review and export its measurements.")).toBeVisible();
+    screen.getByText("Study metadata", { exact: true }).closest("details")!.open = true;
+    fireEvent.change(screen.getByRole("textbox", { name: "condition" }), { target: { value: "Updated condition" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save metadata" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("sample", expect.objectContaining({
+      id: secondSource.id, source_id: secondSource.id, expected_revision: 1,
+    })));
+    await openTool("Results", "Study", "samples");
+    expect(editor).toHaveValue(csv);
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeDisabled();
+    expect(screen.getByText(/CSV or study metadata changed/)).toBeVisible();
+  });
+
+  it("rejects a Samples revision removed while its cross-source display is still loading", async () => {
+    const first = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256 };
+    const secondSource = { ...snapshot.sources[0], id: "7".repeat(32), sha256: "8".repeat(64), name: "Deferred specimen" };
+    const target = { ...first, id: "1".repeat(32), revision_hash: "2".repeat(64), source_id: secondSource.id,
+      source_sha256: secondSource.sha256 };
+    let current = { ...snapshot, sources: [...snapshot.sources, secondSource], results: [first, target] };
+    let releaseDefaults!: () => void;
+    const pendingDefaults = new Promise<void>((resolve) => { releaseDefaults = resolve; });
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return { image: "data:image/png;base64,view" };
+      if (operation === "result") return resultPage(request, current.results);
+      if (operation === "result_view") return resultView(current.results.find((row) => row.id === request.result_id)!);
+      if (operation === "sample") { current = { ...current, results: [first] }; return {}; }
+      return {};
+    });
+    const bridge = api({ getSnapshot: vi.fn(async () => current), execute });
+    const ordinaryExecute = bridge.execute;
+    bridge.execute = vi.fn(async (operation, request) => {
+      if (operation === "viewer_defaults" && request.source_id === secondSource.id) await pendingDefaults;
+      return ordinaryExecute(operation, request);
+    });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study", "samples");
+    const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${secondSource.id}"]`)!;
+    const details = within(row).getByText("Results (1)").closest("details")!; details.open = true; fireEvent(details, new Event("toggle"));
+    fireEvent.click(within(row).getByRole("button", { name: "Inspect result" }));
+    await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent(secondSource.name));
+    expect(execute).not.toHaveBeenCalledWith("result", expect.objectContaining({ result_id: target.id }));
+    screen.getByText("Study metadata", { exact: true }).closest("details")!.open = true;
+    fireEvent.click(screen.getByRole("button", { name: "Save metadata" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This exact result revision is no longer available");
+    await act(async () => releaseDefaults());
+    await waitFor(() => expect(screen.getByLabelText(`Image viewer: ${secondSource.name}`)).toHaveAttribute("data-prepared", "true"));
+    expect(execute).not.toHaveBeenCalledWith("result", expect.objectContaining({ result_id: target.id }));
+    expect(execute).not.toHaveBeenCalledWith("result_view", expect.objectContaining({ result_id: target.id }));
+    await openTool("Results", "Study", "samples");
+    expect(within(container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${secondSource.id}"]`)!).getByText("No results")).toBeVisible();
+  });
+
+  it("cancels an abandoned Samples navigation and keeps ordinary exact export inspection working", async () => {
+    const { bridge, study, resultA, resultB, execute } = exportDraftFixture();
+    let releaseDefaults!: () => void;
+    const pendingDefaults = new Promise<void>((resolve) => { releaseDefaults = resolve; });
+    const ordinaryExecute = bridge.execute;
+    bridge.execute = vi.fn(async (operation, request) => {
+      if (operation === "viewer_defaults" && request.source_id === resultB.source_id) await pendingDefaults;
+      return ordinaryExecute(operation, request);
+    });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study", "samples");
+    const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${resultB.source_id}"]`)!;
+    const details = within(row).getByText("Results (1)").closest("details")!; details.open = true; fireEvent(details, new Event("toggle"));
+    fireEvent.click(within(row).getByRole("button", { name: "Inspect result" }));
+    await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent("Second specimen"));
+    await openTool("View", "Display");
+    await act(async () => releaseDefaults());
+    await waitFor(() => expect(screen.getByLabelText("Image viewer: Second specimen")).toHaveAttribute("data-prepared", "true"));
+    expect(execute).not.toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id }));
+    fireEvent.click(container.querySelector<HTMLButtonElement>(`button[data-source-id="${study.sources[0].id}"]`)!);
+    await selectHistoryResult();
+    await openTool("Results", "Info");
+    if (screen.queryByRole("button", { name: "Export" })) fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    exportChoice("Data export result scope", "study");
+    fireEvent.click(await exportPanel().findByRole("button", { name: /^Inspect result: Second specimen/ }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id })));
+    await waitFor(() => expect(container.querySelector(`button[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultA.id }));
+    expect(screen.queryByText(/The exact selected study revision changed/)).not.toBeInTheDocument();
+  });
+
+  it("gives Study distinct sections and retains drafts, linked image and focus across navigation", async () => {
+    const bridge = api();
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study", "samples");
+    expect(screen.getByRole("tablist", { name: "Study sections" })).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "Corrections" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Sample sheet" })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Experiment intensity" })).not.toBeInTheDocument();
+    const csv = screen.getByLabelText("Sample sheet CSV");
+    fireEvent.change(csv, { target: { value: "source_id,study,sample,condition\na,Study,A,Control" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Intensity" }));
+    const declaration = screen.getByRole("textbox", { name: "Shared channel declaration" });
+    fireEvent.change(declaration, { target: { value: "Recorded channel draft" } });
+    const canvas = container.querySelector(".research-canvas")!;
+    expect(canvas).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Focus study" }));
+    expect(canvas).not.toBeVisible();
+    expect(screen.getByText("Linked image:", { exact: false })).toHaveTextContent("Specimen");
+    expect(screen.getByRole("main", { name: "Research workspace" })).toHaveClass("is-study-focused");
+    fireEvent.click(screen.getByRole("tab", { name: "Batch" }));
+    fireEvent.change(screen.getByLabelText("Study recipe name"), { target: { value: "Batch draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show image" }));
+    expect(container.querySelector(".research-canvas")).toBe(canvas);
+    expect(canvas).toBeVisible();
+    await openTool("View", "Display");
+    await openTool("Results", "Study", "intensity");
+    expect(screen.getByRole("textbox", { name: "Shared channel declaration" })).toBe(declaration);
+    expect(declaration).toHaveValue("Recorded channel draft");
+    fireEvent.click(screen.getByRole("tab", { name: "Samples" }));
+    expect(screen.getByLabelText("Sample sheet CSV")).toBe(csv);
+    expect(csv).toHaveValue("source_id,study,sample,condition\na,Study,A,Control");
+    fireEvent.click(screen.getByRole("tab", { name: "Batch" }));
+    expect(screen.getByLabelText("Study recipe name")).toHaveValue("Batch draft");
+    expect(bridge.submitBatch).not.toHaveBeenCalled();
+    expect(bridge.reviewResult).not.toHaveBeenCalled();
+    const operations = vi.mocked(bridge.execute).mock.calls.map(([operation]) => operation);
+    for (const operation of ["run_recipe", "sample_sheet_apply", "intensity_preview", "intensity_save", "study_correction_effect"])
+      expect(operations).not.toContain(operation);
+  });
+
+  it("opens the intensity section with the exact reviewed revision from Review & export", async () => {
+    const result = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256, review: { disposition: "reviewed" as const } };
+    const study = { ...snapshot, results: [result] };
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return { image: "data:image/png;base64,view" };
+      if (operation === "result") return resultPage(request, study.results);
+      if (operation === "result_view") return resultView(result);
+      if (operation === "intensity_catalog") return { schema: "loci.experiment-intensity-catalog/v1", results: [{
+        result_id: result.id, revision_hash: result.revision_hash, source_id: result.source_id, descriptors: [],
+      }] };
+      return {};
+    });
+    render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(study), execute })} onBack={vi.fn()} />);
+    await selectHistoryResult();
+    await openTool("Results", "Info");
+    expect(execute).not.toHaveBeenCalledWith("intensity_catalog", expect.anything());
+    fireEvent.click(screen.getByRole("button", { name: "Compare intensity in Study & batch" }));
+    expect(screen.getByRole("tab", { name: "Intensity" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("checkbox", { name: /^Intensity result: Specimen/ })).toBeChecked();
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("intensity_catalog", { result_ids: [result.id] }));
+    fireEvent.click(screen.getByRole("tab", { name: "Samples" }));
+    expect(screen.queryByRole("region", { name: "Experiment intensity" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Intensity" }));
+    expect(screen.getByRole("checkbox", { name: /^Intensity result: Specimen/ })).toBeChecked();
+    expect(execute).not.toHaveBeenCalledWith("intensity_save", expect.anything());
+  });
+
+  it("retains an immutable intensity report across study sections and rechecks current inputs on return", async () => {
+    const source = snapshot.sources[0];
+    const result = { ...snapshot.results[0], source_sha256: source.sha256, review: { disposition: "reviewed" as const } };
+    const sample = { study: "Study", sample: "Field", condition: "Control", biological_replicate: "R1", plate: null, well: null };
+    const study = { ...snapshot, project: { ...snapshot.project, project_id: "1".repeat(32) }, results: [result],
+      samples: [{ id: source.id, revision: 1, data: sample }] };
+    const mean = -0.12345678901234568;
+    const report: IntensityReport = { schema: "loci.experiment-intensity-report/v1", report_hash: "e".repeat(64),
+      created_at: "2026-10-21T00:01:00Z", software: { engine: "0.2.0", implementation: { kind: "source", sha256: "7".repeat(64) } }, result_ids: [result.id],
+      endpoint: { schema: "loci.intensity-endpoint/v1", kind: "raw-channel-intensity", statistic: "mean", unit: "source-intensity", compartment: "object" },
+      declaration: { channel: "Declared stored channel", acquisition_context: "Recorded acquisition", rationale: "Recorded comparison rationale" },
+      bindings: [{ result_id: result.id, source_id: source.id, revision_hash: result.revision_hash, source_sha256: source.sha256,
+        descriptor: { id: "raw.mean", label: "Raw mean", kind: "intensity", statistic: "mean", unit: "source-intensity", channel: "Raw" }, source: { name: source.name } }],
+      observations: [{ result_id: result.id, label: 1, value: mean, status: "value" }],
+      images: [{ ...sample, result_id: result.id, source_id: source.id, revision_hash: result.revision_hash,
+        object_count: 1, valid_object_count: 1, null_object_count: 0, missing_object_count: 0, mean, included: true, reason: "included" }],
+      replicates: [{ condition: "Control", biological_replicate: "R1", mean, image_count: 1, valid_image_count: 1, object_count: 1, valid_object_count: 1 }],
+      conditions: [{ condition: "Control", mean, sd: null, object_count: 1, valid_object_count: 1, image_count: 1, valid_image_count: 1,
+        declared_replicate_count: 1, valid_replicate_count: 1, unassigned_image_count: 0 }],
+      audit: [{ result_id: result.id, source_id: source.id, review_disposition: "reviewed", reason: "included" }], aggregation: {} };
+    let inputsCurrent = true;
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      if (operation === "view") return { image: "data:image/png;base64,view" };
+      if (operation === "result") return resultPage(request, study.results);
+      if (operation === "result_view") return resultView(result);
+      if (operation === "intensity_list") return { reports: [{ id: "e".repeat(32), created_at: report.created_at, endpoint: report.endpoint, declaration: report.declaration }] };
+      if (operation === "intensity_get") return { report, report_id: "e".repeat(32), status: { current: inputsCurrent,
+        changes: inputsCurrent ? [] : [{ result_id: result.id, reason: "changed: review" }] } };
+      return {};
+    });
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(study), execute, planIntensityExport: vi.fn() });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Results", "Study", "intensity");
+    screen.getByText(/Saved intensity reports \(/).closest("details")!.open = true;
+    fireEvent.click(await screen.findByRole("button", { name: /^Open saved intensity report 1: Declared stored channel/ }));
+    const saved = await screen.findByRole("region", { name: "Saved intensity report" });
+    await screen.findByText("Current inputs match this saved report.");
+    fireEvent.click(screen.getByRole("tab", { name: "Samples" }));
+    expect(saved).not.toBeVisible();
+    const statusReads = execute.mock.calls.filter(([operation]) => operation === "intensity_get").length;
+    inputsCurrent = false;
+    await openTool("View", "Display");
+    expect(execute.mock.calls.filter(([operation]) => operation === "intensity_get")).toHaveLength(statusReads);
+    await openTool("Results", "Study", "intensity");
+    expect(screen.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
+    await screen.findByText("Current inputs differ. Saved values remain unchanged.");
+    const table = screen.getByRole("table", { name: "Condition means · source-intensity units" });
+    const exactValue = within(table).getByLabelText("Exact value");
+    exactValue.closest("details")!.open = true;
+    expect(exactValue).toHaveTextContent(String(mean));
+    expect(exactValue).toBeVisible();
+    expect(execute).not.toHaveBeenCalledWith("intensity_preview", expect.anything());
+    expect(execute).not.toHaveBeenCalledWith("intensity_save", expect.anything());
+    screen.getByText(/Image means & inclusion reasons/).closest("details")!.open = true;
+    fireEvent.click(screen.getByRole("button", { name: /^Inspect result: Specimen/ }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("result_view", expect.objectContaining({
+      result_id: result.id, labels: true,
+    })));
+    expect(saved).not.toBeVisible();
+    await openTool("Results", "Study", "intensity");
+    expect(screen.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
     expect(bridge.reviewResult).not.toHaveBeenCalled();
   });
 
@@ -543,6 +882,10 @@ describe("ResearchWorkbench", () => {
     await openTool("Results", "Info");
     fireEvent.click(screen.getByRole("button", { name: "Show experiment effect" }));
     expect(await screen.findByRole("region", { name: "Experiment effect" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Corrections" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText("After correction revision")).toHaveValue(child.id);
+    fireEvent.click(screen.getByRole("tab", { name: "Samples" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Corrections" }));
     expect(screen.getByLabelText("After correction revision")).toHaveValue(child.id);
     fireEvent.click(screen.getByRole("button", { name: "Calculate experiment effect" }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("study_correction_effect", {
@@ -621,6 +964,54 @@ describe("ResearchWorkbench", () => {
     expect(first.title).not.toContain(active.results[0].id);
     const second = screen.getByRole("button", { name: /pending review$/ });
     expect(second).toHaveAttribute("data-review-state", "pending");
+  });
+
+  it("distinguishes duplicate result rows with stable visible labels and selects exact revisions", async () => {
+    const active = structuredClone(snapshot);
+    const first = { ...active.results[0], created_at: "2026-10-22T04:05:06Z" };
+    const second = { ...first, id: "e".repeat(32), revision_hash: "f".repeat(64) };
+    const later = { ...first, id: "1".repeat(32), revision_hash: "2".repeat(64), created_at: "2026-10-22T04:05:07Z" };
+    const corrected = { ...first, id: "3".repeat(32), revision_hash: "4".repeat(64), kind: "corrected-labels", parent_id: second.id };
+    // Reverse the equal-time pair: ordinal identity must not depend on array order.
+    active.results = [second, first, later, corrected];
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(async (operation, request) => {
+      const exact = active.results.find((item) => item.id === request.result_id);
+      if (operation === "result") return resultPage(request, active.results, [{ label: 1, area: exact === second ? 33 : 22 }]);
+      if (operation === "result_view" && exact) return resultView(exact);
+      return {};
+    }) });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    const rows = () => [first, second, later, corrected].map((result) => container.querySelector<HTMLButtonElement>(`[data-result-id="${result.id}"]`)!);
+    await waitFor(() => expect(rows()[0]).toBeEnabled());
+    const [firstRow, secondRow, laterRow, correctedRow] = rows();
+    expect(firstRow).toHaveTextContent("Result 1");
+    expect(secondRow).toHaveTextContent("Result 2");
+    expect(laterRow).toHaveTextContent("Created ");
+    expect(correctedRow).not.toHaveTextContent("Created ");
+    expect(correctedRow).toHaveTextContent("Edited from Segmentation · Result 2");
+    expect(new Set([firstRow, secondRow, laterRow].map((row) => row.getAttribute("aria-label"))).size).toBe(3);
+    for (const [index, row] of [firstRow, secondRow, laterRow].entries()) {
+      const discriminator = row.querySelector(".research-result-meta")!.textContent!;
+      expect(row.getAttribute("aria-label")).toContain(discriminator);
+      expect(row).not.toHaveTextContent(active.results[index].id);
+      expect(row).not.toHaveTextContent(active.results[index].revision_hash);
+    }
+    fireEvent.click(screen.getByRole("button", { name: secondRow.getAttribute("aria-label")! }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("result", { result_id: second.id, offset: 0, limit: 200 }));
+    await waitFor(() => expect(secondRow).toHaveAttribute("aria-pressed", "true"));
+    expect(firstRow).toHaveAttribute("aria-pressed", "false");
+    await openTool("Analyze", "Analyze");
+    expect(await screen.findByText("33", { exact: true })).toBeVisible();
+    expect(bridge.execute).toHaveBeenCalledWith("result_view", expect.objectContaining({ result_id: second.id }));
+  });
+
+  it("uses an ordinal when duplicate results have no valid recorded time", async () => {
+    const active = structuredClone(snapshot);
+    active.results.push({ ...active.results[0], id: "e".repeat(32), revision_hash: "f".repeat(64), created_at: "unavailable" });
+    render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(active) })} onBack={vi.fn()} />);
+    expect(await screen.findByRole("button", { name: /^Segmentation, Result 1,/ })).toHaveTextContent("Result 1");
+    expect(screen.getByRole("button", { name: /^Segmentation, Result 2,/ })).toHaveTextContent("Result 2");
+    expect(screen.queryByText(/Invalid Date/)).not.toBeInTheDocument();
   });
 
   it("waits for initial restoration before a native image command and ignores duplicate commands", async () => {
@@ -983,6 +1374,7 @@ describe("ResearchWorkbench", () => {
         ]) }),
       }));
       await openTool("Results", "Info");
+      fireEvent.click(screen.getByRole("button", { name: "Export" }));
       fireEvent.click(screen.getByRole("button", { name: "Export result" }));
       expect(main).toHaveAttribute("inert");
       expect(exportResult).not.toHaveBeenCalled();
@@ -2173,7 +2565,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await screen.findAllByText("Specimen");
     await openTool("Results", "Info");
-    fireEvent.click(screen.getByText("Study metadata", { exact: true }));
+    expect(screen.getByLabelText("condition")).toBeVisible();
     fireEvent.change(screen.getByLabelText("condition"), {
       target: { value: "Drug" },
     });
@@ -2213,9 +2605,11 @@ describe("ResearchWorkbench", () => {
     await openTool("Results", "Info");
 
     expect(screen.getByText("Review required before export")).toBeVisible();
-    const markReviewed = screen.getByRole("button", { name: "Mark reviewed" });
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
     const exportRevision = screen.getByRole("button", { name: "Export result" });
     expect(exportRevision).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const markReviewed = screen.getByRole("button", { name: "Mark reviewed" });
     fireEvent.click(markReviewed);
     fireEvent.click(markReviewed);
     expect(reviewResult).toHaveBeenCalledOnce();
@@ -2223,11 +2617,118 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByText("Review pending")).toBeVisible();
 
     finishReview();
-    await waitFor(() => expect(screen.getByText("Reviewed")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Reviewed", { selector: '[role="status"]' })).toBeVisible());
     expect(fetchSnapshot).toHaveBeenCalledTimes(2);
     expect(markReviewed).toBeDisabled();
-    expect(exportRevision).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(screen.getByRole("button", { name: "Export result" })).toBeEnabled();
   });
+  it.each([
+    { names: ["DAPI", " Marker "], labels: ["1: DAPI", "2: Marker"] },
+    { names: ["", "   "], labels: ["1: Channel 1", "2: Channel 2"] },
+    { names: undefined, labels: ["1: Channel 1", "2: Channel 2"] },
+  ])("labels classical measurement channels from recorded names or explicit fallbacks: $labels", async ({ names, labels }) => {
+    const active = structuredClone(snapshot);
+    active.sources[0].metadata.channel_names = names;
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    const channel = screen.getByRole("combobox", { name: "Measurement channel" });
+    expect(within(channel).getAllByRole("option").map((option) => ({ text: option.textContent?.trim(), value: (option as HTMLOptionElement).value })))
+      .toEqual(labels.map((text, index) => ({ text, value: String(index) })));
+    fireEvent.change(channel, { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      source_id: active.sources[0].id, recipe: expect.objectContaining({ measurement_channels: [1] }),
+    })));
+  });
+
+  it.each([false, true])("keeps segmentation, display and measurement channels independent with exact raw plane scope (range %s)", async (range) => {
+    const active = structuredClone(snapshot);
+    const dimensions = { x: 64, y: 48, z: 5, t: 3, c: 3 };
+    active.sources[0].metadata.dimensions = dimensions;
+    active.sources[0].metadata.levels = [{ index: 0, dimensions }];
+    active.sources[0].metadata.channel_names = ["Recorded structural", "Recorded signal", " "];
+    const selection = { level: 0, x: 5, y: 6, width: 20, height: 10, c: 0, z: 2, t: 1, ...(range ? { z_stop: 5 } : {}) };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+    const original = bridge.execute;
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "source_view") return { source_id: active.sources[0].id, source_sha256: active.sources[0].sha256, revision: 0,
+        state: { interpretation: "auto", projection: "plane", selection, camera: null, rgb_mapping: null,
+          channels: [0, 1, 2].map((channel) => ({ channel, visible: true, color: "#ffffff", opacity: 1, low: 0, high: 255, gamma: 1 })) } };
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    const segmentation = await screen.findByRole("combobox", { name: "Segmentation input" });
+    await waitFor(() => expect(segmentation).toBeEnabled());
+    expect(within(segmentation).getAllByRole("option").map((option) => ({ text: option.textContent?.trim(), value: (option as HTMLOptionElement).value })))
+      .toEqual([{ text: "1: Recorded structural", value: "0" }, { text: "2: Recorded signal", value: "1" }, { text: "3: Channel 3", value: "2" }]);
+    expect(screen.getByText(range ? "Raw source channel · T 2 · Z 3–5" : "Raw source channel · T 2 · Z 3")).toBeVisible();
+    fireEvent.change(segmentation, { target: { value: "1" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+    expect(segmentation).toHaveValue("1");
+    fireEvent.change(screen.getByRole("combobox", { name: "Measurement channel" }), { target: { value: "2" } });
+    expect(segmentation).toHaveValue("1");
+    expect(screen.getByRole("combobox", { name: "Display channel" })).toHaveValue("2");
+    await openTool("Results", "Study");
+    fireEvent.click(screen.getByRole("tab", { name: "Batch" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save validated recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("recipe", expect.objectContaining({
+      source_id: active.sources[0].id, data: expect.objectContaining({ selection: { ...selection, c: 1 },
+        recipe: expect.objectContaining({ measurement_channels: [2] }) }),
+    })));
+    await openTool("Analyze", "Analyze");
+    expect(screen.getByRole("combobox", { name: "Segmentation input" })).toHaveValue("1");
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      source_id: active.sources[0].id, selection: { ...selection, c: 1 }, recipe: expect.objectContaining({ measurement_channels: [2] }),
+    })));
+  });
+
+  it("blocks segmentation input and submission while busy or source display defaults are unresolved", async () => {
+    const active = structuredClone(snapshot);
+    const second = { ...active.sources[0], id: "7".repeat(32), sha256: "8".repeat(64), name: "Second scalar source" };
+    active.sources.push(second);
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+    const original = bridge.execute;
+    let releaseDefaults!: () => void;
+    let releaseRun!: () => void;
+    bridge.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "viewer_defaults" && request.source_id === second.id) {
+        await new Promise<void>((resolve) => { releaseDefaults = resolve; });
+      }
+      if (operation === "run_recipe") return new Promise((resolve) => { releaseRun = () => resolve({}); });
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Segmentation input" })).toBeEnabled());
+    fireEvent.change(screen.getByRole("combobox", { name: "Segmentation input" }), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    expect(screen.getByRole("combobox", { name: "Segmentation input" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Running…" })).toBeDisabled();
+    await act(async () => releaseRun());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled());
+    fireEvent.click(document.querySelector<HTMLButtonElement>(`button[data-source-id="${second.id}"]`)!);
+    await waitFor(() => expect(releaseDefaults).toBeDefined());
+    expect(screen.getByRole("combobox", { name: "Segmentation input" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Segmentation input" }), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    expect(vi.mocked(bridge.execute).mock.calls.filter(([operation]) => operation === "run_recipe")).toHaveLength(1);
+    await act(async () => releaseDefaults());
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Segmentation input" })).toBeEnabled());
+    expect(screen.getByRole("combobox", { name: "Segmentation input" })).toHaveValue("0");
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      source_id: second.id, selection: expect.objectContaining({ c: 0, z: 1, t: 0 }),
+      recipe: expect.objectContaining({ measurement_channels: [0] }),
+    })));
+    await act(async () => releaseRun());
+  });
+
   it("requires an explicit generic RGB intensity conversion without assuming histology", async () => {
     const rgb = structuredClone(snapshot);
     rgb.sources[0].metadata.sample_semantics = "RGB";
@@ -2235,6 +2736,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Analyze");
     expect(screen.queryByLabelText("Stain basis")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Measurement channel")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
     expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
     fireEvent.change(screen.getByLabelText("RGB analysis input"), { target: { value: "rgb_intensity" } });
@@ -3280,7 +3782,7 @@ describe("ResearchWorkbench", () => {
     );
     await selectHistoryResult();
     await openTool("Annotate", "Correction");
-    fireEvent.click(screen.getByText("Other source"));
+    fireEvent.click(screen.getByRole("button", { name: "Other source" }));
     resolveInfo({
       result_id: snapshot.results[0].id,
       revision_hash: snapshot.results[0].revision_hash,
@@ -3674,7 +4176,7 @@ describe("ResearchWorkbench", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Exact revision is stale",
     );
-    fireEvent.click(screen.getByText("Other"));
+    fireEvent.click(screen.getByRole("button", { name: "Other" }));
     expect(
       await screen.findByText("Select a segmentation result to edit labels or add an ROI."),
     ).toBeVisible();

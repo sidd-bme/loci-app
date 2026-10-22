@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createEmptyStudy, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, createEmptyStudy, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants, createReadStream, promises as fs } from "node:fs";
@@ -264,7 +264,7 @@ async function newResult(page, action, kind) {
   );
   await waitFor(
     page,
-    () => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"),
+    () => page.locator(`button[data-result-id="${result.id}"]`).getAttribute("class"),
     (value) => value?.includes("selected"),
     `selected ${kind ?? "result"}`,
   );
@@ -451,7 +451,7 @@ try {
   await screenshot(page, "04-corrected-association-revision");
 
   await selectWorkbenchTool(page, "Info");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   const reviewed = await waitFor(
     page,
     () => snapshot(page),
@@ -460,7 +460,7 @@ try {
     "human review of corrected temporal revision",
   );
   const reviewedResult = reviewed.results.find((item) => item.id === corrected.id);
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await waitFor(
     page,
     () => fs.readdir(exportPath).catch(() => []),

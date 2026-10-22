@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, selectWorkbenchTool, selectStudySection, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 // Root owns serial live execution and visual acceptance. Scientific actions below
 // use actual controls. Read-only list/get calls inspect the report saved by those
@@ -68,6 +68,9 @@ const source = {
 };
 const intensity = () => page.getByRole("region", { name: "Experiment intensity", exact: true });
 const samples = () => page.getByRole("region", { name: "Sample sheet", exact: true });
+const sampleNavigator = () => samples().getByRole("region", { name: "Sources & samples", exact: true });
+const resultChoice = id => intensity().locator(`.intensity-result-row[data-intensity-result-id="${id}"]`).getByRole("checkbox");
+const channelChoice = id => intensity().locator(`.intensity-setup > label[data-intensity-result-id="${id}"]`).getByRole("combobox");
 const snapshot = () => page.evaluate(() => window.lociResearch.getSnapshot());
 const listed = () => page.evaluate(() => window.lociResearch.execute("intensity_list", {}));
 const saved = id => page.evaluate(report_id => window.lociResearch.execute("intensity_get", { report_id }), id);
@@ -99,7 +102,7 @@ async function layout() {
     const clipped = roots.flatMap(region => [...region.querySelectorAll("button, legend, h2, h3, summary, label")]
       .filter(visible).filter(element => !element.closest(".intensity-table") && element.scrollWidth > element.clientWidth + 1)
       .map(element => ({ tag: element.tagName, text: element.textContent.trim(), width: element.clientWidth, scroll: element.scrollWidth })));
-    const tables = roots.flatMap(region => [...region.querySelectorAll(".intensity-table")].filter(visible)
+    const tables = roots.flatMap(region => [...region.querySelectorAll(".intensity-table, .study-sample-table")].filter(visible)
       .map(element => ({ label: element.getAttribute("aria-label"), role: element.getAttribute("role"), tab_index: element.tabIndex,
         width: element.clientWidth, scroll: element.scrollWidth })));
     const unbroken = roots.flatMap(region => [...region.querySelectorAll(".intensity-table td, .intensity-table code, .intensity-table button")]
@@ -113,7 +116,13 @@ async function layout() {
       .map(element => element.textContent.trim()));
     const plots = roots.flatMap(region => [...region.querySelectorAll(".intensity-plot")].filter(visible)
       .filter(element => element.scrollWidth > element.clientWidth + 1).map(element => element.scrollWidth));
-    return { width: innerWidth, height: innerHeight, document_width: document.documentElement.scrollWidth,
+    const toolbar = document.querySelector(".source-browser__toolbar");
+    const toolbarButtons = toolbar ? [...toolbar.querySelectorAll("button")].filter(visible) : [];
+    const overlaps = toolbarButtons.flatMap((button, index) => toolbarButtons.slice(index + 1).filter(other => {
+      const a = button.getBoundingClientRect(), b = other.getBoundingClientRect();
+      return Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+    }).map(other => [button.textContent.trim() || button.getAttribute("aria-label"), other.textContent.trim() || other.getAttribute("aria-label")]));
+    return { source_browser_overlaps: overlaps, width: innerWidth, height: innerHeight, document_width: document.documentElement.scrollWidth,
       theme: document.documentElement.dataset.theme, clipped_labels: clipped, wrapped_numbers_or_identity: unbroken,
       overflowing_captions: captions, overflowing_plots: plots, tables };
   });
@@ -124,6 +133,7 @@ async function shot(name, target, allowed = []) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const bounds = await layout();
   assert.ok(bounds.document_width <= bounds.width + 1, "App-wide horizontal overflow: " + JSON.stringify(bounds));
+  assert.deepEqual(bounds.source_browser_overlaps, [], "Source browser controls must not overlap");
   assert.deepEqual(bounds.clipped_labels, [], "Clipped essential labels: " + JSON.stringify(bounds.clipped_labels));
   assert.deepEqual(bounds.wrapped_numbers_or_identity, [], "Exact values and revision actions must stay unbroken");
   assert.deepEqual(bounds.overflowing_captions, [], "Table captions must fit the panel");
@@ -167,8 +177,8 @@ async function launch(openPath) {
   await fileMenuAction(page, "Open study");
   await waitForSnapshot(page, state => state?.sources?.length === Object.keys(fixture.records).length &&
     Object.values(fixture.records).every(record => [record.object, record.compartment].every(binding => state.results.some(result => result.id === binding.result_id))), "fresh exact intensity fixture", 120_000);
-  await selectWorkbenchTool(page, "Study");
-  await samples().waitFor(); await intensity().waitFor();
+  await selectWorkbenchTool(page, "Study", "Samples");
+  await samples().waitFor();
 }
 async function closeApp() {
   if (!app) return;
@@ -194,19 +204,20 @@ async function details(name) {
   if (!(await disclosure.evaluate(element => element.open))) await summary.click();
 }
 async function choose(part) {
+  await selectStudySection(page, "Intensity");
   const another = intensity().getByRole("button", { name: "Set up another comparison", exact: true });
   if (await another.count()) await another.click();
   for (const box of await intensity().getByRole("checkbox").all()) if (await box.isChecked()) await box.uncheck();
   const kind = part === "object" ? "object" : "compartment";
   for (const record of Object.values(fixture.records)) {
-    const box = intensity().getByRole("checkbox", { name: "Intensity result " + record[kind].result_id, exact: true });
+    const box = resultChoice(record[kind].result_id);
     if (record.disposition === "pending") {
       assert.equal(await box.isDisabled(), true, "Pending revisions must be blocked");
       assert.match(await box.locator("..").innerText(), /Blocked until reviewed/u);
     } else {
       await box.check();
       const alternative = record[kind === "object" ? "compartment" : "object"];
-      assert.equal(await intensity().getByRole("checkbox", { name: "Intensity result " + alternative.result_id, exact: true }).isDisabled(), true,
+      assert.equal(await resultChoice(alternative.result_id).isDisabled(), true,
         "A second revision on the same source must be blocked");
     }
   }
@@ -216,7 +227,7 @@ async function choose(part) {
   const metric = "intensity:" + Buffer.from(channel, "utf8").toString("hex") + ":mean";
   const literal = part === "object" ? metric : "compartment:" + part + ":" + metric;
   for (const record of Object.values(fixture.records).filter(record => record.disposition !== "pending"))
-    await intensity().getByLabel("Intensity channel for " + record[kind].result_id, { exact: true }).selectOption(literal);
+    await channelChoice(record[kind].result_id).selectOption(literal);
   await intensity().getByLabel("Shared channel declaration", { exact: true }).fill("Authored raw.mean:核/β channel");
   await intensity().getByLabel("Acquisition context", { exact: true }).fill("Same authored float64 source generation, 32 × 32 native grid, no acquisition correction.");
   await intensity().getByLabel("Comparability rationale", { exact: true }).fill("Constant synthetic source intensity within authored cells; identical executed segmentation and compartment definitions. This declaration does not establish biological identity or calibration.");
@@ -225,8 +236,20 @@ async function choose(part) {
 async function oracleTables() {
   const table = intensity().getByRole("region", { name: "Intensity condition means", exact: true });
   await table.waitFor();
-  const cells = await table.getByRole("rowheader", { name: "A", exact: true }).locator("..").getByRole("cell").allTextContents();
-  assert.equal(Number(cells[0]), 30); assert.ok(Math.abs(Number(cells[1]) - Math.sqrt(200)) < 1e-12);
+  const row = table.getByRole("rowheader", { name: "A", exact: true }).locator("..");
+  const cells = await row.getByRole("cell").allTextContents();
+  const exactCell = async index => {
+    const cell = row.getByRole("cell").nth(index), disclosure = cell.locator("details.scientific-number");
+    if (!(await disclosure.count())) return Number(await cell.innerText());
+    const summary = disclosure.locator(":scope > summary");
+    await summary.focus(); await page.keyboard.press("Enter");
+    assert.equal(await disclosure.evaluate(element => element.open), true, "Exact value must be keyboard accessible");
+    const value = Number(await disclosure.getByLabel("Exact value", { exact: true }).innerText());
+    await summary.press("Enter");
+    assert.equal(await disclosure.evaluate(element => element.open), false);
+    return value;
+  };
+  assert.equal(await exactCell(0), 30); assert.ok(Math.abs(await exactCell(1) - Math.sqrt(200)) < 1e-12);
   assert.equal(cells[2].replaceAll(/\s/g, ""), "102/102");
   assert.equal(cells[3].replaceAll(/\s/g, ""), "3/3");
   assert.equal(cells[4].replaceAll(/\s/g, ""), "2/2");
@@ -254,8 +277,9 @@ async function saveReport(part) {
   return value;
 }
 async function openReport(id) {
+  await selectStudySection(page, "Intensity");
   await details(/^Saved intensity reports/u);
-  const button = intensity().getByRole("button", { name: "Open intensity report " + id, exact: true });
+  const button = intensity().locator(`.intensity-report-list > li[data-report-id="${id}"]`).getByRole("button");
   await button.scrollIntoViewIfNeeded(); await button.focus(); await page.keyboard.press("Enter");
   await intensity().getByRole("heading", { name: "Saved intensity report", exact: true }).waitFor();
   await oracleTables();
@@ -263,13 +287,13 @@ async function openReport(id) {
 }
 async function inspectAndReturn(binding, heading) {
   await details(/^Image means & inclusion reasons/u);
-  const button = intensity().getByRole("button", { name: "Inspect rev " + binding.revision_hash.slice(0, 8), exact: true });
+  const button = intensity().locator(`.intensity-report tr[data-intensity-result-id="${binding.result_id}"][data-revision-hash="${binding.revision_hash}"]`).getByRole("button", { name: /^Inspect result:/u });
   await button.scrollIntoViewIfNeeded(); await button.click();
-  await wait(() => page.locator(`[data-result-id="${binding.result_id}"]`).getAttribute("aria-pressed"), value => value === "true", "exact inspected result/source coherence");
+  await wait(() => page.locator(`button[data-result-id="${binding.result_id}"]`).getAttribute("aria-pressed"), value => value === "true", "exact inspected result/source coherence");
   const sourceRecord = Object.values(fixture.records).find(record => [record.object, record.compartment].some(row => row.result_id === binding.result_id));
   assert.ok(sourceRecord, "Inspected exact revision must map to an authored source");
   assert.equal(await page.locator(`button[data-source-id="${sourceRecord.source_id}"]`).getAttribute("aria-current"), "true");
-  await selectWorkbenchTool(page, "Study");
+  await selectWorkbenchTool(page, "Study", "Intensity");
   await intensity().getByRole("heading", { name: heading, exact: true }).waitFor();
   await oracleTables();
 }
@@ -316,13 +340,14 @@ async function runningBodyCancellation() {
   await mainDialogValues({ openPath: probe.study_path });
   await fileMenuAction(page, "Open study");
   await waitForSnapshot(page, state => state.sources.length === 1 && state.results.some(row => row.id === probe.result_id), "separate authored cancellation study", 120_000);
-  await selectWorkbenchTool(page, "Study");
+  await selectWorkbenchTool(page, "Study", "Samples");
   await samples().getByLabel("Sample sheet file", { exact: true }).setInputFiles(probe.samples_csv);
   await wait(() => samples().getByLabel("Sample sheet CSV", { exact: true }).inputValue(), text => text.includes(probe.source_id), "cancellation sample CSV");
   await samplePreview(); await sampleApply(1);
-  await intensity().getByRole("checkbox", { name: "Intensity result " + probe.result_id, exact: true }).check();
+  await selectStudySection(page, "Intensity");
+  await resultChoice(probe.result_id).check();
   await intensity().getByLabel("Intensity compartment", { exact: true }).selectOption("object");
-  const metric = intensity().getByLabel("Intensity channel for " + probe.result_id, { exact: true });
+  const metric = channelChoice(probe.result_id);
   await wait(() => metric.locator("option").evaluateAll(options => options.map(option => option.value).filter(Boolean)), values => values.length === 1, "single actual cancellation measurement descriptor");
   await metric.selectOption(await metric.locator("option").evaluateAll(options => options.map(option => option.value).find(Boolean)));
   await intensity().getByLabel("Shared channel declaration", { exact: true }).fill("Authored single grayscale raw channel");
@@ -349,7 +374,7 @@ async function runningBodyCancellation() {
   await mainDialogValues({ openPath: setup.study_path });
   await fileMenuAction(page, "Open study");
   await waitForSnapshot(page, state => state.sources.length === 8 && state.results.some(row => row.id === fixture.records.A100.object.result_id), "return to main authored study", 120_000);
-  await selectWorkbenchTool(page, "Study");
+  await selectWorkbenchTool(page, "Study", "Samples");
 }
 
 try {
@@ -362,6 +387,29 @@ try {
   await samples().getByRole("button", { name: "Load sample sheet template", exact: true }).click();
   const csvBox = samples().getByLabel("Sample sheet CSV", { exact: true });
   await wait(() => csvBox.inputValue(), text => text.includes(fixture.records.A100.source_id), "stable-ID CSV template");
+  const initialCsvDraft = await csvBox.inputValue();
+  const navigator = sampleNavigator();
+  const sourceRows = () => navigator.locator("tbody > tr[data-source-id]");
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("missing");
+  assert.equal(await sourceRows().count(), 8, "Every source initially lacks required declarations");
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("none");
+  assert.equal(await sourceRows().count(), 0, "Every authored source has saved result revisions");
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("all");
+  await selectStudySection(page, "Intensity");
+  await intensity().getByLabel("Shared channel declaration", { exact: true }).fill("Unsubmitted study navigation draft");
+  await selectStudySection(page, "Batch");
+  await selectStudySection(page, "Samples");
+  assert.equal(await csvBox.inputValue(), initialCsvDraft, "Section navigation retains unapplied CSV");
+  await selectStudySection(page, "Intensity");
+  assert.equal(await intensity().getByLabel("Shared channel declaration", { exact: true }).inputValue(), "Unsubmitted study navigation draft");
+  const study = page.getByRole("region", { name: "Study workspace", exact: true });
+  await study.getByRole("button", { name: "Focus study", exact: true }).click();
+  assert.equal(await page.locator(".research-canvas").isVisible(), false);
+  await study.getByRole("button", { name: "Show image", exact: true }).click();
+  assert.equal(await page.locator(".research-canvas").isVisible(), true);
+  await selectStudySection(page, "Samples");
+  assertions.study_sections_preserve_drafts_and_restore_linked_image = true;
+
   assertions.actual_stable_source_template = true;
   const csv = await fs.readFile(fixture.samples_csv, "utf8");
   const lines = csv.trimEnd().split("\n");
@@ -401,13 +449,63 @@ try {
   assert.equal((await snapshot()).samples.length, 8);
   assertions.csv_file_duplicate_unknown_stale_atomic_apply_and_recovery = true;
 
+  const beforeNavigation = await snapshot();
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("missing");
+  assert.equal(await sourceRows().count(), 0);
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("unassigned");
+  assert.deepEqual(await sourceRows().evaluateAll(rows => rows.map(row => row.dataset.sourceId)), [fixture.records.Unassigned.source_id]);
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("all");
+  await navigator.getByLabel("Condition filter", { exact: true }).selectOption(JSON.stringify(["declared", "A"]));
+  await navigator.getByLabel("Biological replicate filter", { exact: true }).selectOption(JSON.stringify(["declared", "R1"]));
+  assert.deepEqual((await sourceRows().evaluateAll(rows => rows.map(row => row.dataset.sourceId))).sort(), [fixture.records.A100.source_id, fixture.records.A30.source_id].sort());
+  await navigator.getByLabel("Condition filter", { exact: true }).selectOption(JSON.stringify(["declared", "B"]));
+  assert.deepEqual(await sourceRows().evaluateAll(rows => rows.map(row => row.dataset.sourceId)), [fixture.records.Bnegative.source_id]);
+  await navigator.getByLabel("Condition filter", { exact: true }).selectOption("all");
+  await navigator.getByLabel("Biological replicate filter", { exact: true }).selectOption("all");
+  await navigator.getByLabel("Find images or samples", { exact: true }).fill("Pending");
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("pending");
+  assert.equal(await sourceRows().count(), 1);
+  // The authored source retains cell labels, nuclear labels and compartment
+  // measurements. All three revisions are pending; none may disappear merely
+  // because only cells/compartments are selected for the intensity comparison.
+  const pendingRevisions = beforeNavigation.results.filter(result => result.source_id === fixture.records.Pending.source_id);
+  assert.equal(pendingRevisions.length, 3, "All three authored Pending revisions remain visible to sample navigation");
+  assert.ok(pendingRevisions.every(result => result.review == null));
+  observations.sample_navigation_pending_revisions = pendingRevisions.map(result => [result.id, result.revision_hash]);
+  await sourceRows().getByText("3 to review · 0 reviewed · 0 excluded", { exact: true }).waitFor();
+  await navigator.getByLabel("Sample status", { exact: true }).selectOption("all");
+  await navigator.getByLabel("Find images or samples", { exact: true }).fill("A30");
+  const a30Row = navigator.locator(`tr[data-source-id="${fixture.records.A30.source_id}"]`);
+  await a30Row.locator("details.study-source-results > summary").click();
+  const exactSampleResult = a30Row.locator(`li[data-result-id="${fixture.records.A30.compartment.result_id}"][data-revision-hash="${fixture.records.A30.compartment.revision_hash}"]`);
+  await exactSampleResult.getByRole("button", { name: "Inspect result", exact: true }).click();
+  await wait(() => page.locator(`button[data-result-id="${fixture.records.A30.compartment.result_id}"]`).getAttribute("aria-pressed"), value => value === "true", "Samples exact cross-source revision");
+  assert.equal(await page.locator(`button[data-source-id="${fixture.records.A30.source_id}"]`).getAttribute("aria-current"), "true");
+  await selectWorkbenchTool(page, "Study", "Samples");
+  assert.equal(await csvBox.inputValue(), csv, "Exact result inspection preserves CSV draft");
+  assert.equal(await navigator.getByLabel("Find images or samples", { exact: true }).inputValue(), "A30", "Filters survive inspection and return");
+  await navigator.getByLabel("Find images or samples", { exact: true }).fill("A40");
+  await navigator.locator(`tr[data-source-id="${fixture.records.A40.source_id}"]`).getByRole("button", { name: "Edit metadata", exact: true }).click();
+  assert.equal(await page.locator(`button[data-source-id="${fixture.records.A40.source_id}"]`).getAttribute("aria-current"), "true");
+  await page.getByText("Study metadata", { exact: true }).waitFor();
+  assert.equal(await page.locator('button[data-result-id][aria-pressed="true"]').count(), 0, "Metadata navigation selects only the source");
+  await selectWorkbenchTool(page, "Study", "Samples");
+  assert.equal(await csvBox.inputValue(), csv);
+  await navigator.getByLabel("Find images or samples", { exact: true }).fill("");
+  const afterNavigation = await snapshot();
+  assert.deepEqual(afterNavigation.samples, beforeNavigation.samples, "Navigation must not change sample metadata");
+  assert.deepEqual(afterNavigation.results, beforeNavigation.results, "Navigation must not change results or review state");
+  assert.deepEqual(afterNavigation.jobs.map(job => [job.id, job.operation]), beforeNavigation.jobs.map(job => [job.id, job.operation]), "Navigation creates no analysis/export jobs");
+  await shot("03b-sources-and-samples", navigator);
+  assertions.sample_filters_exact_inspection_metadata_route_and_no_mutation = true;
+
   await page.locator(`button[data-source-id="${fixture.records.A100.source_id}"]`).click();
-  await page.locator(`[data-result-id="${fixture.records.A100.object.result_id}"]`).click();
+  await page.locator(`button[data-result-id="${fixture.records.A100.object.result_id}"]`).click();
   await selectWorkbenchTool(page, "Info");
   await page.getByRole("button", { name: "Compare intensity in Study & batch", exact: true }).click();
   await intensity().waitFor();
-  await wait(() => intensity().getByRole("checkbox", { name: "Intensity result " + fixture.records.A100.object.result_id, exact: true }).isChecked(), Boolean, "current result comparison seeded");
-  assert.equal(await intensity().getByRole("checkbox", { name: "Intensity result " + fixture.records.A100.object.result_id, exact: true }).isChecked(), true);
+  await wait(() => resultChoice(fixture.records.A100.object.result_id).isChecked(), Boolean, "current result comparison seeded");
+  assert.equal(await resultChoice(fixture.records.A100.object.result_id).isChecked(), true);
   assertions.direct_current_result_route_to_study_intensity = true;
   const reportIds = {};
   for (const part of parts) {
@@ -417,7 +515,7 @@ try {
       const declaration = await intensity().getByLabel("Comparability rationale", { exact: true }).inputValue();
       await inspectAndReturn(fixture.records.A30.object, "Comparison preview");
       assert.equal(await intensity().getByLabel("Comparability rationale", { exact: true }).inputValue(), declaration);
-      assert.equal(await intensity().getByRole("checkbox", { name: "Intensity result " + fixture.records.A100.object.result_id, exact: true }).isChecked(), true);
+      assert.equal(await resultChoice(fixture.records.A100.object.result_id).isChecked(), true);
       assertions.preview_exact_revision_inspection_preserves_draft = true;
     }
     const value = await saveReport(part); reportIds[part] = value.report_id;
@@ -462,6 +560,7 @@ try {
   // Change only the previously unassigned B image through actual metadata UI.
   const changedLine = lines.find(line => line.startsWith(fixture.records.Unassigned.source_id + ",")).split(",");
   changedLine[4] = "R3";
+  await selectStudySection(page, "Samples");
   await samples().getByLabel("Sample sheet CSV", { exact: true }).fill(lines[0] + "\n" + changedLine.join(",") + "\n");
   await samplePreview(); await sampleApply(1);
   await openReport(reportIds.object);
@@ -492,19 +591,44 @@ try {
     await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), { width, height });
     await shot(`08-${theme}-${width}-conditions`, intensity().getByRole("region", { name: "Intensity condition means", exact: true }));
     await shot(`08-${theme}-${width}-images`, intensity().getByRole("region", { name: "Intensity image means", exact: true }));
+    await selectStudySection(page, "Samples");
+    await shot(`08-${theme}-${width}-samples`, sampleNavigator());
+    await selectStudySection(page, "Intensity");
   }
+  // These are renderer CSS viewports, not claims about physical laptop inches.
+  // Native window screenshots above remain separate from CDP emulation below.
+  const viewportSession = await app.context().newCDPSession(page);
+  observations.viewport_method = "Packaged Electron renderer, explicit CDP CSS viewport emulation; native 1024/1440 windows captured separately";
+  for (const theme of ["graphite", "paper"]) for (const [width, height] of [[1280, 800], [1512, 982], [1728, 1117], [1920, 1200], [2048, 1280], [2560, 1440], [3008, 1692]]) {
+    await viewportSession.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    await appearance(theme);
+    assert.equal(await page.evaluate(() => innerWidth), width, "Requested CSS viewport must actually be rendered");
+    await shot(`08-matrix-${theme}-${width}-split`, intensity().getByRole("region", { name: "Intensity condition means", exact: true }));
+    await study.getByRole("button", { name: "Focus study", exact: true }).click();
+    assert.equal(await page.locator(".research-canvas").isVisible(), false);
+    await shot(`08-matrix-${theme}-${width}-focus`, intensity().getByRole("region", { name: "Intensity image means", exact: true }));
+    await study.getByRole("button", { name: "Show image", exact: true }).click();
+  }
+  await viewportSession.send("Emulation.clearDeviceMetricsOverride");
+  await viewportSession.detach();
   await appearance("paper", true, true);
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 720 }));
   await shot("09-paper-1024-large-text-reduced-motion", intensity().getByRole("region", { name: "Intensity condition means", exact: true }));
+  await selectStudySection(page, "Samples");
+  await shot("09b-paper-1024-large-text-samples", sampleNavigator());
+  await selectStudySection(page, "Intensity");
   observations.appearance = await page.evaluate(() => ({ theme: document.documentElement.dataset.theme,
     preferences: JSON.parse(localStorage.getItem("loci.preferences.v1")) }));
   assert.equal(observations.appearance.preferences.textSize, "large");
   assert.equal(observations.appearance.preferences.motion, "reduced");
   const scrollTable = intensity().getByRole("region", { name: "Intensity condition means", exact: true });
+  const tableOverflows = await scrollTable.evaluate(element => element.scrollWidth > element.clientWidth + 1);
   await scrollTable.focus(); await page.keyboard.press("ArrowRight");
-  await wait(() => scrollTable.evaluate(element => element.scrollLeft), value => value > 0, "keyboard horizontal table scrolling");
-  await page.keyboard.press("ArrowLeft");
-  await wait(() => scrollTable.evaluate(element => element.scrollLeft), value => value === 0, "keyboard table scroll return");
+  if (tableOverflows) {
+    await wait(() => scrollTable.evaluate(element => element.scrollLeft), value => value > 0, "keyboard horizontal table scrolling");
+    await page.keyboard.press("ArrowLeft");
+    await wait(() => scrollTable.evaluate(element => element.scrollLeft), value => value === 0, "keyboard table scroll return");
+  } else assert.equal(await scrollTable.evaluate(element => element.scrollLeft), 0, "Fitting table must not gain accidental overflow");
   assertions.actual_theme_width_large_text_reduced_motion_keyboard_and_overflow = true;
 
   const retained = await listed(), frozenReports = {};
