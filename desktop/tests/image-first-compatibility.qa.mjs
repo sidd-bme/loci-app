@@ -650,7 +650,7 @@ try {
     }), imported.results[0]);
   assert.equal(correctionInfo.result_id, imported.results[0].id);
   assert.ok(correctionInfo.label_ids.length > 0);
-  await page.locator(`[data-result-id="${imported.results[0].id}"]`).click();
+  await page.locator(`button[data-result-id="${imported.results[0].id}"]`).click();
   await selectWorkbenchTool(page, "Correction");
   await page.getByLabel("Correction label").waitFor({ state: "visible", timeout: 120_000 });
   await capture("01-legacy-reviewed-correctable");

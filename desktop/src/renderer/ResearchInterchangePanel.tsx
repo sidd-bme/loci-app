@@ -198,8 +198,8 @@ export function ResearchInterchangePanel({
           onChange={(event) => chooseFile(event.target.files?.[0] ?? null)}
         />
       </label>
-      <p className="research-interchange-binding">
-        Exact revision: <code>{result.revision_hash}</code>
+      <p className="research-interchange-context">
+        {result.method_label ?? result.kind.replaceAll("-", " ")} · {result.review?.disposition ?? "unreviewed"}
       </p>
       <fieldset disabled={locked || !info}>
         <legend>Intensity measurement channels</legend>
@@ -230,6 +230,15 @@ export function ResearchInterchangePanel({
           Import into new revision
         </button>
       </div>
+      <details className="research-interchange-binding">
+        <summary>Technical identity</summary>
+        <dl>
+          <div><dt>Source ID</dt><dd><code>{result.source_id}</code></dd></div>
+          {result.source_sha256 && <div><dt>Source SHA-256</dt><dd><code>{result.source_sha256}</code></dd></div>}
+          <div><dt>Result ID</dt><dd><code>{result.id}</code></dd></div>
+          <div><dt>Exact revision</dt><dd><code>{result.revision_hash}</code></dd></div>
+        </dl>
+      </details>
       {status && <p role="status">{status}</p>}
       <p className="research-interchange-note">
         Imported measurements are descriptive. Review the new revision before

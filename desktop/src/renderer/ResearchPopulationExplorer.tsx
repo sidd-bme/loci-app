@@ -39,6 +39,7 @@ export type ResearchPopulationExplorerProps = {
 type FilterDraft = { key: number; metric: string; min: string; max: string };
 const PAGE_SIZE = 25;
 const PLOT_LIMIT = 500;
+const MAX_LABEL = 0xffffffff;
 const initialQuery = (): PopulationQuery => ({ filters: [], offset: 0, bins: 16 });
 const number = populationNumber;
 const metricName = populationMetricName;
@@ -46,7 +47,7 @@ const isCount = (value: unknown): value is number => Number.isSafeInteger(value)
 function checkedRow(value: unknown): value is PopulationRow {
   if (!value || typeof value !== "object") return false;
   const row = value as PopulationRow;
-  return Number.isSafeInteger(row.label) && row.label > 0 && Boolean(row.values) && typeof row.values === "object" && !Array.isArray(row.values) &&
+  return Number.isSafeInteger(row.label) && row.label > 0 && row.label <= MAX_LABEL && Boolean(row.values) && typeof row.values === "object" && !Array.isArray(row.values) &&
     Object.values(row.values).every((entry) => entry === null || (typeof entry === "number" && Number.isFinite(entry))) &&
     Array.isArray(row.centroid_index) && [2, 3].includes(row.centroid_index.length) && row.centroid_index.every(Number.isFinite) &&
     row.index_axes === (row.centroid_index.length === 2 ? "YX" : "ZYX");
@@ -96,6 +97,9 @@ function checkedResponse(value: unknown, result: ResearchResult, expected: Popul
     !data.accounting.metric_missing_counts || [...metricIds].some((metric) => !isCount(data.accounting.metric_missing_counts[metric]) || data.accounting.metric_missing_counts[metric] > data.filtered_count) ||
     data.rows.length !== Math.min(PAGE_SIZE, Math.max(0, data.filtered_count - expected.offset)) ||
     data.rows.some((row) => [...metricIds].some((metric) => !(metric in row.values))) ||
+    (data.selected?.filtered_index !== null && data.selected?.filtered_index !== undefined &&
+      data.selected.filtered_index >= expected.offset && data.selected.filtered_index < expected.offset + data.rows.length &&
+      data.rows[data.selected.filtered_index - expected.offset]?.label !== selectedLabel) ||
     !summaryValid(data.summaries?.x, data.query.x_metric) || !summaryValid(data.summaries?.y, data.query.y_metric) ||
     data.summaries.x.count !== data.histogram.finite_count || data.summaries.x.missing_count !== data.histogram.missing_count ||
     data.scatter.points.some((point) => point.x < data.summaries.x.min! || point.x > data.summaries.x.max! || point.y < data.summaries.y.min! || point.y > data.summaries.y.max!))
@@ -129,6 +133,9 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
   const [retry, setRetry] = useState(0);
   const [drafts, setDrafts] = useState<FilterDraft[]>([]);
   const [filterError, setFilterError] = useState<string | null>(null);
+  const [labelDraft, setLabelDraft] = useState("");
+  const [labelInvalid, setLabelInvalid] = useState(false);
+  const [navigationMessage, setNavigationMessage] = useState<string | null>(null);
   const [histogramView, setHistogramView] = useState<ChartView>(fullChartView);
   const [scatterView, setScatterView] = useState<ChartView>(fullChartView);
   const [enlarged, setEnlarged] = useState<"histogram" | "scatter" | null>(null);
@@ -137,8 +144,9 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
   const selectionGeneration = useRef(0);
   const nextFilter = useRef(0);
   const table = useRef<HTMLDivElement>(null);
+  const restoreTableFocus = useRef(false);
   const id = useId();
-  const request = (label: number | null) => ({ result_id: result.id, revision_hash: result.revision_hash, ...query,
+  const request = (label: number | null, page = query) => ({ result_id: result.id, revision_hash: result.revision_hash, ...page,
     limit: PAGE_SIZE, plot_limit: PLOT_LIMIT, selected_label: label });
   useEffect(() => {
     if (!active) { setEnlarged(null); return; }
@@ -157,7 +165,7 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, result.id, result.revision_hash, result.source_id, result.source_sha256, query, selectedLabel, retry, active]);
   const selectLabel = async (label: number) => {
-    if (loading || selectionPending || !data) return;
+    if (loading || selectionPending || !data || data.query.selected_label !== selectedLabel) return;
     const row = data.rows.find((item) => item.label === label) ?? (data.selected?.row.label === label ? data.selected.row : null);
     if (row) { onSelect(row); return; }
     const token = ++selectionGeneration.current;
@@ -179,10 +187,73 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
   const yMetric = metrics.find((metric) => metric.id === (query.y_metric ?? data?.query.y_metric));
   const update = (patch: Partial<PopulationQuery>) => {
     setLoading(true);
+    setNavigationMessage(null); setLabelInvalid(false);
     if (patch.x_metric !== undefined || patch.y_metric !== undefined || patch.filters !== undefined || patch.bins !== undefined) {
       setHistogramView(fullChartView()); setScatterView(fullChartView());
     }
     setQuery((current) => ({ ...current, ...patch, offset: patch.offset ?? 0 }));
+  };
+  const chooseNavigationRow = (row: PopulationRow, offset: number) => {
+    restoreTableFocus.current = true;
+    table.current?.focus();
+    if (offset !== query.offset) update({ offset });
+    onSelect(row);
+  };
+  const navigateToIndex = async (index: number) => {
+    if (!data || loading || selectionPending || data.query.selected_label !== selectedLabel || index < 0 || index >= data.filtered_count) return;
+    setNavigationMessage(null);
+    const offset = Math.floor(index / PAGE_SIZE) * PAGE_SIZE;
+    if (offset === query.offset) { chooseNavigationRow(data.rows[index - offset], offset); return; }
+    const token = ++selectionGeneration.current;
+    const scope = generation.current;
+    const page = { ...query, offset };
+    setSelectionPending(true); setError(null);
+    try {
+      const value = await api.execute("population_query", request(selectedLabel, page));
+      if (token !== selectionGeneration.current || scope !== generation.current) return;
+      const response = checkedResponse(value, result, page, selectedLabel);
+      if (response.membership_sha256 !== data.membership_sha256 || response.filtered_count !== data.filtered_count)
+        throw new Error("The filtered population changed. Retry the population before navigating.");
+      chooseNavigationRow(response.rows[index - offset], offset);
+    } catch (caught) {
+      if (token === selectionGeneration.current && scope === generation.current)
+        setError(caught instanceof Error ? caught.message : "Could not read the next object. Retry the population.");
+    } finally { if (token === selectionGeneration.current && scope === generation.current) setSelectionPending(false); }
+  };
+  const navigate = (direction: -1 | 1) => {
+    if (!data) return;
+    const index = data.selected?.filtered_index;
+    void navigateToIndex(index === null || index === undefined
+      ? query.offset + (direction === 1 ? 0 : data.rows.length - 1) : index + direction);
+  };
+  const goToLabel = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!data || loading || selectionPending || data.query.selected_label !== selectedLabel) return;
+    const text = labelDraft.trim();
+    const label = Number(text);
+    if (!/^[0-9]+$/.test(text) || !Number.isSafeInteger(label) || label < 1 || label > MAX_LABEL) {
+      setLabelInvalid(true);
+      setNavigationMessage("Enter an object label from 1 to 4294967295 using whole-number digits."); return;
+    }
+    const token = ++selectionGeneration.current;
+    const scope = generation.current;
+    setSelectionPending(true); setLabelInvalid(false); setNavigationMessage(null); setError(null);
+    try {
+      const value = await api.execute("population_query", request(label));
+      if (token !== selectionGeneration.current || scope !== generation.current) return;
+      const response = checkedResponse(value, result, query, label);
+      const target = response.selected;
+      if (!target) { setNavigationMessage(`Object #${label} is absent from this result revision. Check the label.`); return; }
+      if (target.filtered_index === null) {
+        setNavigationMessage(`Object #${label} is outside the current ranges. Clear or widen the filters to navigate to it.`); return;
+      }
+      if (response.membership_sha256 !== data.membership_sha256 || response.filtered_count !== data.filtered_count)
+        throw new Error("The filtered population changed. Retry the population before navigating.");
+      chooseNavigationRow(target.row, Math.floor(target.filtered_index / PAGE_SIZE) * PAGE_SIZE);
+    } catch (caught) {
+      if (token === selectionGeneration.current && scope === generation.current)
+        setError(caught instanceof Error ? caught.message : "Could not find this object. Retry the population.");
+    } finally { if (token === selectionGeneration.current && scope === generation.current) setSelectionPending(false); }
   };
   const resetDrafts = () => { setDrafts(query.filters.map((filter) => ({ key: nextFilter.current++, metric: filter.metric,
     min: filter.min === undefined ? "" : String(filter.min), max: filter.max === undefined ? "" : String(filter.max) }))); setFilterError(null); };
@@ -214,17 +285,19 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
     setFilterError(null); update({ filters });
   };
   const handleTableKey = (event: React.KeyboardEvent) => {
-    if (!data || loading || selectionPending || (event.target as HTMLElement).tagName === "BUTTON") return;
-    const index = data.rows.findIndex((row) => row.label === selectedLabel);
-    let next: number | null = null;
-    if (event.key === "ArrowDown") next = Math.min(data.rows.length - 1, index + 1);
-    if (event.key === "ArrowUp") next = Math.max(0, index < 0 ? data.rows.length - 1 : index - 1);
-    if (event.key === "Home") next = 0;
-    if (event.key === "End") next = data.rows.length - 1;
-    if (next !== null && data.rows[next]) { event.preventDefault(); onSelect(data.rows[next]); }
+    if (!data || loading || selectionPending || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") navigate(event.key === "ArrowDown" ? 1 : -1);
+    else void navigateToIndex(query.offset + (event.key === "Home" ? 0 : data.rows.length - 1));
   };
   useEffect(() => { table.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" }); }, [selectedLabel, data]);
-  const ready = !loading && data !== null;
+  useEffect(() => {
+    if (!loading && !selectionPending && data?.query.selected_label === selectedLabel && restoreTableFocus.current) {
+      table.current?.focus(); restoreTableFocus.current = false;
+    }
+  }, [loading, selectionPending, data, selectedLabel]);
+  const ready = !loading && data !== null && data.query.selected_label === selectedLabel;
   const selected = ready ? data.selected : null;
   const count = data?.filtered_count ?? 0;
   const draftChanged = JSON.stringify(drafts.map(({ metric, min, max }) => ({ metric, min, max }))) !==
@@ -249,7 +322,7 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
   return <section className="research-panel population-explorer" aria-label="Object population explorer" aria-busy={loading || selectionPending}>
     <header className="population-heading"><div><h2>Statistics &amp; objects</h2>
       <p className="population-scope">{result.selection ? `T ${result.selection.t + 1} · Z ${result.selection.z + 1}${result.selection.z_stop === undefined ? "" : `–${result.selection.z_stop}`}` : "Source plane scope unavailable"} · {result.arrays?.labels?.shape?.length === 3 || result.arrays?.image?.shape?.length === 3 ? "3D objects" : "2D objects"}</p>
-      <p className="population-binding">{resultTitle(result)} · {result.object_count.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · {reviewLabel(result.review)} · rev {result.revision_hash.slice(0, 8)}</p></div>
+      <p className="population-binding">{resultTitle(result)} · {result.object_count.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · {reviewLabel(result.review)}</p></div>
       <div className="population-heading-actions">
         {onOpenReviewExport && <button type="button" onClick={onOpenReviewExport}>Review &amp; export result</button>}
         {onToggleFocus && <button type="button" onClick={onToggleFocus} aria-pressed={focused}
@@ -324,6 +397,21 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
         </div>
         <PopulationFigureExport api={api} data={data} histogramView={histogramView} scatterView={scatterView} disabled={!ready || selectionPending} />
         <div className="population-section-heading"><h3>Objects</h3><span>{count ? `${query.offset + 1}–${Math.min(query.offset + data.rows.length, count)} of ${number(count)}` : "No matches"}</span></div>
+        <div className="population-navigation">
+          <form onSubmit={goToLabel} aria-label="Go to object" className="population-label-search">
+            <label htmlFor={`${id}-object-label`}>Go to object label</label>
+            <div><input id={`${id}-object-label`} inputMode="numeric" value={labelDraft} disabled={selectionPending}
+              aria-invalid={labelInvalid}
+              aria-describedby={navigationMessage ? `${id}-navigation-message` : undefined}
+              onChange={(event) => { setLabelDraft(event.target.value); setLabelInvalid(false); setNavigationMessage(null); }} />
+              <button type="submit" disabled={selectionPending}>Go</button></div>
+          </form>
+          <div className="population-object-steps" role="group" aria-label="Traverse filtered objects">
+            <button type="button" disabled={selectionPending || !count || data.selected?.filtered_index === 0} onClick={() => navigate(-1)}>Previous object</button>
+            <button type="button" disabled={selectionPending || !count || data.selected?.filtered_index === count - 1} onClick={() => navigate(1)}>Next object</button>
+          </div>
+        </div>
+        {navigationMessage && <p id={`${id}-navigation-message`} role="status" className="population-note">{navigationMessage}</p>}
         <div className="population-sort"><label>Sort<select aria-label="Population sort metric" value={query.sort?.metric ?? "label"} disabled={selectionPending}
           onChange={(event) => update({ sort: { metric: event.target.value, direction: query.sort?.direction ?? "asc" } })}><option value="label">Object label</option>{metrics.map((metric) => <option key={metric.id} value={metric.id}>{metricName(metric)}</option>)}</select></label>
           <label>Order<select aria-label="Population sort direction" value={query.sort?.direction ?? "asc"} disabled={selectionPending}
@@ -339,11 +427,11 @@ function PopulationExplorer({ api, result, selectedLabel, onSelect, onLocate, on
         </div>
         <div className="population-pagination"><button type="button" disabled={!query.offset || selectionPending} onClick={() => update({ offset: Math.max(0, query.offset - PAGE_SIZE) })}>Previous page</button>
           <button type="button" disabled={query.offset + PAGE_SIZE >= count || selectionPending} onClick={() => update({ offset: query.offset + PAGE_SIZE })}>Next page</button></div>
-        <p className="population-note">Select a row or point; use arrow keys, Home or End in the table. Missing values sort last.</p>
+        <p className="population-note">Arrow keys traverse the filtered sort order across pages; Home and End select this page’s first and last objects. Locate moves the image. Missing values sort last.</p>
       </>}
       <details className="population-receipt"><summary>Source &amp; query details</summary>
         <p>Objects are descriptive observations, not biological replicate counts.</p>
-        <p>Revision {result.revision_hash.slice(0, 12)} · Source {result.source_id.slice(0, 12)}</p>
+        <p>Revision {result.revision_hash} · Source {result.source_id}</p>
         {selected && <p>Selected centroid ({selected.row.index_axes.split("").join(", ")}) · {selected.row.centroid_index.map(number).join(", ")}</p>}
         <button type="button" onClick={downloadReceipt}>Download query receipt</button>
         <dl><dt>Membership SHA-256</dt><dd>{data.membership_sha256}</dd><dt>Query SHA-256</dt><dd>{data.query_sha256}</dd></dl>

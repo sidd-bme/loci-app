@@ -44,7 +44,12 @@ const snapshot: ResearchSnapshot = {
     id: sourceId,
     name: "OME source",
     sha256: sourceSha,
-    metadata: { dimensions: { t: 1, c: 2, z: 1, y: 8, x: 10 } },
+    source_kind: "native",
+    metadata: {
+      dimensions: { t: 1, c: 2, z: 1, y: 8, x: 10 },
+      levels: [{ index: 0, dimensions: { t: 1, c: 2, z: 1, y: 8, x: 10 },
+        calibration: { axes: "YX", spacing: [0.5, 0.25], unit: "um" } }],
+    },
   }],
   results,
   samples: [],
@@ -96,6 +101,44 @@ function renderPanel(execute: ResearchDesktopApi["execute"], custom = snapshot) 
 }
 
 describe("ResearchQuantificationPanel", () => {
+  it("labels puncta lengths from source calibration and preserves exact preview/run values", async () => {
+    const adopted = { ...results[0], id: "3".repeat(32), revision_hash: "8".repeat(64) };
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata :
+      operation === "puncta_preview" ? { preview: true, adopted: false, overlay: "data:image/png;base64,AA==", total_peaks: 0, peaks: [] } :
+      { adopted: true, result: adopted, measurements: [] });
+    renderPanel(execute);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByText("Puncta", { exact: true }));
+    fireEvent.change(screen.getByLabelText("LoG sigma (µm)"), { target: { value: "1.25" } });
+    fireEvent.change(screen.getByLabelText("Minimum peak separation (µm)"), { target: { value: "2.5" } });
+    fireEvent.change(screen.getByLabelText("Aperture radius (µm)"), { target: { value: "3.75" } });
+    fireEvent.change(screen.getByLabelText("LoG response threshold"), { target: { value: "0.125" } });
+    fireEvent.change(screen.getByLabelText("Raw intensity threshold (source values)"), { target: { value: "-4.5" } });
+    fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "recorded control" } });
+    const expectedRequest = { source_id: sourceId, selection, sigma: 1.25,
+      minimum_distance: 2.5, aperture_radius: 3.75, response_threshold: 0.125,
+      raw_threshold: -4.5, exclude_border: true, control: "recorded control", working_bytes: 512 * 1024 ** 2 };
+    fireEvent.click(screen.getByRole("button", { name: "Preview puncta candidates" }));
+    await screen.findByText("0 initial peaks before correction.");
+    expect(execute).toHaveBeenCalledWith("puncta_preview", expectedRequest);
+    fireEvent.click(screen.getByRole("button", { name: "Adopt unchanged puncta request" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("puncta_run", expectedRequest));
+  });
+
+  it("does not borrow physical units from a result when source level calibration is missing", async () => {
+    const custom = { ...snapshot, sources: [{ ...snapshot.sources[0], metadata: {
+      dimensions: snapshot.sources[0].metadata.dimensions,
+    } }] };
+    renderPanel(vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {}), custom);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByText("Puncta", { exact: true }));
+    expect(results[0].geometry?.unit).toBe("um");
+    expect(screen.getByLabelText("LoG sigma (unit unverified)")).toHaveValue(1);
+    expect(screen.getByLabelText("Minimum peak separation (unit unverified)")).toHaveValue(1);
+    expect(screen.getByLabelText("Aperture radius (unit unverified)")).toHaveValue(2);
+    expect(screen.queryByLabelText("LoG sigma (µm)")).not.toBeInTheDocument();
+  });
+
   it("disambiguates reference filenames without routine fingerprints and binds exact source IDs", async () => {
     const filename = "A long acquisition reference filename.ome.tif";
     const second = { ...snapshot.sources[0], id: "6".repeat(32), sha256: "7".repeat(64), name: filename };
@@ -191,7 +234,7 @@ describe("ResearchQuantificationPanel", () => {
     fireEvent.click(screen.getByText("Puncta"));
     fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "negative control reviewed" } });
     fireEvent.click(screen.getByText("Preview puncta candidates"));
-    fireEvent.change(screen.getByLabelText("Raw intensity threshold"), { target: { value: "7" } });
+    fireEvent.change(screen.getByLabelText("Raw intensity threshold (source values)"), { target: { value: "7" } });
     resolvePreview({ preview: true, adopted: false, overlay: "data:image/png;base64,AA==", total_peaks: 2, peaks: [] });
     await waitFor(() => expect(onPreview).not.toHaveBeenCalled());
     expect(screen.getByText("Adopt unchanged puncta request")).toBeDisabled();

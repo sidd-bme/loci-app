@@ -316,6 +316,8 @@ describe("ResearchWorkbench maturation workflows", () => {
     expect(screen.getByText(/186\.74/)).toBeInTheDocument(); // (124.5678 + 248.9123) / 2
     expect(screen.getByText(/124\.57 – 248\.91/)).toBeInTheDocument(); // range
 
+    // Preview rows are inspectable without expanding the population by default.
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     // Verify ResultTable accessibility
     const tableRegion = screen.getByRole("region", { name: "Result measurements" });
     expect(tableRegion).toBeInTheDocument();

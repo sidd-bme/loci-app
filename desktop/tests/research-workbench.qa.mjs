@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { qualifyExtendedWorkflows } from "./research-extended-workflows.qa.mjs";
 import { qualifyMedicalWorkflow } from "./research-medical-workflow.qa.mjs";
-import { selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -394,10 +394,15 @@ try {
   await selectTool(page, "Info");
   const summary = page.locator(".research-result-summary-card");
   await summary.waitFor({ state: "visible" });
+  assert.equal(await page.getByRole("group",{name:"Result sections",exact:true}).getByRole("button",{name:"Review",exact:true}).getAttribute("aria-pressed"),"true");
+  assert.equal(await page.getByRole("region",{name:"Export scientific data",exact:true}).count(),0);
+  assert.equal(await summary.locator("details.research-preview-rows").evaluate(element=>element.open),false);
+  await screenshot(page,"quantitative-summary-review-first");
   // Fixture rectangles are 4*5 and 6*6 pixels at 0.5*1 µm²/pixel.
   assert.equal(await summary.locator(".research-stat-value").nth(0).innerText(), "2");
   assert.match(await summary.innerText(), /Mean Area\s+14\s+um\^2/);
   assert.match(await summary.innerText(), /Range\s+10 – 18\s+um\^2/);
+  await page.locator("details.research-preview-rows > summary").click();
   const measurementTable = page.getByRole("region", { name: "Result measurements", exact: true });
   await measurementTable.focus();
   await measurementTable.press("ArrowUp");
@@ -429,9 +434,9 @@ try {
 
   // An exact result must be reviewed through the displayed UI before export.
   await selectTool(page, "Info");
-  await page.getByRole("button", { name: "Mark reviewed" }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed" }).click();
   await noUiError(page, "reviewing 3D result");
-  await page.getByRole("button", { name: "Export result" }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result" }).click();
   await assertFileExists(path.join(exportPath, "manifest.json"));
 
   // RGB is selected as a declared brightfield source.  The UI must never call RGB

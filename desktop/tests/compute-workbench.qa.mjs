@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
-import { selectWorkbenchTool, setSelectionField } from './workbench-qa-helpers.mjs';
+import { selectResultSection, selectWorkbenchTool, setSelectionField } from './workbench-qa-helpers.mjs';
 
 const exec = promisify(execFile);
 assert.equal(process.platform, 'darwin');
@@ -398,7 +398,7 @@ try {
       assert.deepEqual(await oracle(parentId), receipt.parent_oracle, 'The remote parent must remain immutable');
       await page.locator(`.research-sources [data-result-id="${child.id}"]`).click();
       await selectWorkbenchTool(page, 'Info');
-      if (child.review === null) await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
+      if (child.review === null) { await selectResultSection(page, 'Review'); await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click(); }
       else {
         assert.equal(child.review.actor, 'human'); assert.equal(child.review.disposition, 'reviewed');
         assert.equal(child.review.revision_hash, child.revision_hash);
@@ -411,7 +411,7 @@ try {
           return { canceled: false, filePath: destination };
         };
       }, exportPath);
-      await page.getByRole('button', { name: 'Export result', exact: true }).click();
+      await selectResultSection(page, "Export"); await page.getByRole('button', { name: 'Export result', exact: true }).click();
       await wait(() => fs.stat(path.join(exportPath, 'manifest.json')).catch(() => null), value => value?.size > 0, 'Atomic corrected export');
       receipt.export_oracle = await oracle(child.id, parentId, exportPath); await capture('06-corrected-reviewed-exported');
       await quit(); await launch('final-reopen');

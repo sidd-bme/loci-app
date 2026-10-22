@@ -24,7 +24,7 @@ const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epi
   Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Info: "Review & export", Study: "Study & batch" };
 
 /** Exercise the same task-group and search controls available to a researcher. */
-export async function selectWorkbenchTool(page, tool) {
+export async function selectWorkbenchTool(page, tool, studySection = "Batch") {
   // Clicking a different tool normally blurs and commits a numeric draft. Do
   // that before Escape: sending Escape into a still-focused field discards it.
   const editable = page.locator('input:focus, textarea:focus, select:focus, [contenteditable="true"]:focus');
@@ -46,9 +46,34 @@ export async function selectWorkbenchTool(page, tool) {
   }
   if (tool === "Display") await revealAnalysisRegion(page);
   if (tool === "Study") {
-    for (const details of await page.locator("details.study-analysis-section").all()) {
-      if (!(await details.evaluate((element) => element.open))) await details.locator(":scope > summary").click();
-    }
+    await selectStudySection(page, studySection);
+  }
+}
+
+/** Choose an ordinary result section explicitly; indexed results retain their dedicated inspector. */
+export async function selectResultSection(page, section, kind = "ordinary") {
+  assert.ok(["Review", "Export"].includes(section), `Unknown result section: ${section}`);
+  assert.ok(["ordinary", "indexed"].includes(kind), `Unknown result interface: ${kind}`);
+  const controls = page.getByRole("group", { name: "Result sections", exact: true });
+  if (kind === "indexed") {
+    assert.equal(await controls.count(), 0, "Indexed results must retain the dedicated inspector");
+    await page.getByRole("region", { name: "Large result objects", exact: true }).waitFor({ state: "visible" });
+    return;
+  }
+  await controls.waitFor({ state: "visible" });
+  const button = controls.getByRole("button", { name: section, exact: true });
+  if (await button.getAttribute("aria-pressed") !== "true") await button.click();
+  assert.equal(await button.getAttribute("aria-pressed"), "true", `${section} section was not selected`);
+  await page.getByRole("region", { name: section === "Review" ? "Review result" : "Export result data", exact: true }).waitFor();
+}
+
+/** Legacy batch journeys explicitly choose their task in the study workspace. */
+export async function selectStudySection(page, section) {
+  await page.getByRole("tablist", { name: "Study sections", exact: true })
+    .getByRole("tab", { name: section, exact: true }).click();
+  await page.getByRole("tabpanel", { name: section, exact: true }).waitFor();
+  if (section === "Batch") for (const details of await page.locator("details.study-analysis-section").filter({ visible: true }).all()) {
+    if (!(await details.evaluate((element) => element.open))) await details.locator(":scope > summary").click();
   }
 }
 

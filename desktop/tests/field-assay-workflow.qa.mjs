@@ -44,6 +44,7 @@ const userData = path.join(runRoot, "user-data");
 const fixture = path.join(runRoot, "known-sum-two-channel-two-z.ome.tiff");
 const previewScreenshot = path.join(runRoot, "field-assay-preview.png");
 const adoptionScreenshot = path.join(runRoot, "field-assay-reviewed-result.png");
+const annotationScreenshot = path.join(runRoot, "exact-source-annotation-coordinates.png");
 const receiptPath = path.join(runRoot, "qa-receipt.json");
 await fs.mkdir(userData, { recursive: true });
 await Promise.all([fs.access(executable), fs.access(worker), fs.access(mainArtifact), fs.access(python)]);
@@ -161,10 +162,76 @@ try {
   ]));
   const focusAnnotation = annotations.annotations.find((item) => item.label === "focus");
   const backgroundAnnotation = annotations.annotations.find((item) => item.label === "background");
-  assert.ok(focusAnnotation && backgroundAnnotation, "Synthetic assay ROIs were not saved.");
+  const wrongPlaneAnnotation = annotations.annotations.find((item) => item.label === "wrong-plane-control");
+  assert.ok(focusAnnotation && backgroundAnnotation && wrongPlaneAnnotation, "Synthetic assay ROIs were not saved.");
 
+  // Fixture preparation above writes through the worker API while the hidden
+  // annotation panel already holds its initial receipt. Reload the renderer to
+  // begin inspection from the saved fixture; live external-write refresh is not
+  // the behavior this journey qualifies.
+  await page.reload();
+  await page.locator(`button[data-source-id="${source.id}"]`).waitFor({ state: "visible" });
   await page.getByLabel("Z plane", { exact: true }).focus();
   await page.getByLabel("Z plane", { exact: true }).press("Home");
+  await selectWorkbenchTool(page, "Annotate");
+  const annotationPanel = page.locator(".source-annotations");
+  await annotationPanel.getByRole("button", { name: "Rectangle", exact: true }).click();
+  const currentTool = annotationPanel.getByLabel("Current annotation tool", { exact: true });
+  await currentTool.waitFor({ state: "visible" });
+  assert.equal(await currentTool.textContent(), "Rectangle");
+  assert.equal(await annotationPanel.getByRole("button", { name: "Rectangle", exact: true }).getAttribute("aria-pressed"), "true");
+  assert.equal(annotations.coordinate_space, "level0-pixel-edges");
+  assert.equal(annotations.geometry.axes, "ZYX");
+  assert.equal(annotations.geometry.unit, "pixel");
+  const annotationDisclosures = [];
+  for (const annotation of [focusAnnotation, backgroundAnnotation, wrongPlaneAnnotation]) {
+    assert.equal(annotation.area, 4);
+    assert.equal(annotation.length, 8);
+    assert.equal(annotation.unit, "pixel");
+    const row = annotationPanel.locator(".annotation-list > li").filter({
+      has: page.getByText(annotation.label, { exact: true }),
+    });
+    await row.waitFor({ state: "visible" });
+    assert.ok((await row.locator("small").textContent()).includes(`Z ${annotation.z + 1}`));
+    const details = row.locator("details.annotation-measurements");
+    assert.equal(await details.getAttribute("open"), null);
+    await details.getByText("Measurements & coordinates", { exact: true }).click();
+    const table = details.getByRole("table", { name: "Stored points · level0-pixel-edges", exact: true });
+    await table.waitFor({ state: "visible" });
+    for (const [label, value, suffix] of [["Perimeter", annotation.length, "pixel"], ["Area", annotation.area, "pixel²"]]) {
+      const measurement = details.getByText(label, { exact: true }).locator("..").locator("dd");
+      assert.equal(await measurement.locator("code").textContent(), String(value));
+      assert.equal(await measurement.textContent(), `${value} ${suffix}`);
+    }
+    assert.equal(await details.getByText("Plane indices", { exact: true }).locator("..").locator("dd").textContent(),
+      `Z ${annotation.z} · T ${annotation.t} (zero-based)`);
+    assert.equal(await details.getByText("Geometry array axes", { exact: true }).locator("..").locator("dd").textContent(), "ZYX");
+    await details.getByText("X is the column axis; Y is the row axis. Points use level-0 pixel-edge coordinates, not array row/column order.", { exact: true }).waitFor({ state: "visible" });
+    assert.deepEqual(await table.locator("thead th").allTextContents(), ["Point", "X (px)", "Y (px)"]);
+    const displayedPoints = [];
+    for (const pointRow of await table.locator("tbody tr").all())
+      displayedPoints.push(await pointRow.locator("th, td").allTextContents());
+    assert.deepEqual(displayedPoints, annotation.points.map((point, index) =>
+      [String(index + 1), String(point.x), String(point.y)]));
+    annotationDisclosures.push({
+      id: annotation.id, label: annotation.label,
+      area: annotation.area, perimeter: annotation.length, unit: annotation.unit,
+      stored_plane_indices: { z: annotation.z, t: annotation.t },
+      displayed_z: annotation.z + 1, coordinate_space: annotations.coordinate_space,
+      points_xy: annotation.points,
+    });
+    // Close each disclosure so the next stored ROI remains reachable without hiding its details.
+    await details.getByText("Measurements & coordinates", { exact: true }).click();
+  }
+  assert.deepEqual(await page.evaluate(
+    (sourceId) => window.lociResearch.execute("source_annotations", { source_id: sourceId }), source.id,
+  ), annotations, "Inspecting exact annotation values changed the saved receipt.");
+  // Capture one open disclosure and the visible current tool in the actual runtime.
+  await annotationPanel.locator(".annotation-list > li").filter({
+    has: page.getByText("focus", { exact: true }),
+  }).getByText("Measurements & coordinates", { exact: true }).click();
+  await annotationPanel.getByRole("table", { name: "Stored points · level0-pixel-edges", exact: true }).waitFor({ state: "visible" });
+  await page.screenshot({ path: annotationScreenshot, fullPage: true });
   await selectWorkbenchTool(page, "Quantify");
   await page.getByRole("button", { name: "Field assay", exact: true }).click();
   const readiness = page.getByLabel("Field assay readiness", { exact: true });
@@ -173,7 +240,7 @@ try {
   assert.equal(await readiness.getAttribute("data-source-sha256"), source.sha256);
   assert.ok((await readiness.innerText()).includes(source.name));
   assert.ok(!(await readiness.innerText()).includes(source.sha256.slice(0, 12)));
-  await page.getByText("T 0, Z 0", { exact: true }).first().waitFor();
+  await readiness.getByText("T 1, Z 1", { exact: true }).waitFor();
   const focusSelection = page.getByLabel("Focus region selection", { exact: true });
   const backgroundSelection = page.getByLabel("Background annotation selection", { exact: true });
   await focusSelection.locator(`option[value="${focusAnnotation.id}"]`).waitFor({ state: "attached" });
@@ -181,15 +248,20 @@ try {
   await focusSelection.selectOption(focusAnnotation.id);
   await backgroundSelection.selectOption(backgroundAnnotation.id);
   const focusOptions = await focusSelection.locator("option").allTextContents();
-  assert.ok(focusOptions.some((text) => text.includes("focus") && text.includes("T 0, Z 0")));
+  assert.ok(focusOptions.some((text) => text.includes("focus") && text.includes("T 1, Z 1")));
   assert.ok(!focusOptions.some((text) => text.includes("wrong-plane-control")));
   assert.equal(await page.getByText(/Recorded Dr Tan/).count(), 0);
   await page.getByRole("heading", { name: "Fluorescence per nucleus", exact: true }).waitFor();
+  for (const [label, value] of [["Minimum nucleus area (pixels)", "10"], ["Maximum nucleus area (pixels)", "5000"], ["Watershed minimum peak distance (px)", "5"]]) {
+    const input = page.getByLabel(label, { exact: true });
+    await input.waitFor({ state: "visible" });
+    assert.equal(await input.inputValue(), value);
+  }
   await page.getByLabel("Count mode", { exact: true }).selectOption("override");
   await page.getByLabel("Manual count override value", { exact: true }).fill("1");
   await page.getByRole("button", { name: "Preview field assay", exact: true }).click();
   await page.getByRole("heading", { name: "Assay quantification preview", exact: true }).waitFor({ timeout: 60_000 });
-  await page.getByRole("img", { name: /Field assay QC overlay.*T 0, Z 0/ }).waitFor();
+  await page.getByRole("img", { name: /Field assay QC overlay.*T 1, Z 1/ }).waitFor();
   const preview = page.locator(".field-assay-preview-results");
   await preview.getByText("4 px", { exact: true }).waitFor();
   await preview.getByText("50 ADU", { exact: true }).waitFor();
@@ -241,7 +313,7 @@ try {
   assert.equal(adopted.result.source_id, source.id);
   assert.equal(adopted.result.source_sha256, source.sha256);
   assert.match(adopted.result.revision_hash, /^[0-9a-f]{64}$/);
-  await page.locator(`[data-result-id="${adopted.result.id}"]`).waitFor({
+  await page.locator(`button[data-result-id="${adopted.result.id}"]`).waitFor({
     state: "visible",
     timeout: 60_000,
   });
@@ -279,6 +351,9 @@ try {
   assert.equal(summary.field_ratio_integrated_signal_per_accepted_nucleus_adu, 46);
   assert.equal(summary.endpoint_status, "reviewed");
   assert.equal(record.provenance.config.nuclear_threshold, 101);
+  assert.equal(record.provenance.config.min_nucleus_area_px, 10);
+  assert.equal(record.provenance.config.max_nucleus_area_px, 5000);
+  assert.equal(record.provenance.config.watershed_min_distance_px, 5);
   assert.equal(record.provenance.config.endpoint_status, "reviewed");
   assert.equal(record.provenance.config.reviewer, reviewer);
   for (const key of [
@@ -316,6 +391,14 @@ try {
     annotation_revision: annotations.revision,
     assertions: {
       active_plane: { t: 0, z: 0 },
+      displayed_plane: { t: 1, z: 1 },
+      exact_saved_annotation_disclosures: {
+        current_tool: "Rectangle", geometry_axes: annotations.geometry.axes,
+        measurements_and_coordinates: annotationDisclosures,
+        inspection_preserved_receipt: true,
+        scope: "Synthetic microscopy pixel geometry; medical world frames are not exercised.",
+      },
+      nucleus_parameter_units_and_requests: { min_nucleus_area_px: 10, max_nucleus_area_px: 5000, watershed_min_distance_px: 5 },
       wrong_plane_roi_hidden: true,
       focus_pixels: 4,
       raw_signal_sum_adu: 50,
@@ -339,6 +422,10 @@ try {
       network_requests: networkRequests,
     },
     screenshots: {
+      exact_source_annotations: {
+        file: path.basename(annotationScreenshot),
+        sha256: await sha256(annotationScreenshot),
+      },
       reviewed_preview: {
         file: path.basename(previewScreenshot),
         sha256: await sha256(previewScreenshot),

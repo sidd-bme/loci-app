@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { previousFloat, ResearchPopulationExplorer, type PopulationFilter, type PopulationResponse, type PopulationRow } from "./ResearchPopulationExplorer";
 import type { ResearchDesktopApi, ResearchResult } from "../shared/research-contracts";
@@ -18,8 +19,13 @@ function response(request: Record<string, unknown>, input = objects, exactResult
   const filtered = input.filter((row) => filters.every(({ metric, min, max }) => row.values[metric] !== null &&
     (min === undefined || row.values[metric]! >= min) && (max === undefined || row.values[metric]! <= max)));
   const sort = request.sort as { metric: string; direction: "asc" | "desc" } | undefined;
-  const ordered = [...filtered].sort((left, right) => sort ? (sort.direction === "asc" ? 1 : -1) *
-    ((sort.metric === "label" ? left.label : left.values[sort.metric]!) - (sort.metric === "label" ? right.label : right.values[sort.metric]!)) : left.label - right.label);
+  const ordered = [...filtered].sort((left, right) => {
+    if (!sort) return left.label - right.label;
+    const a = sort.metric === "label" ? left.label : left.values[sort.metric];
+    const b = sort.metric === "label" ? right.label : right.values[sort.metric];
+    if (a === null || b === null) return a === b ? left.label - right.label : a === null ? 1 : -1;
+    return (sort.direction === "asc" ? 1 : -1) * (a - b) || left.label - right.label;
+  });
   const selectedLabel = request.selected_label as number | null;
   const selectedRow = input.find((row) => row.label === selectedLabel);
   const selectedIndex = ordered.findIndex((row) => row.label === selectedLabel);
@@ -62,13 +68,26 @@ function mount(desktopApi = api(), selectedLabel: number | null = null, exactRes
   const view = render(<ResearchPopulationExplorer api={desktopApi} result={exactResult} selectedLabel={selectedLabel} onSelect={onSelect} onLocate={onLocate} />);
   return { ...view, desktopApi, onSelect, onLocate };
 }
+function mountNavigation(desktopApi = api(), initialLabel: number | null = null, exactResult = result) {
+  const onSelect = vi.fn(), onLocate = vi.fn();
+  function Connected() {
+    const [label, setLabel] = useState(initialLabel);
+    return <ResearchPopulationExplorer api={desktopApi} result={exactResult} selectedLabel={label}
+      onSelect={(row) => { onSelect(row); setLabel(Number(row.label)); }} onLocate={onLocate} />;
+  }
+  return { ...render(<Connected />), desktopApi, onSelect, onLocate };
+}
+function goToObject(label: string) {
+  fireEvent.change(screen.getByLabelText("Go to object label"), { target: { value: label } });
+  fireEvent.submit(screen.getByRole("form", { name: "Go to object" }));
+}
   it("hands a sparse object beyond the first page to correction with the exact result revision", async () => {
   const sparse = { ...objects[999], label: 0xffffffff };
   const desktopApi = api((request) => Promise.resolve(response(request, [...objects.slice(0, 999), sparse])));
   const onEdit = vi.fn();
   const onOpenReviewExport = vi.fn();
   render(<ResearchPopulationExplorer api={desktopApi} result={result} selectedLabel={sparse.label} onSelect={vi.fn()} onLocate={vi.fn()} onEdit={onEdit} onOpenReviewExport={onOpenReviewExport} />);
-  expect(screen.getByText(/Segmentation · 1,000 objects · To review · rev aaaaaaaa/)).toBeVisible();
+  expect(screen.getByText("Segmentation · 1,000 objects · To review")).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Review & export result" }));
   expect(onOpenReviewExport).toHaveBeenCalledTimes(1);
   await screen.findByLabelText("Selected population object");
@@ -236,6 +255,183 @@ describe("Revision-bound object population exploration", () => {
     expect(screen.queryByLabelText("Object 2: 5,000, 3", { selector: "circle[role=button]" })).not.toBeInTheDocument();
     const finalPoint = scatterPoint("Object 1000: 1,000, 1,001");
     expect(Number(finalPoint.getAttribute("cx"))).toBeCloseTo(76 + (1000 - 1) / (5000 - 1) * 404);
+  });
+});
+
+describe("Filtered population object navigation", () => {
+  it("traverses page edges with arrows and restores table focus without moving the image", async () => {
+    const { onSelect, onLocate, desktopApi } = mountNavigation(api(), 25); await ready();
+    const region = screen.getByRole("region", { name: "Filtered object measurements" });
+    region.focus();
+    fireEvent.keyDown(region, { key: "ArrowDown" });
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="26"]')).toHaveAttribute("aria-selected", "true"));
+    expect(region).toHaveFocus();
+    expect(desktopApi.execute).toHaveBeenCalledWith("population_query", expect.objectContaining({ offset: 25, selected_label: 25, limit: 25 }));
+    fireEvent.keyDown(region, { key: "ArrowUp" });
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="25"]')).toHaveAttribute("aria-selected", "true"));
+    expect(onSelect.mock.calls.map(([row]) => row.label)).toEqual([26, 25]);
+    expect(onLocate).not.toHaveBeenCalled();
+  });
+
+  it("keeps first and last boundaries bounded, including keys from object buttons", async () => {
+    const { onSelect } = mountNavigation(api(), 1); await ready();
+    expect(controls(".population-object-steps").getByRole("button", { name: "Previous object" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "ArrowUp" });
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(controls(".population-table").getByRole("button", { name: "#1" }), { key: "End" });
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="25"]')).toHaveAttribute("aria-selected", "true"));
+    goToObject("1000");
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="1000"]')).toHaveAttribute("aria-selected", "true"));
+    const calls = onSelect.mock.calls.length;
+    expect(controls(".population-object-steps").getByRole("button", { name: "Next object" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "ArrowDown" });
+    expect(onSelect).toHaveBeenCalledTimes(calls);
+    fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "Home" });
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="976"]')).toHaveAttribute("aria-selected", "true"));
+  });
+
+  it("traverses from a selection outside the visible page using its filtered index", async () => {
+    const { onSelect, desktopApi } = mountNavigation(api(), 1000); await ready();
+    fireEvent.click(controls(".population-object-steps").getByRole("button", { name: "Previous object" }));
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="999"]')).toHaveAttribute("aria-selected", "true"));
+    expect(onSelect).toHaveBeenCalledWith(objects[998]);
+    expect(desktopApi.execute).toHaveBeenCalledWith("population_query", expect.objectContaining({ offset: 975, selected_label: 1000 }));
+  });
+
+  it("goes to an exact label in filtered descending order and continues across its page edge", async () => {
+    const { desktopApi, onLocate } = mountNavigation(); await ready();
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
+    fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Population maximum"), { target: { value: "60" } });
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
+    await screen.findByText(/51 of 1,000 objects match/);
+    fireEvent.change(screen.getByLabelText("Population sort metric"), { target: { value: "measure" } });
+    await ready();
+    fireEvent.change(screen.getByLabelText("Population sort direction"), { target: { value: "desc" } });
+    await waitFor(() => expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "60"));
+    goToObject("36");
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="36"]')).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(controls(".population-selected").getByRole("heading")).toHaveTextContent("Object #36"));
+    fireEvent.click(controls(".population-object-steps").getByRole("button", { name: "Next object" }));
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="35"]')).toHaveAttribute("aria-selected", "true"));
+    expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ offset: 25, selected_label: 35,
+      filters: [{ metric: "measure", min: 10, max: 60 }], sort: { metric: "measure", direction: "desc" } }));
+    expect(onLocate).not.toHaveBeenCalled();
+    fireEvent.click(controls(".population-selected").getByRole("button", { name: "Locate selected object" }));
+    expect(onLocate).toHaveBeenCalledWith(objects[34]);
+  });
+
+  it("rejects invalid label drafts without queries or losing the draft", async () => {
+    const { desktopApi, onSelect } = mount(); await ready();
+    const calls = vi.mocked(desktopApi.execute).mock.calls.length;
+    for (const label of ["", "0", "-1", "1.5", "1e3", "Infinity", "NaN", "4294967296", "9007199254740993", "0x10"]) {
+      goToObject(label);
+      expect(screen.getByText(/Enter an object label from 1 to 4294967295/)).toBeVisible();
+      expect(screen.getByLabelText("Go to object label")).toHaveValue(label);
+      expect(screen.getByLabelText("Go to object label")).toHaveAttribute("aria-invalid", "true");
+    }
+    expect(vi.mocked(desktopApi.execute).mock.calls).toHaveLength(calls);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("starts on the shown page when selection is outside ranges and keeps missing values last", async () => {
+    const few = structuredClone(objects.slice(0, 3)); few[1].values.measure = null;
+    const { onLocate } = mountNavigation(api(async (request) => response(request, few)), 1); await ready();
+    fireEvent.change(screen.getByLabelText("Population sort metric"), { target: { value: "measure" } });
+    await ready();
+    fireEvent.change(screen.getByLabelText("Population sort direction"), { target: { value: "desc" } });
+    await waitFor(() => expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "3"));
+    fireEvent.click(controls(".population-object-steps").getByRole("button", { name: "Next object" }));
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="2"]')).toHaveAttribute("aria-selected", "true"));
+    expect(screen.getByRole("table").querySelector("tbody tr:last-child")).toHaveTextContent("Missing");
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
+    fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "3" } });
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
+    await screen.findByText("This selected object is outside the current ranges.");
+    fireEvent.click(controls(".population-object-steps").getByRole("button", { name: "Next object" }));
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="3"]')).toHaveAttribute("aria-selected", "true"));
+    expect(screen.getByLabelText("Population minimum")).toHaveValue("3");
+    expect(onLocate).not.toHaveBeenCalled();
+  });
+
+  it("preserves filters and selection for absent or excluded labels and an empty filtered population", async () => {
+    const { onSelect, desktopApi } = mountNavigation(api(), 1); await ready();
+    goToObject("1001");
+    await screen.findByText("Object #1001 is absent from this result revision. Check the label.");
+    fireEvent.click(controls(".population-filter-heading").getByRole("button", { name: "Add range" }));
+    fireEvent.change(screen.getByLabelText("Population minimum"), { target: { value: "2000" } });
+    fireEvent.click(controls(".population-filters").getByRole("button", { name: "Apply filter" }));
+    await screen.findByText(/0 of 1,000 objects match/);
+    goToObject("2");
+    await screen.findByText("Object #2 is outside the current ranges. Clear or widen the filters to navigate to it.");
+    expect(controls(".population-object-steps").getByRole("button", { name: "Next object" })).toBeDisabled();
+    expect(controls(".population-object-steps").getByRole("button", { name: "Previous object" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "End" });
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Population minimum")).toHaveValue("2000");
+    expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ filters: [{ metric: "measure", min: 2000 }], selected_label: 2, offset: 0 }));
+  });
+
+  it("supports the largest label and a 100,000-object population with bounded page requests", async () => {
+    const large = Array.from({ length: 100000 }, (_, index) => ({ ...objects[index % objects.length], label: index === 99999 ? 0xffffffff : index + 1 }));
+    const desktopApi = api(async (request) => response(request, large));
+    const { onSelect } = mountNavigation(desktopApi, null, { ...result, object_count: large.length }); await ready();
+    goToObject("4294967295");
+    await waitFor(() => expect(screen.getByRole("table").querySelector('[data-label="4294967295"]')).toHaveAttribute("aria-selected", "true"));
+    expect(onSelect).toHaveBeenCalledWith(large[99999]);
+    expect(screen.getByText("100,000 of 100,000 objects match.")).toBeVisible();
+    expect(screen.getByRole("table").querySelectorAll("tbody tr")).toHaveLength(25);
+    for (const [, request] of vi.mocked(desktopApi.execute).mock.calls) expect(request).toMatchObject({ limit: 25, plot_limit: 500 });
+    expect(desktopApi.execute).toHaveBeenLastCalledWith("population_query", expect.objectContaining({ offset: 99975, selected_label: 0xffffffff }));
+  });
+
+  it("discards a delayed label lookup after the result revision changes", async () => {
+    let resolveLookup!: (value: PopulationResponse) => void;
+    let lookup!: Record<string, unknown>;
+    const nextResult = { ...result, revision_hash: "e".repeat(64) };
+    const desktopApi = api((request) => {
+      if (request.selected_label === 1000) { lookup = request; return new Promise((resolve) => { resolveLookup = resolve; }); }
+      return Promise.resolve(response(request, objects, request.revision_hash === nextResult.revision_hash ? nextResult : result));
+    });
+    const { onSelect, onLocate, rerender } = mount(desktopApi); await ready();
+    goToObject("1000");
+    expect(screen.getByText("Reading the selected object…")).toBeVisible();
+    rerender(<ResearchPopulationExplorer api={desktopApi} result={nextResult} selectedLabel={null} onSelect={onSelect} onLocate={onLocate} />);
+    await ready();
+    await act(async () => resolveLookup(response(lookup)));
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Go to object label")).toHaveValue("");
+  });
+
+  it("discards an old page traversal when a newer metric query completes first", async () => {
+    let resolvePage!: (value: PopulationResponse) => void;
+    let oldPage!: Record<string, unknown>;
+    const desktopApi = api((request) => {
+      if (request.offset === 25 && !request.x_metric) { oldPage = request; return new Promise((resolve) => { resolvePage = resolve; }); }
+      return Promise.resolve(response(request));
+    });
+    const { onSelect } = mount(desktopApi, 25); await ready();
+    fireEvent.keyDown(screen.getByRole("region", { name: "Filtered object measurements" }), { key: "ArrowDown" });
+    fireEvent.change(screen.getByLabelText("Population X metric"), { target: { value: "voxel_count" } });
+    await ready();
+    await act(async () => resolvePage(response(oldPage)));
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Population X metric")).toHaveValue("voxel_count");
+    expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "1");
+  });
+
+  it("rejects a lookup response bound to a different revision without selecting or changing page", async () => {
+    const desktopApi = api(async (request) => {
+      const value = response(request);
+      if (request.selected_label === 1000) value.revision_hash = "f".repeat(64);
+      return value;
+    });
+    const { onSelect } = mount(desktopApi); await ready();
+    goToObject("1000");
+    await screen.findByText(/The population response does not match this exact result, page and selection/);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole("table").querySelector("tbody tr")).toHaveAttribute("data-label", "1");
+    expect(screen.getByLabelText("Go to object label")).toHaveValue("1000");
   });
 });
 

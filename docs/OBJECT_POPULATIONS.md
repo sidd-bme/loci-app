@@ -19,6 +19,12 @@ for a filter metric are excluded and counted. Histogram bins use left-closed,
 right-open intervals except the final closed bin; clicking a bin narrows the
 current ranges to its exact membership. Sorting uses label IDs to break metric
 ties and puts missing values last. The table contains 25 objects per page.
+**Go to object label** selects an exact positive integer label and reveals its
+page in the current filtered order. An absent label or a label outside the current
+ranges leaves selection and filters unchanged and explains the issue. **Previous
+object**, **Next object** and table arrow keys traverse that order across pages;
+Home and End select the current page's first and last objects. Selection does not
+move the image; use **Locate selected object** to move to the selected object.
 Histogram counts and summaries use the full filtered population. Scatterplots
 show at most 500 points, deterministically spaced in label order; any sampling is
 explicit and is not a representative statistical sample.

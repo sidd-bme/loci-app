@@ -42,7 +42,7 @@ const snapshot: ResearchSnapshot = {
     id: sourceId,
     name: "Widefield source",
     sha256: sourceSha,
-    metadata: { dimensions: { t: 1, c: 2, z: 1, y: 8, x: 10 } },
+    metadata: { dimensions: { t: 2, c: 2, z: 3, y: 8, x: 10 } },
   }],
   results: [],
   samples: [],
@@ -91,11 +91,11 @@ function createApi(executeMock: ResearchDesktopApi["execute"]): ResearchDesktopA
   };
 }
 
-function renderFieldAssayPanel(executeMock: ResearchDesktopApi["execute"]) {
+function renderFieldAssayPanel(executeMock: ResearchDesktopApi["execute"], plane = selection) {
   const onPublished = vi.fn().mockResolvedValue(undefined);
   const onPreview = vi.fn();
   const props = {
-    api: createApi(executeMock), snapshot, source: snapshot.sources[0], selection,
+    api: createApi(executeMock), snapshot, source: snapshot.sources[0], selection: plane,
     recipe, setRecipe: vi.fn(), report: async <T,>(work: () => Promise<T>) => work(), busy: false,
     onBusyChange: vi.fn(), onPreview, onPublished,
   };
@@ -104,6 +104,58 @@ function renderFieldAssayPanel(executeMock: ResearchDesktopApi["execute"]) {
 }
 
 describe("ResearchQuantificationPanel - Field Assay Tab", () => {
+  it.each([{ t: 0, z: 0, display: "T 1, Z 1" }, { t: 1, z: 2, display: "T 2, Z 3" }])(
+    "shows $display while retaining exact zero-based plane, annotation and parameter requests",
+    async ({ t, z, display }) => {
+      const plane = { ...selection, t, z };
+      const adopted = { ...dummyResult, selection: plane };
+      const annotations = sourceAnnotations.annotations.slice(0, 3).map((item) => ({ ...item, t, z }));
+      const offPlane = { ...sourceAnnotations.annotations[0], id: "off-plane", label: "wrong plane", t, z: z + 1 };
+      const recorded = JSON.stringify({ plane, annotations });
+      const execute = vi.fn(async (op: string) => op === "channel_metadata" ? channelMetadata :
+        op === "source_annotations" ? { ...sourceAnnotations, annotations: [...annotations, offPlane] } :
+        op === "field_assay_preview" ? { preview: true, qc_overlay: "current-qc" } :
+        { adopted: true, result: adopted });
+      const view = renderFieldAssayPanel(execute, plane);
+      await screen.findByText(/original: Channel 1/);
+      fireEvent.click(screen.getByText("Field assay", { exact: true }));
+      expect(screen.getByLabelText("Field assay readiness")).toHaveTextContent(display);
+      expect(screen.getByRole("group", { name: `Regions on ${display}` })).toBeVisible();
+      const focus = screen.getByLabelText("Focus region selection");
+      const background = screen.getByLabelText("Background annotation selection");
+      expect(within(focus).getByRole("option", { name: `ROI: focus · ${display}` })).toHaveValue("ann-focus-1");
+      expect(within(background).getByRole("option", { name: `ROI: background · ${display}` })).toHaveValue("ann-bg-1");
+      expect(within(focus).queryByRole("option", { name: /wrong plane/ })).not.toBeInTheDocument();
+      expect(focus).toHaveValue("ann-focus-1");
+      expect(background).toHaveValue("ann-bg-1");
+      expect(screen.getByLabelText("Minimum nucleus area (pixels)")).toHaveValue(10);
+      expect(screen.getByLabelText("Maximum nucleus area (pixels)")).toHaveValue(5000);
+      expect(screen.getByLabelText("Watershed minimum peak distance (px)")).toHaveValue(5);
+      fireEvent.change(screen.getByLabelText("Count mode"), { target: { value: "points" } });
+      const points = screen.getByLabelText("Manual points annotation");
+      expect(within(points).getByRole("option", { name: `All point markers on ${display}` })).toHaveValue("all_points");
+      fireEvent.change(points, { target: { value: "ann-pt-1" } });
+      const previewRequest = { source_id: sourceId, nuclei_channel: 0, signal_channel: 1, z, t,
+        segmentation_method: "manual", threshold_manual: 100, background_estimator: "median",
+        exclude_boundary_nuclei: false, focus_annotation_id: "ann-focus-1",
+        background_annotation_id: "ann-bg-1", manual_points_annotation_id: "ann-pt-1",
+        config: { nuclear_threshold: 100, segmentation_method: "manual", background_estimator: "median",
+          exclude_boundary_nuclei: false, min_nucleus_area_px: 10, max_nucleus_area_px: 5000,
+          watershed_min_distance_px: 5, endpoint_status: "exploratory" } };
+      fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+      expect(await screen.findByRole("img", { name: `Field assay QC overlay for Widefield source, ${display}` })).toHaveAttribute("src", "current-qc");
+      expect(execute).toHaveBeenCalledWith("field_assay_preview", previewRequest);
+      const reviewFlags = { channel_identity_confirmed: false, acquisition_comparable: false,
+        focus_reviewed: false, nuclei_reviewed: false, background_reviewed: false, saturation_reviewed: false,
+        reviewer: undefined, assay_notes: undefined, endpoint_status: "exploratory" };
+      fireEvent.click(screen.getByRole("button", { name: "Save exploratory" }));
+      await waitFor(() => expect(view.onPublished).toHaveBeenCalledWith(adopted));
+      expect(execute).toHaveBeenCalledWith("field_assay_run", { ...previewRequest, ...reviewFlags,
+        config: { ...previewRequest.config, ...reviewFlags } });
+      expect(JSON.stringify({ plane, annotations })).toBe(recorded);
+    },
+  );
+
   it("uses per-source ROI and count-mark ordinals while preserving exact annotation bindings", async () => {
     const annotations = [
       { id: "c".repeat(32), label: "focus", kind: "polygon", z: 0, t: 0 },
@@ -118,9 +170,9 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     await screen.findByText(/original: Channel 1/);
     fireEvent.click(screen.getByText("Field assay", { exact: true }));
     const focus = screen.getByLabelText("Focus region selection");
-    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 1 · T 0, Z 0" })).toHaveValue(annotations[0].id);
-    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 2 · T 0, Z 0" })).toHaveValue(annotations[1].id);
-    expect(within(focus).getByRole("option", { name: "ROI: Region 3 · T 0, Z 0" })).toHaveValue(annotations[2].id);
+    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 1 · T 1, Z 1" })).toHaveValue(annotations[0].id);
+    expect(within(focus).getByRole("option", { name: "ROI: focus · ROI 2 · T 1, Z 1" })).toHaveValue(annotations[1].id);
+    expect(within(focus).getByRole("option", { name: "ROI: Region 3 · T 1, Z 1" })).toHaveValue(annotations[2].id);
     expect(focus).not.toHaveTextContent(annotations[2].id.slice(0, 8));
     fireEvent.change(focus, { target: { value: annotations[2].id } });
     fireEvent.change(screen.getByLabelText("Background mode selection"), { target: { value: "value" } });
@@ -362,7 +414,7 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
 
     const ptSelect = screen.getByLabelText("Manual points annotation");
     expect(ptSelect).toBeVisible();
-    expect(screen.getByText("All point markers on T 0, Z 0")).toBeInTheDocument();
+    expect(screen.getByText("All point markers on T 1, Z 1")).toBeInTheDocument();
     expect(screen.getByText(/Marks: count \(2 points\)/)).toBeInTheDocument();
     expect(screen.queryByText(/wrong plane/)).not.toBeInTheDocument();
     expect(screen.queryByText(/wrong time/)).not.toBeInTheDocument();
@@ -423,7 +475,7 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     });
 
     expect(await screen.findByText("Assay quantification preview")).toBeVisible();
-    expect(screen.getByRole("img", { name: /Field assay QC overlay for Widefield source, T 0, Z 0/ })).toHaveAttribute(
+    expect(screen.getByRole("img", { name: /Field assay QC overlay for Widefield source, T 1, Z 1/ })).toHaveAttribute(
       "src",
       previewResponse.qc_overlay,
     );

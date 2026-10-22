@@ -55,6 +55,43 @@ const prepare = async () => {
 };
 
 describe("ScientificDataExportPanel", () => {
+  it("leads prepared evidence with source/method/review/counts and discloses complete selectable identities", async () => {
+    const bridge = api();
+    render(<ScientificDataExportPanel api={bridge} snapshot={snapshot} result={result} />);
+    await prepare();
+    const prepared = screen.getByText("Prepared scope").closest<HTMLElement>(".scientific-data-export__preview")!;
+    expect(within(prepared).getByRole("heading", { name: "Sample image · reviewed" })).toBeVisible();
+    expect(within(prepared).getByText("Threshold", { selector: ".scientific-data-export__method" })).toBeVisible();
+    expect(within(prepared).getByText("Threshold", { selector: ".scientific-data-export__method" }).closest("[data-export-result-id]")).toHaveAttribute("data-export-result-id", result.id);
+    expect(within(prepared).getByText("Threshold", { selector: ".scientific-data-export__method" }).closest("[data-export-result-id]")).toHaveAttribute("data-revision-hash", result.revision_hash);
+    expect(within(prepared).getByText("2 of 2 objects · 4 metric values · 0 groups")).toBeVisible();
+    const summary = within(prepared).getByText("Technical identity", { selector: "summary" });
+    summary.focus(); expect(summary).toHaveFocus(); fireEvent.click(summary);
+    for (const identity of [result.id, result.revision_hash, source.id, source.sha256, result.created_at])
+      expect(within(prepared).getByText(identity, { selector: "dd" })).toBeVisible();
+    fireEvent.click(within(prepared).getByText("Prepared package identity"));
+    expect(within(prepared).getByText("2".repeat(64), { selector: "dd" })).toBeVisible();
+    const bindings = within(prepared).getByLabelText("Exact prepared export bindings");
+    bindings.focus(); expect(bindings).toHaveFocus();
+    expect(bindings).toHaveTextContent(source.sha256);
+    // Opaque numeric strings retain precision beyond JavaScript's number range.
+    expect(screen.getByRole("cell", { name: "0.1234567890123456789012345" })).toBeVisible();
+  });
+  it("distinguishes duplicate source/method labels and retains each exact result identity", () => {
+    const duplicate = { ...other, method_label: result.method_label, created_at: "2026-10-22T01:02:03Z" };
+    render(<ScientificDataExportPanel api={api()} snapshot={{ ...snapshot, results: [result, duplicate] }} result={result} />);
+    choose("Data export result scope", "study");
+    const choices = screen.getByRole("group", { name: "Exact result revisions" });
+    expect(within(choices).getByRole("checkbox", { name: /result 1 · 2 objects · reviewed/ })).toBeChecked();
+    expect(within(choices).getByRole("checkbox", { name: /result 2 · 2 objects · reviewed/ })).not.toBeChecked();
+    const duplicateChoice = within(choices).getByRole("checkbox", { name: /result 2 · 2 objects · reviewed/ });
+    expect(duplicateChoice).not.toHaveAccessibleName(new RegExp(duplicate.created_at));
+    expect(duplicateChoice.closest("[data-export-result-id]")).toHaveAttribute("data-export-result-id", duplicate.id);
+    expect(duplicateChoice.closest("[data-export-result-id]")).toHaveAttribute("data-revision-hash", duplicate.revision_hash);
+    fireEvent.click(within(choices).getByText(duplicate.id, { selector: "dd" }).closest<HTMLElement>("details")!.querySelector("summary")!);
+    expect(within(choices).getByText(duplicate.revision_hash, { selector: "dd" })).toBeVisible();
+    expect(within(choices).getByText(duplicate.created_at, { selector: "dd" })).toBeVisible();
+  });
   it("binds the current revision and source exactly and exports only its opaque prepared plan", async () => {
     const bridge = api(), onSnapshot = vi.fn();
     render(<ScientificDataExportPanel api={bridge} snapshot={snapshot} result={result} onSnapshot={onSnapshot} />);
@@ -174,14 +211,14 @@ describe("ScientificDataExportPanel", () => {
     );
     choose("Data export result scope", "study");
     const choices = screen.getByRole("group", { name: "Exact result revisions" });
-    const inspectBtn = within(choices).getByRole("button", { name: `Inspect rev ${pendingOther.revision_hash.slice(0, 8)}` });
+    const inspectBtn = within(choices).getByRole("button", { name: "Inspect result: Sample image · Watershed" });
     fireEvent.click(inspectBtn);
     expect(onSelectResult).toHaveBeenCalledWith(pendingOther);
 
     fireEvent.click(within(choices).getAllByRole("checkbox")[1]);
     fireEvent.click(screen.getByRole("button", { name: "Preview data" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Reviewed data requires every selected revision to be reviewed");
-    fireEvent.click(screen.getByRole("button", { name: `Inspect unreviewed rev ${pendingOther.revision_hash.slice(0, 8)}` }));
+    fireEvent.click(screen.getByRole("button", { name: "Inspect unreviewed result: Sample image · Watershed" }));
     expect(onSelectResult).toHaveBeenLastCalledWith(pendingOther);
 
     fireEvent.click(screen.getByRole("button", { name: "Use Provisional data for review" }));

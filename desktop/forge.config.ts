@@ -219,7 +219,13 @@ export function copyEngineResource(source: string, destination: string): void {
   // Exclusive creation rejects existing directories, files and dangling links.
   // Retain any partial copy on failure for inspection by the packaging owner.
   mkdirSync(destination);
-  cpSync(source, destination, { recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true });
+  // Node 24.22 correctly rejects cpSync onto an existing directory with
+  // errorOnExist. Keep our exclusive root and copy only its absent children.
+  for (const name of readdirSync(source)) {
+    cpSync(path.join(source, name), path.join(destination, name), {
+      recursive: true, verbatimSymlinks: true, force: false, errorOnExist: true,
+    });
+  }
   const copiedLinks = engineResourceLinks(destination);
   if (sourceLinks.size !== copiedLinks.size ||
       [...sourceLinks].some(([name, target]) => copiedLinks.get(name) !== target)) {

@@ -11,6 +11,11 @@ type GroupState = { identity: string; groups: Group[]; status: "loading" | "read
 type ActiveRequest = { key: string; scope: string; phase: "planning" | "exporting"; generation: number };
 const resultKey = (result: ResearchResult) => JSON.stringify([result.id, result.revision_hash]);
 const reviewStatus = (result: ResearchResult) => result.review?.disposition ?? "pending";
+function TechnicalIdentity({ result, sourceFingerprint }: { result: Pick<ResearchResult, "id" | "revision_hash" | "source_id"> & { created_at?: string }; sourceFingerprint?: string }) {
+  return <dl className="scientific-data-export__technical-fields"><div><dt>Result ID</dt><dd>{result.id}</dd></div>
+    <div><dt>Revision</dt><dd>{result.revision_hash}</dd></div><div><dt>Source ID</dt><dd>{result.source_id}</dd></div>
+    <div><dt>Source fingerprint</dt><dd>{sourceFingerprint ?? "Unavailable"}</dd></div><div><dt>Created</dt><dd>{result.created_at ?? "Unavailable"}</dd></div></dl>;
+}
 const errorMessage = (error: unknown) => {
   if (!(error instanceof Error)) return "Could not prepare scientific data. Retry the preview.";
   const message = error.message.replace(/^Error invoking remote method '[^']+':\s*/u, "")
@@ -258,7 +263,11 @@ export function ScientificDataExportPanel({ api, snapshot, result, busy = false,
     } catch (caught) { if (mounted.current) { setNotice(""); setError(`Could not confirm cancellation: ${errorMessage(caught)}`); } }
     finally { if (mounted.current) setCancelling(false); }
   };
-  const resultLabel = (entry: ResearchResult) => `${snapshot.sources.find((source) => source.id === entry.source_id)?.name ?? "Unavailable source"} · ${entry.method_label ?? entry.kind}`;
+  const resultLabel = (entry: ResearchResult) => {
+    const describe = (row: ResearchResult) => `${snapshot.sources.find((source) => source.id === row.source_id)?.name ?? "Unavailable source"} · ${row.method_label ?? row.kind}`;
+    const matching = snapshot.results.filter((row) => describe(row) === describe(entry));
+    return `${describe(entry)}${matching.length > 1 ? ` · result ${matching.findIndex((row) => resultKey(row) === resultKey(entry)) + 1}` : ""}`;
+  };
   const resultObjectLabel = (entry: ResearchResult) => `${entry.object_count.toLocaleString()} ${entry.object_count === 1 ? "object" : "objects"}`;
   const toggle = (items: string[], key: string, checked: boolean) => checked ? [...items, key] : items.filter((item) => item !== key);
   const unreviewedResults = exactResults.filter((entry) => reviewStatus(entry) !== "reviewed");
@@ -270,19 +279,22 @@ export function ScientificDataExportPanel({ api, snapshot, result, busy = false,
     <label>Results<select aria-label="Data export result scope" value={scope} onChange={(event) => setScope(event.target.value as typeof scope)}>
       <option value="current">Current result</option><option value="study">Choose study results</option>
     </select></label>
-    {scope === "current" && (result ? <p className="scientific-data-export__identity">
-      {resultLabel(result)} · {resultObjectLabel(result)} · {reviewStatus(result)}<code title={result.revision_hash}>Revision {result.revision_hash}</code>
-    </p> : <p>Select a result to export its scientific data.</p>)}
+    {scope === "current" && (result ? <div className="scientific-data-export__identity">
+      <p>{resultLabel(result)} · {resultObjectLabel(result)} · {reviewStatus(result)}</p>
+      <details className="scientific-data-export__technical"><summary>Technical identity</summary><TechnicalIdentity result={result} sourceFingerprint={result.source_sha256} /></details>
+    </div> : <p>Select a result to export its scientific data.</p>)}
     {scope === "study" && <fieldset className="scientific-data-export__choices"><legend>Exact result revisions</legend>
       {snapshot.results.length === 0 && <p>This study has no results. Run an analysis first.</p>}
-      {snapshot.results.map((entry) => <div className="scientific-data-export__choice-row" key={resultKey(entry)}>
+      {snapshot.results.map((entry) => <div className="scientific-data-export__choice-row" key={resultKey(entry)} data-export-result-id={entry.id} data-revision-hash={entry.revision_hash}>
         <label className="scientific-data-export__choice">
           <input type="checkbox" checked={chosenResults.includes(resultKey(entry))}
             onChange={(event) => setChosenResults((old) => toggle(old, resultKey(entry), event.target.checked))} />
-          <span>{resultLabel(entry)} · {resultObjectLabel(entry)} · {reviewStatus(entry)}<code title={entry.revision_hash}>Revision {entry.revision_hash}</code></span>
+          <span>{resultLabel(entry)} · {resultObjectLabel(entry)} · {reviewStatus(entry)}</span>
         </label>
+        <details className="scientific-data-export__technical scientific-data-export__choice-identity"><summary aria-label={`Technical identity for ${resultLabel(entry)}`}>Technical identity</summary>
+          <TechnicalIdentity result={entry} sourceFingerprint={entry.source_sha256} /></details>
         {onSelectResult && entry.id !== result?.id && <button type="button" className="scientific-data-export__inspect-btn"
-          disabled={busy || Boolean(pending) || cancelling} onClick={() => onSelectResult(entry)}>Inspect rev {entry.revision_hash.slice(0, 8)}</button>}
+          aria-label={`Inspect result: ${resultLabel(entry)}`} disabled={busy || Boolean(pending) || cancelling} onClick={() => onSelectResult(entry)}>Inspect result</button>}
       </div>)}
     </fieldset>}
     <label>Purpose<select aria-label="Data export purpose" value={purpose} onChange={(event) => setPurpose(event.target.value as typeof purpose)}>
@@ -332,7 +344,7 @@ export function ScientificDataExportPanel({ api, snapshot, result, busy = false,
     {error && purpose === "reviewed" && unreviewedResults.length > 0 && <div className="scientific-data-export__recovery">
       <button type="button" disabled={busy || Boolean(pending) || cancelling} onClick={() => setPurpose("provisional")}>Use Provisional data for review</button>
       {onSelectResult && unreviewedResults[0] && unreviewedResults[0].id !== result?.id && <button type="button"
-        disabled={busy || Boolean(pending) || cancelling} onClick={() => onSelectResult(unreviewedResults[0])}>Inspect unreviewed rev {unreviewedResults[0].revision_hash.slice(0, 8)}</button>}
+        aria-label={`Inspect unreviewed result: ${resultLabel(unreviewedResults[0])}`} disabled={busy || Boolean(pending) || cancelling} onClick={() => onSelectResult(unreviewedResults[0])}>Inspect unreviewed result</button>}
     </div>}
     {notice && <p role="status" className="scientific-data-export__notice">{notice}</p>}
     {currentPlan && <div className="scientific-data-export__preview">
@@ -348,17 +360,28 @@ export function ScientificDataExportPanel({ api, snapshot, result, busy = false,
       {currentPlan.plan.mixed_units && <p className="scientific-data-export__caution">Mixed measurement units are present. Compare rows within the same metric and unit; convert units explicitly before pooling values.</p>}
       {currentPlan.plan.unassigned_source_count > 0 && <p>Assign biological replicates in study metadata before treating sources as independent samples.</p>}
       {currentPlan.plan.selected_count === 0 && <p>This scope contains zero objects. The package will retain its empty tables, schemas and provenance.</p>}
-      {currentPlan.plan.results.map((entry) => <div key={JSON.stringify([entry.result_id, entry.revision_hash])}>
+      <details className="scientific-data-export__technical"><summary>Prepared package identity</summary>
+        <dl className="scientific-data-export__technical-fields"><div><dt>Plan fingerprint</dt><dd>{currentPlan.plan.plan_sha256}</dd></div></dl>
+        <pre tabIndex={0} aria-label="Exact prepared export bindings">{JSON.stringify(currentPlan.plan.request, null, 2)}</pre>
+      </details>
+      {currentPlan.plan.results.map((entry) => {
+        const exact = exactResults.find((row) => row.id === entry.result_id && row.revision_hash === entry.revision_hash && row.source_id === entry.source_id);
+        const binding = currentPlan.plan.request.bindings.find((row) => row.result_id === entry.result_id && row.revision_hash === entry.revision_hash);
+        return <div key={JSON.stringify([entry.result_id, entry.revision_hash])} data-export-result-id={entry.result_id} data-revision-hash={entry.revision_hash}>
         <h4>{entry.name} · {entry.review_status}</h4>
-        <p className="scientific-data-export__identity"><code>Result {entry.result_id}<br />Revision {entry.revision_hash}</code>
+        {exact && <p className="scientific-data-export__method">{exact.method_label ?? exact.kind}</p>}
+        <p className="scientific-data-export__identity">
           {entry.selected_count} of {entry.total_count} objects · {entry.measurement_count} metric values · {entry.group_count} groups</p>
+        <details className="scientific-data-export__technical"><summary aria-label={`Technical identity for prepared ${exact ? resultLabel(exact) : entry.name}`}>Technical identity</summary>
+          <TechnicalIdentity result={{ id: entry.result_id, revision_hash: entry.revision_hash, source_id: entry.source_id, created_at: exact?.created_at }} sourceFingerprint={binding?.source_sha256} />
+        </details>
         {entry.preview.length > 0 && <div className="scientific-data-export__table" role="region" aria-label={`Data preview for ${entry.name}`} tabIndex={0}>
           <table><caption>First {entry.preview.length} object rows · exact stored values</caption>
             <thead><tr><th scope="col">Label</th><th scope="col">Measure</th><th scope="col">Unit</th></tr></thead>
             <tbody>{entry.preview.map((row, index) => <tr key={index}><td>{row.label}</td><td>{row.measure}</td><td>{row.measure_unit}</td></tr>)}</tbody>
           </table>
         </div>}
-      </div>)}
+      </div>; })}
     </div>}
   </section>;
 }

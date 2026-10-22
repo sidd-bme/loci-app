@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
-import { selectWorkbenchTool } from './workbench-qa-helpers.mjs';
+import { selectResultSection, selectWorkbenchTool } from './workbench-qa-helpers.mjs';
 const repo=path.resolve(import.meta.dirname, '../..');
 const bundle=process.env.LOCI_PACKAGED_APP;
 assert.ok(bundle, 'Set LOCI_PACKAGED_APP to the exact qualification candidate');
@@ -61,8 +61,9 @@ try{
  const rows=result.measurements.sort((a,b)=>a.voxel_count-b.voxel_count);
  assert.deepEqual(rows.map(r=>[r.voxel_count,r.measure,Object.values(r.intensity)[0].mean]),[[320,120,100],[1000,375,200]]);
  assert.equal(result.provenance.recipe.working_bytes,1024**3);
- await page.locator('[data-result-id]').click();
+ await page.locator('button[data-result-id]').click();
  await selectWorkbenchTool(page,'Info');
+ await page.locator("details.research-preview-rows > summary").click();
  await until(()=>page.getByRole('region',{name:'Result measurements',exact:true}).locator('tbody tr').count().then(n=>n===2),'two displayed measurement rows');
  await page.waitForFunction(()=>{
    const v=document.querySelector('.image-viewport[data-result-overlay]');
@@ -73,8 +74,8 @@ try{
  });
  assert.equal(await page.locator('.research-alert').count(),0);
  await capture('04-larger-result-and-measurements');
- await page.getByRole('button',{name:'Mark reviewed',exact:true}).click();
- await page.getByRole('button',{name:'Export result',exact:true}).click();
+ await selectResultSection(page, "Review"); await page.getByRole('button',{name:'Mark reviewed',exact:true}).click();
+ await selectResultSection(page, "Export"); await page.getByRole('button',{name:'Export result',exact:true}).click();
  await until(()=>fs.stat(path.join(exported,'manifest.json')).then(()=>true,()=>false),'atomic reviewed export');
  const exportRecord=JSON.parse(await fs.readFile(path.join(exported,'result.json'),'utf8'));
  assert.equal(exportRecord.result.provenance.recipe.working_bytes,1024**3);

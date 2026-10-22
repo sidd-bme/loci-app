@@ -4,6 +4,7 @@ import { checkedIntensityReport, type IntensityCatalog, type IntensityCompartmen
   type IntensityDescriptor, type IntensityEndpoint, type IntensityReport, type IntensityRequest, type IntensitySaved,
   type IntensityStatus } from "../shared/intensity-contracts";
 import "./ExperimentIntensityPanel.css";
+import { ScientificNumber } from "./ScientificNumber";
 
 type SavedSummary = { id: string; created_at: string; endpoint: IntensityEndpoint; declaration: IntensityDeclaration };
 type ReportView = { report: IntensityReport; reportJson?: string; savedId: string | null; signature: string; status: IntensityStatus | null };
@@ -14,6 +15,31 @@ const compartments = Object.keys(compartmentNames) as IntensityCompartment[];
 const disposition = (result: ResearchResult) => result.review?.disposition ?? "pending";
 const message = (error: unknown) => error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+':\s*/u, "") : "Could not prepare the intensity comparison. Retry the preview.";
 const exactNumber = (value: number | null) => value === null ? "Not estimable" : Object.is(value, -0) ? "-0" : String(value);
+const resultDescription = (snapshot: ResearchSnapshot, result: ResearchResult) => {
+  const describe = (row: ResearchResult) => `${snapshot.sources.find((source) => source.id === row.source_id)?.name ?? "Unavailable source"} · ${row.method_label ?? row.kind}`;
+  const matching = snapshot.results.filter((row) => describe(row) === describe(result));
+  return `${describe(result)}${matching.length > 1 ? ` · result ${matching.findIndex((row) => keyOf(row) === keyOf(result)) + 1}` : ""}`;
+};
+function boundDescription(binding: IntensityReport["bindings"][number] | undefined, fallback: string): string {
+  const source = binding?.source as { name?: string } | undefined;
+  const descriptor = binding?.descriptor as IntensityDescriptor | undefined;
+  return `${source?.name ?? fallback}${descriptor?.label ? ` · ${descriptor.label}` : ""}`;
+}
+function reportDescription(report: IntensityReport, resultId: string): string {
+  const binding = report.bindings.find((entry) => entry.result_id === resultId);
+  const description = boundDescription(binding, "Bound result");
+  const matching = report.bindings.filter((entry) => boundDescription(entry, "Bound result") === description);
+  return `${description}${matching.length > 1 ? ` · image ${matching.findIndex((entry) => entry.result_id === resultId) + 1}` : ""}`;
+}
+function ResultIdentity({ result }: { result: ResearchResult }) {
+  return <dl className="intensity-declaration intensity-identity"><div><dt>Result ID</dt><dd>{result.id}</dd></div>
+    <div><dt>Revision</dt><dd>{result.revision_hash}</dd></div><div><dt>Source ID</dt><dd>{result.source_id}</dd></div>
+    <div><dt>Source fingerprint</dt><dd>{result.source_sha256 ?? "Unavailable"}</dd></div><div><dt>Created</dt><dd>{result.created_at}</dd></div></dl>;
+}
+function reportTime(createdAt: string): string {
+  const date = new Date(createdAt);
+  return Number.isFinite(date.getTime()) ? `${new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }).format(date)} UTC` : "Time unavailable";
+}
 const meanDescriptor = (descriptor: IntensityDescriptor, compartment?: string) => descriptor.kind === "intensity" && descriptor.statistic === "mean" &&
   descriptor.unit === "source-intensity" && typeof descriptor.channel === "string" && Boolean(descriptor.channel) &&
   (!compartment || (descriptor.compartment ?? "object") === compartment);
@@ -95,39 +121,45 @@ function ReplicatePlot({ report }: { report: IntensityReport }) {
 function ReportTables({ report, snapshot, onInspect, disabled }: { report: IntensityReport; snapshot: ResearchSnapshot; onInspect: (result: ResearchResult) => void; disabled: boolean }) {
   return <>
     <p><strong>{compartmentNames[report.endpoint.compartment]} raw-channel mean</strong> · source-intensity units</p>
-    <dl className="intensity-declaration"><div><dt>Shared channel declaration</dt><dd>{report.declaration.channel}</dd></div>
-      <div><dt>Acquisition context</dt><dd>{report.declaration.acquisition_context}</dd></div><div><dt>Comparability rationale</dt><dd>{report.declaration.rationale}</dd></div></dl>
-    <p>Equal-weight object means within each image → equal-weight image means within each declared replicate → equal-weight replicate means within each condition. SD is descriptive sample SD; it needs at least two valid replicate means. Declared groups do not establish independent sampling.</p>
+    <p className="intensity-hint">Equal weight at each step: objects → images → declared replicates → conditions.</p>
+    <details className="intensity-details"><summary>Channel declaration &amp; method</summary>
+      <dl className="intensity-declaration"><div><dt>Shared channel declaration</dt><dd>{report.declaration.channel}</dd></div>
+        <div><dt>Acquisition context</dt><dd>{report.declaration.acquisition_context}</dd></div><div><dt>Comparability rationale</dt><dd>{report.declaration.rationale}</dd></div></dl>
+      <p>Object means have equal weight within each image; image means have equal weight within each declared replicate; replicate means have equal weight within each condition. SD is descriptive sample SD; it needs at least two valid replicate means. Declared groups do not establish independent sampling.</p>
+    </details>
     <ReplicatePlot report={report} />
     <div className="intensity-table" role="region" aria-label="Intensity condition means" tabIndex={0}><table>
-      <caption>Condition means · exact values</caption><thead><tr>{["Condition", "Mean", "Sample SD", "Objects / valid", "Images / valid", "Declared replicate groups / valid", "Images without replicate"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
-      <tbody>{report.conditions.map((row) => <tr key={row.condition}><th scope="row">{row.condition}</th><td>{exactNumber(row.mean)}</td><td>{exactNumber(row.sd)}</td>
+      <caption>Condition means · source-intensity units</caption><thead><tr>{["Condition", "Mean", "Sample SD", "Objects / valid", "Images / valid", "Declared replicate groups / valid", "Images without replicate"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+      <tbody>{report.conditions.map((row) => <tr key={row.condition}><th scope="row">{row.condition}</th><td><ScientificNumber value={row.mean} /></td><td><ScientificNumber value={row.sd} /></td>
         <td>{row.object_count} / {row.valid_object_count}</td><td>{row.image_count} / {row.valid_image_count}</td><td>{row.declared_replicate_count} / {row.valid_replicate_count}</td><td>{row.unassigned_image_count}</td></tr>)}</tbody>
     </table></div>
     <details className="intensity-details"><summary>Declared replicate means ({report.replicates.length})</summary>
       <div className="intensity-table" role="region" aria-label="Intensity replicate means" tabIndex={0}><table><caption>Equal-weight image means within each condition / declared replicate</caption>
         <thead><tr>{["Condition", "Declared replicate", "Mean", "Images / valid", "Objects / valid"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
         <tbody>{report.replicates.map((row) => <tr key={JSON.stringify([row.condition, row.biological_replicate])}><th scope="row">{row.condition}</th><td>{row.biological_replicate}</td>
-          <td>{exactNumber(row.mean)}</td><td>{row.image_count} / {row.valid_image_count}</td><td>{row.object_count} / {row.valid_object_count}</td></tr>)}</tbody></table></div>
+          <td><ScientificNumber value={row.mean} /></td><td>{row.image_count} / {row.valid_image_count}</td><td>{row.object_count} / {row.valid_object_count}</td></tr>)}</tbody></table></div>
     </details>
     <details className="intensity-details"><summary>Image means &amp; inclusion reasons ({report.images.length})</summary>
       <div className="intensity-table" role="region" aria-label="Intensity image means" tabIndex={0}><table><caption>Exact selected revisions · equal-weight object means per image</caption>
-        <thead><tr>{["Image / revision", "Sample / condition / replicate", "Literal channel", "Mean", "Objects / valid / null / missing", "Reason"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+        <thead><tr>{["Image / measurement", "Sample / condition / replicate", "Literal channel", "Mean", "Objects / valid / null / missing", "Reason"].map((label) => <th scope="col" key={label}>{label}</th>)}</tr></thead>
         <tbody>{report.images.map((row) => {
           const binding = report.bindings.find((entry) => entry.result_id === row.result_id);
-          const source = binding?.source as { name?: string } | undefined;
           const descriptor = binding?.descriptor as IntensityDescriptor | undefined;
           const exact = snapshot.results.find((entry) => entry.id === row.result_id && entry.revision_hash === row.revision_hash && entry.source_id === row.source_id);
           const audit = report.audit.find((entry) => entry.result_id === row.result_id);
-          return <tr key={row.result_id}><th scope="row">{source?.name ?? row.sample}<code title={row.revision_hash}>rev {row.revision_hash.slice(0, 8)}</code>
-            {exact ? <button type="button" disabled={disabled} onClick={() => onInspect(exact)}>Inspect rev {row.revision_hash.slice(0, 8)}</button> : <span>Exact revision unavailable in this study.</span>}</th>
-            <td>{row.sample}<br />{row.condition}<br />{row.biological_replicate ?? "Unassigned"}</td><td>{descriptor?.channel ?? "Unavailable"}</td><td>{exactNumber(row.mean)}</td>
+          return <tr key={row.result_id} data-intensity-result-id={row.result_id} data-revision-hash={row.revision_hash}><th scope="row">{reportDescription(report, row.result_id)}
+            {exact ? <button type="button" aria-label={`Inspect result: ${reportDescription(report, row.result_id)}`} disabled={disabled} onClick={() => onInspect(exact)}>Inspect result</button> : <span>Exact revision unavailable in this study.</span>}
+            <details className="intensity-details"><summary aria-label={`Technical identity for ${reportDescription(report, row.result_id)}`}>Technical identity</summary><dl className="intensity-declaration intensity-identity">
+              <div><dt>Result ID</dt><dd>{row.result_id}</dd></div><div><dt>Revision</dt><dd>{row.revision_hash}</dd></div>
+              <div><dt>Source ID</dt><dd>{row.source_id}</dd></div><div><dt>Source fingerprint</dt><dd>{binding?.source_sha256 ?? "Unavailable"}</dd></div>
+            </dl></details></th>
+            <td>{row.sample}<br />{row.condition}<br />{row.biological_replicate ?? "Unassigned"}</td><td>{descriptor?.channel ?? "Unavailable"}</td><td><ScientificNumber value={row.mean} /></td>
             <td>{row.object_count} / {row.valid_object_count} / {row.null_object_count} / {row.missing_object_count}</td><td>{String(audit?.review_disposition ?? "unavailable")} · {row.reason}</td></tr>;
         })}</tbody></table></div>
     </details>
     <details className="intensity-details"><summary>Exact report identity &amp; settings</summary>
       <p>Created {report.created_at} · engine {report.software.engine}</p><code className="intensity-hash">{report.report_hash}</code>
-      <pre>{JSON.stringify({ endpoint: report.endpoint, bindings: report.bindings, aggregation: report.aggregation, audit: report.audit }, null, 2)}</pre>
+      <pre tabIndex={0} aria-label="Exact intensity report identity and settings">{JSON.stringify({ endpoint: report.endpoint, bindings: report.bindings, aggregation: report.aggregation, audit: report.audit }, null, 2)}</pre>
     </details>
   </>;
 }
@@ -357,17 +389,19 @@ export function ExperimentIntensityPanel({ api, snapshot, active = true, busy = 
         const checked = selectedKeys.includes(keyOf(row));
         const other = exact.some((entry) => entry.source_id === row.source_id && keyOf(entry) !== keyOf(row));
         const review = disposition(row);
-        const why = row.schema === "loci.research-result/v2" ? "Unsupported indexed result" : review === "pending" ? "Blocked until reviewed" : review === "excluded" ? "Audit only; excluded from estimates" : "Eligible reviewed revision";
-        return <label className="intensity-result-choice" key={keyOf(row)}><input type="checkbox" aria-label={`Intensity result ${row.id}`} checked={checked}
+        const description = resultDescription(snapshot, row);
+        const why = row.schema === "loci.research-result/v2" ? "Unsupported indexed result" : review === "pending" ? "Blocked until reviewed" : review === "excluded" ? "Excluded from estimates; audit only" : "Reviewed";
+        return <div key={keyOf(row)} className="intensity-result-row" data-intensity-result-id={row.id} data-revision-hash={row.revision_hash}><label className="intensity-result-choice"><input type="checkbox" aria-label={`Intensity result: ${description} · ${why}`} checked={checked}
           disabled={!checked && (review === "pending" || row.schema === "loci.research-result/v2" || other)} onChange={(event) => {
             setSelectedKeys((old) => event.target.checked ? [...old, keyOf(row)] : old.filter((key) => key !== keyOf(row))); setError(""); setNotice("");
-          }} /><span>{snapshot.sources.find((source) => source.id === row.source_id)?.name ?? "Unavailable source"} · rev {row.revision_hash.slice(0, 8)}<small>{review} · {why}{other ? " · Clear the other selected revision on this source first" : ""}</small></span></label>;
+          }} /><span>{description}<small>{why}{other ? " · Clear the other selected revision on this source first" : ""}</small></span></label>
+          <details className="intensity-choice-identity"><summary aria-label={`Technical identity for ${description}`}>Technical identity</summary><ResultIdentity result={row} /></details></div>;
       })}</div>
       {selectedKeys.some((key) => !snapshot.results.some((row) => keyOf(row) === key)) && <button type="button" onClick={() => setSelectedKeys((old) => old.filter((key) => snapshot.results.some((row) => keyOf(row) === key)))}>Clear unavailable revisions</button>}
       <label>Compartment<select aria-label="Intensity compartment" value={compartment} onChange={(event) => { setCompartment(event.target.value as typeof compartment); setMetrics({}); }}>
         <option value="">Choose measured compartment</option>{availableCompartments.map((part) => <option key={part} value={part}>{compartmentNames[part]} mean</option>)}
       </select></label>
-      {currentCatalog?.results.map((row) => <label key={row.result_id}>{row.name} · rev {row.revision_hash.slice(0, 8)}<select aria-label={`Intensity channel for ${row.result_id}`}
+      {currentCatalog?.results.map((row) => <label key={row.result_id} data-intensity-result-id={row.result_id} data-revision-hash={row.revision_hash}>{resultDescription(snapshot, exact.find((entry) => entry.id === row.result_id)!)}<select aria-label={`Intensity channel for ${resultDescription(snapshot, exact.find((entry) => entry.id === row.result_id)!)}`}
         value={metrics[row.result_id] ?? ""} disabled={!compartment} onChange={(event) => setMetrics((old) => ({ ...old, [row.result_id]: event.target.value }))}>
         <option value="">Choose literal stored channel mean</option>{row.descriptors.filter((descriptor) => meanDescriptor(descriptor, compartment)).map((descriptor) => <option key={descriptor.id} value={descriptor.id}>{descriptor.channel} · {descriptor.label}</option>)}
       </select></label>)}
@@ -395,14 +429,19 @@ export function ExperimentIntensityPanel({ api, snapshot, active = true, busy = 
       <button type="button" disabled={locked} onClick={() => void run("Reading saved reports", async () => refreshReports())}>Refresh saved intensity reports</button>
       {reportsLoading && <p role="status">Reading saved intensity reports…</p>}
       {reportsLoaded && !reports.length && <p>No intensity reports have been saved in this study.</p>}
-      <ul className="intensity-report-list">{reports.map((row) => <li key={row.id}><span>{row.declaration.channel} · {compartmentNames[row.endpoint.compartment]} · {row.created_at}</span>
-        <button type="button" disabled={locked} aria-label={`Open intensity report ${row.id}`} onClick={() => void open(row.id)}>Open saved report</button></li>)}</ul>
+      <ul className="intensity-report-list">{reports.map((row, index) => <li key={row.id} data-report-id={row.id}><span>{row.declaration.channel} · {compartmentNames[row.endpoint.compartment]} · {reportTime(row.created_at)}</span>
+        <button type="button" disabled={locked} aria-label={`Open saved intensity report ${index + 1}: ${row.declaration.channel} · ${compartmentNames[row.endpoint.compartment]} · ${reportTime(row.created_at)}`} onClick={() => void open(row.id)}>Open saved report</button>
+        <details className="intensity-details"><summary>Report identity</summary><code className="intensity-hash">{row.id}</code><p>Created {row.created_at}</p></details></li>)}</ul>
     </details>
     {view && <section className="intensity-report" aria-label={view.savedId ? "Saved intensity report" : "Intensity comparison preview"}>
       <h3>{view.savedId ? "Saved intensity report" : "Comparison preview"}</h3>
       {view.savedId && <div className="intensity-current-status" role="status"><p>{statusChecking ? "Checking current inputs…" : !view.status ? "Current input status could not be verified. Saved values remain unchanged." : view.status.current ? "Current inputs match this saved report." : "Current inputs differ. Saved values remain unchanged."}</p>
-        {!statusChecking && view.status && !view.status.current && <ul>{view.status.changes.map((row, index) => <li key={index}>Revision {row.result_id.slice(0, 8)} · {friendlyStatus(row.reason)}</li>)}</ul>}</div>}
-      {view.savedId && view.status && <details className="intensity-details"><summary>Current input status details</summary><pre>{JSON.stringify(view.status, null, 2)}</pre></details>}
+        {!statusChecking && view.status && !view.status.current && <ul>{view.status.changes.map((row, index) => <li key={index}>
+          {reportDescription(view.report, row.result_id)} · {friendlyStatus(row.reason)}</li>)}</ul>}</div>}
+      {view.savedId && view.status && <details className="intensity-details"><summary>Current input status details</summary>
+        {view.status.changes.map((row, index) => <dl className="intensity-declaration intensity-identity" key={index}><div><dt>Result ID</dt><dd>{row.result_id}</dd></div>
+          <div><dt>Saved revision</dt><dd>{view.report.bindings.find((binding) => binding.result_id === row.result_id)?.revision_hash ?? "Unavailable"}</dd></div></dl>)}
+        <pre tabIndex={0} aria-label="Exact current input status">{JSON.stringify(view.status, null, 2)}</pre></details>}
       <ReportTables report={view.report} snapshot={snapshot} onInspect={onInspect} disabled={locked} />
     </section>}
   </section>;

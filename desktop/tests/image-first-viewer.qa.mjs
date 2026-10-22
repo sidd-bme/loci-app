@@ -904,7 +904,7 @@ assert report["maximum_absolute_delta"] == 0
     { sourceId: reopenedResultSource.id, sourceName: reopenedResultSource.name },
     { timeout: 120_000 },
   );
-  const reopenedResultButton = page.locator(`[data-result-id="${selectedResult.id}"]`);
+  const reopenedResultButton = page.locator(`button[data-result-id="${selectedResult.id}"]`);
   await reopenedResultButton.waitFor({ state: "visible", timeout: 120_000 });
   await reopenedResultButton.click();
   await page.waitForFunction(({ sourceId, resultId, overlayKey }) => {

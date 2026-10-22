@@ -14,7 +14,7 @@ import { createReadStream, existsSync, promises as fs, statSync } from "node:fs"
 import path from "node:path";
 import { once } from "node:events";
 import { _electron as electron } from "playwright";
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const desktopRoot = path.resolve(import.meta.dirname, "..");
 const projectRoot = path.resolve(desktopRoot, "..");
@@ -445,11 +445,13 @@ try {
   const results = manifest.segments.find((item) => item.id === "07-results");
   records.push(await recordSegment(page, cdp, captureRoot, results, captureGeometry, async () => {
     await sourceButton(phaseName).click(); await waitForViewer(page, phaseName);
-    const selectedResult = page.locator(`[data-result-id="${phaseResult.id}"]`); await selectedResult.click();
-    await page.locator(`[data-result-id="${phaseResult.id}"][aria-pressed="true"]`).waitFor({ state: "visible", timeout: 30_000 });
+    const selectedResult = page.locator(`button[data-result-id="${phaseResult.id}"]`); await selectedResult.click();
+    await page.locator(`button[data-result-id="${phaseResult.id}"][aria-pressed="true"]`).waitFor({ state: "visible", timeout: 30_000 });
     await selectWorkbenchTool(page, "Info");
+    await selectResultSection(page, "Review");
     const review = page.getByRole("button", { name: "Mark reviewed", exact: true }); await review.waitFor({ state: "visible", timeout: 30_000 }); await review.click();
     await page.getByText("Reviewed", { exact: true }).waitFor({ timeout: 30_000 });
+    await selectResultSection(page, "Export");
     const exportRevision = page.getByRole("button", { name: "Export result", exact: true });
     await exportRevision.waitFor({ state: "visible", timeout: 30_000 });
     assert.equal(await exportRevision.isEnabled(), true, "The reviewed result did not enable its real export action.");

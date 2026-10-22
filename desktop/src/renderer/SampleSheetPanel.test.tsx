@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchDesktopApi, ResearchSnapshot } from "../shared/research-contracts";
 import type { SampleSheetPreview } from "../shared/intensity-contracts";
@@ -33,6 +33,39 @@ const prepare = async () => {
 };
 
 describe("SampleSheetPanel", () => {
+  it("places read-only source navigation above the CSV editor without changing its preview contract", async () => {
+    const onInspectResult = vi.fn(), onEditMetadata = vi.fn();
+    const view = mount();
+    view.rerender(<SampleSheetPanel {...view.props} onInspectResult={onInspectResult} onEditMetadata={onEditMetadata} />);
+    const navigator = screen.getByRole("region", { name: "Sources & samples" });
+    const editor = screen.getByRole("textbox", { name: "Sample sheet CSV" });
+    expect(navigator.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    setCsv(csv); await prepare();
+    const prepared = screen.getByRole("region", { name: "Sample sheet before and after" });
+    fireEvent.change(within(navigator).getByRole("searchbox"), { target: { value: "Field A" } });
+    fireEvent.click(within(navigator).getByRole("button", { name: "Edit metadata" }));
+    expect(onEditMetadata).toHaveBeenCalledWith(source);
+    expect(onInspectResult).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Sample sheet CSV" })).toBe(editor);
+    expect(editor).toHaveValue(csv); expect(prepared).toBeVisible();
+    expect(view.execute.mock.calls.map(([operation]) => operation)).toEqual(["sample_sheet_preview"]);
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeEnabled();
+    view.rerender(<SampleSheetPanel {...view.props} onEditMetadata={onEditMetadata}
+      snapshot={{ ...snapshot, samples: [{ ...snapshot.samples[0], revision: 2 }] }} />);
+    expect(editor).toHaveValue(csv);
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeDisabled();
+  });
+  it("keeps format limits and validation visible while disclosing the full CSV column reference", () => {
+    mount();
+    expect(screen.getByText("UTF-8 CSV · up to 1,000 rows and 1 MiB. Preview validates every row before applying.")).toBeVisible();
+    const columns = screen.getByText(/Columns: source_id, study, sample/);
+    expect(columns).not.toBeVisible();
+    const summary = screen.getByText("CSV columns & source matching");
+    summary.focus(); expect(summary).toHaveFocus(); fireEvent.click(summary);
+    expect(columns).toBeVisible();
+    expect(columns).toHaveTextContent("exact source_id from the template");
+    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeDisabled();
+  });
   it("loads an inspectable template, downloads literal CSV and applies only the exact preview", async () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:sample-template"), revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });

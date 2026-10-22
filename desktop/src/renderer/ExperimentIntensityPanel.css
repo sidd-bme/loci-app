@@ -13,6 +13,9 @@
 .intensity-result-choice input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--mineral); }
 .intensity-result-choice span { min-width: 0; }
 .intensity-result-choice small { display: block; font-size: var(--type-sm); color: var(--ink-secondary); margin-top: 3px; }
+.intensity-choice-identity { margin: 4px 0 0 22px; }
+.intensity-choice-identity summary { cursor: pointer; min-height: 24px; color: var(--ink-secondary); font-size: var(--type-sm); }
+.intensity-identity dd { overflow-wrap: anywhere; white-space: normal; user-select: text; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
 .experiment-intensity .intensity-hint, .sample-sheet .intensity-hint { color: var(--ink-secondary); }
 .experiment-intensity .intensity-caution, .sample-sheet .intensity-caution { color: var(--warning); }
 .experiment-intensity [role="alert"], .sample-sheet [role="alert"] { color: var(--error); }
@@ -24,6 +27,9 @@
 .intensity-table thead th { color: var(--ink-secondary); font-weight: 600; }
 .intensity-table code { display: block; font-size: var(--type-xs); margin-top: 4px; }
 .intensity-table button { margin-top: 8px; }
+.intensity-table th > button { display: block; margin-top: 6px; }
+.intensity-table .intensity-details { white-space: normal; }
+.intensity-table .intensity-details summary { white-space: nowrap; }
 .intensity-details { margin-top: 16px; }
 .intensity-details summary { cursor: pointer; min-height: 28px; padding-block: 4px; color: var(--ink); }
 .intensity-details pre { max-width: 100%; max-height: 320px; overflow: auto; font-size: var(--type-xs); white-space: pre; background: var(--graphite-925); padding: 8px; scrollbar-color: var(--line-strong) transparent; }

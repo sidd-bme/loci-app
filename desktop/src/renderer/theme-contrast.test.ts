@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+const workbenchCss = readFileSync(new URL("./ResearchWorkbench.css", import.meta.url), "utf8");
+const summaryBackground = workbenchCss.match(/\.research-stat-item\s*\{[^}]*background:\s*var\((--[\w-]+)\)/)![1];
 function tokens(block: string) {
   return Object.fromEntries([...block.matchAll(/(--[\w-]+):\s*(#[0-9a-fA-F]{6})/g)].map((match) => [match[1], match[2]]));
 }
@@ -25,6 +27,9 @@ describe("theme text contrast", () => {
         }
       }
       expect(contrast("#10201c", colors["--mineral"])).toBeGreaterThanOrEqual(4.5);
+      for (const foreground of ["--ink", "--ink-muted"]) {
+        expect(contrast(colors[foreground], colors[summaryBackground]), `quantitative summary ${foreground}`).toBeGreaterThanOrEqual(4.5);
+      }
     });
   }
 });

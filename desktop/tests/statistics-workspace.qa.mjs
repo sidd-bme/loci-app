@@ -43,7 +43,7 @@ try {
   const openResult = async (id) => {
     const result = snapshot.results.find((r) => r.id === id);
     await openSource(result.source_id);
-    await page.locator(`[data-result-id="${id}"]`).click();
+    await page.locator(`button[data-result-id="${id}"]`).click();
     await selectWorkbenchTool(page, 'Population');
     await panel.getByText(`${result.object_count} of ${result.object_count} objects match.`, { exact: true }).waitFor();
     await page.waitForFunction(() => document.querySelector('.population-explorer')?.getAttribute('aria-busy') === 'false');
@@ -57,6 +57,53 @@ try {
   await page.screenshot({ path: path.join(output, '01-raw-image-guidance.png') });
   await page.getByRole('button', { name: 'Open image & channels', exact: true }).click();
   await openResult(oracle.dense);
+  const populationReady = async () => page.waitForFunction(() => document.querySelector('.population-explorer')?.getAttribute('aria-busy') === 'false');
+  const selectedObject = async label => {
+    await panel.getByRole('heading', { name: `Object #${label}`, exact: true }).waitFor();
+    await populationReady();
+    await panel.locator(`tr[data-label="${label}"][aria-selected="true"]`).waitFor();
+  };
+  const goToObject = async label => {
+    await populationReady();
+    await panel.getByRole('textbox', { name: 'Go to object label', exact: true }).fill(String(label));
+    await panel.getByRole('button', { name: 'Go', exact: true }).click();
+    await selectedObject(label);
+  };
+  const denseViewer = page.getByRole('img', { name: 'Exact selected result revision', exact: true });
+  await denseViewer.waitFor({ state: 'visible' });
+  await denseViewer.evaluate(image => image.complete && image.naturalWidth > 0
+    ? undefined : new Promise((resolve, reject) => {
+      image.addEventListener('load', resolve, { once: true });
+      image.addEventListener('error', reject, { once: true });
+    }));
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const imagePosition = () => denseViewer.evaluate(image => {
+    const bounds = image.getBoundingClientRect();
+    const frame = image.closest('.research-image-frame');
+    return { source: image.currentSrc, x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
+      frameClass: frame.className, scrollX: frame.scrollLeft, scrollY: frame.scrollTop };
+  });
+  const cameraBeforeNavigation = await imagePosition();
+  await goToObject(25);
+  await panel.getByRole('button', { name: 'Next object', exact: true }).click(); await selectedObject(26);
+  await panel.getByRole('button', { name: 'Previous object', exact: true }).click(); await selectedObject(25);
+  const objectTable = panel.getByRole('region', { name: 'Filtered object measurements', exact: true });
+  await objectTable.focus(); await page.keyboard.press('ArrowDown'); await selectedObject(26);
+  assert.equal(await objectTable.evaluate(element => document.activeElement === element), true, 'Cross-page traversal restores table focus');
+  await page.keyboard.press('ArrowUp'); await selectedObject(25);
+  await goToObject(625);
+  assert.equal(await panel.getByRole('button', { name: 'Next object', exact: true }).isDisabled(), true);
+  assert.deepEqual(await imagePosition(), cameraBeforeNavigation, 'Selecting exact objects must not move or replace the result image');
+  await panel.getByRole('textbox', { name: 'Go to object label', exact: true }).fill('0');
+  await panel.getByRole('button', { name: 'Go', exact: true }).click();
+  await panel.getByText('Enter an object label from 1 to 4294967295 using whole-number digits.', { exact: true }).waitFor();
+  assert.equal(await panel.getByRole('textbox', { name: 'Go to object label', exact: true }).getAttribute('aria-invalid'), 'true');
+  await panel.getByRole('textbox', { name: 'Go to object label', exact: true }).fill('626');
+  await panel.getByRole('button', { name: 'Go', exact: true }).click();
+  await panel.getByText('Object #626 is absent from this result revision. Check the label.', { exact: true }).waitFor();
+  await selectedObject(625);
+  assert.deepEqual(await imagePosition(), cameraBeforeNavigation);
+  await page.screenshot({ path: path.join(output, '02a-exact-label-and-cross-page-navigation.png') });
   const first = await query(oracle.dense);
   assert.equal(first.total_count, 625); assert.equal(first.scatter.displayed_count, 500);
   assert.equal(first.histogram.counts.reduce((a, b) => a + b, 0), 625);
@@ -143,6 +190,13 @@ try {
   await panel.getByRole('button', { name: 'Apply filter', exact: true }).click();
   const expectedFiltered = oracle.expected.filter((r) => r.measure >= 1.5).length;
   await panel.getByText(new RegExp(`^${expectedFiltered} of 625 objects match`)).waitFor();
+  await populationReady();
+  await panel.getByRole('textbox', { name: 'Go to object label', exact: true }).fill('4');
+  await panel.getByRole('button', { name: 'Go', exact: true }).click();
+  await panel.getByText('Object #4 is outside the current ranges. Clear or widen the filters to navigate to it.', { exact: true }).waitFor();
+  await panel.getByRole('heading', { name: 'Object #625', exact: true }).waitFor();
+  assert.equal(await panel.getByLabel('Population minimum', { exact: true }).inputValue(), '1.5');
+
   await panel.getByRole('button', { name: 'Zoom in distribution', exact: true }).click();
   const filteredExport = await exportFigure('filtered-histogram-current', 'histogram', 'current');
   assert.equal(filteredExport.filtered_count, expectedFiltered);
@@ -174,6 +228,8 @@ try {
   await openResult(oracle.tiled);
   assert.equal(await panel.getByLabel('Histogram bins').inputValue(), '16');
   await panel.getByText('625 of 625 objects match.', { exact: true }).waitFor();
+  await goToObject(25);
+  await panel.getByRole('button', { name: 'Next object', exact: true }).click(); await selectedObject(26);
   const tiled = await query(oracle.tiled);
   assert.deepEqual(tiled.summaries.x, first.summaries.x);
   await exportFigure('tiled-histogram', 'histogram', 'full');
@@ -182,6 +238,9 @@ try {
   const volume = await query(oracle.volume);
   assert.equal(volume.total_count, 2); assert.equal(volume.metrics[0].unit, 'um^3');
   assert.ok(Math.abs(volume.summaries.x.min - 9.6) < 1e-12); assert.ok(Math.abs(volume.summaries.x.max - 48) < 1e-12);
+  await goToObject(2);
+  assert.equal(await panel.getByRole('button', { name: 'Next object', exact: true }).isDisabled(), true);
+  await panel.getByRole('button', { name: 'Previous object', exact: true }).click(); await selectedObject(1);
   await exportFigure('volume-histogram', 'histogram', 'full');
   await page.screenshot({ path: path.join(output, '08-volume-statistics.png') });
   const stale = { schema_version: 'loci.statistics-figure-request/v1', ...Object.fromEntries(['source_id', 'source_sha256', 'result_id', 'revision_hash', 'query_sha256', 'membership_sha256'].map((key) => [key, volume[key]])), query: volume.query, chart: 'histogram', domain: { mode: 'full' }, width_mm: 85, height_mm: 65, preset: 'publication-monochrome', membership_sha256: 'f'.repeat(64) };
@@ -189,7 +248,7 @@ try {
   assert.match(staleError, /changed|Refresh/);
   assert.deepEqual(errors, []); assert.deepEqual(await identity(), receipt.build);
   for (const [file, digest] of Object.entries(oracle.sources)) assert.equal(await hash(file), digest);
-  receipt.checks = ['raw-source-guidance', 'side-by-side-default', 'zoom-pan-membership-separation', 'tool-state-retention', 'enlargement-escape-focus', 'focused-workspace', 'sample-disclosure', 'exact-object-625-selection', 'filter-empty-recovery', 'query-replay-and-figure-hashes', '600dpi-physical-size', 'stale-query-rejection', 'dense-tiled-3d-parity', 'compact-light-dark-no-overflow'];
+  receipt.checks = ['raw-source-guidance', 'side-by-side-default', 'zoom-pan-membership-separation', 'tool-state-retention', 'enlargement-escape-focus', 'focused-workspace', 'sample-disclosure', 'exact-object-625-selection', 'filter-empty-recovery', 'query-replay-and-figure-hashes', '600dpi-physical-size', 'stale-query-rejection', 'dense-tiled-3d-parity', 'compact-light-dark-no-overflow', 'exact-label-jump', 'cross-page-button-and-keyboard-traversal', 'selection-leaves-camera-unchanged', 'absent-invalid-filtered-label-recovery', 'indexed-and-3d-label-navigation'];
   receipt.status = 'passed';
 } catch (error) {
   receipt.status = 'failed'; receipt.failure = error.stack;

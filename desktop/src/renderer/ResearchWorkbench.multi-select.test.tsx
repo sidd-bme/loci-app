@@ -315,7 +315,8 @@ describe("ResearchWorkbench Left-Pane Multi-Select & Resizer", () => {
       expect(screen.getByLabelText("Active image")).toHaveTextContent("No image open");
     });
     expect(screen.getByText("Open an image to begin")).toBeInTheDocument();
-    expect(screen.getByText("No image selected")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "No image selected", level: 3 })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Study workspace" })).not.toBeInTheDocument();
   });
 
   it("reorders images via Alt+Arrow keyboard shortcuts", async () => {

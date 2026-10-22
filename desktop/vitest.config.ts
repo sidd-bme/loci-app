@@ -7,8 +7,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   server: { fs: { allow: [searchForWorkspaceRoot(process.cwd()), fileURLToPath(new URL("../docs", import.meta.url))] } },
   test: {
-    // Hosted macOS provides three CPUs; leave capacity for Vitest coordination.
-    maxWorkers: process.env.CI ? 2 : 4,
+    // Keep memory-intensive renderer journeys within their existing per-test
+    // budgets on hosted macOS by running test files serially.
+    maxWorkers: process.env.CI ? 1 : 4,
   },
 });
 

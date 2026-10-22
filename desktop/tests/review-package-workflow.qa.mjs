@@ -14,7 +14,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const root = path.resolve(import.meta.dirname, "../..");
@@ -124,8 +124,10 @@ async function reviewedExportBlocked(items) {
     await result.click();
     await page.locator(`button[data-result-id="${result_id}"][aria-pressed="true"]`).waitFor();
     await selectWorkbenchTool(page, "Info");
+    await selectResultSection(page, "Review");
     await until(() => page.getByRole("button", { name: "Mark reviewed", exact: true }).isEnabled(), Boolean,
       "pending result loaded and available for researcher review");
+    await selectResultSection(page, "Export");
     assert.equal(await page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), false,
       "Provisional material must not enable reviewed export");
   }

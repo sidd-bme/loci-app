@@ -11,6 +11,7 @@ import type {
 } from "../shared/research-contracts";
 import "./ResearchQuantificationPanel.css";
 import { resultTitle } from "./result-title";
+import { punctaDistanceUnit, UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
 
 type Report = <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
 type PunctaPreview = {
@@ -305,6 +306,7 @@ export function ResearchQuantificationPanel({
   onPublished: (result: ResearchResult) => Promise<void>;
 }): React.JSX.Element {
   const isRgb = source.metadata.sample_semantics === "RGB";
+  const distanceUnit = punctaDistanceUnit(source, selection);
   const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "field-assay">(initialMode);
   const [sourceAnnotations, setSourceAnnotations] = useState<SourceAnnotation[]>([]);
   const [sourceAnnotationRevision, setSourceAnnotationRevision] = useState<number | null>(null);
@@ -1038,8 +1040,9 @@ export function ResearchQuantificationPanel({
       {mode === "puncta" && <>
         <h2>Puncta candidates</h2><p>Preview candidates before adoption.</p>
         <div className="research-grid">
-          {[ ["Physical LoG sigma", punctaSigma, setPunctaSigma], ["LoG response threshold", punctaResponse, setPunctaResponse], ["Raw intensity threshold", punctaRaw, setPunctaRaw], ["Physical minimum distance", punctaDistance, setPunctaDistance], ["Physical aperture radius", punctaAperture, setPunctaAperture] ].map(([label, value, setter]) => <label key={label as string}>{label as string}<input aria-label={label as string} type="number" step="any" value={value as string} onChange={(event) => (setter as (v: string) => void)(event.target.value)} /></label>)}
+          {[ [`LoG sigma (${distanceUnit})`, punctaSigma, setPunctaSigma], ["LoG response threshold", punctaResponse, setPunctaResponse], ["Raw intensity threshold (source values)", punctaRaw, setPunctaRaw], [`Minimum peak separation (${distanceUnit})`, punctaDistance, setPunctaDistance], [`Aperture radius (${distanceUnit})`, punctaAperture, setPunctaAperture] ].map(([label, value, setter]) => <label key={label as string}>{label as string}<input aria-label={label as string} type="number" step="any" value={value as string} onChange={(event) => (setter as (v: string) => void)(event.target.value)} /></label>)}
         </div>
+        {distanceUnit === UNVERIFIED_DISTANCE_UNIT && <p className="quantification-guidance">Length units are unverified for this source and level. Check source calibration before interpreting these lengths.</p>}
         <label className="research-check"><input type="checkbox" checked={punctaBorder} onChange={(event) => setPunctaBorder(event.target.checked)} /> Exclude peaks whose aperture touches the crop border</label>
         <label>Control / assumptions<textarea aria-label="Puncta control and assumptions" value={punctaControl} onChange={(event) => setPunctaControl(event.target.value)} /></label>
         <div className="research-actions"><button disabled={locked || isRgb} onClick={() => void previewPuncta()}>Preview puncta candidates</button><button className="research-primary" disabled={locked || !punctaPreview} onClick={() => void adoptPuncta()}>Adopt unchanged puncta request</button></div>
@@ -1078,7 +1081,7 @@ export function ResearchQuantificationPanel({
         <p>Measure signal in a region, subtract background, and divide by the reviewed nucleus count.</p>
         <dl className="research-kv" aria-label="Field assay readiness" data-source-id={source.id} data-source-sha256={source.sha256}>
           <div><dt>Image</dt><dd>{source.name}</dd></div>
-          <div><dt>Plane</dt><dd>T {selection.t}, Z {selection.z}</dd></div>
+          <div><dt>Plane</dt><dd>T {selection.t + 1}, Z {selection.z + 1}</dd></div>
           <div><dt>Nuclear channel</dt><dd>{selectedNucleiChannel ? `${selectedNucleiChannel.index + 1}: ${selectedNucleiChannel.name}` : "select a declared channel"}</dd></div>
           <div><dt>Signal channel</dt><dd>{selectedSignalChannel ? `${selectedSignalChannel.index + 1}: ${selectedSignalChannel.name}` : "select a declared channel"}</dd></div>
           <div><dt>Focus</dt><dd>{focusReadiness}</dd></div>
@@ -1097,7 +1100,7 @@ export function ResearchQuantificationPanel({
             </select></label>
           </fieldset>
 
-          <fieldset><legend>Regions on T {selection.t}, Z {selection.z}</legend>
+          <fieldset><legend>Regions on T {selection.t + 1}, Z {selection.z + 1}</legend>
             <label>Focus region<select aria-label="Focus region selection" value={fieldAssayFocusMode === "all" ? "all" : fieldAssayFocusAnnotationId} onChange={(event) => {
               if (event.target.value === "all") {
                 setFieldAssayFocusMode("all");
@@ -1108,7 +1111,7 @@ export function ResearchQuantificationPanel({
             }}>
               <option value="">Select focus ROI…</option>
               {planeRegionAnnotations.map((a) => (
-                <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t}, Z {a.z}</option>
+                <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t + 1}, Z {a.z + 1}</option>
               ))}
               <option value="all">Measure whole field (exploratory only)</option>
             </select></label>
@@ -1136,7 +1139,7 @@ export function ResearchQuantificationPanel({
               <label>Background ROI<select aria-label="Background annotation selection" value={fieldAssayBackgroundAnnotationId} onChange={(event) => setFieldAssayBackgroundAnnotationId(event.target.value)}>
                 <option value="">Select background ROI…</option>
                 {planeRegionAnnotations.map((a) => (
-                  <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t}, Z {a.z}</option>
+                  <option key={a.id} value={a.id}>ROI: {annotationLabel(a, planeRegionAnnotations, sourceAnnotations)} · T {a.t + 1}, Z {a.z + 1}</option>
                 ))}
               </select></label>
             )}
@@ -1161,9 +1164,9 @@ export function ResearchQuantificationPanel({
             {fieldAssaySegmentationMethod === "manual" && (
               <label>Threshold ADU<input aria-label="Manual threshold" type="number" step="any" value={fieldAssayThresholdManual} onChange={(event) => setFieldAssayThresholdManual(event.target.value)} /></label>
             )}
-            <label>Min nucleus area (px)<input aria-label="Min nucleus area" type="number" min="1" value={fieldAssayMinArea} onChange={(event) => setFieldAssayMinArea(event.target.value)} /></label>
-            <label>Max nucleus area (px)<input aria-label="Max nucleus area" type="number" min="1" value={fieldAssayMaxArea} onChange={(event) => setFieldAssayMaxArea(event.target.value)} /></label>
-            <label>Watershed min peak distance (px)<input aria-label="Watershed distance" type="number" min="1" value={fieldAssayWatershedMinDist} onChange={(event) => setFieldAssayWatershedMinDist(event.target.value)} /></label>
+            <label>Minimum nucleus area (pixels)<input aria-label="Minimum nucleus area (pixels)" type="number" min="1" value={fieldAssayMinArea} onChange={(event) => setFieldAssayMinArea(event.target.value)} /></label>
+            <label>Maximum nucleus area (pixels)<input aria-label="Maximum nucleus area (pixels)" type="number" min="1" value={fieldAssayMaxArea} onChange={(event) => setFieldAssayMaxArea(event.target.value)} /></label>
+            <label>Watershed minimum peak distance (px)<input aria-label="Watershed minimum peak distance (px)" type="number" min="1" value={fieldAssayWatershedMinDist} onChange={(event) => setFieldAssayWatershedMinDist(event.target.value)} /></label>
             <label className="research-check"><input type="checkbox" checked={fieldAssayExcludeBoundary} onChange={(event) => setFieldAssayExcludeBoundary(event.target.checked)} /> Exclude boundary-touching nuclei</label>
 
             <label>Count mode<select aria-label="Count mode" value={fieldAssayManualCountMode} onChange={(event) => setFieldAssayManualCountMode(event.target.value as "none" | "override" | "points")}>
@@ -1178,7 +1181,7 @@ export function ResearchQuantificationPanel({
             {fieldAssayManualCountMode === "points" && (
               <label>Point marks annotation<select aria-label="Manual points annotation" value={fieldAssayManualPointsAnnotationId} onChange={(event) => setFieldAssayManualPointsAnnotationId(event.target.value)}>
                 <option value="">Select point annotation…</option>
-                <option value="all_points" disabled={!planePointAnnotations.length}>All point markers on T {selection.t}, Z {selection.z}</option>
+                <option value="all_points" disabled={!planePointAnnotations.length}>All point markers on T {selection.t + 1}, Z {selection.z + 1}</option>
                 {planePointAnnotations.map((a) => {
                   const count = a.points?.length ?? 1;
                   return (
@@ -1204,7 +1207,7 @@ export function ResearchQuantificationPanel({
             <img
               className="research-preview"
               src={fieldAssayPreview.qc_overlay}
-              alt={`Field assay QC overlay for ${source.name}, T ${selection.t}, Z ${selection.z}`}
+              alt={`Field assay QC overlay for ${source.name}, T ${selection.t + 1}, Z ${selection.z + 1}`}
             />
             <p className="research-summary">Inspect the focus, nuclei and background before saving.</p>
             <dl className="research-kv">

@@ -413,6 +413,7 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
       expect(screen.getByText("Quantitative summary")).toBeInTheDocument();
     });
 
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     const rows = document.querySelectorAll("tr[role='row']");
     expect(rows.length).toBeGreaterThan(1);
 

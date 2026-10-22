@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 // This is an independent decoder for the exact exported NIfTI-1 QA subset.
 // It does not participate in application import, analysis, or publication.
@@ -108,8 +108,10 @@ export async function qualifyMedicalWorkflow({ app, page, runRoot, screenshot, n
     };
   }, destination);
   await click("Info");
+  await selectResultSection(page, "Review");
   await click("Mark reviewed");
   await wait(snapshot, (value) => value.results.some((item) => item.id === result.id && item.review?.disposition === "reviewed"), "review exact medical revision");
+  await selectResultSection(page, "Export");
   await click("Export result");
   await wait(() => fs.stat(path.join(destination, "manifest.json")).catch(() => null), (value) => value?.size > 0, "atomic medical export");
   await checkNifti(path.join(destination, "image.nii.gz"), false);

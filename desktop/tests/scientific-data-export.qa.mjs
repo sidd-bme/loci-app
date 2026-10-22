@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile), root = path.resolve(import.meta.dirname,"../..");
 assert.equal(process.platform,"darwin");
@@ -26,7 +26,23 @@ const wait=async(read,test,message,timeout=60000)=>{const end=Date.now()+timeout
 const panel=()=>page.getByRole("region",{name:"Export scientific data",exact:true});
 const snapshot=()=>page.evaluate(()=>window.lociResearch.getSnapshot());
 async function shot(name){assert.equal(await page.locator(".recoverable-error").count(),0,"Unexpected global error before "+name);await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));await page.screenshot({path:path.join(runRoot,name+".png"),fullPage:true});checkpoints.push(name);process.stdout.write("Checkpoint: "+name+"\n");}
-async function selectResult(name){const value=fixture.results[name]??fixture.method_results[name];await page.locator(`button[data-source-id="${value.source_id}"]`).click();await page.locator(`[data-result-id="${value.result_id}"]`).click();await selectWorkbenchTool(page,"Info");await panel().waitFor();await panel().getByLabel("Data export result scope",{exact:true}).selectOption("current");await panel().getByLabel("Data export object scope",{exact:true}).selectOption("all");await panel().getByLabel("Data export purpose",{exact:true}).selectOption("reviewed");return value;}
+async function selectResult(name) {
+  const value=fixture.results[name]??fixture.method_results[name];
+  await page.locator(`button[data-source-id="${value.source_id}"]`).click();
+  await page.locator(`button[data-result-id="${value.result_id}"]`).click();
+  await selectWorkbenchTool(page,"Info");
+  const selected=(await snapshot()).results.find(result=>result.id===value.result_id);
+  assert.equal(selected.revision_hash,value.revision_hash);
+  const kind=selected.schema==="loci.research-result/v2"?"indexed":"ordinary";
+  if(kind==="ordinary") assert.equal(await page.getByRole("group",{name:"Result sections",exact:true})
+    .getByRole("button",{name:"Review",exact:true}).getAttribute("aria-pressed"),"true","New result selection must enter Review");
+  await selectResultSection(page,"Export",kind);
+  await panel().waitFor();
+  await panel().getByLabel("Data export result scope",{exact:true}).selectOption("current");
+  await panel().getByLabel("Data export object scope",{exact:true}).selectOption("all");
+  await panel().getByLabel("Data export purpose",{exact:true}).selectOption("reviewed");
+  return value;
+}
 async function prepared(){await panel().getByRole("button",{name:"Preview data",exact:true}).click();await panel().getByRole("heading",{name:"Prepared scope",exact:true}).waitFor({timeout:120000});}
 async function destination(name){const target=path.join(runRoot,name);await app.evaluate((_electron,value)=>{globalThis.scientificExportDestination=value;},target);return target;}
 async function workerMemory(){try{const ids=(await run("pgrep",["-f",path.join(bundle,"Contents/Resources/loci-engine/loci-engine")])).stdout.trim().split(/\s+/).filter(value=>/^\d+$/.test(value));if(!ids.length)return[];const raw=(await run("ps",["-o","pid=,rss=","-p",ids.join(",")])).stdout;return raw.trim().split("\n").filter(Boolean).map(line=>{const [pid,rss_kib]=line.trim().split(/\s+/).map(Number);return{pid,rss_kib};});}catch{return[];}}
@@ -48,6 +64,38 @@ try{
   assert.equal((await fs.readdir(runRoot)).some(name=>name.startsWith(".loci-data-")),false);
   assertions.request_owned_planning_cancel=true;
   await prepared();await shot("01-reviewed-exact-preview");
+  const exactPrepared=JSON.parse(await panel().getByLabel("Exact prepared export bindings",{exact:true}).textContent());
+  const retainedExportPanel=await panel().elementHandle();
+  const panelLayout=page.getByRole("group",{name:"Panel layout",exact:true});
+  await panelLayout.getByRole("button",{name:"Focus panel",exact:true}).click();
+  assert.equal(await page.locator("#research-image-stage").getAttribute("hidden"),"");
+  assert.equal(await panel().evaluate((element,original)=>element===original,retainedExportPanel),true);
+  assert.deepEqual(JSON.parse(await panel().getByLabel("Exact prepared export bindings",{exact:true}).textContent()),exactPrepared);
+  assert.equal(await panel().getByRole("button",{name:"Export data package…",exact:true}).isEnabled(),true);
+  await shot("01c-focused-exact-export");
+  await panelLayout.getByRole("button",{name:"Show image",exact:true}).click();
+  assert.equal(await page.locator("#research-image-stage").getAttribute("hidden"),null);
+  assert.equal(await panel().evaluate((element,original)=>element===original,retainedExportPanel),true);
+  assert.deepEqual(JSON.parse(await panel().getByLabel("Exact prepared export bindings",{exact:true}).textContent()),exactPrepared);
+  await retainedExportPanel.dispose();
+  assertions.focus_layout_retains_mounted_exact_prepared_export=true;
+  await selectResultSection(page,"Review");
+  const review=page.getByRole("region",{name:"Review result",exact:true});
+  await review.getByRole("heading",{name:"Quantitative summary",exact:true}).waitFor();
+  assert.equal(await panel().count(),0,"Review must not mount export configuration or its effects");
+  assert.equal(await review.locator("details.research-preview-rows").evaluate(element=>element.open),false);
+  for(const name of ["Technical identity","Analysis details","Review history"])
+    assert.equal(await review.getByText(name,{exact:true}).evaluate(element=>element.closest("details").open),false);
+  const sourceIdentity=review.locator("details.research-result-details");
+  assert.equal(await sourceIdentity.getByText(fixture.results.A.revision_hash,{exact:true}).count(),1);
+  await selectResultSection(page,"Export");
+  assert.equal(await panel().getByLabel("Data export result scope",{exact:true}).inputValue(),"current");
+  assert.equal(await panel().getByLabel("Data export purpose",{exact:true}).inputValue(),"reviewed");
+  assert.equal(await panel().getByRole("heading",{name:"Prepared scope",exact:true}).count(),0);
+  assert.equal(await panel().getByRole("button",{name:"Export data package…",exact:true}).isEnabled(),false);
+  await prepared();
+  assert.deepEqual(JSON.parse(await panel().getByLabel("Exact prepared export bindings",{exact:true}).textContent()),exactPrepared);
+  assertions.review_export_roundtrip_retains_draft_requires_fresh_exact_preview=true;
   await panel().getByRole("region",{name:/^Data preview for/}).first().scrollIntoViewIfNeeded();await shot("01b-reviewed-exact-table");
   const reviewed=await exported("reviewed-A"); observations.reviewed=await oracle("reviewedA",reviewed);observations.readers=await readers(reviewed);
   const provenance=JSON.parse(await fs.readFile(path.join(reviewed,"provenance.json"),"utf8"));assert.equal(provenance.export_software.kind,"frozen-executable-sha256");assert.equal(provenance.export_software.sha256,build.worker_sha256);
@@ -65,7 +113,7 @@ try{
   await panel().getByLabel("Data export result scope",{exact:true}).selectOption("study");
   const choices=panel().getByRole("group",{name:"Exact result revisions",exact:true});
   for(const box of await choices.getByRole("checkbox").all())await box.uncheck();
-  for(const value of Object.values(fixture.results))await choices.locator("label").filter({hasText:value.revision_hash}).getByRole("checkbox").check();
+  for(const value of Object.values(fixture.results))await choices.locator(`[data-export-result-id="${value.result_id}"][data-revision-hash="${value.revision_hash}"]`).getByRole("checkbox").check();
   await prepared();await panel().getByText(/^Mixed measurement units are present/).waitFor();
   await shot("04-mixed-unit-study-preview");
   await panel().getByRole("region",{name:/^Data preview for/}).first().scrollIntoViewIfNeeded();await shot("04b-mixed-unit-table");
@@ -75,7 +123,7 @@ try{
   // Study export foundation: inspection may change the active result, but
   // it must retain the exact study draft and per-revision group selections.
   for(const box of await choices.getByRole("checkbox").all())await box.uncheck();
-  for(const name of ["A","B"])await choices.locator("label").filter({hasText:fixture.results[name].revision_hash}).getByRole("checkbox").check();
+  for(const name of ["A","B"])await choices.locator(`[data-export-result-id="${fixture.results[name].result_id}"][data-revision-hash="${fixture.results[name].revision_hash}"]`).getByRole("checkbox").check();
   await panel().getByLabel("Data export object scope",{exact:true}).selectOption("groups");
   const small=()=>panel().getByRole("checkbox",{name:"Small · 2 objects",exact:true});
   const high=()=>panel().getByRole("checkbox",{name:"High · 2 objects",exact:true});
@@ -84,14 +132,14 @@ try{
     assert.equal(await panel().getByLabel("Data export result scope",{exact:true}).inputValue(),"study");
     assert.equal(await panel().getByLabel("Data export purpose",{exact:true}).inputValue(),"provisional");
     assert.equal(await panel().getByLabel("Data export object scope",{exact:true}).inputValue(),"groups");
-    for(const name of ["A","B"])assert.equal(await panel().getByRole("group",{name:"Exact result revisions",exact:true}).locator("label").filter({hasText:fixture.results[name].revision_hash}).getByRole("checkbox").isChecked(),true);
+    for(const name of ["A","B"])assert.equal(await panel().getByRole("group",{name:"Exact result revisions",exact:true}).locator(`[data-export-result-id="${fixture.results[name].result_id}"][data-revision-hash="${fixture.results[name].revision_hash}"]`).getByRole("checkbox").isChecked(),true);
     assert.equal(await small().isChecked(),true);assert.equal(await high().isChecked(),true);
     assert.equal(await panel().getByRole("heading",{name:"Prepared scope",exact:true}).count(),0,"Navigation must not resurrect a prepared export plan");
   }
   for(const name of ["A","B"]){
     const exact=fixture.results[name];
-    await panel().getByRole("button",{name:"Inspect rev "+exact.revision_hash.slice(0,8),exact:true}).click();
-    await wait(()=>page.locator(`[data-result-id="${exact.result_id}"]`).getAttribute("aria-pressed"),value=>value==="true","Exact inspected result");
+    await choices.locator(`[data-export-result-id="${exact.result_id}"][data-revision-hash="${exact.revision_hash}"]`).getByRole("button",{name:/^Inspect result:/}).click();
+    await wait(()=>page.locator(`button[data-result-id="${exact.result_id}"]`).getAttribute("aria-pressed"),value=>value==="true","Exact inspected result");
     assert.equal(await page.locator(`button[data-source-id="${exact.source_id}"]`).getAttribute("aria-current"),"true");
     await retainedDraft();
   }

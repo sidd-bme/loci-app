@@ -180,7 +180,7 @@ async function selectSource(name) {
   const state = await snapshot();
   const source = state.sources.find(item => item.name === path.basename(sourcePath(name)));
   assert.ok(source, "Exact authored source absent: " + name);
-  const row = page.locator(`[data-source-id="${source.id}"]`);
+  const row = page.locator(`button[data-source-id="${source.id}"]`);
   if (await row.getAttribute("aria-current") !== "true") await row.click();
   await wait(() => row.getAttribute("aria-current"), value => value === "true", "select " + name);
   return source;
@@ -523,7 +523,7 @@ try {
   const reopened = await wait(snapshot, state => state?.results?.length === 6 && state?.comparisons?.length === saved.comparisons.length, "cold reopen exact revisions and receipts");
   assert.deepEqual(comparisonDocuments(reopened), comparisonDocuments(saved));
   assert.deepEqual(resultBindings(reopened), arrayBindings);
-  await selectWorkbenchTool(page, "Study");
+  await selectWorkbenchTool(page, "Study", "Corrections");
   await restore(records.final_receipt);
   await captureReports("05-cold-reopen");
   await selectWorkbenchTool(page, "Portability");
@@ -534,7 +534,7 @@ try {
     state.sources.every(item => item.locator_state === "relink-required") && state?.comparisons?.length === saved.comparisons.length, "portable receipt import");
   assert.deepEqual(comparisonDocuments(imported), comparisonDocuments(reopened));
   assert.deepEqual(resultBindings(imported), arrayBindings);
-  await selectWorkbenchTool(page, "Study");
+  await selectWorkbenchTool(page, "Study", "Corrections");
   await restore(records.final_receipt);
   await captureReports("06-portable-restored");
   assertions.save_as_cold_reopen_and_portable_receipt_exact = true;

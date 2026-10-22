@@ -176,7 +176,7 @@ try {
   await page.getByRole("button",{name:"Adopt this region",exact:true}).click();
   const paired=await waitForSnapshot(page,value=>value?.results?.length===2,"synthetic subset revision");
   const nucleus=paired.results.find(item=>item.id!==result.id); assert.equal(nucleus.object_count,1);
-  await page.locator(`[data-result-id="${result.id}"]`).click();
+  await page.locator(`button[data-result-id="${result.id}"]`).click();
   await selectWorkbenchTool(page,"Population");
   await page.locator(".population-measurement-guide > summary").click();
   await page.getByRole("button",{name:"Connect nucleus & cell results",exact:true}).click();
@@ -220,7 +220,7 @@ try {
   const reopened=await waitForSnapshot(page,value=>value?.results?.some(item=>item.id===result.id),"cold reopen exact result");
   assert.equal(reopened.results.find(item=>item.id===result.id).revision_hash,result.revision_hash);
   assert.deepEqual((await groups()).groups,records.groups,"Cold reopen changed group records");
-  await page.locator(`[data-result-id="${result.id}"]`).click(); await selectWorkbenchTool(page,"Population");
+  await page.locator(`button[data-result-id="${result.id}"]`).click(); await selectWorkbenchTool(page,"Population");
   await page.getByRole("button",{name:"Gates & named groups",exact:true}).click();
   await page.getByRole("button",{name:"Highlight Small",exact:true}).click();
   await wait(()=>page.locator('[data-group-highlight-count="2"]').count(),n=>n>0,"cold reopen highlight absent");
@@ -349,7 +349,7 @@ try {
     assert.ok(grpSignals && grpSecond);
     assert.equal(grpSignals.source_available, true);
     assert.equal(grpSecond.source_available, false);
-    await page.locator(`[data-result-id="${resSig.id}"]`).click();
+    await page.locator(`button[data-result-id="${resSig.id}"]`).click();
     await page.getByRole("table", { name: "Population object table" }).waitFor();
     await page.getByRole("button", { name: "Gates & named groups", exact: true }).click();
     await page.getByRole("button", { name: "Highlight Group-Signals", exact: true }).click();

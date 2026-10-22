@@ -97,6 +97,9 @@ def export_onnx(
             example,
             temporary,
             export_params=True,
+            # Preserve the qualified dynamic-axes, single-file export contract.
+            dynamo=False,
+            external_data=False,
             opset_version=opset,
             do_constant_folding=True,
             input_names=["image"],

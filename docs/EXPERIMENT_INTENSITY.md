@@ -8,6 +8,20 @@ keys remain literal, including punctuation and Unicode. Integrated measurements,
 arbitrary expressions, inferred biological identity and automatic corrections are
 outside this format.
 
+## Workspace
+
+Open **Results → Study & batch**. **Samples**, **Intensity**, **Batch** and,
+when available, **Corrections** have separate sections. Switching sections retains
+unapplied CSV, comparison drafts and saved-report views. **Focus study** expands
+the data workspace; **Show image** restores the linked image. Comparing intensity
+from a result opens Intensity with that exact revision selected.
+
+Routine labels use source and method names; **Technical identity** retains the
+complete source/result/revision bindings. Long decimal displays may use six
+significant figures with an `≈` marker. Expand the value with a pointer or keyboard
+to inspect and select its exact stored spelling. Counts, signed values and null
+states remain distinct; calculation, saved reports and exports retain full precision.
+
 ## Evidence and estimand
 
 Choose at most 100 exact v1 result revisions, one per source, and at most 50,000
@@ -51,6 +65,20 @@ A/R2 (one at 40) -> condition 30, sample SD sqrt(200), 102 objects/3 images/2
 declared replicate groups. Object-pooled and pixel-pooled answers are wrong.
 
 ## Samples
+
+The Sources & samples table joins source and sample records by exact source ID.
+Search image/sample names, filter exact condition and replicate declarations, or
+show sources missing required metadata, without a replicate, with pending results,
+or with no results. Missing study/sample/condition values differ from an optional
+unassigned replicate; the table makes no analysis-readiness claim.
+
+Counts include every visible result revision, with pending, reviewed and excluded
+states separately. Expand Results to inspect one explicit revision and its review
+actor; agent review is not researcher approval. Inspection rechecks the source
+fingerprint and exact revision, including after a deferred image switch. Edit
+metadata selects the source only. Neither route mutates scientific state, and
+returning to Samples preserves filters and unapplied CSV. Source lists page at 25
+rows and expanded result lists at 10; local table scrolling remains keyboard accessible.
 
 UTF-8 CSV columns are source_id, study, sample, condition,
 biological_replicate, plate and well. IDs match exactly; no filename inference.

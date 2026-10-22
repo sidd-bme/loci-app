@@ -7,7 +7,7 @@ import os from "node:os";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { researchSourceButtonSelector, reopenStudyFromEmptyState } from "./public-hardening-qa-helpers.mjs";
-import { fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { verifyResearchBatchExports } from "./research-batch-qa-helpers.mjs";
 
 // Core image-first regression. The learned model has its own pinned full-array
@@ -82,7 +82,7 @@ sourceIdentity.runtime_worktree_changes = Object.fromEntries(await Promise.all(c
 assert.ok(development || changedRuntime.length === 0, "Packaged qualification requires a committed runtime source tree");
 const performanceBudgets = { empty_launch_seconds: 8, first_useful_1536_square_seconds: 5 };
 const rendererModules = new Map(), rendererResponses = [];
-let app, page, picker = { sources: [sourceCopy], folder, export: baselineExport, rendered: path.join(output, "rendered-default.tiff") };
+let app, page, picker = { sources: [sourceCopy], folder, export: baselineExport, rendered: path.join(output, "rendered-neutral.tiff") };
 async function installPickers() {
   await app.evaluate(({ dialog }, values) => {
     globalThis.coreQaPicker = values;
@@ -153,20 +153,35 @@ async function selectResult(id) {
   assert.ok(result, "The requested result is not in this study");
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
-  const sourceButton = page.locator(researchSourceButtonSelector).filter({ has: page.getByText(resultSource.name, { exact: true }) });
+  const browser = page.locator('.research-sources .source-browser');
+  await browser.getByRole('searchbox', { name: 'Search images and folders', exact: true }).fill('');
+  const tree = browser.getByRole('tree', { name: 'Study images', exact: true });
+  if (await tree.count()) {
+    // Reveal folder leaves through the ordinary keyboard disclosures; hidden
+    // descendants are intentionally not mounted in the source browser.
+    while (await tree.locator('[role="treeitem"][aria-expanded="false"]').count()) {
+      const folderId = await tree.locator('[role="treeitem"][aria-expanded="false"]').first().getAttribute('data-folder-id');
+      assert.ok(folderId);
+      const folder = tree.locator(`[role="treeitem"][data-folder-id=${JSON.stringify(folderId)}]`);
+      await folder.focus(); await folder.press('ArrowRight');
+      await until(() => folder.getAttribute('aria-expanded'), value => value === 'true', 'visible source folder expansion', 30_000);
+    }
+  }
+  const sourceButton = page.locator(`${researchSourceButtonSelector}[data-source-id="${resultSource.id}"]`);
   if (await sourceButton.getAttribute('aria-current') !== 'true') await sourceButton.click();
-  await page.locator(`[data-result-id="${id}"]`).click();
-  await page.locator(`[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
+  await until(() => sourceButton.getAttribute('aria-current'), value => value === 'true', 'exact result source activation');
+  await page.locator(`button[data-result-id="${id}"]`).click();
+  await page.locator(`button[data-result-id="${id}"][aria-pressed="true"]`).waitFor();
   await page.locator('.image-viewport[data-result-overlay]').waitFor();
 }
 async function latestResult() {
-  const id = await page.locator('[data-result-id][aria-pressed="true"]').getAttribute("data-result-id");
+  const id = await page.locator('button[data-result-id][aria-pressed="true"]').getAttribute("data-result-id");
   return (await snapshot()).results.find((r) => r.id === id);
 }
 async function changedFrom(parent, label) {
   const next = await until(async () => { const s = await snapshot(); return s.results.find((r) => r.parent_id === parent.id); },
     (r) => r?.revision_hash !== parent.revision_hash && r?.object_count !== undefined, label);
-  await page.locator(`[data-result-id="${next.id}"][aria-pressed="true"]`).waitFor();
+  await page.locator(`button[data-result-id="${next.id}"][aria-pressed="true"]`).waitFor();
   await until(() => page.getByLabel("Correction tool", { exact: true }).isEnabled(), Boolean, label + " correction readiness");
   await viewerReady();
   await moveNavigationAway();
@@ -174,11 +189,13 @@ async function changedFrom(parent, label) {
 }
 async function reviewAndExport(result, destination) {
   await selectResult(result.id); await selectWorkbenchTool(page, "Info");
-  if (!(await snapshot()).results.find((r) => r.id === result.id)?.review)
+  if (!(await snapshot()).results.find((r) => r.id === result.id)?.review) {
+    await selectResultSection(page, "Review");
     await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  }
   await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "exact review");
   picker.export = destination; await installPickers();
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await until(() => fs.stat(path.join(destination, "manifest.json")).catch(() => null), (s) => s?.isFile(), "reviewed export");
   const exported = JSON.parse(await fs.readFile(path.join(destination, "result.json"), "utf8"));
   const manifest = JSON.parse(await fs.readFile(path.join(destination, "manifest.json"), "utf8"));
@@ -189,14 +206,15 @@ async function reviewAndExport(result, destination) {
 }
 async function correctionInputReady() {
   await page.locator('.image-viewport[data-prepared="true"][data-result-overlay]').waitFor();
-  await page.getByRole('status').filter({ hasText: 'Loading the selected exact plane…' }).waitFor({ state: 'detached' });
+  await page.locator('.research-correction').getByRole('status')
+    .filter({ hasText: /^Loading selected plane…$/ }).waitFor({ state: 'detached' });
 }
 async function imagePoint(u, v, click = true) {
   let priorPoints;
   if (click) {
     await correctionInputReady();
-    const pointStatus = await page.getByText(/·\s*\d+\s+drawn points$/).textContent();
-    priorPoints = Number(pointStatus?.match(/·\s*(\d+)\s+drawn points$/)?.[1]);
+    const pointStatus = await page.locator('.research-correction').getByText(/\b\d+\s+drawn points$/).textContent();
+    priorPoints = Number(pointStatus?.match(/\b(\d+)\s+drawn points$/)?.[1]);
     assert.ok(Number.isSafeInteger(priorPoints), "The exact correction draft must report its point count");
   }
   const viewport = page.locator('.image-viewport'), b = await viewport.boundingBox();
@@ -208,7 +226,8 @@ async function imagePoint(u, v, click = true) {
   if (click) {
     await page.mouse.click(point.x, point.y);
     // Observe the accepted draft before sending another point; never replay a rejected click.
-    await page.getByText(new RegExp(`·\\s*${priorPoints + 1}\\s+drawn points$`)).waitFor();
+    await page.locator('.research-correction')
+      .getByText(new RegExp(`(?:^|·\\s*)${priorPoints + 1}\\s+drawn points$`)).waitFor();
   }
   return point;
 }
@@ -229,6 +248,32 @@ async function correctionReady() {
   await correctionInputReady();
   await moveNavigationAway();
 }
+async function selectBatchSources(sources, selectedIds) {
+  const selected = new Set(selectedIds);
+  assert.equal(selected.size, selectedIds.length, "Batch scope must not repeat a source ID");
+  assert.ok(selectedIds.every(id => sources.some(source => source.id === id)), "Batch scope must use current source IDs");
+  const displayPaths = sources.map(source => {
+    const location = source.browser_location;
+    if (!location) return source.name;
+    assert.ok(location.relative_path && !location.relative_path.includes('\\'));
+    if (!location.root) return location.relative_path;
+    const roots = new Set(sources.filter(peer => peer.browser_location?.root?.name === location.root.name)
+      .map(peer => peer.browser_location.root.id));
+    assert.equal(roots.size, 1, "This fixture must have one unambiguous public folder label per root name");
+    return `${location.root.name}/${location.relative_path}`;
+  });
+  assert.equal(new Set(displayPaths).size, sources.length, "Batch leaf labels must identify each fixture source uniquely");
+  const picker = page.getByRole('group', { name: 'Batch images', exact: true });
+  const leaves = picker.locator('.batch-source-picker__image input[type="checkbox"]');
+  assert.equal(await leaves.count(), sources.length, "Every current source must be available in the batch picker");
+  for (const [index, source] of sources.entries()) {
+    const checkbox = picker.getByRole('checkbox', { name: `Include ${displayPaths[index]} in batch`, exact: true });
+    await checkbox.setChecked(selected.has(source.id));
+    assert.equal(await checkbox.isChecked(), selected.has(source.id), `Batch membership differs for ${source.id}`);
+  }
+  assert.equal(await picker.locator('.batch-source-picker__image input[type="checkbox"]:checked').count(),
+    selected.size, "Batch scope must contain exactly the intended sources");
+}
 try {
   await launch(); await shot("01-direct-opening");
   const started = performance.now(); await page.getByRole("button", { name: "Open images", exact: true }).click();
@@ -237,23 +282,41 @@ try {
   await viewerReady(); timings.first_useful_view_seconds = (performance.now() - started) / 1000;
   await page.getByRole("button", { name: "Fit image", exact: true }).click();
   await shot("02-full-image");
+  const displayPanel = page.locator('.research-inspector .source-display-local');
+  // Initial scalar contrast intentionally uses whole-image percentiles. Select
+  // an explicit neutral mapping before comparing rendered codes with raw * 257.
+  await displayPanel.locator('.source-channel > summary').first().click();
+  for (const [label, value] of [["Channel 1 low", "0"], ["Channel 1 high", "255"], ["Channel 1 gamma", "1"]]) {
+    const input = displayPanel.getByLabel(label, { exact: true });
+    await input.fill(value); await input.blur();
+    assert.equal(await input.inputValue(), value);
+  }
   await page.locator('.source-export > summary').click();
   await page.getByLabel("Rendered export format", { exact: true }).selectOption("tiff");
   await page.getByLabel("Rendered export extent", { exact: true }).selectOption("whole");
-  const defaultTiff = picker.rendered;
+  const neutralTiff = picker.rendered;
   await page.getByRole("button", { name: "Export TIFF16…", exact: true }).click();
-  await until(() => fs.stat(defaultTiff).catch(() => null), (v) => v?.isFile(), "full-resolution default TIFF16 export");
-  await page.locator('.source-channel > summary').first().click();
-  await page.getByLabel("Channel 1 gamma", { exact: true }).fill("2");
-  await page.getByLabel("Channel 1 gamma", { exact: true }).blur();
+  await until(() => fs.stat(neutralTiff).catch(() => null), (v) => v?.isFile(), "full-resolution neutral TIFF16 export");
+  await displayPanel.getByLabel("Channel 1 gamma", { exact: true }).fill("2");
+  await displayPanel.getByLabel("Channel 1 gamma", { exact: true }).blur();
   picker.rendered = path.join(output, "rendered-adjusted.tiff"); await installPickers();
   await page.getByRole("button", { name: "Export TIFF16…", exact: true }).click();
   await until(() => fs.stat(picker.rendered).catch(() => null), (v) => v?.isFile(), "adjusted TIFF16 export");
-  receipts.rendered_tiff16 = JSON.parse((await run(python, ["-c", `import json,sys,numpy as np,tifffile
+  receipts.rendered_tiff16 = JSON.parse((await run(python, ["-c", `import hashlib,json,sys,numpy as np,tifffile
 from PIL import Image
-raw=np.asarray(Image.open(sys.argv[1])); a=tifffile.imread(sys.argv[2]); b=tifffile.imread(sys.argv[3]); assert a.dtype==b.dtype==np.uint16; assert a.shape==b.shape==(1536,1536,3); np.testing.assert_array_equal(a,np.repeat((raw.astype(np.uint16)*257)[...,None],3,axis=2)); assert np.any(a!=b)
-print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'default_equals_source_codes_x257':True,'adjustment_changes_display':True}))`, source, defaultTiff, picker.rendered])).stdout);
-  await page.locator('.source-channel-heading').getByRole("button", { name: "Reset", exact: true }).click();
+raw=np.asarray(Image.open(sys.argv[1]))
+with tifffile.TiffFile(sys.argv[2]) as tif: a=tif.asarray(); neutral=json.loads(tif.pages[0].description)
+with tifffile.TiffFile(sys.argv[3]) as tif: b=tif.asarray(); adjusted=json.loads(tif.pages[0].description)
+assert a.dtype==b.dtype==np.uint16; assert a.shape==b.shape==(1536,1536,3)
+mapping={'channel':0,'low':0.0,'high':255.0,'gamma':1.0,'color':'#ffffff','opacity':1.0,'visible':True}
+assert neutral['display']==[mapping]; assert adjusted['display']==[{**mapping,'gamma':2.0}]
+with open(sys.argv[1],'rb') as stream: source_sha256=hashlib.file_digest(stream,'sha256').hexdigest()
+assert neutral['source_sha256']==adjusted['source_sha256']==source_sha256
+np.testing.assert_array_equal(a,np.repeat((raw.astype(np.uint16)*257)[...,None],3,axis=2))
+expected_adjusted=np.rint(np.sqrt(raw.astype(np.float64)/255.0)*65535.0).astype(np.uint16)
+np.testing.assert_array_equal(b,np.repeat(expected_adjusted[...,None],3,axis=2)); assert np.any(a!=b)
+print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'neutral_equals_source_codes_x257':True,'adjusted_equals_sqrt_oracle':True,'embedded_display_mappings_verified':True,'source_sha256':source_sha256,'adjustment_changes_display':True}))`, source, neutralTiff, picker.rendered])).stdout);
+  await displayPanel.locator('.source-channel-heading').getByRole("button", { name: "Reset", exact: true }).click();
   await fileMenuAction(page, "Save as study…");
   await until(() => fs.stat(project).catch(() => null), (s) => s?.isDirectory(), "save managed source as study");
   await until(() => page.locator('.session-save-state').textContent(), (text) => text === 'Saved locally', 'completed Save as');
@@ -380,7 +443,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await selectWorkbenchTool(page, "Analyze"); await page.getByLabel("Segmentation model", { exact: true }).selectOption("adaptive");
   await page.getByRole("button", { name: "Segment image", exact: true }).waitFor();
   await selectWorkbenchTool(page, "Study");
-  for (const s of collection.sources) await page.getByLabel(`Include ${s.name} in batch`, { exact: true }).check();
+  await selectBatchSources(collection.sources, collection.sources.map(source => source.id));
   await page.getByRole("button", { name: "Run selected sources sequentially", exact: true }).click();
   const queued = await until(snapshot, (s) => s.jobs.filter((j) => j.request_key.startsWith("loci-batch:")).length === 11, "all batch requests persisted before execution");
   assert.ok(queued.jobs.filter((j) => j.request_key.startsWith("loci-batch:")).some((j) => j.state === "queued"));
@@ -412,7 +475,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   assert.ok(exportedResults.every((r) => r?.object_count === expectedCount));
   // Export every exact reviewed item; aggregate/export schema checks are shared
   // with the batch writer's own qualification helper below.
-  for (const result of exportedResults) { await selectResult(result.id); await selectWorkbenchTool(page, "Info"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click(); await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "review each batch result"); }
+  for (const result of exportedResults) { await selectResult(result.id); await selectWorkbenchTool(page, "Info"); await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click(); await until(snapshot, (s) => s.results.find((r) => r.id === result.id)?.review?.disposition === "reviewed", "review each batch result"); }
   receipts.batch.reviewed_result_ids = exportedResults.map((r) => r.id);
   await selectWorkbenchTool(page, "Study");
   for (const r of (await snapshot()).results) await page.getByLabel(`Compare ${r.id}`, { exact: true }).setChecked(exportedResults.some((item) => item.id === r.id));
@@ -435,14 +498,14 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await selectWorkbenchTool(page, "Analyze"); await page.getByLabel("Segmentation model", { exact: true }).selectOption("adaptive");
   await page.getByRole("button", { name: "Segment image", exact: true }).waitFor();
   await selectWorkbenchTool(page, "Study");
-  for (const s of formulaOpened.sources) await page.getByLabel(`Include ${s.name} in batch`, { exact: true }).setChecked(formulaSources.some((f) => f.id === s.id));
+  await selectBatchSources(formulaOpened.sources, formulaSources.map(source => source.id));
   const beforeIds = new Set(formulaOpened.results.map((r) => r.id));
   await page.getByRole("button", { name: "Run selected sources sequentially", exact: true }).click();
   const formulaComplete = await until(snapshot, (s) => s.results.filter((r) => !beforeIds.has(r.id)).length === 2 && !s.jobs.some((j) => j.state === 'running'), "two summary source results", 120_000);
   const formulaResults = formulaComplete.results.filter((r) => !beforeIds.has(r.id));
   assert.ok(formulaResults.every((r) => r.object_count === expectedCount));
   for (const r of formulaResults) {
-    await selectResult(r.id); await selectWorkbenchTool(page, "Info"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+    await selectResult(r.id); await selectWorkbenchTool(page, "Info"); await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
     await until(snapshot, (s) => s.results.find((item) => item.id === r.id)?.review?.disposition === 'reviewed', "review summary source");
   }
   await selectWorkbenchTool(page, "Study");

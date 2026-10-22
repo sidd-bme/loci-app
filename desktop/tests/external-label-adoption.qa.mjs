@@ -5,7 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 // All scientific mutations use visible packaged controls and real native-dialog
 // handlers. Snapshots and inspection RPCs are read-only assertion evidence.
@@ -138,7 +138,7 @@ async function sourceNamed(name) {
   const state = await wait(snapshot, value => Array.isArray(value?.sources), "source list available");
   const source = state.sources.find(item => item.name === path.basename(name));
   assert.ok(source, "Registered synthetic source absent: " + path.basename(name));
-  const row = page.locator(`[data-source-id="${source.id}"]`);
+  const row = page.locator(`button[data-source-id="${source.id}"]`);
   if (await row.getAttribute("aria-current") !== "true") await row.click();
   await wait(() => row.getAttribute("aria-current"), value => value === "true", "activate exact synthetic source");
   return source;
@@ -211,12 +211,12 @@ async function adopt(source, count) {
   assert.equal(result.source_id, source.id);
   assert.equal(result.source_sha256, source.sha256);
   assert.equal(result.review, null);
-  await wait(() => page.locator(`[data-result-id="${result.id}"]`).getAttribute("class"), value => value?.includes("selected"), "select adopted revision");
+  await wait(() => page.locator(`button[data-result-id="${result.id}"]`).getAttribute("class"), value => value?.includes("selected"), "select adopted revision");
   return result;
 }
 async function openResult(result, sourcePath) {
   await sourceNamed(sourcePath);
-  const row = page.locator(`[data-result-id="${result.id}"]`);
+  const row = page.locator(`button[data-result-id="${result.id}"]`);
   if (!(await row.getAttribute("class"))?.includes("selected")) await row.click();
   await wait(() => row.getAttribute("class"), value => value?.includes("selected"), "select exact result");
 }
@@ -381,10 +381,10 @@ try {
   assert.deepEqual(records.child.measurements.map(row => row.label), fixtureManifest.ids.slice(0, -1));
   assert.deepEqual((await inspect(parent.id)), records.parent, "Correction altered the parent scientific record");
   await page.getByRole("button", { name: "Undo revision", exact: true }).click();
-  await wait(() => page.locator(`[data-result-id="${parent.id}"]`).getAttribute("class"), value => value?.includes("selected"), "undo selects parent revision");
+  await wait(() => page.locator(`button[data-result-id="${parent.id}"]`).getAttribute("class"), value => value?.includes("selected"), "undo selects parent revision");
   assert.equal((await inspect(parent.id)).result.object_count, 256);
   await page.getByRole("button", { name: "Redo revision", exact: true }).click();
-  await wait(() => page.locator(`[data-result-id="${child.id}"]`).getAttribute("class"), value => value?.includes("selected"), "redo selects correction child");
+  await wait(() => page.locator(`button[data-result-id="${child.id}"]`).getAttribute("class"), value => value?.includes("selected"), "redo selects correction child");
   await screenshot("04-exact-selected-object-deleted");
   assertions.original_id_paging_locate_and_exact_correction = true;
   assertions.parent_immutable_and_original_input_removal = true;
@@ -410,11 +410,32 @@ try {
   assert.deepEqual(await inspect(parent.id), records.parent);
   assert.deepEqual(await inspect(child.id), records.child);
   await selectWorkbenchTool(page, "Info");
+  const resultSections=page.getByRole("group",{name:"Result sections",exact:true});
+  assert.equal(await resultSections.getByRole("button",{name:"Review",exact:true}).getAttribute("aria-pressed"),"true",
+    "Selecting the exact corrected revision must open Review");
+  const review=page.getByRole("region",{name:"Review result",exact:true});
+  const summary=review.locator(".research-result-summary-card");
+  await summary.waitFor({state:"visible"});
+  assert.equal(child.object_count,255,"The synthetic correction preserves 255 original object identities");
+  await summary.getByText("Summary of the first 200 of 255 objects. Use Statistics & objects for the full population.",{exact:true}).waitFor();
+  assert.match(await summary.innerText(),/um\^2/,"Review summary retains the calibrated area unit");
+  assert.equal(await review.getByRole("button",{name:"Explore in Statistics & objects",exact:true}).isVisible(),true);
+  assert.equal(await page.getByRole("region",{name:"Export scientific data",exact:true}).count(),0);
+  assert.equal(await summary.locator("details.research-preview-rows").evaluate(element=>element.open),false);
+  for(const name of ["Technical identity","Analysis details","Review history"])
+    assert.equal(await review.getByText(name,{exact:true}).evaluate(element=>element.closest("details").open),false);
+  const technical=review.locator("details.research-result-details");
+  assert.equal(await technical.getByText(child.revision_hash,{exact:true}).count(),1);
+  const reviewStatus=page.getByRole("status").filter({hasText:/Review required before export|Review pending/});
+  assert.equal((await reviewStatus.locator("..").innerText()).includes(child.revision_hash.slice(0,8)),false);
+  await screenshot("05a-review-first-partial-calibrated-preview");
+  assertions.review_first_summary_partial_coverage_units_collapsed_details=true;
+  await selectResultSection(page, "Export");
   assert.equal(await page.getByRole("button", { name: "Export result", exact: true }).isEnabled(), false,
     "Correction child must be explicitly reviewed before export");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
   await wait(snapshot, state => state?.results?.find(item => item.id === child.id)?.review?.disposition === "reviewed", "explicit reopened child review");
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
   await wait(() => fs.stat(path.join(exportPath, "manifest.json")).catch(() => null), value => value?.size > 0, "atomic reviewed export");
   await screenshot("05-cold-reopen-review-export");
   await selectWorkbenchTool(page, "Portability");

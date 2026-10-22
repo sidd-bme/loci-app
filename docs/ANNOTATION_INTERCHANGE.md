@@ -13,6 +13,21 @@ not establish annotation truth, segmentation accuracy, biological identity,
 diagnosis, or clinical validity. A researcher must review every corrected
 result and any interpretation derived from it.
 
+## Inspecting saved source annotations
+
+In **Annotate → Draw & measure**, the active tool name remains visible. Each
+saved source annotation has a **Measurements & coordinates** disclosure with
+full-precision perimeter/area, stored X/Y level-0 pixel-edge coordinates, explicit
+zero-based plane indices, and geometry array axes. Supported world coordinates
+are computed from the saved geometry and labelled with their frame and units;
+the stored source points remain separately inspectable. Long point lists are
+paged in groups of 100 and loaded when the disclosure is opened.
+
+Source annotation pixel-edge coordinates belong to the saved source-annotation
+receipt. The derived-label polygon and brush contracts below use voxel-center
+coordinates. Inspection preserves the original receipt and does not mutate either
+coordinate representation.
+
 ## Coordinates and identities
 
 Arrays use YX or ZYX order. World coordinates use XYZ order and the declared

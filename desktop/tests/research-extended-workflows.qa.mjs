@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 // All mutations below use visible controls in the actual packaged application.
 // Read-only snapshots and result inspection provide numerical assertions against
@@ -138,6 +138,45 @@ export async function qualifyExtendedWorkflows({
   // crop is a valid retained scope but excludes the second translating object.
   for (const [label, value] of [["X", "0"], ["Y", "0"], ["Width", "64"], ["Height", "48"]])
     await page.getByLabel(label, { exact: true }).fill(value);
+  // A non-default raw segmentation channel is selected through its actual Analyze
+  // control. Display Edit/Solo and raw measurement selection remain independent.
+  await page.getByLabel("T",{exact:true}).fill("1");
+  await tab("Analyze");
+  const segmentation=page.getByLabel("Segmentation input",{exact:true});
+  await wait(()=>segmentation.isEnabled(),Boolean,"source-bound segmentation input ready");
+  const segmentationSource=(await snapshot()).sources.find(source=>source.name==="multiplex_translating_objects.ome.tiff");
+  assert.ok(segmentationSource && segmentationSource.metadata.dimensions.c>=2);
+  assert.deepEqual(await segmentation.locator("option").evaluateAll(options=>options.map(option=>({value:option.value,text:option.textContent.trim()}))),
+    [{value:"0",text:"1: synthetic-nuclear"},{value:"1",text:"2: synthetic-reporter"}]);
+  await segmentation.selectOption("1");
+  const display=page.getByLabel("Display channel",{exact:true});
+  await display.selectOption("0");
+  await page.getByRole("button",{name:"Solo",exact:true}).click();
+  assert.equal(await segmentation.inputValue(),"1");
+  const measurement=page.getByLabel("Measurement channel",{exact:true});
+  await measurement.selectOption("1");
+  assert.equal(await segmentation.inputValue(),"1");
+  assert.equal(await display.inputValue(),"0");
+  await measurement.selectOption("0");
+  assert.equal(await segmentation.inputValue(),"1");
+  await page.getByText("Raw source channel · T 2 · Z 3",{exact:true}).waitFor();
+  await page.getByLabel("Threshold",{exact:true}).fill("50");
+  await screenshot(page,"extended-segmentation-input-independent");
+  const segmentationProbe=await newResult(()=>tab("Run recipe"));
+  const segmentationRecord=await inspect(segmentationProbe.id);
+  assert.equal(segmentationProbe.source_id,segmentationSource.id);
+  assert.equal(segmentationProbe.source_sha256,segmentationSource.sha256);
+  assert.deepEqual(segmentationRecord.provenance.selection,{x:0,y:0,width:64,height:48,t:1,c:1,z:2,level:0});
+  assert.deepEqual(segmentationRecord.result.selection,segmentationRecord.provenance.selection);
+  assert.deepEqual(segmentationRecord.provenance.recipe.measurement_channels,[0]);
+  assert.deepEqual(segmentationRecord.measurements.map(row=>row.measure),[18,18]);
+  assert.deepEqual(segmentationRecord.measurements.map(row=>Object.values(row.intensity)[0].mean),[100,200]);
+  await tab("Show source");
+  await tab("Display");
+  await openAnalysisRegion();
+  await page.getByLabel("T",{exact:true}).fill("0");
+  await tab("Analyze");
+  await page.getByLabel("Segmentation input",{exact:true}).selectOption("0");
   await tab("Quantify");
   await page.getByLabel("Channel 1 name", { exact: true }).fill("Declared nuclei");
   await page.getByLabel("Channel 1 declaration", { exact: true }).fill("Synthetic QA channel declaration");
@@ -221,11 +260,16 @@ export async function qualifyExtendedWorkflows({
   const colocRecord = await inspect(coloc.id);
   assert.ok(JSON.stringify(colocRecord.provenance).includes("Exact proportional synthetic channels"));
   await tab("Puncta");
-  await page.getByLabel("Physical LoG sigma").fill("2");
-  await page.getByLabel("LoG response threshold").fill("1");
-  await page.getByLabel("Raw intensity threshold").fill("50");
-  await page.getByLabel("Physical minimum distance").fill("8");
-  await page.getByLabel("Physical aperture radius").fill("1");
+  const punctaSource = (await snapshot()).sources.find((item) => item.id === frames[0].source_id);
+  const punctaCalibration = punctaSource.metadata.levels.find((item) => item.index === 0).calibration;
+  assert.equal(punctaCalibration.unit, "µm", "The multiplex fixture uses micrometre source calibration.");
+  assert.equal(punctaCalibration.axes, "ZYX");
+  assert.deepEqual(punctaCalibration.spacing, [2, 1, 0.5]);
+  await page.getByLabel("LoG sigma (µm)", { exact: true }).fill("2");
+  await page.getByLabel("LoG response threshold", { exact: true }).fill("1");
+  await page.getByLabel("Raw intensity threshold (source values)", { exact: true }).fill("50");
+  await page.getByLabel("Minimum peak separation (µm)", { exact: true }).fill("8");
+  await page.getByLabel("Aperture radius (µm)", { exact: true }).fill("1");
   await page.getByLabel("Puncta control and assumptions").fill("Synthetic flat objects test candidate publication; no puncta accuracy claim.");
   await tab("Preview puncta candidates");
   const puncta = await newResult(() => tab("Adopt unchanged puncta request"), "puncta-quantification");
@@ -282,9 +326,11 @@ export async function qualifyExtendedWorkflows({
   assert.equal(roi.parent_id, frames[0].id);
   assert.equal(roiRecord.provenance.annotations[0].id, "qa-roi");
   await tab("Info");
+  await selectResultSection(page, "Review");
   await tab("Mark reviewed");
   await wait(snapshot, (state) => state.results.some((item) =>
     item.id === roi.id && item.review?.disposition === "reviewed"), "review ROI revision");
+  await selectResultSection(page, "Export");
   await tab("Export result");
   const geojsonPath = path.join(paths.roiExport, "annotations.geojson");
   const imagejPath = path.join(paths.roiExport, "annotation-qa-roi.roi");
@@ -388,6 +434,11 @@ export async function qualifyExtendedWorkflows({
     temporal: tracked.id, correctedTracks: correctedTracks.id,
     registered: registered.id, resampled: resampled.id,
     colocalisation: coloc.id, puncta: puncta.id, association: association.id,
+    punctaDistanceUnit: "µm",
+    segmentationInput: { result_id: segmentationProbe.id, revision_hash: segmentationProbe.revision_hash,
+      source_id: segmentationSource.id, source_sha256: segmentationSource.sha256,
+      selection: segmentationRecord.provenance.selection, measurement_channels: [0],
+      display_edit_and_solo_independent: true, measurement_channel_independent: true },
     roi: roi.id, importedGeojson: importedGeojson.id, importedImagej: importedImagej.id,
     frameResults: frames.map((item) => item.id),
     portableRevisionHashesPreserved: true, exactRelink: true,

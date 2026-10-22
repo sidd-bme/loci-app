@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { _electron as electron } from "playwright";
-import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const repo = path.resolve(import.meta.dirname, "../..");
 const bundle = process.env.LOCI_PACKAGED_APP;
@@ -272,8 +272,8 @@ try {
 
   // 5. Review and Export
   await selectWorkbenchTool(page, "Info");
-  await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
-  await page.getByRole("button", { name: "Export result", exact: true }).click();
+  await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+  await selectResultSection(page, "Export"); await page.getByRole("button", { name: "Export result", exact: true }).click();
 
   await until(() => fs.stat(path.join(exported, "manifest.json")).then(() => true, () => false), "atomic reviewed export");
 
@@ -350,6 +350,7 @@ print("Export oracle passed: exact normalized scalar array and corrected labels 
   assert.equal(unchangedParent.result.revision_hash, parentResult.result.revision_hash);
   await page.getByRole("button", {name:/^corrected-labels/}).click();
   await selectWorkbenchTool(page, "Info");
+  await page.locator("details.research-preview-rows > summary").click();
   await until(() => page.getByRole("region", {name:"Result measurements", exact:true}).locator("tbody tr").count().then(n => n === 1), "restored child visible measurements");
   assert.equal(await page.locator(".research-alert").count(), 0);
   await capture("06-restored-study");

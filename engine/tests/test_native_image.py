@@ -778,6 +778,20 @@ def test_png_region_is_exact_and_full_decode_is_budgeted(tmp_path: Path) -> None
         read_native_region(path, NativeSelection(x=11, y=7, width=9, height=8, budget_bytes=1_300))
 
 
+def test_uint16_png_native_region_preserves_precision_and_source(tmp_path):
+    pixels = np.array([[0, 1, 255], [256, 32768, 65535]], dtype=np.uint16)
+    path = tmp_path / "uint16.png"
+    Image.fromarray(pixels).save(path)
+    original = path.read_bytes()
+
+    with NativeImageSession(path) as session:
+        assert session.metadata.channel_dtypes == ("uint16",)
+        region = session.read_region(NativeSelection(x=1, y=0, width=2, height=2))
+        assert region.pixels.dtype == np.uint16
+        np.testing.assert_array_equal(region.pixels, pixels[:, 1:])
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("format_name", ["PNG", "JPEG", "TIFF"])
 @pytest.mark.parametrize("rgb", [False, True])
 def test_print_dpi_never_becomes_specimen_calibration(tmp_path, format_name, rgb):

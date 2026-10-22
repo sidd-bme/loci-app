@@ -367,6 +367,41 @@ describe("Info Review & export rendered summary component", () => {
       getSnapshot: vi.fn(async () => structuredClone(mockSnapshot)),
     }) as unknown as ResearchDesktopApi;
 
+  it("opens Review with evidence, partial coverage and units before exposing export configuration", () => {
+    const api = createMockApi();
+    const result = { ...mockResult, kind: "segmentation", created_at: "now", object_count: 201 };
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={api} result={result}
+      rows={[{ label: 1, measure: -0.00001, measure_kind: "area", measure_unit: "µm²" }]}
+      onSave={vi.fn()} report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} onOpenPopulation={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("region", { name: "Review result" })).toBeVisible();
+    expect(screen.getByText("Quantitative summary")).toBeVisible();
+    expect(screen.getByText(/first 1 of 201 objects/)).toBeVisible();
+    expect(screen.getAllByText("µm²").some((item) => item.closest(".research-stat-value"))).toBe(true);
+    expect(screen.getByRole("button", { name: "Explore in Statistics & objects" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Export result" })).not.toBeInTheDocument();
+    expect(screen.getByText(/^Inspect preview rows/).closest("details")).not.toHaveAttribute("open");
+    const identity = screen.getByText("Technical identity").closest("details")!;
+    expect(identity).not.toHaveAttribute("open");
+    expect(within(identity).getByText(result.revision_hash)).toBeInTheDocument();
+    expect(screen.getByRole("status").closest("p")).not.toHaveTextContent(result.revision_hash.slice(0, 8));
+    expect(screen.getByText("Analysis details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Review history").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(screen.getByRole("button", { name: "Export result" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(screen.getByText(/first 1 of 201 objects/)).toBeVisible();
+  });
+
+  it("keeps source metadata directly reachable without an active result", () => {
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={createMockApi()} result={null}
+      onSave={vi.fn()} report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    expect(screen.getByLabelText("sample")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Result sections" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Quantitative summary")).not.toBeInTheDocument();
+  });
+
   it("labels agent decisions and lets the researcher supersede them", async () => {
     const api = createMockApi();
     const result = { ...mockResult, kind: "segmentation", created_at: "2026-10-17T00:00:00Z", object_count: 2,
@@ -378,6 +413,24 @@ describe("Info Review & export rendered summary component", () => {
     expect(button).toBeEnabled();
     fireEvent.click(button);
     await waitFor(() => expect(api.reviewResult).toHaveBeenCalledWith(result.id, result.revision_hash, "reviewed"));
+  });
+
+  it("releases a failed review write for retry on the same exact revision", async () => {
+    const api = createMockApi();
+    vi.mocked(api.reviewResult).mockRejectedValueOnce(new Error("Synthetic review unavailable"));
+    const errors: string[] = [];
+    const onSnapshot = vi.fn();
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={api} result={mockSnapshot.results[0]}
+      onSave={vi.fn()} report={async (work) => { try { return await work(); } catch (error) { errors.push((error as Error).message); return undefined; } }}
+      busy={false} onSnapshot={onSnapshot} />);
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled());
+    expect(errors).toEqual(["Synthetic review unavailable"]);
+    expect(onSnapshot).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Mark reviewed" }));
+    await waitFor(() => expect(onSnapshot).toHaveBeenCalledOnce());
+    expect(api.reviewResult).toHaveBeenNthCalledWith(1, mockResult.id, mockResult.revision_hash, "reviewed");
+    expect(api.reviewResult).toHaveBeenNthCalledWith(2, mockResult.id, mockResult.revision_hash, "reviewed");
   });
 
   it("shows external input identity and unknown upstream settings independently of correction lineage", () => {
@@ -434,6 +487,7 @@ describe("Info Review & export rendered summary component", () => {
     ).toBeInTheDocument();
 
     // ResultTable is rendered and interactive
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     const tableRegion = screen.getByRole("region", { name: "Result measurements" });
     expect(tableRegion).toBeInTheDocument();
     const tableRows = screen.getAllByRole("row");
@@ -451,6 +505,7 @@ describe("Info Review & export rendered summary component", () => {
     // Review controls remain present and gated
     const reviewBtn = screen.getByRole("button", { name: "Mark reviewed" });
     expect(reviewBtn).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
     const exportBtn = screen.getByRole("button", { name: "Export result" });
     expect(exportBtn).toBeDisabled(); // Requires reviewed disposition
   });
@@ -558,6 +613,7 @@ describe("Info Review & export rendered summary component", () => {
       rows={[{ label: 1, area: 100 }, { label: 2, volume: 200 }]}
       selectedRow={null} onSelectRow={vi.fn()} onSave={vi.fn()}
       report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     const table = screen.getByRole("region", { name: "Result measurements" });
     expect(within(table).getByRole("columnheader", { name: "Area" })).toBeVisible();
     expect(within(table).getByRole("columnheader", { name: "Volume" })).toBeVisible();
@@ -571,6 +627,7 @@ describe("Info Review & export rendered summary component", () => {
       rows={[{ measure: 0.00001, centroid_index: [0.001, -0.001] }, { measure: -0.00001 }, { measure: Infinity }]}
       selectedRow={null} onSelectRow={vi.fn()} onSave={vi.fn()}
       report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     const table = screen.getByRole("region", { name: "Result measurements" });
     expect(within(table).getByRole("gridcell", { name: "1.00e-5" })).toBeVisible();
     expect(within(table).getByRole("gridcell", { name: "-1.00e-5" })).toBeVisible();
@@ -589,6 +646,7 @@ describe("Info Review & export rendered summary component", () => {
       api={createMockApi()} result={mockResult as any} rows={rows}
       selectedRow={null} onSelectRow={onSelect} onSave={vi.fn()}
       report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
     const table = screen.getByRole("region", { name: "Result measurements" });
     expect(within(table).getByRole("columnheader", { name: "Channel intensity" })).toBeVisible();
     const channels = within(table).getByText("2 channels");
@@ -662,7 +720,7 @@ describe("Info Review & export rendered summary component", () => {
       />,
     );
 
-    expect(screen.getByText(/rev 99887766/)).toBeVisible();
+    expect(within(screen.getByText("Technical identity").closest("details")!).getByText(secondResult.revision_hash)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Explore in Statistics & objects" }));
     expect(onOpenPopulation).toHaveBeenCalledTimes(1);
   });

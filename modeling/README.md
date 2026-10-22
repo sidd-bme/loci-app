@@ -92,17 +92,19 @@ to the source-resolution output grid.
 
 ## Reproducible run
 
-The supported dependency matrix is:
+The supported local environment uses Python 3.11 or 3.12, PyTorch 2.13 and
+Pillow 13. On macOS, the locked PyTorch wheel requires Apple Silicon and
+macOS 14 or later; Intel Macs are unsupported for this modeling environment.
+Earlier PyTorch and Pillow environments are unsupported because of known
+dependency vulnerabilities. Install the exact reviewed lock, including
+the export and development checks, from this directory:
 
-- Python 3.11 with PyTorch 2.1.x (the pinned Vanda/reproducibility profile);
-- Python 3.11 or 3.12 with PyTorch 2.2.x (the Python 3.12-compatible path).
+```bash
+uv sync --frozen --extra export --extra dev
+```
 
-PyTorch 2.1 does not publish a Python 3.12 wheel. The package therefore allows
-PyTorch `>=2.1,<2.3` while the Vanda launcher should use Python 3.11 when exact
-2.1.x reproduction is required. The local/macOS `uv.lock` resolves PyTorch
-2.2.2; it is not the Vanda installation recipe.
-
-Create one of those environments, then:
+Activate that environment or invoke the following commands through `uv run
+--frozen --extra export --extra dev`:
 
 ```bash
 python -m loci_modeling validate-manifest \
@@ -157,7 +159,21 @@ identity across different GPU architectures is not promised. Release export
 compares PyTorch and ONNX Runtime numerically on two dynamic shapes and also
 requires identical postprocessed counts.
 
-Before a real cluster run, submit
+## Vanda runtime awaiting security qualification
+
+All three Vanda modeling launchers currently exit with status 2 before module
+loading, environment activation, source access or output creation. Their former
+PyTorch 2.1.2 / Pillow 10 stack has known vulnerabilities and does not satisfy
+the current package requirements. The local lock and synthetic tests do not
+qualify a replacement CUDA cluster environment. No remote module, dataset or
+model artifact was changed. A secure cluster stack needs independent dependency
+audit, deterministic GPU checks and ONNX parity checks before these launchers
+can be re-enabled.
+
+<details>
+<summary>Historical Vanda procedure, retained for provenance; do not execute</summary>
+
+The former procedure was: before a real cluster run, submit
 [`scripts/vanda_gpu_smoke.pbs`](scripts/vanda_gpu_smoke.pbs) to prove that the
 allocated GPU can complete a strict-determinism forward/backward/optimizer
 step. Next run the fixed, test-locked
@@ -231,3 +247,5 @@ export LOCI_MODEL_OUTPUT=VANDASCRATCH/runs/native-v1-full
 export LOCI_EVALUATE_TEST=0
 qsub -v LOCI_PYTORCH_MODULE,LOCI_MODEL_ENV,LOCI_MODEL_MANIFEST,LOCI_RAW_ROOT,LOCI_MASK_ROOT,LOCI_MODEL_OUTPUT,LOCI_PROFILE_ID,LOCI_PROFILE_VERSION,LOCI_PROFILE_DISPLAY_NAME,LOCI_CODE_REVISION,LOCI_EVALUATE_TEST scripts/vanda_train.pbs
 ```
+
+</details>
