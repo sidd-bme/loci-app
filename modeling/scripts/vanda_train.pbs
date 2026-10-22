@@ -8,6 +8,10 @@
 set -euo pipefail
 umask 027
 
+# The retained module recipe predates the security floors in pyproject.toml.
+echo "Vanda modeling is blocked: the legacy torch 2.1.2 / Pillow 10 runtime is unsupported; qualify a secure cluster stack before re-enabling this launcher." >&2
+exit 2
+
 : "${PBS_O_WORKDIR:?PBS must provide PBS_O_WORKDIR}"
 : "${LOCI_PYTORCH_MODULE:?Set LOCI_PYTORCH_MODULE to the pinned Vanda PyTorch module name}"
 : "${LOCI_MODEL_ENV:?Set LOCI_MODEL_ENV to the prepared loci-modeling virtual environment}"

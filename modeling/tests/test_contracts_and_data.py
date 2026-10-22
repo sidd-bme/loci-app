@@ -5,9 +5,28 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from PIL import Image
 
 from loci_modeling.contracts import DatasetManifest
-from loci_modeling.data import CellAwarePatchDataset, ensure_output_isolated, resolve_samples
+from loci_modeling.data import (
+    CellAwarePatchDataset,
+    _read_array,
+    ensure_output_isolated,
+    resolve_samples,
+)
+
+
+def test_uint16_png_decode_preserves_full_precision_and_source(tmp_path: Path) -> None:
+    pixels = np.array([[0, 1, 255], [256, 32768, 65535]], dtype=np.uint16)
+    path = tmp_path / "uint16.png"
+    Image.fromarray(pixels).save(path)
+    original = path.read_bytes()
+
+    decoded = _read_array(path)
+
+    assert decoded.dtype == np.uint16
+    np.testing.assert_array_equal(decoded, pixels)
+    assert path.read_bytes() == original
 
 
 def test_grouped_manifest_quarantine_is_indexed_but_never_opened(dataset_builder) -> None:

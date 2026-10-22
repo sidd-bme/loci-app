@@ -1,4 +1,7 @@
-# Non-Torch packages for the Python 3.11 Vanda environment.
+# HISTORICAL ONLY: this stack has known vulnerabilities and must not be installed.
+# All Vanda modeling launchers are blocked pending secure cluster qualification.
+# Use the frozen local pyproject.toml/uv.lock environment for current modeling.
+# Non-Torch packages for the former Python 3.11 Vanda environment.
 # PyTorch is intentionally absent: it must come from the reviewed Vanda module
 # and is verified as exactly 2.1.2 by both PBS launchers.
 flatbuffers==25.12.19

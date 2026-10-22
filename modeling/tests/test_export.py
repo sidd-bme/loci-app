@@ -75,7 +75,7 @@ def test_adjudication_record_is_carried_into_profile_lineage(dataset_builder) ->
 def test_onnx_bundle_has_verified_hash_and_path_free_lineage(
     dataset_builder, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pytest.importorskip("onnx")
+    onnx = pytest.importorskip("onnx")
     onnxruntime = pytest.importorskip("onnxruntime")
     runtime_shapes: list[tuple[int, ...]] = []
     postprocess_shapes: list[tuple[int, ...]] = []
@@ -147,6 +147,11 @@ def test_onnx_bundle_has_verified_hash_and_path_free_lineage(
     metadata = json.loads(metadata_text)
 
     assert model_path.is_file()
+    # The published artifact must load independently, with no external weight sidecar.
+    graph = onnx.load(str(model_path), load_external_data=False)
+    assert graph.graph.initializer
+    assert all(not tensor.external_data for tensor in graph.graph.initializer)
+    assert not list(output_dir.glob("*.data"))
     assert result["model_sha256"] == sha256_file(model_path)
     assert profile["model"]["sha256"] == result["model_sha256"]
     assert profile["rights"]["redistribution"] == "permitted"

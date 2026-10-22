@@ -11,11 +11,11 @@ requires-python = ">=3.11,<3.13"
 license = "Apache-2.0"
 dependencies = [
   "numpy>=1.26,<2",
-  "pillow>=10,<12",
+  "pillow>=13,<14",
   "scipy>=1.11,<2",
   "scikit-image>=0.22,<0.25",
   "tifffile>=2023.9.26",
-  "torch>=2.1,<2.3",
+  "torch>=2.13,<2.14",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +24,7 @@ export = [
   "onnxruntime>=1.16,<2",
 ]
 dev = [
-  "pytest>=8,<9",
+  "pytest>=9.0.3,<10",
   "ruff>=0.9,<1",
 ]
 

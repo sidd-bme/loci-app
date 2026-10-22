@@ -60,12 +60,19 @@ def test_default_training_does_not_resolve_or_evaluate_test_split(
     manifest_path = dataset_builder.write()
     resolved_splits: list[str] = []
     real_resolve = training_module.resolve_samples
+    real_load = training_module.torch.load
+    restricted_checkpoint_loads: list[bool] = []
+
+    def recording_load(*args, **kwargs):
+        restricted_checkpoint_loads.append(kwargs.get("weights_only") is True)
+        return real_load(*args, **kwargs)
 
     def recording_resolve(manifest, raw_root, mask_root, split, **kwargs):
         resolved_splits.append(split)
         return real_resolve(manifest, raw_root, mask_root, split, **kwargs)
 
     monkeypatch.setattr(training_module, "resolve_samples", recording_resolve)
+    monkeypatch.setattr(training_module.torch, "load", recording_load)
     output = dataset_builder.root / "default-locked-test-run"
     result = run_training(
         manifest_path=manifest_path,
@@ -97,6 +104,7 @@ def test_default_training_does_not_resolve_or_evaluate_test_split(
     )
 
     assert resolved_splits == ["train", "validation"]
+    assert restricted_checkpoint_loads == [True]
     assert set(result["agreement"]) == {"validation"}
     assert not (output / "test-agreement.json").exists()
 

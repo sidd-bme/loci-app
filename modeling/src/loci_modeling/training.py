@@ -471,7 +471,7 @@ def run_training(
             flush=True,
         )
 
-    checkpoint = torch.load(best_checkpoint, map_location=device)
+    checkpoint = torch.load(best_checkpoint, map_location=device, weights_only=True)
     if checkpoint.get("manifest_sha256") != manifest.manifest_sha256:
         raise RuntimeError("best checkpoint lineage does not match the active manifest")
     model.load_state_dict(checkpoint["model_state_dict"])

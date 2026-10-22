@@ -1,7 +1,30 @@
+import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "vanda_real_data_smoke.pbs"
 TRAIN_SCRIPT = Path(__file__).parents[1] / "scripts" / "vanda_train.pbs"
+
+
+@pytest.mark.parametrize(
+    "name", ["vanda_gpu_smoke.pbs", "vanda_real_data_smoke.pbs", "vanda_train.pbs"]
+)
+def test_legacy_vanda_runtime_is_blocked_before_module_or_data_access(name: str) -> None:
+    script = SCRIPT.with_name(name)
+    completed = subprocess.run(
+        ["bash", str(script)],
+        env={"PATH": os.defpath},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "legacy torch 2.1.2 / Pillow 10 runtime is unsupported" in completed.stderr
+    assert "PBS must provide" not in completed.stderr
+    assert "module:" not in completed.stderr
 
 
 def test_real_data_smoke_is_fixed_fail_closed_and_keeps_test_locked() -> None:
