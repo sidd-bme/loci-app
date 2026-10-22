@@ -381,13 +381,15 @@ async function openTool(
   group: "View" | "Annotate" | "Analyze" | "Results",
   tool: string,
   studySection: "samples" | "intensity" | "batch" = "batch",
+  toolScope?: HTMLElement,
 ) {
-  fireEvent.click(await screen.findByRole("button", { name: group }));
+  const tools = toolScope ? within(toolScope) : screen;
+  fireEvent.click(await tools.findByRole("button", { name: group }));
   const labels: Record<string, string> = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
     Analyze: "Segment & measure", Process: "Preprocess", Model: "Use a model", Quantify: "Fluorescence & field assay",
     Temporal: "Track over time", Registration: "Register & resample", Info: "Review & export", Study: "Study & batch" };
-  fireEvent.click(await screen.findByRole("combobox", { name: `${group} tool` }));
-  fireEvent.click(await screen.findByRole("option", { name: labels[tool] }));
+  fireEvent.click(await tools.findByRole("combobox", { name: `${group} tool` }));
+  fireEvent.click(await tools.findByRole("option", { name: labels[tool] }));
   if (tool === "Study") fireEvent.click(screen.getByRole("tab", { name: { samples: "Samples", intensity: "Intensity", batch: "Batch" }[studySection] }));
   if (tool === "Study") for (const details of document.querySelectorAll<HTMLDetailsElement>("details.study-analysis-section")) {
     details.open = true; fireEvent(details, new Event("toggle"));
@@ -963,35 +965,39 @@ describe("ResearchWorkbench", () => {
     });
     const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(study), execute, planIntensityExport: vi.fn() });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    await openTool("Results", "Study", "intensity");
-    screen.getByText(/Saved intensity reports \(/).closest("details")!.open = true;
-    fireEvent.click(await screen.findByRole("button", { name: /^Open saved intensity report 1: Declared stored channel/ }));
-    const saved = await screen.findByRole("region", { name: "Saved intensity report" });
-    await screen.findByText("Current inputs match this saved report.");
-    fireEvent.click(screen.getByRole("tab", { name: "Samples" }));
+    const toolScope = (await screen.findByRole("navigation", { name: "Task groups" })).parentElement!;
+    await openTool("Results", "Study", "intensity", toolScope);
+    const intensity = within(screen.getByRole("region", { name: "Experiment intensity" }));
+    const sections = within(screen.getByRole("tablist", { name: "Study sections" }));
+    intensity.getByText(/Saved intensity reports \(/).closest("details")!.open = true;
+    fireEvent.click(await intensity.findByRole("button", { name: /^Open saved intensity report 1: Declared stored channel/ }));
+    const saved = await intensity.findByRole("region", { name: "Saved intensity report" });
+    const reportQueries = within(saved);
+    await reportQueries.findByText("Current inputs match this saved report.");
+    fireEvent.click(sections.getByRole("tab", { name: "Samples" }));
     expect(saved).not.toBeVisible();
     const statusReads = execute.mock.calls.filter(([operation]) => operation === "intensity_get").length;
     inputsCurrent = false;
-    await openTool("View", "Display");
+    await openTool("View", "Display", "batch", toolScope);
     expect(execute.mock.calls.filter(([operation]) => operation === "intensity_get")).toHaveLength(statusReads);
-    await openTool("Results", "Study", "intensity");
-    expect(screen.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
-    await screen.findByText("Current inputs differ. Saved values remain unchanged.");
-    const table = screen.getByRole("table", { name: "Condition means · source-intensity units" });
+    await openTool("Results", "Study", "intensity", toolScope);
+    expect(intensity.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
+    await reportQueries.findByText("Current inputs differ. Saved values remain unchanged.");
+    const table = reportQueries.getByRole("table", { name: "Condition means · source-intensity units" });
     const exactValue = within(table).getByLabelText("Exact value");
     exactValue.closest("details")!.open = true;
     expect(exactValue).toHaveTextContent(String(mean));
     expect(exactValue).toBeVisible();
     expect(execute).not.toHaveBeenCalledWith("intensity_preview", expect.anything());
     expect(execute).not.toHaveBeenCalledWith("intensity_save", expect.anything());
-    screen.getByText(/Image means & inclusion reasons/).closest("details")!.open = true;
-    fireEvent.click(screen.getByRole("button", { name: /^Inspect result: Specimen/ }));
+    reportQueries.getByText(/Image means & inclusion reasons/).closest("details")!.open = true;
+    fireEvent.click(reportQueries.getByRole("button", { name: /^Inspect result: Specimen/ }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("result_view", expect.objectContaining({
       result_id: result.id, labels: true,
     })));
     expect(saved).not.toBeVisible();
-    await openTool("Results", "Study", "intensity");
-    expect(screen.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
+    await openTool("Results", "Study", "intensity", toolScope);
+    expect(intensity.getByRole("region", { name: "Saved intensity report" })).toBe(saved);
     expect(bridge.reviewResult).not.toHaveBeenCalled();
   });
 
@@ -1618,7 +1624,9 @@ describe("ResearchWorkbench", () => {
     await openTool("View", "Display");
     const low = await screen.findByLabelText("Channel 1 low");
     await waitFor(() => expect(low).toHaveValue("0"));
-    fireEvent.change(low, { target: { value: "7" } }); fireEvent.keyDown(low, { key: "Enter" });
+    // Settle the committed edit and its persistence effect before the next native action.
+    fireEvent.change(low, { target: { value: "7" } });
+    await act(async () => fireEvent.keyDown(low, { key: "Enter" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Workspace write refused");
     expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
@@ -1628,7 +1636,8 @@ describe("ResearchWorkbench", () => {
       state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 7 })]) }),
     }));
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    fireEvent.change(low, { target: { value: "9" } }); fireEvent.keyDown(low, { key: "Enter" });
+    fireEvent.change(low, { target: { value: "9" } });
+    await act(async () => fireEvent.keyDown(low, { key: "Enter" }));
     fireEvent.click(screen.getByRole("button", { name: "Save study" }));
     await waitFor(() => expect(saveAs).toHaveBeenCalledOnce());
     expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({ source_id: first.id,
