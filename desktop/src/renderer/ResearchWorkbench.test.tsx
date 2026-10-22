@@ -558,53 +558,77 @@ describe("ResearchWorkbench", () => {
 
   it.each([false, true])("preserves export draft through cross-source inspection, null recovery and tab return (indexed %s)", async (indexed) => {
     const { bridge, resultA, resultB, planDataExport, execute } = exportDraftFixture(indexed);
-    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    await selectHistoryResult();
-    await openTool("Results", "Info");
-    if (screen.queryByRole("button", { name: "Export" })) fireEvent.click(screen.getByRole("button", { name: "Export" }));
-    exportChoice("Data export result scope", "study");
-    fireEvent.click(exactExportChoices().getAllByRole("checkbox")[1]);
-    exportChoice("Data export purpose", "provisional");
-    exportChoice("Data export object scope", "groups");
-    for (const letter of ["A", "B"]) fireEvent.click(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` }));
-    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
-    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
-    fireEvent.click(within(screen.getByRole("group", { name: "Exact result revisions" }).querySelector<HTMLElement>(`[data-export-result-id="${resultB.id}"][data-revision-hash="${resultB.revision_hash}"]`)!).getByRole("button", { name: /^Inspect result:/ }));
+    const {container}=render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await screen.findByRole("main",{name:"Research workspace"});
+    // Re-resolve the export subtree after navigation/remounts and scope role
+    // queries to the relevant controls instead of traversing unrelated UI.
+    const inspector=within(container.querySelector<HTMLElement>(".research-inspector")!);
+    const sources=within(container.querySelector<HTMLElement>(".research-sources")!);
+    const exportElement=()=>container.querySelector<HTMLElement>(".research-inspector .scientific-data-export")!;
+    const panel=()=>within(exportElement());
+    const choices=()=>within(panel().getByRole("group",{name:"Exact result revisions"}));
+    const choice=(name:string,value:string)=>fireEvent.change(panel().getByRole("combobox",{name}),{target:{value}});
+    const section=(name:"Review"|"Export")=>within(inspector.getByRole("group",{name:"Result sections"})).getByRole("button",{name});
+    const open=(tool:"Info"|"Display")=>{
+      const toolbar=within(container.querySelector<HTMLElement>(".workbench-tools")!);
+      const group=tool==="Info"?"Results":"View";
+      fireEvent.click(toolbar.getByRole("button",{name:group}));
+      fireEvent.click(toolbar.getByRole("combobox",{name:`${group} tool`}));
+      fireEvent.click(toolbar.getByRole("option",{name:tool==="Info"?"Review & export":"Image & channels"}));
+    };
+    const history=await sources.findByRole("button",{name:/^Segmentation,/i});
+    await waitFor(()=>expect(history).toBeEnabled());
+    fireEvent.click(history);
+    open("Info");
+    fireEvent.click(section("Export"));
+    expect(exportElement()).toHaveAccessibleName("Export scientific data");
+    expect(exportElement()).toBeVisible();
+    choice("Data export result scope", "study");
+    fireEvent.click(choices().getAllByRole("checkbox")[1]);
+    choice("Data export purpose", "provisional");
+    choice("Data export object scope", "groups");
+    for (const letter of ["A", "B"]) fireEvent.click(await panel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` }));
+    fireEvent.click(panel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(panel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    fireEvent.click(within(panel().getByRole("group", { name: "Exact result revisions" }).querySelector<HTMLElement>(`[data-export-result-id="${resultB.id}"][data-revision-hash="${resultB.revision_hash}"]`)!).getByRole("button", { name: /^Inspect result:/ }));
     await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
     expect(document.querySelector(`[data-result-id="${resultA.id}"]`)).toBeNull();
     expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id }));
     const assertDraft = async () => {
-      expect(screen.getByRole("combobox", { name: "Data export result scope" })).toHaveValue("study");
-      expect(screen.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
-      expect(screen.getByRole("combobox", { name: "Data export object scope" })).toHaveValue("groups");
-      for (const input of exactExportChoices().getAllByRole("checkbox")) expect(input).toBeChecked();
-      for (const letter of ["A", "B"]) expect(await exportPanel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` })).toBeChecked();
+      const currentPanel=panel();
+      expect(exportElement()).toHaveAccessibleName("Export scientific data");
+      expect(exportElement()).toBeVisible();
+      expect(currentPanel.getByRole("combobox", { name: "Data export result scope" })).toHaveValue("study");
+      expect(currentPanel.getByRole("combobox", { name: "Data export purpose" })).toHaveValue("provisional");
+      expect(currentPanel.getByRole("combobox", { name: "Data export object scope" })).toHaveValue("groups");
+      for (const input of choices().getAllByRole("checkbox")) expect(input).toBeChecked();
+      for (const letter of ["A", "B"]) expect(await panel().findByRole("checkbox", { name: `Group ${letter} · 1 objects` })).toBeChecked();
     };
     await assertDraft();
     if (!indexed) {
-      fireEvent.click(screen.getByRole("button", { name: "Review" }));
-      expect(screen.getByText("Quantitative summary")).toBeVisible();
-      expect(screen.queryByRole("region", { name: "Export scientific data" })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Export" }));
+      fireEvent.click(section("Review"));
+      expect(inspector.getByText("Quantitative summary")).toBeVisible();
+      expect(inspector.queryByRole("region", { name: "Export scientific data" })).not.toBeInTheDocument();
+      fireEvent.click(section("Export"));
       await assertDraft();
     }
-    expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Original image" }));
-    await screen.findByRole("group", { name: "Results on this image" });
+    expect(panel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
+    fireEvent.click(sources.getByRole("button", { name: "Original image" }));
+    await inspector.findByRole("group", { name: "Results on this image" });
     await assertDraft();
-    fireEvent.click(screen.getByRole("button", { name: `Select rev ${resultB.revision_hash.slice(0, 8)}` }));
+    fireEvent.click(inspector.getByRole("button", { name: `Select rev ${resultB.revision_hash.slice(0, 8)}` }));
     await waitFor(() => expect(document.querySelector(`[data-result-id="${resultB.id}"]`)).toHaveAttribute("aria-pressed", "true"));
     await assertDraft();
-    fireEvent.click(exportPanel().getByRole("button", { name: "Preview data" }));
-    await waitFor(() => expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
+    fireEvent.click(panel().getByRole("button", { name: "Preview data" }));
+    await waitFor(() => expect(panel().getByRole("button", { name: "Export data package…" })).toBeEnabled());
     expect(planDataExport.mock.calls.at(-1)![0]).toEqual({ purpose: "provisional", bindings: [resultA, resultB].map((entry) => ({
       result_id: entry.id, revision_hash: entry.revision_hash, source_id: entry.source_id, source_sha256: entry.source_sha256,
       subset: "groups", group_ids: [`group-${entry.id}`],
     })) });
-    await openTool("View", "Display");
-    await openTool("Results", "Info");
+    open("Display");
+    open("Info");
     await assertDraft();
-    expect(exportPanel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
+    expect(panel().getByRole("button", { name: "Export data package…" })).toBeDisabled();
     expect(bridge.reviewResult).not.toHaveBeenCalled();
     expect(bridge.exportDataPackage).not.toHaveBeenCalled();
   });
