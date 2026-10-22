@@ -39,7 +39,7 @@ import {
   Ban,
   Laptop,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { InspectorResizeHandle, loadInspectorWidth } from "./InspectorResizeHandle";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
@@ -816,6 +816,9 @@ export default function ResearchWorkbench({
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
   const [populationOpened, setPopulationOpened] = useState(false);
   const [statisticsFocused, setStatisticsFocused] = useState(false);
+  const [focusedPanel, setFocusedPanel] = useState<Tab | null>(null);
+  const toolHeaderRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { setFocusedPanel(null); }, [tab]);
   const [resultSection, setResultSection] = useState<"review" | "export">("review");
   const [studySection, setStudySection] = useState<StudySection>("samples");
   const [studyFocused, setStudyFocused] = useState(false);
@@ -1092,6 +1095,18 @@ export default function ResearchWorkbench({
   const source =
     snapshot?.sources.find((entry) => entry.id === sourceId) ?? null;
   const sourceResults = useMemo(() => snapshot?.results.filter((item) => item.source_id === sourceId) ?? [], [snapshot?.results, sourceId]);
+  useLayoutEffect(() => {
+    const header = toolHeaderRef.current;
+    if (!header) return;
+    const update = () => {
+      const height = header.getBoundingClientRect().height;
+      if (height > 0) header.parentElement?.style.setProperty("--research-tool-header-height", `${height}px`);
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, [source?.id, tab, preferences.textSize, preferences.font]);
   const resultDiscriminators = useMemo(() => resultRowDiscriminators(sourceResults), [sourceResults]);
   const numberScope = `${documentEpoch}:${source?.id}:${source?.sha256}`;
   const numberKey = `${numberScope}:${numberResetEpoch}`;
@@ -2748,8 +2763,10 @@ export default function ResearchWorkbench({
       </main>
     );
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
+  const canFocusPanel = Boolean(source && (tab === "Analyze" || (tab === "Info" && !isLargeResult(selectedResult))));
+  const panelFocused = canFocusPanel && focusedPanel === tab;
   return (
-    <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
+    <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
       inert={documentSwitching} aria-busy={documentSwitching || undefined}
       style={
         {
@@ -2933,7 +2950,7 @@ export default function ResearchWorkbench({
           onKeyDown={handleSourcesResizeKeyDown}
         />
       </div>
-      <section className="research-canvas" hidden={(tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused)}>
+      <section id="research-image-stage" className="research-canvas" hidden={panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused)}>
         <div className="research-view-toolbar">
         {source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
           source={source} channels={channels} onChannels={setChannels}
@@ -3322,9 +3339,17 @@ export default function ResearchWorkbench({
         </div>}
       </section>
       <div className="research-inspector-shell">
-      {tab !== "Workflow" && tab !== "Population" && tab !== "Study" && <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />}
+      {!panelFocused && tab !== "Workflow" && tab !== "Population" && tab !== "Study" && <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />}
       <aside className="research-inspector">
-        <WorkbenchTools tab={tab} onTab={openWorkbenchTab} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0} />
+        <div ref={toolHeaderRef} className={`research-tool-header${canFocusPanel ? " has-layout-tools" : ""}`}>
+          <WorkbenchTools tab={tab} onTab={openWorkbenchTab} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0} />
+          {canFocusPanel && <div className="research-panel-layout-tools" role="group" aria-label="Panel layout">
+            <button type="button" aria-pressed={panelFocused} aria-controls="research-image-stage"
+              onClick={() => setFocusedPanel((current) => current === tab ? null : tab)}>
+              {panelFocused ? "Show image" : "Focus panel"}
+            </button>
+          </div>}
+        </div>
         {workflowOpened && source && dimensions && <div className="workflow-workspace-host" hidden={tab !== "Workflow"}>
           <ResearchWorkflowPanel key={documentEpoch}
             api={api} source={source} sources={snapshot.sources}

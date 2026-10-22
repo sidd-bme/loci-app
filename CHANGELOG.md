@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Focus panel / Show image for analysis and ordinary result review, retaining drafts and prepared export previews while giving smaller screens more task space.
+
 - Ordinary results open in Review; Export contains result and scientific data exports. Editable data-export choices survive navigation; reopening requires a fresh preview.
 - Classical scalar analysis names the segmentation input separately from raw measurement and display channels, with one-based T/Z scope labels.
 

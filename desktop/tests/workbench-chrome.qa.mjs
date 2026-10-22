@@ -83,7 +83,7 @@ const frame = () =>
 async function focusVisible(locator, label, body = false) {
   const result = await locator.evaluate((el) => {
     const r = el.getBoundingClientRect(),
-      h = document.querySelector(".workbench-tools").getBoundingClientRect();
+      h = document.querySelector(".research-tool-header").getBoundingClientRect();
     const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
     const cs = getComputedStyle(el);
     // Text fields intentionally draw the two-pixel focus ring inside their
@@ -126,6 +126,51 @@ async function focusVisible(locator, label, body = false) {
     `${label}: keyboard focus has no visible ring: ${JSON.stringify(result)}`,
   );
   return result;
+}
+async function qualifyFocusPanel(tool, key) {
+  const layout = page.getByRole("group", { name: "Panel layout", exact: true });
+  const button = layout.getByRole("button", { name: "Focus panel", exact: true });
+  const stage = page.locator("#research-image-stage");
+  const retainedStage = await stage.elementHandle();
+  const content = tool === "Analyze" ? page.getByLabel("Threshold", { exact: true })
+    : page.getByRole("region", { name: "Review result", exact: true });
+  const retainedContent = await content.elementHandle();
+  const imageState = () => page.evaluate(() => ({
+    viewers: Array.from(document.querySelectorAll("[data-viewer-source]")).map(element => ({
+      source: element.getAttribute("data-viewer-source"), camera: element.getAttribute("data-camera"),
+    })),
+    images: Array.from(document.querySelectorAll(".research-result-image img")).map(element => ({
+      src: element.currentSrc, parentStyle: element.parentElement.getAttribute("style"),
+    })),
+    source: document.querySelector('button[data-source-id][aria-current="true"]')?.getAttribute("data-source-id"),
+    result: document.querySelector('button[data-result-id][aria-pressed="true"]')?.getAttribute("data-result-id"),
+  }));
+  const before = await imageState();
+  const resultsBefore = await page.evaluate(async () => (await window.lociResearch.getSnapshot()).results);
+  const widthBefore = (await page.locator(".research-inspector").boundingBox()).width;
+  const valueBefore = tool === "Analyze" ? await content.inputValue() : null;
+  await button.focus();
+  await button.press("Space");
+  await frame();
+  const restore = layout.getByRole("button", { name: "Show image", exact: true });
+  assert.equal(await restore.getAttribute("aria-pressed"), "true");
+  assert.equal(await stage.getAttribute("hidden"), "");
+  assert.equal(await stage.evaluate((element, original) => element === original, retainedStage), true);
+  assert.equal(await content.evaluate((element, original) => element === original, retainedContent), true);
+  assert.ok((await page.locator(".research-inspector").boundingBox()).width > widthBefore, `${key}: focus must give the panel more width`);
+  await focusVisible(restore, `${key}/${tool}/focused return`);
+  if (key.endsWith("-reduce")) await capture(`${key}-${tool}-focused`);
+  await restore.press("Space");
+  await frame();
+  assert.equal(await stage.getAttribute("hidden"), null);
+  assert.equal(await button.getAttribute("aria-pressed"), "false");
+  assert.equal(await content.evaluate((element, original) => element === original, retainedContent), true);
+  if (tool === "Analyze") assert.equal(await content.inputValue(), valueBefore);
+  assert.deepEqual(await imageState(), before, `${key}: returning must preserve source, revision and image camera`);
+  assert.deepEqual(await page.evaluate(async () => (await window.lociResearch.getSnapshot()).results), resultsBefore);
+  await retainedContent.dispose();
+  await retainedStage.dispose();
+  return { retained_mounts: true, retained_scientific_state: true, retained_image_state: true };
 }
 try {
   app = await electron.launch({
@@ -246,6 +291,7 @@ try {
           for (const tool of ["Analyze", "Annotate", "Info"]) {
             await selectWorkbenchTool(page, tool);
             await frame();
+            const focus = tool === "Analyze" || tool === "Info" ? await qualifyFocusPanel(tool, key) : null;
             assert.equal(
               await page.locator(".research-alert[role=alert]").count(),
               0,
@@ -334,6 +380,12 @@ try {
             await focusVisible(search, `${key}/search return`);
             // Actual keyboard transition from header into body must remain unobscured.
             await search.press("Tab");
+            if (tool === "Analyze" || tool === "Info") {
+              const layoutButton = page.getByRole("group", { name: "Panel layout", exact: true }).getByRole("button");
+              assert.equal(await layoutButton.evaluate(element => element === document.activeElement), true);
+              await focusVisible(layoutButton, `${key}/${tool}/layout control`);
+              await layoutButton.press("Tab");
+            }
             const focused = page.locator(":focus");
             await focusVisible(focused, `${key}/${tool}/body`, true);
             if (tool === "Analyze") {
@@ -374,7 +426,7 @@ try {
               true,
               `${key}: global overflow`,
             );
-            report.cases.push({ key, tool, geometry, viewport: v });
+            report.cases.push({ key, tool, geometry, viewport: v, focus });
           }
           await save();
         }
