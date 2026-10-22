@@ -82,7 +82,7 @@ sourceIdentity.runtime_worktree_changes = Object.fromEntries(await Promise.all(c
 assert.ok(development || changedRuntime.length === 0, "Packaged qualification requires a committed runtime source tree");
 const performanceBudgets = { empty_launch_seconds: 8, first_useful_1536_square_seconds: 5 };
 const rendererModules = new Map(), rendererResponses = [];
-let app, page, picker = { sources: [sourceCopy], folder, export: baselineExport, rendered: path.join(output, "rendered-default.tiff") };
+let app, page, picker = { sources: [sourceCopy], folder, export: baselineExport, rendered: path.join(output, "rendered-neutral.tiff") };
 async function installPickers() {
   await app.evaluate(({ dialog }, values) => {
     globalThis.coreQaPicker = values;
@@ -191,14 +191,15 @@ async function reviewAndExport(result, destination) {
 }
 async function correctionInputReady() {
   await page.locator('.image-viewport[data-prepared="true"][data-result-overlay]').waitFor();
-  await page.getByRole('status').filter({ hasText: 'Loading the selected exact plane…' }).waitFor({ state: 'detached' });
+  await page.locator('.research-correction').getByRole('status')
+    .filter({ hasText: /^Loading selected plane…$/ }).waitFor({ state: 'detached' });
 }
 async function imagePoint(u, v, click = true) {
   let priorPoints;
   if (click) {
     await correctionInputReady();
-    const pointStatus = await page.getByText(/·\s*\d+\s+drawn points$/).textContent();
-    priorPoints = Number(pointStatus?.match(/·\s*(\d+)\s+drawn points$/)?.[1]);
+    const pointStatus = await page.locator('.research-correction').getByText(/\b\d+\s+drawn points$/).textContent();
+    priorPoints = Number(pointStatus?.match(/\b(\d+)\s+drawn points$/)?.[1]);
     assert.ok(Number.isSafeInteger(priorPoints), "The exact correction draft must report its point count");
   }
   const viewport = page.locator('.image-viewport'), b = await viewport.boundingBox();
@@ -210,7 +211,8 @@ async function imagePoint(u, v, click = true) {
   if (click) {
     await page.mouse.click(point.x, point.y);
     // Observe the accepted draft before sending another point; never replay a rejected click.
-    await page.getByText(new RegExp(`·\\s*${priorPoints + 1}\\s+drawn points$`)).waitFor();
+    await page.locator('.research-correction')
+      .getByText(new RegExp(`(?:^|·\\s*)${priorPoints + 1}\\s+drawn points$`)).waitFor();
   }
   return point;
 }
@@ -239,23 +241,41 @@ try {
   await viewerReady(); timings.first_useful_view_seconds = (performance.now() - started) / 1000;
   await page.getByRole("button", { name: "Fit image", exact: true }).click();
   await shot("02-full-image");
+  const displayPanel = page.locator('.research-inspector .source-display-local');
+  // Initial scalar contrast intentionally uses whole-image percentiles. Select
+  // an explicit neutral mapping before comparing rendered codes with raw * 257.
+  await displayPanel.locator('.source-channel > summary').first().click();
+  for (const [label, value] of [["Channel 1 low", "0"], ["Channel 1 high", "255"], ["Channel 1 gamma", "1"]]) {
+    const input = displayPanel.getByLabel(label, { exact: true });
+    await input.fill(value); await input.blur();
+    assert.equal(await input.inputValue(), value);
+  }
   await page.locator('.source-export > summary').click();
   await page.getByLabel("Rendered export format", { exact: true }).selectOption("tiff");
   await page.getByLabel("Rendered export extent", { exact: true }).selectOption("whole");
-  const defaultTiff = picker.rendered;
+  const neutralTiff = picker.rendered;
   await page.getByRole("button", { name: "Export TIFF16…", exact: true }).click();
-  await until(() => fs.stat(defaultTiff).catch(() => null), (v) => v?.isFile(), "full-resolution default TIFF16 export");
-  await page.locator('.source-channel > summary').first().click();
-  await page.getByLabel("Channel 1 gamma", { exact: true }).fill("2");
-  await page.getByLabel("Channel 1 gamma", { exact: true }).blur();
+  await until(() => fs.stat(neutralTiff).catch(() => null), (v) => v?.isFile(), "full-resolution neutral TIFF16 export");
+  await displayPanel.getByLabel("Channel 1 gamma", { exact: true }).fill("2");
+  await displayPanel.getByLabel("Channel 1 gamma", { exact: true }).blur();
   picker.rendered = path.join(output, "rendered-adjusted.tiff"); await installPickers();
   await page.getByRole("button", { name: "Export TIFF16…", exact: true }).click();
   await until(() => fs.stat(picker.rendered).catch(() => null), (v) => v?.isFile(), "adjusted TIFF16 export");
-  receipts.rendered_tiff16 = JSON.parse((await run(python, ["-c", `import json,sys,numpy as np,tifffile
+  receipts.rendered_tiff16 = JSON.parse((await run(python, ["-c", `import hashlib,json,sys,numpy as np,tifffile
 from PIL import Image
-raw=np.asarray(Image.open(sys.argv[1])); a=tifffile.imread(sys.argv[2]); b=tifffile.imread(sys.argv[3]); assert a.dtype==b.dtype==np.uint16; assert a.shape==b.shape==(1536,1536,3); np.testing.assert_array_equal(a,np.repeat((raw.astype(np.uint16)*257)[...,None],3,axis=2)); assert np.any(a!=b)
-print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'default_equals_source_codes_x257':True,'adjustment_changes_display':True}))`, source, defaultTiff, picker.rendered])).stdout);
-  await page.locator('.source-channel-heading').getByRole("button", { name: "Reset", exact: true }).click();
+raw=np.asarray(Image.open(sys.argv[1]))
+with tifffile.TiffFile(sys.argv[2]) as tif: a=tif.asarray(); neutral=json.loads(tif.pages[0].description)
+with tifffile.TiffFile(sys.argv[3]) as tif: b=tif.asarray(); adjusted=json.loads(tif.pages[0].description)
+assert a.dtype==b.dtype==np.uint16; assert a.shape==b.shape==(1536,1536,3)
+mapping={'channel':0,'low':0.0,'high':255.0,'gamma':1.0,'color':'#ffffff','opacity':1.0,'visible':True}
+assert neutral['display']==[mapping]; assert adjusted['display']==[{**mapping,'gamma':2.0}]
+with open(sys.argv[1],'rb') as stream: source_sha256=hashlib.file_digest(stream,'sha256').hexdigest()
+assert neutral['source_sha256']==adjusted['source_sha256']==source_sha256
+np.testing.assert_array_equal(a,np.repeat((raw.astype(np.uint16)*257)[...,None],3,axis=2))
+expected_adjusted=np.rint(np.sqrt(raw.astype(np.float64)/255.0)*65535.0).astype(np.uint16)
+np.testing.assert_array_equal(b,np.repeat(expected_adjusted[...,None],3,axis=2)); assert np.any(a!=b)
+print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'neutral_equals_source_codes_x257':True,'adjusted_equals_sqrt_oracle':True,'embedded_display_mappings_verified':True,'source_sha256':source_sha256,'adjustment_changes_display':True}))`, source, neutralTiff, picker.rendered])).stdout);
+  await displayPanel.locator('.source-channel-heading').getByRole("button", { name: "Reset", exact: true }).click();
   await fileMenuAction(page, "Save as study…");
   await until(() => fs.stat(project).catch(() => null), (s) => s?.isDirectory(), "save managed source as study");
   await until(() => page.locator('.session-save-state').textContent(), (text) => text === 'Saved locally', 'completed Save as');
