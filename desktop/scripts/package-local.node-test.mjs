@@ -251,33 +251,51 @@ test("ESM config still rejects unsupported signing modes and unsigned macOS reso
   assert.match(stdout, /Unsigned resources rejected/);
 });
 
-test("owns the canonical worker copy and preserves relative links and source bytes", async (t) => {
+test("owns the canonical worker copy, preserves nested resources and rejects a repeated copy", async (t) => {
   const { root } = await fixture(t);
   const source = path.join(root, "worker-input");
   const resources = path.join(root, "package", "Loci.app", "Contents", "Resources");
   await mkdir(path.join(source, "_internal", "lib"), { recursive: true });
+  await mkdir(path.join(source, "_internal", "empty"));
+  await mkdir(path.join(source, "empty"));
   await mkdir(resources, { recursive: true });
   await writeFile(path.join(source, "loci-engine"), "worker fixture");
   await chmod(path.join(source, "loci-engine"), 0o755);
   const sourceLibrary = path.join(source, "_internal", "lib", "data.dylib");
   await writeFile(sourceLibrary, "library fixture");
   await symlink("lib/data.dylib", path.join(source, "_internal", "alias.dylib"));
+  await symlink("lib", path.join(source, "_internal", "alias-dir"));
   const { stdout } = await inspectForgeConfig(`
     import assert from 'node:assert/strict';
+    import fs from 'node:fs';
+    import path from 'node:path';
     process.argv.push('package');
-    const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+    const {copyEngineResource, default: config} = await import(${JSON.stringify(forgeConfigUrl)});
     assert.deepEqual(config.packagerConfig.extraResource, []);
     await config.packagerConfig.beforeCopyExtraResources[0]({ buildPath: ${JSON.stringify(path.join(root, "package"))}, platform: 'darwin', arch: 'arm64', electronVersion: '44.0.0' });
+    const destination = path.join(${JSON.stringify(resources)}, 'loci-engine');
+    const sentinel = path.join(destination, 'sentinel');
+    fs.writeFileSync(sentinel, 'retained destination');
+    assert.throws(() => copyEngineResource(${JSON.stringify(source)}, destination), /EEXIST/);
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'retained destination');
+    assert.equal(fs.readFileSync(path.join(destination, 'loci-engine'), 'utf8'), 'worker fixture');
     console.log('Worker copied by owned hook');
   `, "adhoc-local", { LOCI_ENGINE_RESOURCE: source });
   assert.match(stdout, /Worker copied by owned hook/);
   const copied = path.join(resources, "loci-engine");
   assert.equal(await readlink(path.join(copied, "_internal", "alias.dylib")), "lib/data.dylib");
+  assert.equal(await readlink(path.join(copied, "_internal", "alias-dir")), "lib");
+  assert.deepEqual(await readdir(path.join(copied, "empty")), []);
+  assert.deepEqual(await readdir(path.join(copied, "_internal", "empty")), []);
   assert.equal(await readFile(path.join(copied, "_internal", "alias.dylib"), "utf8"), "library fixture");
+  assert.equal(await readFile(path.join(copied, "_internal", "alias-dir", "data.dylib"), "utf8"), "library fixture");
   await writeFile(path.join(copied, "_internal", "lib", "data.dylib"), "independent copied bytes");
   assert.equal(await readFile(sourceLibrary, "utf8"), "library fixture");
   assert.equal(await readFile(path.join(source, "loci-engine"), "utf8"), "worker fixture");
   assert.equal(await readlink(path.join(source, "_internal", "alias.dylib")), "lib/data.dylib");
+  assert.equal(await readlink(path.join(source, "_internal", "alias-dir")), "lib");
+  assert.equal(await readFile(path.join(source, "_internal", "alias-dir", "data.dylib"), "utf8"), "library fixture");
+  assert.equal(await readFile(path.join(copied, "_internal", "alias-dir", "data.dylib"), "utf8"), "independent copied bytes");
 });
 
 test("rejects absolute, escaping, dangling and cyclic source links before creating a destination", async (t) => {
