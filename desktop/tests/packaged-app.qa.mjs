@@ -233,6 +233,32 @@ async function correctionReady() {
   await correctionInputReady();
   await moveNavigationAway();
 }
+async function selectBatchSources(sources, selectedIds) {
+  const selected = new Set(selectedIds);
+  assert.equal(selected.size, selectedIds.length, "Batch scope must not repeat a source ID");
+  assert.ok(selectedIds.every(id => sources.some(source => source.id === id)), "Batch scope must use current source IDs");
+  const displayPaths = sources.map(source => {
+    const location = source.browser_location;
+    if (!location) return source.name;
+    assert.ok(location.relative_path && !location.relative_path.includes('\\'));
+    if (!location.root) return location.relative_path;
+    const roots = new Set(sources.filter(peer => peer.browser_location?.root?.name === location.root.name)
+      .map(peer => peer.browser_location.root.id));
+    assert.equal(roots.size, 1, "This fixture must have one unambiguous public folder label per root name");
+    return `${location.root.name}/${location.relative_path}`;
+  });
+  assert.equal(new Set(displayPaths).size, sources.length, "Batch leaf labels must identify each fixture source uniquely");
+  const picker = page.getByRole('group', { name: 'Batch images', exact: true });
+  const leaves = picker.locator('.batch-source-picker__image input[type="checkbox"]');
+  assert.equal(await leaves.count(), sources.length, "Every current source must be available in the batch picker");
+  for (const [index, source] of sources.entries()) {
+    const checkbox = picker.getByRole('checkbox', { name: `Include ${displayPaths[index]} in batch`, exact: true });
+    await checkbox.setChecked(selected.has(source.id));
+    assert.equal(await checkbox.isChecked(), selected.has(source.id), `Batch membership differs for ${source.id}`);
+  }
+  assert.equal(await picker.locator('.batch-source-picker__image input[type="checkbox"]:checked').count(),
+    selected.size, "Batch scope must contain exactly the intended sources");
+}
 try {
   await launch(); await shot("01-direct-opening");
   const started = performance.now(); await page.getByRole("button", { name: "Open images", exact: true }).click();
@@ -402,7 +428,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await selectWorkbenchTool(page, "Analyze"); await page.getByLabel("Segmentation model", { exact: true }).selectOption("adaptive");
   await page.getByRole("button", { name: "Segment image", exact: true }).waitFor();
   await selectWorkbenchTool(page, "Study");
-  for (const s of collection.sources) await page.getByLabel(`Include ${s.name} in batch`, { exact: true }).check();
+  await selectBatchSources(collection.sources, collection.sources.map(source => source.id));
   await page.getByRole("button", { name: "Run selected sources sequentially", exact: true }).click();
   const queued = await until(snapshot, (s) => s.jobs.filter((j) => j.request_key.startsWith("loci-batch:")).length === 11, "all batch requests persisted before execution");
   assert.ok(queued.jobs.filter((j) => j.request_key.startsWith("loci-batch:")).some((j) => j.state === "queued"));
@@ -457,7 +483,7 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await selectWorkbenchTool(page, "Analyze"); await page.getByLabel("Segmentation model", { exact: true }).selectOption("adaptive");
   await page.getByRole("button", { name: "Segment image", exact: true }).waitFor();
   await selectWorkbenchTool(page, "Study");
-  for (const s of formulaOpened.sources) await page.getByLabel(`Include ${s.name} in batch`, { exact: true }).setChecked(formulaSources.some((f) => f.id === s.id));
+  await selectBatchSources(formulaOpened.sources, formulaSources.map(source => source.id));
   const beforeIds = new Set(formulaOpened.results.map((r) => r.id));
   await page.getByRole("button", { name: "Run selected sources sequentially", exact: true }).click();
   const formulaComplete = await until(snapshot, (s) => s.results.filter((r) => !beforeIds.has(r.id)).length === 2 && !s.jobs.some((j) => j.state === 'running'), "two summary source results", 120_000);
