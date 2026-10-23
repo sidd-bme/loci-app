@@ -94,6 +94,10 @@ OPERATION_CATALOG = {
         "mutates": True,
         "summary": "Associate exact declared nucleus and cell revisions with overlap ambiguity",
     },
+    "perinuclear_run": {
+        "mutates": True,
+        "summary": "Measure raw nuclear-to-perinuclear-ring enrichment on an exact native 2D grid",
+    },
     "colocalisation_run": {
         "mutates": True,
         "summary": "Persist descriptive raw-channel correlation and thresholded Manders measures",
@@ -375,6 +379,7 @@ TASK_OPERATIONS = frozenset(
         "field_assay_preview",
         "field_assay_run",
         "associate_results",
+        "perinuclear_run",
         "colocalisation_run",
     }
 )

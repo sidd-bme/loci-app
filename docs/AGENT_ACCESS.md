@@ -294,7 +294,20 @@ publication. Existing policies are never widened automatically.
 | `review_history` | Ordered review events, current digest and pagination; assessment text requires all result disclosures |
 | `review_result` | Append an agent decision for an exact revision and observed prior review digest |
 
-The initial registry covers recipes, result context, label/ROI correction,
+`source_image` and `review_result` publish their complete nested `request` JSON
+schemas in MCP `list_tools` and `catalog.tools[].request_schema`. The latter is
+static documentation, contains no study data, and does not grant execution.
+`action_guide` accepts registered analysis/editing action names, not these tool
+names. Image requests require explicit selection, display channels, projection
+and thumbnail size; a plane forbids `z_stop`, while max/mean require an exclusive
+`z_stop`. Review requests require the exact inspected revision, disposition,
+nonblank reason and coverage, and `expected_review_sha256` copied from
+`review_history.current_review_sha256` (null only without a prior review).
+Native validators and all source, disclosure, runtime and delegation guards
+remain authoritative.
+
+The registry covers recipes, the built-in adaptive watershed (`classical_run`),
+result context, label/ROI correction,
 puncta, cell/nucleus association, colocalisation, tracking, population inspection,
 and bounded large-result inspection/deletion. The desktop operation catalogue
 marks each supported action as read or task. Named actions require all six
@@ -302,6 +315,45 @@ response disclosures and a source-scoped delegation. They use the same native
 executors as the GUI and CLI. Read and task workers retain CPU, memory and shared
 concurrency limits, policy/source checks, and publication guards. There is no
 generic operation, shell or model-install escape hatch.
+
+`classical_run` requires the `loci-classical` profile, all native segmentation
+settings, one fully resolved 2D source selection (`x,y,width,height,t,c,z,level`),
+explicit raw measurement channels and a working-memory allowance. Its source,
+measurement and runtime grants are checked before submission; the existing
+policy revocation and publication guards remain active during execution.
+The native adaptive executor supplies the same labels, raw measurements and
+provenance as desktop execution. It does not grant Cellpose execution or model
+installation. New results require their own review before reviewed export.
+
+`perinuclear_run` measures **Perinuclear enrichment**, a geometric ring proxy,
+through the same native operation used by the desktop. Its exact request contains
+`result_id`, `revision_hash`, `signal_channel`, `radius_px`, `working_bytes` and
+`control`. The bound nucleus result must occupy the full native scalar level-zero
+2D source plane; the raw signal must share its exact grid. The radius is explicit,
+finite, greater than zero and at most 128 pixels. Qualification protocols can pin
+a narrower choice, such as five pixels, without changing that general contract.
+
+Every nucleus blocks and competes for ring pixels, including excluded nuclei.
+Rings use inclusive Euclidean pixel-center distance outside every nucleus;
+pixels claimed by multiple nuclei are discarded from every ring. Nuclei touching
+the image boundary, empty rings and zero-mean rings are excluded explicitly.
+No epsilon, imputation or intensity gate is applied. The per-object endpoint is
+raw nuclear mean divided by raw ring mean. The saved source-plane summary records
+the median and mean eligible ratios, counts and every exclusion; for a one-field
+well, the median is its well endpoint. With no eligible objects, the endpoint is
+explicitly undefined (`null`), never a successful qualification claim.
+This fluorescence endpoint requires nonnegative raw values across the selected
+signal plane. Negative samples fail execution and restore/export validation with
+an actionable error; they are never clipped, offset or silently excluded.
+General signed raw-intensity workflows retain their existing behavior.
+
+The result preserves the original nucleus revision, raw signal, unique ring
+ownership and discarded-pixel masks, raw counts/sums/means, ratios and exclusions.
+Reviewed export includes these arrays, TIFF masks, `objects.csv` and
+`perinuclear-summary.json`; restore/export verify their arithmetic and bindings.
+`result_view` optionally accepts `label_field: nuclei`, `rings` or `ambiguous`
+only for this result kind. Its default remains nuclei. The selected field and its
+basis accompany every QC view; a ring proxy must never be called true cytoplasm.
 
 Read `correction_info` before editing: `expected_input_sha256` is the label-array
 hash, not `revision_hash`. Corrections preserve the parent, remeasure the changed

@@ -11,6 +11,7 @@ import type { ImageWindowPresentation } from "../shared/image-window-api";
 import { RecipeResourcePanel } from "./RecipeResourcePanel";
 import { ResearchLabelsImportPanel } from "./ResearchLabelsImportPanel";
 import { ResearchCorrectionEffectPanel, type CorrectionEffectSeed } from "./ResearchCorrectionEffectPanel";
+import { SegmentationInputControl } from "./SegmentationInputControl";
 import { ResearchAdaptivePanel, type ResearchAdaptiveBatchConfiguration } from "./ResearchAdaptivePanel";
 import { WorkspaceRecordActions } from "./WorkspaceRecordActions";
 import { SourceTree } from "./SourceTree";
@@ -76,6 +77,7 @@ import { ResearchRegistrationPanel } from "./ResearchRegistrationPanel";
 import { ResearchPopulationExplorer } from "./ResearchPopulationExplorer";
 import { ResearchWorkflowPanel } from "./ResearchWorkflowPanel";
 import { ResearchQuantificationPanel } from "./ResearchQuantificationPanel";
+import { PerinuclearResultSummary } from "./ResearchPerinuclearPanel";
 import { AgentImagePanel } from "./AgentImagePanel";
 import { SourceDisplayFollower } from "./source-display-follower";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
@@ -2762,6 +2764,14 @@ export default function ResearchWorkbench({
         <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
       </main>
     );
+  const changeSegmentationChannel = (channel: number) => {
+    if (!source || !dimensions || busy || documentSwitching || documentSwitch.current || sourceIsChanging || !viewSettingsReady || source.locator_state === "relink-required" ||
+        !Number.isInteger(channel) || channel < 0 || channel >= dimensions.c) return;
+    setSelection((old) => ({ ...old, c: channel }));
+  };
+  const declaredChannels = snapshot.channels?.find((record) => record.id === source?.id && record.data.source_sha256 === source?.sha256)?.data.channels;
+  const segmentationChannelNames = Array.from({ length: dimensions?.c ?? 0 }, (_, index) =>
+    declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
   const canFocusPanel = Boolean(source && (tab === "Analyze" || (tab === "Info" && !isLargeResult(selectedResult))));
   const panelFocused = canFocusPanel && focusedPanel === tab;
@@ -3545,29 +3555,6 @@ export default function ResearchWorkbench({
         )}
         {source && dimensions && tab === "Analyze" && (
           <>
-          {segmentationFamily === "classical" && <GuidedExplorationPanel api={api} source={source} selection={shownSelection}
-            busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={setBusy} onSelection={setSelection}
-            onDrawRegion={() => { setDrawingAnalysisRegion(true); setResultId(null); setResultView(null); setImage(null); }}
-            onUse={(next, region) => { setRecipe(next); setSelection(region); }}
-            onResult={async (target, measurements) => { await persistRevision(target, measurements); await api.getSnapshot().then(adopt); }} />}
-          <details className="external-labels-disclosure"><summary>Import existing labels</summary>
-          <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
-            navigationIntent={() => largeNavigationIntent.current}
-            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={(message, owner) => {
-              if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
-              else if (labelImportBusyOwner.current?.owner === owner) {
-                const ownMessage = labelImportBusyOwner.current.message;
-                labelImportBusyOwner.current = null;
-                setBusy((current) => current === ownMessage ? null : current);
-              }
-            }}
-            onResult={async (target, measurements, isCurrent) => {
-              const capturedScope = labelImportScope;
-              const current = () => isCurrent() && liveLabelImportScope.current === capturedScope && !documentSwitch.current;
-              if (await persistRevision(target, measurements, undefined, current, true) && current()) {
-                setRedoStack([]); setCorrectionObjectTarget(null); openWorkbenchTab("Population");
-              }
-            }} /></details>
           <label className="segmentation-family">Segment with<select aria-label="Segmentation model" value={segmentationFamily} onChange={(event) => setSegmentationFamily(event.target.value as typeof segmentationFamily)}>
             <option value="classical">Classical methods</option><option value="large-components">Large image · threshold components</option><option value="adaptive">Loci Adaptive Watershed</option>{isRgb && <option value="stain">Declared stain separation</option>}<option value="cellpose-sam">Cellpose-SAM</option><option value="cellpose-sam-v2">Cellpose-SAM v2</option>
           </select></label>
@@ -3587,13 +3574,9 @@ export default function ResearchWorkbench({
             key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("analyze", valid)}
             recipe={recipe}
             channelCount={dimensions.c}
-            channelNames={source.metadata.channel_names}
+            channelNames={segmentationChannelNames}
             selection={shownSelection}
-            onSegmentationChannel={(c) => {
-              if (busy || documentSwitching || documentSwitch.current || sourceIsChanging || !viewSettingsReady || source.locator_state === "relink-required" ||
-                  !Number.isInteger(c) || c < 0 || c >= dimensions.c) return;
-              setSelection((old) => ({ ...old, c }));
-            }}
+            onSegmentationChannel={changeSegmentationChannel}
             setRecipe={setRecipe}
             onRun={() => void run()}
             busy={busy !== null}
@@ -3613,6 +3596,8 @@ export default function ResearchWorkbench({
             onOpenPopulation={() => openWorkbenchTab("Population")}
             onOpenReviewExport={() => { setResultSection("review"); openWorkbenchTab("Info"); }}
           /> : segmentationFamily === "adaptive" ? <ResearchAdaptivePanel api={api} source={source} selection={shownSelection}
+            onSegmentationChannel={changeSegmentationChannel} channelNames={segmentationChannelNames}
+            inputUnavailable={documentSwitching || sourceIsChanging || !viewSettingsReady || source.locator_state === "relink-required"}
             busy={busy !== null} onBusy={(message) => { if (message) setError(null); setBusy(message); }} onError={setError} onBatchConfiguration={setAdaptiveBatchConfiguration}
             workingBytes={recipe.working_bytes}
             onWorkingBytesChange={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))}
@@ -3663,6 +3648,31 @@ export default function ResearchWorkbench({
               }}
             />
           )}
+          {segmentationFamily === "classical" && <details className="segmentation-comparison-disclosure"><summary>Compare settings on regions</summary>
+          <GuidedExplorationPanel api={api} source={source} selection={shownSelection}
+            busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={setBusy} onSelection={setSelection}
+            onDrawRegion={() => { setDrawingAnalysisRegion(true); setResultId(null); setResultView(null); setImage(null); }}
+            onUse={(next, region) => { setRecipe(next); setSelection(region); }}
+            onResult={async (target, measurements) => { await persistRevision(target, measurements); await api.getSnapshot().then(adopt); }} /></details>}
+          <details className="external-labels-disclosure"><summary>Import existing labels</summary>
+          <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
+            navigationIntent={() => largeNavigationIntent.current}
+            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={(message, owner) => {
+              if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
+              else if (labelImportBusyOwner.current?.owner === owner) {
+                const ownMessage = labelImportBusyOwner.current.message;
+                labelImportBusyOwner.current = null;
+                setBusy((current) => current === ownMessage ? null : current);
+              }
+            }}
+            onResult={async (target, measurements, isCurrent) => {
+              const capturedScope = labelImportScope;
+              const current = () => isCurrent() && liveLabelImportScope.current === capturedScope && !documentSwitch.current;
+              if (await persistRevision(target, measurements, undefined, current, true) && current()) {
+                setRedoStack([]); setCorrectionObjectTarget(null); openWorkbenchTab("Population");
+              }
+            }} /></details>
+
           </>
         )}
         {populationOpened && selectedResult && (<div className="population-workspace-host" hidden={tab !== "Population"}>
@@ -4505,18 +4515,8 @@ function Analyze({
       )}
       {!isRgb && (
         <>
-          {!rgbIntensity && <div className="research-segmentation-input">
-            <label>Segmentation input
-              <select aria-label="Segmentation input" disabled={busy || inputUnavailable} value={selection.c}
-                onChange={(event) => onSegmentationChannel(Number(event.target.value))}>
-                {Array.from({ length: channelCount }, (_, index) => <option key={index} value={index}>
-                  {index + 1}: {channelNames?.[index]?.trim() || `Channel ${index + 1}`}
-                </option>)}
-              </select>
-            </label>
-            <small>Raw source channel · T {selection.t + 1} · {selection.z_stop === undefined
-              ? `Z ${selection.z + 1}` : `Z ${selection.z + 1}–${selection.z_stop}`}</small>
-          </div>}
+          {!rgbIntensity && <SegmentationInputControl channelCount={channelCount} channelNames={channelNames}
+            selection={selection} disabled={busy || inputUnavailable} onChange={onSegmentationChannel} />}
           <label>
             Threshold
             <ValidatedNumberInput key={`${numberKey}:Threshold`} label="Threshold" value={Number(segmentation.threshold)}
@@ -6272,6 +6272,7 @@ export function Info({
             <button type="button" aria-pressed={section === "export"} onClick={() => changeSection("export")}>Export</button>
           </div>
           {section === "review" && <section aria-label="Review result">
+            {result.kind === "perinuclear-enrichment" && <PerinuclearResultSummary api={api} result={result} rows={rows} />}
             {rows.length > 0 && (
               <div className="research-result-summary-card">
                 <div className="research-result-summary-header">

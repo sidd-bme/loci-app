@@ -249,6 +249,10 @@ def execute_edit(
         operation,
     )
     parent = _bound_result(workbench, request)
+    if "perinuclear" in parent["provenance"]:
+        raise ValueError(
+            "Edit or annotate the underlying nucleus result and rerun perinuclear enrichment"
+        )
     if operation == "correct_result" and "association" in parent["provenance"]:
         raise ValueError("Correct the underlying cell or nucleus result and rerun the association")
     if "tracking" in parent["provenance"]:

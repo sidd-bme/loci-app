@@ -2342,7 +2342,7 @@ describe("ResearchWorkbench", () => {
     };
     const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(null), tryExample: vi.fn().mockResolvedValue(practice) });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Try an example" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Try a synthetic example" }));
     expect(await screen.findByText("Practice guide · synthetic shapes")).toBeVisible();
     expect(bridge.tryExample).toHaveBeenCalledWith();
     expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
@@ -2762,6 +2762,110 @@ describe("ResearchWorkbench", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     expect(screen.getByRole("button", { name: "Export result" })).toBeEnabled();
   });
+  it("keeps primary segmentation controls before collapsed comparison and label import", async () => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.sources[0].metadata.dimensions!.z = 1;
+    active.sources[0].metadata.levels![0].dimensions.z = 1;
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+    const widthKey = "loci.inspector-width.v1";
+    const previousWidth = localStorage.getItem(widthKey);
+    localStorage.setItem(widthKey, "300");
+    try { render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />); }
+    finally {
+      if (previousWidth === null) localStorage.removeItem(widthKey);
+      else localStorage.setItem(widthKey, previousWidth);
+    }
+    expect(await screen.findByRole("main", { name: "Research workspace" })).toHaveStyle("--research-inspector-width: 300px");
+    await openTool("Analyze", "Analyze");
+    const model = screen.getByRole("combobox", { name: "Segmentation model" });
+    const run = screen.getByRole("button", { name: "Run recipe" });
+    const comparison = screen.getByText("Compare settings on regions", { selector: "summary" });
+    const labels = screen.getByText("Import existing labels", { selector: "summary" });
+    const comparisonDisclosure = comparison.closest("details")!;
+    const labelsDisclosure = labels.closest("details")!;
+    const setting = screen.getByLabelText("Setting 1 threshold");
+    expect(model).toBeVisible();
+    expect(run).toBeVisible();
+    expect(model.compareDocumentPosition(run) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(run.compareDocumentPosition(comparison) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(comparison.compareDocumentPosition(labels) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(comparisonDisclosure).not.toHaveAttribute("open");
+    expect(labelsDisclosure).not.toHaveAttribute("open");
+    expect(setting).not.toBeVisible();
+    run.focus();
+    expect(run).toHaveFocus();
+    comparison.focus();
+    expect(comparison).toHaveFocus();
+    fireEvent.click(comparison);
+    expect(comparisonDisclosure).toHaveAttribute("open");
+    expect(setting).toBeVisible();
+    expect(labelsDisclosure).not.toHaveAttribute("open");
+    // Disclosure toggles preserve the optional workflow's numeric state.
+    fireEvent.change(setting, { target: { value: "17" } });
+    fireEvent.click(comparison);
+    expect(setting).not.toBeVisible();
+    fireEvent.click(comparison);
+    expect(setting).toHaveValue("17");
+    labels.focus();
+    expect(labels).toHaveFocus();
+    fireEvent.click(labels);
+    expect(labelsDisclosure).toHaveAttribute("open");
+    expect(model).toHaveValue("classical");
+    expect(screen.getByRole("textbox", { name: "Threshold" })).toHaveValue("0");
+    expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
+    expect(bridge.execute).not.toHaveBeenCalledWith("exploration_preview", expect.anything());
+  });
+
+  it.each([true, false])("selects Adaptive raw input independently of display with source-bound declaration names (%s)", async (matchingDeclaration) => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.sources[0].metadata.dimensions!.z = 1;
+    active.sources[0].metadata.levels![0].dimensions.z = 1;
+    active.sources[0].metadata.channel_names = ["Stored GFP", "Stored DNA"];
+    active.channels = [{ id: active.sources[0].id, revision: 1, data: {
+      source_sha256: matchingDeclaration ? active.sources[0].sha256 : "0".repeat(64), original_names: ["Stored GFP", "Stored DNA"],
+      channels: ["Declared GFP", "Declared DNA"].map((name, index) => ({ index, name, marker: "", fluorophore: "", declaration: "Recorded acquisition" })),
+    } }];
+    const settings = { image_mode: "fluorescence", polarity: "bright", expected_diameter_px: 34, min_area_px: 80,
+      sensitivity: 0, smoothing_px: 1.2, split_touching: true, exclude_border: false };
+    const native = { listProfiles: vi.fn().mockResolvedValue([{ id: "loci-classical", backendKind: "classical",
+      recommendedSettings: settings, settingsContract: [], validation: { summary: "Deterministic fixture" } }]) };
+    const previous = Object.getOwnPropertyDescriptor(window, "loci");
+    Object.defineProperty(window, "loci", { configurable: true, value: native });
+    try {
+      const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active) });
+      const original = bridge.execute;
+      bridge.execute = vi.fn(async (operation, request, options) => operation === "classical_run"
+        ? { result: { ...active.results[0], kind: "adaptive-segmentation" } } : original(operation, request, options));
+      render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+      await openTool("Analyze", "Analyze");
+      fireEvent.change(screen.getByRole("combobox", { name: "Segmentation model" }), { target: { value: "adaptive" } });
+      const input = await screen.findByRole("combobox", { name: "Segmentation input" });
+      await waitFor(() => expect(input).toBeEnabled());
+      expect(within(input).getAllByRole("option").map((option) => option.textContent?.trim())).toEqual(
+        matchingDeclaration ? ["1: Declared GFP", "2: Declared DNA"] : ["1: Stored GFP", "2: Stored DNA"]);
+      fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "1" } });
+      fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+      expect(input).toHaveValue("0");
+      input.focus(); expect(input).toHaveFocus();
+      fireEvent.change(input, { target: { value: "1" } });
+      expect(input).toHaveValue("1");
+      fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "0" } });
+      fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+      expect(input).toHaveValue("1");
+      await waitFor(() => expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
+      await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("classical_run", expect.objectContaining({
+        source_id: active.sources[0].id, selection: expect.objectContaining({ c: 1, z: 0, t: 0 }),
+        settings, measurement_channels: [1], profile_id: "loci-classical",
+      })));
+    } finally {
+      if (previous) Object.defineProperty(window, "loci", previous);
+      else Reflect.deleteProperty(window, "loci");
+    }
+  });
+
   it.each([
     { names: ["DAPI", " Marker "], labels: ["1: DAPI", "2: Marker"] },
     { names: ["", "   "], labels: ["1: Channel 1", "2: Channel 2"] },

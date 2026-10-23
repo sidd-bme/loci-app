@@ -641,8 +641,27 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
         )
     records = _archive_records(project, snapshot)
     artifacts: dict[str, Path] = {}
+    perinuclear_parents = {}
     for result in snapshot["results"]:
         project.result(result["id"])
+        if "perinuclear" in result["provenance"]:
+            from .research_perinuclear import validate_parent, validate_source
+
+            nucleus_parent = project.result(result["provenance"]["parent_result"]["result_id"])
+            validate_parent(result, nucleus_parent)
+            validate_source(result, project.source(result["source_id"]))
+            perinuclear_parents[result["id"]] = nucleus_parent
+    # Every persisted scientific scope/budget is preflighted before decoding
+    # even a parent artifact from another result in this portable study.
+    for result in snapshot["results"]:
+        if result["id"] in perinuclear_parents:
+            from .research_perinuclear import validate_arrays
+
+            validate_arrays(
+                result,
+                {name: project.load_array(item) for name, item in result["arrays"].items()},
+                parent=perinuclear_parents[result["id"]],
+            )
         for descriptor in result.get("arrays", {}).values():
             project.load_array(descriptor)
             artifacts[descriptor["sha256"]] = project.arrays / (descriptor["sha256"] + ".npy")
@@ -908,6 +927,10 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
+    if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record["provenance"]:
+        from .research_perinuclear import validate_record
+
+        validate_record(record)
     return record
 
 
@@ -944,6 +967,15 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if result.get("kind") == "perinuclear-enrichment" or "perinuclear" in provenance:
+        from .research_perinuclear import validate_parent, validate_record, validate_source
+
+        validate_record(result)
+        parent = results.get(provenance["parent_result"]["result_id"])
+        if parent is None:
+            raise ValueError("Perinuclear nucleus input is missing")
+        validate_parent(result, parent)
+        validate_source(result, sources[result["source_id"]])
     if "exploration" in provenance:
         from .research_exploration import validate_exploration_receipt
 
@@ -1530,6 +1562,15 @@ def import_project(
                     raise ValueError("Study artifact failed its manifest hash")
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
+            for result in results:
+                if "perinuclear" in result["provenance"]:
+                    from .research_perinuclear import validate_arrays
+
+                    validate_arrays(
+                        result,
+                        {name: project.load_array(item) for name, item in result["arrays"].items()},
+                        parent=result_by_id[result["provenance"]["parent_result"]["result_id"]],
+                    )
             from .research_correction_effect import validate_document as validate_effect_document
 
             for document in documents:

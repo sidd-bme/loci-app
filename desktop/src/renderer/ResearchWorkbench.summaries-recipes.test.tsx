@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchWorkbench, { computeResultStats, formatStatValue, Info } from "./ResearchWorkbench";
 import type { ResearchDesktopApi, ResearchSnapshot } from "../shared/research-contracts";
+import { PERINUCLEAR_RULES, PERINUCLEAR_VIEWS } from "../shared/perinuclear-contracts";
 
 let canvasContext: Record<string, ReturnType<typeof vi.fn>>;
 
@@ -366,6 +367,34 @@ describe("Info Review & export rendered summary component", () => {
       exportResult: vi.fn(async () => {}),
       getSnapshot: vi.fn(async () => structuredClone(mockSnapshot)),
     }) as unknown as ResearchDesktopApi;
+
+  it("restores the full perinuclear endpoint from saved result metadata before preview rows load", async () => {
+    const perinuclear = { ...PERINUCLEAR_RULES, schema: "loci.perinuclear-enrichment/v1" as const,
+      radius_px: 5, signal_channel: 0, control: "Recorded field controls",
+      nucleus_result: { result_id: "a".repeat(32), revision_hash: "b".repeat(64) },
+      summary: { object_count: 3, eligible_count: 2, excluded_count: 1,
+        excluded_by_reason: { "boundary-touching-nucleus": 1, "empty-ring": 0, "zero-mean-ring": 0 },
+        endpoint_defined: true, median_ratio: 2.5, mean_ratio: 2.5 } };
+    const geometry = { axes: "YX", unit: "pixel", frame: "image", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
+    const result = { id: "c".repeat(32), revision_hash: "d".repeat(64), source_id: mockSource.id,
+      source_sha256: mockSource.sha256, kind: "perinuclear-enrichment", created_at: "2026-10-23", parent_id: perinuclear.nucleus_result.result_id,
+      object_count: 3, perinuclear, geometry, selection: { x: 0, y: 0, width: 512, height: 512, c: 0, z: 0, t: 0, level: 0 },
+      arrays: { labels: { shape: [512, 512] }, ring_labels: { shape: [512, 512] }, ring_ambiguous: { shape: [512, 512] } } };
+    const execute = vi.fn(async (operation: string) => operation === "result_view" ? {
+      result_id: result.id, revision_hash: result.revision_hash, geometry, shape: [512, 512], axis: "z", index: 0,
+      image: "data:image/png;base64,AA==", label_image: "data:image/png;base64,AA==",
+      label_field: "nuclei", label_field_basis: PERINUCLEAR_VIEWS.nuclei.basis,
+    } : {});
+    const api = { ...createMockApi(), execute };
+    render(<Info source={mockSource} snapshot={{ ...mockSnapshot, results: [result] }} api={api} result={result} rows={[]}
+      onSave={vi.fn()} report={async (work) => work()} busy={false} onSnapshot={vi.fn()} />);
+    const summary = screen.getByRole("region", { name: "Perinuclear enrichment summary" });
+    expect(summary).toHaveTextContent("2 of 3 nuclei");
+    expect(within(summary).getAllByText("2.5")).toHaveLength(2);
+    expect(screen.getByText("No preview measurements are available for this revision.")).toBeVisible();
+    expect(await screen.findByRole("img", { name: "Nuclei (all) over the saved raw signal channel" })).toBeVisible();
+    expect(execute).not.toHaveBeenCalledWith("perinuclear_run", expect.anything());
+  });
 
   it("opens Review with evidence, partial coverage and units before exposing export configuration", () => {
     const api = createMockApi();

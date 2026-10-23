@@ -101,6 +101,18 @@ function renderPanel(execute: ResearchDesktopApi["execute"], custom = snapshot) 
 }
 
 describe("ResearchQuantificationPanel", () => {
+  it("exposes perinuclear enrichment through the ordinary fluorescence tool with declared raw channels", async () => {
+    const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {});
+    renderPanel(execute, { ...snapshot, operations: { perinuclear_run: { mutates: true, summary: "Measure perinuclear enrichment" } } });
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByRole("button", { name: "Perinuclear" }));
+    expect(screen.getByRole("heading", { name: "Perinuclear enrichment" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Perinuclear nucleus result" })).toBeVisible();
+    expect(within(screen.getByRole("combobox", { name: "Perinuclear raw signal channel" })).getByRole("option", { name: "1: DNA" })).toHaveValue("0");
+    expect(screen.getByRole("button", { name: "Measure perinuclear enrichment" })).toBeDisabled();
+    expect(execute).not.toHaveBeenCalledWith("perinuclear_run", expect.anything());
+  });
+
   it("labels puncta lengths from source calibration and preserves exact preview/run values", async () => {
     const adopted = { ...results[0], id: "3".repeat(32), revision_hash: "8".repeat(64) };
     const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata :

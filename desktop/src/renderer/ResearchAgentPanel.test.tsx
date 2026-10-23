@@ -84,6 +84,7 @@ describe("ResearchAgentPanel", () => {
   it("grants the full explicit study snapshot and invalidates the receipt when it changes", async () => {
     const second = { ...source, id: "2".repeat(32), sha256: "3".repeat(64), name: "Second source" };
     const operations: ResearchSnapshot["operations"] = {
+      classical_run: { summary: "Run classical segmentation", mutates: true, agent_execution: "task" },
       correction_info: { summary: "Inspect labels for correction", mutates: false, agent_execution: "read" },
       correct_result: { summary: "Correct labels", mutates: true, agent_execution: "task" },
     };
@@ -105,16 +106,50 @@ describe("ResearchAgentPanel", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
     expect(createAgentAccess).not.toHaveBeenCalled();
     expect(screen.getByText(/all 2 current sources/)).toBeVisible();
+    fireEvent.click(screen.getByText("Customize permissions"));
+    fireEvent.click(screen.getByText("Included actions (3)"));
+    expect(screen.getByText("Run classical segmentation")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
     await screen.findByLabelText("Created agent access receipt");
     expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
       allow_run: true, allow_export: true, export_names: [], export_scope: "directory",
-      actions: ["correct_result", "correction_info"],
+      actions: ["classical_run", "correct_result", "correction_info"],
       delegation: { client_id: "codex", expires_at: null, result_scope: "granted-sources", allow_review: true },
       source_scope: { mode: "study-sources", sources: [source, second].map(({ id, sha256 }) => ({ id, sha256 })) },
     }));
     rerender(<ResearchAgentPanel {...props} studySources={[source, second, { ...second, id: "4".repeat(32) }]} />);
     await waitFor(() => expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument());
+    expect(createAgentAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps task actions out of Inspect and invalidates a receipt when the action catalogue changes", async () => {
+    const operations: ResearchSnapshot["operations"] = {
+      classical_run: { summary: "Run classical segmentation", mutates: true, agent_execution: "task" },
+      correction_info: { summary: "Inspect labels", mutates: false, agent_execution: "read" },
+    };
+    const createAgentAccess = vi.fn(async (request) => ({
+      ...receipt, schema: "loci.agent-policy/v4", plugin_filename: "plugin/plugin.json",
+      delegation: { id: "f".repeat(32), client_id: request.delegation.client_id,
+        expires_at: request.delegation.expires_at, result_scope: request.delegation.result_scope },
+      actions: request.actions, sources: [{ id: source.id, sha256: source.sha256 }], export_scope: "listed",
+      disclosures: request.disclosures,
+      operations: ["inspect_source", "validate_recipe", "analysis_context", "result", "result_view",
+        "source_image", "review_history", "study_results", "validate_action", "inspect_action"],
+    })) as NonNullable<ResearchDesktopApi["createAgentAccess"]>;
+    const props = { api: bridge(vi.fn().mockResolvedValue(validation), createAgentAccess), source, selection, recipe,
+      operations, report: async <T,>(work: () => Promise<T>) => work(), busy: false, onBusyChange: vi.fn() };
+    const { rerender } = render(<ResearchAgentPanel {...props} />);
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      actions: ["correction_info"], allow_run: false, allow_export: false,
+      delegation: expect.objectContaining({ allow_review: false }),
+    }));
+    rerender(<ResearchAgentPanel {...props} operations={{ classical_run: operations.classical_run }} />);
+    await waitFor(() => expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
     expect(createAgentAccess).toHaveBeenCalledTimes(1);
   });
 
