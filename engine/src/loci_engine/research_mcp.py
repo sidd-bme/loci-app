@@ -11,17 +11,24 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
 from .agent_experiments import matching_templates
-from .agent_policy import STUDY_POLICY_SCHEMA, VISION_POLICY_SCHEMAS, AgentPolicy, load_policy
+from .agent_policy import (
+    DISCLOSURES,
+    STUDY_POLICY_SCHEMA,
+    VISION_POLICY_SCHEMAS,
+    AgentPolicy,
+    load_policy,
+)
 from .export import _rename_noreplace
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
 from .research_process import research_command
 from .research_project import ResearchProject, checked_id, parse_json, timestamp
+from .research_tool_schemas import ReviewResultRequest, SourceImageRequest, tool_request_schema
 from .workbench import Workbench, runtime_record
 
 _TOOL_CATALOG = (
@@ -73,7 +80,8 @@ _VISION_TOOL_CATALOG = (
     (
         "source_image",
         "Render an explicit permitted crop and channel display as a native image; "
-        "requires previews.",
+        "requires previews. Read this tool's request schema in list_tools or "
+        "catalog.tools[].request_schema; action_guide describes analysis actions, not this tool.",
     ),
     ("source_display", "Read only granted channel display settings and optimistic view revision."),
     (
@@ -91,7 +99,8 @@ _STUDY_TOOL_CATALOG = (
     (
         "action_guide",
         "Discover shared analysis and editing request schemas, units, effects and retry "
-        "contracts; no study data is read.",
+        "contracts; no study data is read. Accepts registered action names only. "
+        "For source_image/review_result, read their list_tools request schemas or catalog.",
     ),
     (
         "study_results",
@@ -118,7 +127,9 @@ _STUDY_TOOL_CATALOG = (
         "review_result",
         "Record an explicitly delegated agent decision for an exact result revision. "
         "Supply the current review digest, assessment reason and inspected coverage; "
-        "this never creates a human review.",
+        "this never creates a human review. Read this tool's request schema in list_tools "
+        "or catalog.tools[].request_schema; action_guide describes analysis actions, "
+        "not this tool.",
     ),
 )
 _EXPORT_DISCLOSURES = ("geometry", "source_names", "previews", "measurements", "provenance")
@@ -516,6 +527,12 @@ class PolicyAgent:
 
     def _provenance(self, original: dict[str, Any]) -> dict[str, Any]:
         value = dict(original)
+        if "perinuclear" in value and not self.policy.disclosures >= DISCLOSURES:
+            # These bounded scientific snapshots combine counts, channel
+            # declarations, geometry and parent identities. A narrower reader
+            # receives its separately authorized rows/view, not hidden fields.
+            for key in ("perinuclear", "nucleus_analysis", "parent_result"):
+                value.pop(key, None)
         if "geometry" not in self.policy.disclosures:
             value.pop("geometry", None)
             value.pop("selection", None)
@@ -827,7 +844,15 @@ class PolicyAgent:
             "schema": "loci.agent-tools/v1",
             "transport": "stdio",
             "tools": [
-                {"name": name, "description": description}
+                {
+                    "name": name,
+                    "description": description,
+                    **(
+                        {"request_schema": schema}
+                        if (schema := tool_request_schema(name)) is not None
+                        else {}
+                    ),
+                }
                 for name, description in (
                     _TOOL_CATALOG
                     + (_VISION_TOOL_CATALOG if self.policy.schema in VISION_POLICY_SCHEMAS else ())
@@ -1139,6 +1164,7 @@ class PolicyAgent:
         axis: str = "z",
         index: int | None = None,
         labels: bool = True,
+        label_field: Literal["nuclei", "rings", "ambiguous"] | None = None,
     ) -> dict[str, Any]:
         workbench = self._workbench("result_view")
         try:
@@ -1147,8 +1173,15 @@ class PolicyAgent:
             request: dict[str, Any] = {"result_id": result_id, "axis": axis, "labels": labels}
             if index is not None:
                 request["index"] = index
+            if label_field is not None:
+                request["label_field"] = label_field
             value = workbench.result_view(request)
             output = {
+                **(
+                    {key: value[key] for key in ("label_field", "label_field_basis")}
+                    if "label_field" in value
+                    else {}
+                ),
                 "image": value["image"],
                 "result_id": value["result_id"],
                 "revision_hash": value["revision_hash"],
@@ -1671,6 +1704,10 @@ def build_server(policy_path: str | Path) -> MCPServer:
         if context.method == "tools/call" and isinstance(params, dict):
             name = params.get("name")
             action_arguments = {
+                "result_view": (
+                    {"result_id", "axis", "index", "labels", "label_field"},
+                    {"result_id"},
+                ),
                 "action_guide": ({"operation"}, set()),
                 "study_results": ({"source_id", "offset", "limit"}, set()),
                 "validate_action": ({"operation", "request"}, {"operation", "request"}),
@@ -1983,8 +2020,9 @@ def build_server(policy_path: str | Path) -> MCPServer:
         axis: str = "z",
         index: int | None = None,
         labels: bool = True,
+        label_field: Literal["nuclei", "rings", "ambiguous"] | None = None,
     ) -> dict[str, Any]:
-        return image_result(lambda: agent.result_view(result_id, axis, index, labels))
+        return image_result(lambda: agent.result_view(result_id, axis, index, labels, label_field))
 
     @server.tool(
         name="export_result",
@@ -2061,7 +2099,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             description=descriptions["review_result"],
             annotations=annotations("review_result"),
         )
-        def review_result(request: dict[str, Any]) -> dict[str, Any]:
+        def review_result(request: ReviewResultRequest) -> dict[str, Any]:
             return invoke(lambda: agent.review_result(request))
 
     if agent.policy.schema in VISION_POLICY_SCHEMAS:
@@ -2072,7 +2110,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             description=descriptions["source_image"],
             annotations=annotations("source_image"),
         )
-        def source_image(request: dict[str, Any]) -> dict[str, Any]:
+        def source_image(request: SourceImageRequest) -> dict[str, Any]:
             return image_result(lambda: agent.source_image(request))
 
         @server.tool(

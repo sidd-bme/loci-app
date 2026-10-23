@@ -150,7 +150,7 @@ try {
   };
   await launch();
   await shot("01-welcome");
-  await page.getByRole("button", { name: "Try an example", exact: true }).click();
+  await page.getByRole("button", { name: "Try a synthetic example", exact: true }).click();
   const created = await until(snapshot, (value) => value?.sources.length === 1, "source-only example");
   assert.equal(created.results.length, 0);
   assert.equal(created.jobs.length, 0);

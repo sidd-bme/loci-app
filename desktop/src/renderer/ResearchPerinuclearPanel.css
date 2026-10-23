@@ -1,0 +1,20 @@
+.research-perinuclear { min-width: 0; }
+.research-perinuclear > label { min-width: 0; }
+.research-perinuclear :is(select, textarea) { width: 100%; min-width: 0; box-sizing: border-box; }
+.research-perinuclear details { margin-block: 12px; }
+.research-perinuclear summary, .perinuclear-result summary { min-height: 32px; align-content: center; cursor: pointer; }
+.perinuclear-result { min-width: 0; }
+.perinuclear-result .research-kv dd { font-variant-numeric: tabular-nums; }
+.perinuclear-table-region { overflow: auto; max-width: 100%; overscroll-behavior: contain; }
+.perinuclear-table-region:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.perinuclear-table-region table { width: max-content; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.perinuclear-table-region :is(th, td) { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.perinuclear-table-region td:last-child { max-width: 240px; white-space: normal; }
+.perinuclear-pages { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+
+.perinuclear-qc { margin-block: 16px; min-width: 0; }
+.perinuclear-qc select { width: 100%; min-width: 0; }
+.perinuclear-qc-image { margin: 12px 0; min-width: 0; }
+.perinuclear-qc-image img { display: block; width: 100%; max-height: 320px; object-fit: contain; background: var(--graphite-925); }
+.perinuclear-qc-image figcaption { margin-top: 6px; color: var(--ink-secondary); font-size: var(--type-sm); line-height: 1.45; }
+.population-dialog-body .perinuclear-qc-image img { max-height: 70vh; }

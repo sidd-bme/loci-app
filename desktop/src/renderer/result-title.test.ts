@@ -15,6 +15,7 @@ describe("readable result titles", () => {
     ["puncta-quantification", "Puncta detection"],
     ["nucleus-cell-association", "Nucleus-cell association"],
     ["field-assay", "Fluorescence field assay"],
+    ["perinuclear-enrichment", "Perinuclear enrichment"],
     ["large-components", "Threshold segmentation"],
     ["adaptive-segmentation", "Adaptive watershed segmentation"],
     ["processed", "Image processing"],

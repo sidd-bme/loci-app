@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from .profiles import DEFAULT_PROFILE_ID
 from .research_operations import OPERATION_CATALOG
 from .research_recipe_guide import recipe_guide
 
@@ -43,6 +44,18 @@ POINTS = _array(POINT, 3, 4096)
 RECIPE = recipe_guide()["request_schema"]
 SELECTION = RECIPE["properties"]["selection"]
 SOURCE = {"source_id": ID, "selection": SELECTION}
+ADAPTIVE_SETTINGS = _object(
+    {
+        "image_mode": {"enum": ["auto", "brightfield", "fluorescence"]},
+        "polarity": {"enum": ["auto", "dark", "bright"]},
+        "expected_diameter_px": {"type": "number", "minimum": 4, "maximum": 1000},
+        "min_area_px": {"type": "integer", "minimum": 1, "maximum": 10_000_000},
+        "sensitivity": {"type": "number", "minimum": -1, "maximum": 1},
+        "smoothing_px": {"type": "number", "minimum": 0, "maximum": 20},
+        "split_touching": {"type": "boolean"},
+        "exclude_border": {"type": "boolean"},
+    }
+)
 CORRECTIONS = []
 for _operation, _fields in (
     ("delete", {"label": LABEL}),
@@ -95,7 +108,32 @@ for _mode, _fields in (
 
 REQUESTS = {
     "run_recipe": RECIPE,
+    "classical_run": _object(
+        {
+            "source_id": ID,
+            "selection": _object(
+                {
+                    **{name: INDEX for name in ("x", "y", "t", "c", "z", "level")},
+                    "width": {"type": "integer", "minimum": 1},
+                    "height": {"type": "integer", "minimum": 1},
+                }
+            ),
+            "profile_id": {"const": DEFAULT_PROFILE_ID},
+            "settings": ADAPTIVE_SETTINGS,
+            "measurement_channels": _array(INDEX, 0, 32),
+            "working_bytes": MEMORY,
+        }
+    ),
     "describe_result": _object(BOUND),
+    "perinuclear_run": _object(
+        {
+            **BOUND,
+            "signal_channel": {"type": "integer", "minimum": 0, "maximum": 255},
+            "radius_px": {"type": "number", "exclusiveMinimum": 0, "maximum": 128},
+            "working_bytes": MEMORY,
+            "control": TEXT,
+        }
+    ),
     "correction_info": _object({**BOUND, "label": LABEL, "plane": PLANE, "index": INDEX}, BOUND),
     "correct_result": _object(
         {**BOUND, "operations": _array({"oneOf": CORRECTIONS}, 1, 64), "working_bytes": MEMORY},

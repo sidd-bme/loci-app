@@ -23,9 +23,9 @@ function welcome(recent: Array<Record<string, unknown>> = [],
 describe("image-first welcome", () => {
   it("offers an optional offline example without blocking normal opening", () => {
     const { onExample, onOpen } = welcome();
-    fireEvent.click(screen.getByRole("button", { name: "Try an example" }));
+    fireEvent.click(screen.getByRole("button", { name: "Try a synthetic example" }));
     expect(onExample).toHaveBeenCalledOnce();
-    expect(screen.getByText(/Offline synthetic shapes/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try a synthetic example" })).toBeVisible();
     expect(onOpen).not.toHaveBeenCalled();
   });
 
@@ -116,19 +116,20 @@ describe("image-first welcome", () => {
     expect(screen.getByText(/let Loci validate/)).toBeVisible();
     const primary = screen.getByRole("button", { name: "Open images" });
     expect(primary).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Try an example" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Try a synthetic example" })).toBeDisabled();
     fireEvent.click(primary);
     expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("keeps truthful recent and manual research guidance visible when history is empty", async () => {
+  it("keeps the empty history concise without duplicated opening guidance", async () => {
     const { api } = welcome();
     await waitFor(() => expect(api.recoveryList).toHaveBeenCalled());
     expect(screen.getByRole("heading", { name: "Recent work" })).toBeVisible();
     expect(screen.getByText("No recent work yet")).toBeVisible();
-    expect(screen.getByText("Opened sessions and saved studies will appear here.")).toBeVisible();
-    expect(screen.getByRole("region", { name: "Research tips" })).toBeVisible();
-    expect(screen.getByText("Drag and drop to open")).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Research tips" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Explore, annotate/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Opened sessions and saved studies/)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Open images" })).toHaveLength(1);
   });
 
   it("shows five recent sessions until View all, exposes registry update time, and reopens one", async () => {
@@ -157,50 +158,30 @@ describe("image-first welcome", () => {
     await waitFor(() => expect(onRecovery).toHaveBeenCalled());
   });
 
-  it("moves through research tips by buttons and keyboard and runs their real open actions", () => {
-    const { onOpen, onStudy } = welcome();
-    const tips = screen.getByRole("region", { name: "Research tips" });
-    fireEvent.click(screen.getByRole("button", { name: "Next tip" }));
-    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Choose DICOM files" }));
-    expect(onOpen).toHaveBeenLastCalledWith("dicom");
-    fireEvent.keyDown(tips, { key: "ArrowRight" });
-    expect(screen.getByText("Open local multiscale data")).toBeVisible();
-    fireEvent.keyDown(tips, { key: "ArrowLeft" });
-    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
-    fireEvent.keyDown(tips, { key: "End" });
-    expect(screen.getByText("Resume a saved study")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Choose study" }));
-    expect(onStudy).toHaveBeenCalledOnce();
-    fireEvent.keyDown(tips, { key: "Home" });
-    expect(screen.getByText("Drag and drop to open")).toBeVisible();
+
+  it("keeps unavailable sessions disabled and preserves discard with undo", async () => {
+    const recent = [
+      { sessionId: "ready", title: "Ready study", status: "ready", storage: "managed", canDiscard: true },
+      { sessionId: "missing", title: "Disconnected study", status: "recoverable", storage: "study", canDiscard: false },
+    ];
+    const { api, onRecovery } = welcome(recent);
+    const unavailable = await screen.findByRole("button", { name: "Disconnected study" });
+    expect(unavailable).toBeDisabled();
+    expect(unavailable).toHaveTextContent("unavailable");
+    fireEvent.click(unavailable);
+    expect(api.recoveryKeep).not.toHaveBeenCalled();
+    api.recoveryDiscard = vi.fn().mockResolvedValue({ undoToken: "undo-ready" });
+    api.recoveryUndo = vi.fn().mockResolvedValue(undefined);
+    api.getSnapshot = vi.fn().mockResolvedValue(null);
+    fireEvent.click(screen.getByRole("button", { name: "Discard Ready study" }));
+    await screen.findByRole("button", { name: "Undo" });
+    expect(api.recoveryDiscard).toHaveBeenCalledWith("ready");
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(api.recoveryUndo).toHaveBeenCalledWith("undo-ready"));
+    await waitFor(() => expect(onRecovery).toHaveBeenCalledWith(null));
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
 
-  it("keeps tips on the chosen page until manual navigation, including after focus leaves", async () => {
-    vi.useFakeTimers();
-    welcome();
-    await act(async () => { await Promise.resolve(); });
-    act(() => vi.advanceTimersByTime(21000));
-    expect(screen.getByText("Drag and drop to open")).toBeVisible();
-    const next = screen.getByRole("button", { name: "Next tip" });
-    next.focus();
-    fireEvent.click(next);
-    expect(next).toHaveFocus();
-    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
-    screen.getByRole("button", { name: "Open images" }).focus();
-    fireEvent.pointerLeave(screen.getByRole("region", { name: "Research tips" }));
-    act(() => vi.advanceTimersByTime(21000));
-    expect(screen.getByText("Inspect a DICOM series")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open images" })).toHaveFocus();
-  });
-
-  it("states common formats without redundant generic picker buttons", () => {
-    welcome();
-    expect(screen.getByText("TIFF, OME-TIFF, PNG or JPEG")).toBeVisible();
-    for (const name of ["TIFF", "OME-TIFF", "PNG", "JPEG"]) {
-      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
-    }
-  });
 });
 
 describe("workbench tool selector", () => {

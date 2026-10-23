@@ -640,6 +640,7 @@ export class ResearchBridge {
       "puncta_run",
       "field_assay_preview",
       "field_assay_run",
+      "perinuclear_run",
       "associate_results",
       "colocalisation_run",
     ]);

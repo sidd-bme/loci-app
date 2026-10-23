@@ -105,6 +105,51 @@ def authorize_action(
     if operation == "run_recipe":
         normalized = recipe_scope(policy, workbench, request)
         request = {key: normalized[key] for key in ("source_id", "selection", "recipe")}
+    elif operation == "classical_run":
+        from .profiles import DEFAULT_PROFILE_ID
+        from .research_cellpose import _measurement_channels
+        from .working_result import _settings_from_record
+
+        if request["profile_id"] != DEFAULT_PROFILE_ID:
+            raise ValueError("Choose the built-in Loci Adaptive Watershed profile")
+        # Use the native settings validator; the action adds authorization, not
+        # another segmentation implementation or a looser normalization path.
+        _settings_from_record(
+            {"kind": "SegmentationSettings", "values": request["settings"]},
+            backend_kind="classical",
+        )
+        selection = request["selection"]
+        if not isinstance(selection, dict) or set(selection) != {
+            "x",
+            "y",
+            "width",
+            "height",
+            "t",
+            "c",
+            "z",
+            "level",
+        }:
+            raise ValueError("Adaptive segmentation requires one fully resolved 2D source plane")
+        policy.source_grant(workbench.project, request["source_id"])
+        declarations = workbench.channel_metadata(request["source_id"])
+        channels = _measurement_channels(
+            request["measurement_channels"], len(declarations["channels"])
+        )
+        request["selection"] = source_scope(
+            policy, workbench, request["source_id"], selection, channels
+        )
+        policy.require_runtime(runtime_record())
+    elif operation == "perinuclear_run":
+        from .research_perinuclear import validate_request
+
+        accepted = validate_request(workbench, request)
+        source_scope(
+            policy,
+            workbench,
+            bound["source_id"],
+            accepted["selection"],
+            [request["signal_channel"]],
+        )
     elif operation in {
         "puncta_run",
         "colocalisation_run",

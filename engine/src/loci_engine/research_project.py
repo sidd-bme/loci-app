@@ -835,6 +835,11 @@ class ResearchProject:
             "arrays": artifacts,
             "provenance": provenance,
         }
+        if kind == "perinuclear-enrichment" or "perinuclear" in provenance:
+            from .research_perinuclear import validate_record, validate_source
+
+            validate_record(record)
+            validate_source(record, source)
         record["revision_hash"] = hashlib.sha256(canonical_json(record).encode()).hexdigest()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1086,7 +1091,13 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
-            pass
+            if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record.get(
+                "provenance", {}
+            ):
+                from .research_perinuclear import validate_record, validate_source
+
+                validate_record(record)
+                validate_source(record, self.source(record["source_id"]))
         elif schema == "loci.research-result/v2" and self.schema_version == 2:
             from .research_tiled_store import validate_grid, validate_object_table
 

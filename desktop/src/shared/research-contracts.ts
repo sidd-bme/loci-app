@@ -1,3 +1,4 @@
+import type { ResearchPerinuclearRecord } from "./perinuclear-contracts";
 import type { ScientificExportRequest, ScientificExportPreview, ScientificExportReceipt } from "./scientific-export-contracts";
 import type { StatisticsFigureExportRequest, StatisticsFigureExportReceipt } from "./statistics-figure-contracts";
 /** Renderer-safe records for the native research workbench bridge. */
@@ -77,6 +78,9 @@ export interface ResearchResult {
   review?: ResearchReview | null;
   working_bytes?: number;
   label_import?: ResearchLabelImportIdentity;
+  perinuclear?: ResearchPerinuclearRecord;
+  /** Parent-label eligibility only; full source/grid/revision checks still apply. */
+  perinuclear_nuclei_eligible?: boolean;
 }
 export type ResearchReview = {
   disposition: string;

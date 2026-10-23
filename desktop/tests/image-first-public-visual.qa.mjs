@@ -185,17 +185,28 @@ async function auditWelcomeGeometry(label) {
     const primary = welcome?.querySelector(".welcome-open");
     const options = welcome?.querySelector(".welcome-options-toggle");
     const recent = welcome?.querySelector(".recent-sessions");
-    const tips = welcome?.querySelector(".welcome-tips");
+    const secondary = welcome?.querySelector(".welcome-secondary-actions");
     const actions = [...(welcome?.querySelectorAll(".welcome-main-actions > button") ?? [])];
-    const boxes = [welcome, heading, primary, options, recent, tips, ...actions].map((element) => {
+    const boxes = [welcome, heading, primary, options, recent, secondary, ...actions].map((element) => {
       const box = element?.getBoundingClientRect();
       return box ? { left: box.left, top: box.top, right: box.right, bottom: box.bottom,
         width: box.width, height: box.height } : null;
     });
     const actionTops = actions.map((element) => element.getBoundingClientRect().top);
-    const panelTops = [recent, tips].map((element) => element?.getBoundingClientRect().top ?? null);
+    const welcomeBox = welcome?.getBoundingClientRect();
+    const headingBox = heading?.getBoundingClientRect();
+    const recentBox = recent?.getBoundingClientRect();
+    const secondaryBox = secondary?.getBoundingClientRect();
     return { boxes, heading_text: heading?.textContent?.trim() ?? "",
-      action_count: actions.length, action_tops: actionTops, panel_tops: panelTops,
+      action_count: actions.length, action_tops: actionTops,
+      action_labels: actions.map((element) => element.textContent.trim()),
+      action_subtitle_count: actions.reduce((count, element) => count + element.querySelectorAll("small").length, 0),
+      tip_count: welcome?.querySelectorAll(".welcome-tips").length ?? 0,
+      heading_bottom: headingBox?.bottom ?? null,
+      actions_bottom: actions.length ? Math.max(...actions.map((element) => element.getBoundingClientRect().bottom)) : null,
+      secondary_top: secondaryBox?.top ?? null, secondary_bottom: secondaryBox?.bottom ?? null,
+      recent_top: recentBox?.top ?? null, recent_width: recentBox?.width ?? null,
+      welcome_width: welcomeBox?.width ?? null,
       recent_empty: recent?.querySelector(".recent-empty")?.textContent?.trim() ?? "",
       viewport: { width: innerWidth, height: innerHeight },
       document_width: document.documentElement.scrollWidth,
@@ -206,9 +217,21 @@ async function auditWelcomeGeometry(label) {
   assert.equal(geometry.action_count, 3, `${label}: main opening action row is incomplete.`);
   assert.ok(Math.max(...geometry.action_tops) - Math.min(...geometry.action_tops) <= 1,
     `${label}: main opening actions are not in one row.`);
-  assert.ok(geometry.panel_tops.every((top) => top !== null) &&
-    Math.abs(geometry.panel_tops[0] - geometry.panel_tops[1]) <= 1,
-  `${label}: recent work and research tips are not aligned.`);
+  assert.deepEqual(geometry.action_labels, ["Open images", "Open folder", "Open study"],
+    `${label}: opening choices no longer name their native actions.`);
+  assert.equal(geometry.action_subtitle_count, 0, `${label}: redundant opening subtitles returned.`);
+  assert.equal(geometry.tip_count, 0, `${label}: the duplicate opening tip panel returned.`);
+  assert.ok(geometry.heading_bottom !== null && geometry.heading_bottom <= Math.min(...geometry.action_tops),
+    `${label}: opening choices overlap the heading.`);
+  assert.ok(geometry.secondary_top !== null && geometry.actions_bottom !== null &&
+    geometry.secondary_top >= geometry.actions_bottom,
+  `${label}: optional sources overlap the primary opening choices.`);
+  assert.ok(geometry.recent_top !== null && geometry.secondary_bottom !== null &&
+    geometry.recent_top >= geometry.secondary_bottom,
+  `${label}: recent work overlaps the optional sources.`);
+  assert.ok(geometry.recent_width !== null && geometry.welcome_width !== null &&
+    Math.abs(geometry.recent_width - geometry.welcome_width) <= 1,
+  `${label}: recent work does not use the welcome column width.`);
   assert.match(geometry.recent_empty, /No recent work yet/,
     `${label}: recent work lacks its truthful empty state.`);
   assert.ok(geometry.document_width <= geometry.viewport.width + 1, `${label}: horizontal overflow.`);
@@ -356,21 +379,31 @@ try {
     "Reduced motion still created a decorative phase pulse.");
   await page.emulateMedia({ reducedMotion: "no-preference" });
 
-  const tips = page.getByRole("region", { name: "Research tips" });
-  await tips.focus();
-  assert.equal(await tips.evaluate((element) => document.activeElement === element), true,
-    "The research tips region is not keyboard focusable.");
-  await tips.getByRole("button", { name: "Next tip", exact: true }).click();
-  await page.getByText("Inspect a DICOM series", { exact: true }).waitFor();
-  await tips.press("ArrowRight");
-  await page.getByText("Open local multiscale data", { exact: true }).waitFor();
-  await tips.press("ArrowLeft");
-  await page.getByText("Inspect a DICOM series", { exact: true }).waitFor();
-  await tips.press("Home");
-  await page.getByText("Drag and drop to open", { exact: true }).waitFor();
-  for (const shortcut of ["TIFF", "OME-TIFF", "PNG", "JPEG", "DICOM", "OME-Zarr"])
-    assert.equal(await tips.getByRole("button", { name: shortcut, exact: true }).isEnabled(), true,
-      `${shortcut} shortcut is unavailable.`);
+  await primary.focus();
+  assert.equal(await primary.evaluate((element) => document.activeElement === element), true,
+    "The primary opening action is not keyboard focusable.");
+  for (const name of ["Open folder", "Open study", "Try a synthetic example", "More opening options"]) {
+    await page.keyboard.press("Tab");
+    const choice = page.getByRole("button", { name, exact: true });
+    assert.equal(await choice.isEnabled(), true, `${name} is unavailable.`);
+    assert.equal(await choice.evaluate((element) => document.activeElement === element), true,
+      `${name} is not in the opening choices' keyboard order.`);
+  }
+  await options.press("Enter");
+  assert.equal(await options.getAttribute("aria-expanded"), "true");
+  for (const name of ["DICOM series", "OME-Zarr store", "Open .loci-project", "Convert vendor image format", "New empty study"]) {
+    await page.keyboard.press("Tab");
+    const choice = page.getByRole("button", { name, exact: true });
+    assert.equal(await choice.isEnabled(), true, `${name} is unavailable.`);
+    assert.equal(await choice.evaluate((element) => document.activeElement === element), true,
+      `${name} is not reachable in the optional opening choices' keyboard order.`);
+  }
+  await options.focus();
+  await options.press("Enter");
+  assert.equal(await options.getAttribute("aria-expanded"), "false");
+  assert.equal(await page.locator(`#${regionId}`).getAttribute("inert"), "");
+  await page.getByRole("heading", { name: "Recent work", exact: true }).waitFor();
+  await auditWelcomeGeometry("concise-opening-choices");
 
   await page.evaluate(() => {
     const target = document.querySelector("main.image-first-empty");

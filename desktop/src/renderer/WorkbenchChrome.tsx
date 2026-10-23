@@ -3,13 +3,11 @@ import {
   ArrowLeftRight,
   Boxes,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Database,
   FilePlus2,
   FolderOpen,
   ImagePlus,
-  Lightbulb,
   ScanLine,
   Search,
   X,
@@ -36,7 +34,7 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Process", label: "Preprocess", group: "Analyze" },
   { tab: "Workflow", label: "Workflow builder", group: "Analyze", keywords: "pipeline automation nodes batch recipe" },
   { tab: "Model", label: "Use a model", group: "Analyze" },
-  { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "fluorescence signal nuclei background intensity puncta association" },
+  { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "fluorescence signal nuclei background intensity puncta association perinuclear nuclear ring enrichment" },
   { tab: "Temporal", label: "Track over time", group: "Analyze" },
   { tab: "Registration", label: "Register & resample", group: "Analyze" },
   { tab: "Info", label: "Review & export", group: "Results" },
@@ -358,33 +356,6 @@ function WelcomeEmblem() {
   </button>;
 }
 
-const WELCOME_TIPS = [
-  {
-    title: "Drag and drop to open",
-    detail: "Drop images, a folder, or a saved study anywhere in this window.",
-    action: "Choose images",
-    kind: "files" as const,
-  },
-  {
-    title: "Inspect a DICOM series",
-    detail: "Select one conventional CT or MR series explicitly; Loci validates the series before opening it.",
-    action: "Choose DICOM files",
-    kind: "dicom" as const,
-  },
-  {
-    title: "Open local multiscale data",
-    detail: "Choose a local OME-NGFF 0.4 Zarr v2 store and select the image group when it is ambiguous.",
-    action: "Choose OME-Zarr store",
-    kind: "ome_zarr" as const,
-  },
-  {
-    title: "Resume a saved study",
-    detail: "Open a .loci-study directory to restore its source-bound workspace and review state.",
-    action: "Choose study",
-    kind: "study" as const,
-  },
-];
-
 function updatedLabel(value?: string) {
   if (!value) return null;
   const date = new Date(value);
@@ -408,7 +379,6 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
   const [undo, setUndo] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [showAllRecent, setShowAllRecent] = useState(false);
-  const [tipIndex, setTipIndex] = useState(0);
 
   useEffect(() => {
     void api.recoveryList?.().then(setRecent).catch((error) => onError(error.message));
@@ -417,20 +387,11 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
     try { if (api.recoveryKeep) onRecovery(await api.recoveryKeep(sessionId)); }
     catch (error) { onError(error instanceof Error ? error.message : "Could not reopen this session."); }
   };
-  const showTip = (offset: number) => setTipIndex((index) =>
-    (index + offset + WELCOME_TIPS.length) % WELCOME_TIPS.length);
-  const useTip = () => {
-    const kind = WELCOME_TIPS[tipIndex].kind;
-    if (kind === "study") onStudy();
-    else onOpen(kind);
-  };
   const visibleRecent = showAllRecent ? recent : recent.slice(0, 5);
   return <div className={`image-welcome${dragActive ? " is-drag-active" : ""}`} aria-busy={busy || undefined}>
     <div className="welcome-heading"><WelcomeEmblem /></div>
     <h1>{dragActive ? "Drop to open" : "Open data"}</h1>
-    <p>{dragActive
-      ? "Release to let Loci validate and open the selected files."
-      : "Explore, annotate, quantify and analyse biomedical images locally."}</p>
+    {dragActive && <p role="status">Release to let Loci validate and open the selected files.</p>}
     {state.status === "recoverable" && <div className="session-recovery" role="status">
       <strong>{state.title} is unavailable</strong>
       <p>{state.reason?.includes("unsafe") ? "This location cannot be opened safely. Choose the original study or an intact copy." : "The study may have moved or its drive may be disconnected."}</p>
@@ -438,45 +399,34 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
       <span>Opening new images keeps the previous session available for recovery.</span>
     </div>}
     <div className="welcome-main-actions">
-      <button aria-label="Open images" className="welcome-open" disabled={busy} onClick={() => onOpen()}><ImagePlus /><span><strong>Open images</strong><small>TIFF, OME-TIFF, PNG or JPEG</small></span></button>
-      <button aria-label="Open folder" disabled={busy} onClick={() => onOpen("folder")}><FolderOpen /><span><strong>Open folder</strong><small>Discover a local collection</small></span></button>
-      <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span><strong>Open study</strong><small>Resume a .loci-study</small></span></button>
+      <button aria-label="Open images" className="welcome-open" disabled={busy} onClick={() => onOpen()}><ImagePlus /><span>Open images</span></button>
+      <button aria-label="Open folder" disabled={busy} onClick={() => onOpen("folder")}><FolderOpen /><span>Open folder</span></button>
+      <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span>Open study</span></button>
     </div>
-    <span className="welcome-drop">or drop images, a folder, or a saved study here</span>
-    {onExample && <div className="welcome-example"><button disabled={busy} onClick={onExample}>Try an example</button><span>Offline synthetic shapes · practise analysis, review and export</span></div>}
-    <div className="welcome-formats">
-      <div className="welcome-options-heading"><span aria-hidden="true" /><button aria-label="More opening options" className="welcome-options-toggle" disabled={busy} aria-expanded={optionsOpen} aria-controls="welcome-opening-options" onClick={() => setOptionsOpen((open) => !open)}>More sources <ChevronDown /></button><span aria-hidden="true" /></div>
-      <div className={`welcome-options-reveal${optionsOpen ? " is-open" : ""}`} id="welcome-opening-options" inert={!optionsOpen}>
-        <div><div className="welcome-options-content">
-          <button className="welcome-source-option" aria-label="DICOM series" disabled={busy} onClick={() => onOpen("dicom")}><ScanLine /><span><strong>DICOM series</strong><small>Medical image series</small></span></button>
-          <button className="welcome-source-option" aria-label="OME-Zarr store" disabled={busy} onClick={() => onOpen("ome_zarr")}><Boxes /><span><strong>OME-Zarr store</strong><small>Multiscale array store</small></span></button>
-          <button className="welcome-source-option" aria-label="Open .loci-project" disabled={busy} onClick={onLegacy}><ArchiveRestore /><span><strong>Loci project</strong><small>Import an earlier workspace</small></span></button>
-          {onConvert && <button className="welcome-source-option" aria-label="Convert vendor image format" disabled={busy} onClick={onConvert}><ArrowLeftRight /><span><strong>Convert image format</strong><small>Bio-Formats: CZI, ND2, LIF…</small></span></button>}
-          {onEmptyStudy && <button className="welcome-source-option" aria-label="New empty study" disabled={busy} onClick={onEmptyStudy}><FilePlus2 /><span><strong>New empty study</strong><small>Start without importing data</small></span></button>}
-        </div></div>
-      </div>
+    <div className="welcome-secondary-actions">
+      {onExample && <button disabled={busy} onClick={onExample}>Try a synthetic example</button>}
+      <button aria-label="More opening options" className="welcome-options-toggle" disabled={busy} aria-expanded={optionsOpen} aria-controls="welcome-opening-options" onClick={() => setOptionsOpen((open) => !open)}>More sources <ChevronDown /></button>
+    </div>
+    <div className={`welcome-options-reveal${optionsOpen ? " is-open" : ""}`} id="welcome-opening-options" inert={!optionsOpen}>
+      <div><div className="welcome-options-content">
+        <button className="welcome-source-option" aria-label="DICOM series" disabled={busy} onClick={() => onOpen("dicom")}><ScanLine /><span><strong>DICOM series</strong><small>Medical image series</small></span></button>
+        <button className="welcome-source-option" aria-label="OME-Zarr store" disabled={busy} onClick={() => onOpen("ome_zarr")}><Boxes /><span><strong>OME-Zarr store</strong><small>Multiscale array store</small></span></button>
+        <button className="welcome-source-option" aria-label="Open .loci-project" disabled={busy} onClick={onLegacy}><ArchiveRestore /><span><strong>Loci project</strong><small>Import an earlier workspace</small></span></button>
+        {onConvert && <button className="welcome-source-option" aria-label="Convert vendor image format" disabled={busy} onClick={onConvert}><ArrowLeftRight /><span><strong>Convert image format</strong><small>Bio-Formats: CZI, ND2, LIF…</small></span></button>}
+        {onEmptyStudy && <button className="welcome-source-option" aria-label="New empty study" disabled={busy} onClick={onEmptyStudy}><FilePlus2 /><span><strong>New empty study</strong><small>Start without importing data</small></span></button>}
+      </div></div>
     </div>
     <div className="welcome-researcher-panels">
       <section className="recent-sessions" aria-labelledby="recent-work-heading">
         <header><h2 id="recent-work-heading">Recent work</h2>{recent.length > 5 && <button disabled={busy} onClick={() => setShowAllRecent((shown) => !shown)}>{showAllRecent ? "Show fewer" : "View all"}<ChevronRight /></button>}</header>
-        {recent.length === 0 ? <div className="recent-empty"><ArchiveRestore /><span><strong>No recent work yet</strong><small>Opened sessions and saved studies will appear here.</small></span></div>
+        {recent.length === 0 ? <div className="recent-empty">No recent work yet</div>
           : <div className="recent-list">{visibleRecent.map((item) => <div key={item.sessionId}>
             <button aria-label={item.title} disabled={busy || item.status !== "ready"} onClick={() => void keep(item.sessionId)}><span>{item.title}</span><small>{item.storage === "managed" ? "Autosaved session" : "Saved study"}{item.status === "recoverable" ? " · unavailable" : ""}</small></button>
             {updatedLabel(item.updatedAt) && <time dateTime={item.updatedAt}>{updatedLabel(item.updatedAt)}</time>}
-            {item.canDiscard && <button disabled={busy} aria-label={`Discard ${item.title}`} title="Move this managed session aside; undo is available" onClick={() => {
+            {item.canDiscard && <button className="recent-discard" disabled={busy} aria-label={`Discard ${item.title}`} title="Move this managed session aside; undo is available" onClick={() => {
               void api.recoveryDiscard?.(item.sessionId).then((receipt) => setUndo(receipt.undoToken)).catch((error) => onError(error.message));
             }}><X /></button>}
           </div>)}</div>}
-      </section>
-      <section className="welcome-tips" role="region" aria-label="Research tips" tabIndex={0}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowLeft") { event.preventDefault(); showTip(-1); }
-          if (event.key === "ArrowRight") { event.preventDefault(); showTip(1); }
-          if (event.key === "Home") { event.preventDefault(); setTipIndex(0); }
-          if (event.key === "End") { event.preventDefault(); setTipIndex(WELCOME_TIPS.length - 1); }
-        }}>
-        <header><h2><Lightbulb /> Research tip</h2><div><span>{tipIndex + 1} / {WELCOME_TIPS.length}</span><button aria-label="Previous tip" onClick={() => showTip(-1)}><ChevronLeft /></button><button aria-label="Next tip" onClick={() => showTip(1)}><ChevronRight /></button></div></header>
-        <div className="welcome-tip-content" aria-live="polite"><strong>{WELCOME_TIPS[tipIndex].title}</strong><p>{WELCOME_TIPS[tipIndex].detail}</p><button disabled={busy} onClick={useTip}>{WELCOME_TIPS[tipIndex].action}</button></div>
       </section>
     </div>
     {undo && <div role="status">Session discarded. <button disabled={busy} onClick={() => {

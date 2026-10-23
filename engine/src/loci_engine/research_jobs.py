@@ -136,6 +136,7 @@ def submit_job(
             raise ValueError("Task request must be an object")
         if operation in {
             "correct_result",
+            "perinuclear_run",
             "roi_add",
             "roi_import",
             "correct_tracks",

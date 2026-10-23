@@ -301,6 +301,7 @@ def result_working_bytes(result: dict[str, Any]) -> int:
 
 
 def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
+    from .research_perinuclear import nucleus_result_eligible
     from .research_result_context import method_label
 
     provenance = result["provenance"]
@@ -323,6 +324,8 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         else None
     )
     return {
+        "perinuclear_nuclei_eligible": nucleus_result_eligible(result),
+        **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
@@ -1317,8 +1320,25 @@ class Workbench:
         return {"result": result_summary(result), "measurements": rows[:1000]}
 
     def result_view(self, request: dict[str, Any]) -> dict[str, Any]:
-        exact_keys(request, {"result_id", "axis", "index", "display", "labels"}, "result view")
+        exact_keys(
+            request,
+            {"result_id", "axis", "index", "display", "labels", "label_field"},
+            "result view",
+        )
         result = self.project.result(request["result_id"])
+        label_field = request.get("label_field", "nuclei")
+        perinuclear = result.get("kind") == "perinuclear-enrichment"
+        if "label_field" in request and not perinuclear:
+            raise ValueError("Alternative label fields require a perinuclear enrichment result")
+        if label_field not in {"nuclei", "rings", "ambiguous"}:
+            raise ValueError("Choose nuclei, rings or ambiguous perinuclear label fields")
+        if perinuclear:
+            integer(request.get("index", 0), "perinuclear plane index", 0, 0)
+            if type(request.get("labels", True)) is not bool:
+                raise ValueError("Perinuclear label visibility must be an explicit boolean")
+        label_array = {"nuclei": "labels", "rings": "ring_labels", "ambiguous": "ring_ambiguous"}[
+            label_field
+        ]
         if result.get("schema") == "loci.research-result/v2":
             raise ValueError("Use the bounded large-result viewport for this result")
         array = self.project.load_array(result["arrays"]["image"])
@@ -1349,8 +1369,8 @@ class Workbench:
             working_bytes=working_bytes,
         )
         label_image = None
-        if request.get("labels", True) and "labels" in result["arrays"]:
-            labels = self.project.load_array(result["arrays"]["labels"])
+        if request.get("labels", True) and label_array in result["arrays"]:
+            labels = self.project.load_array(result["arrays"][label_array])
             label_plane = labels if labels.ndim == 2 else np.take(labels, index, axis=axis_number)
             tint = np.stack(
                 [(label_plane * multiplier % 223 + 32) / 255 for multiplier in (67, 97, 137)],
@@ -1366,6 +1386,18 @@ class Workbench:
             label_image = _png(rgba)
             rgb = np.where((label_plane > 0)[..., None], 0.6 * rgb + 0.4 * tint, rgb)
         return {
+            **(
+                {
+                    "label_field": label_field,
+                    "label_field_basis": {
+                        "nuclei": "original nucleus labels, including endpoint exclusions",
+                        "rings": "unique perinuclear ring pixels; geometric proxy, not cytoplasm",
+                        "ambiguous": "multiply claimed ring pixels discarded from every ring",
+                    }[label_field],
+                }
+                if perinuclear
+                else {}
+            ),
             "image": _png(np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8)),
             "label_image": label_image,
             "result_id": result["id"],
@@ -1581,6 +1613,12 @@ class Workbench:
             from .research_annotation_import import import_annotations
 
             return import_annotations(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "perinuclear_run":
+            from .research_perinuclear import execute_perinuclear
+
+            return execute_perinuclear(
                 self, request, job_id=job_id, publication_guard=publication_guard
             )
         if operation in {"puncta_preview", "puncta_run", "associate_results", "colocalisation_run"}:

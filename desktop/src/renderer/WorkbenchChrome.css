@@ -139,5 +139,11 @@
   .workbench-tool-select__popup { transition-duration: 0ms; }
 }
 
-.welcome-example { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 12px; margin-top: 16px; }
-.welcome-example span { color: var(--ink-muted); font-size: var(--type-md); }
+/* Opening choices stay distinct from optional sources and recent work. */
+.welcome-secondary-actions { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 16px; margin-top: 16px; }
+.image-first-empty .welcome-secondary-actions > button { min-height: 40px; background: transparent; border-color: transparent; color: var(--ink-secondary); }
+@media (max-width: 520px) {
+  .recent-list > div { grid-template-columns: minmax(0, 1fr) auto; }
+  .recent-list time { grid-column: 1; grid-row: 2; padding: 0 4px 8px; white-space: normal; }
+  .recent-list > div > .recent-discard { grid-column: 2; grid-row: 1 / span 2; }
+}
