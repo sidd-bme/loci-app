@@ -1577,6 +1577,89 @@ describe("native research bridge", () => {
     },
   );
 
+  it("routes perinuclear_run through durable submission with the exact nucleus revision and signal request", async () => {
+    const project = path.join(root, "Perinuclear.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const worker = mocks.clients[0];
+    const control = mocks.clients[1];
+    const jobId = "d".repeat(32);
+    const request = Object.freeze({
+      result_id: "a".repeat(32), revision_hash: "b".repeat(64), signal_channel: 0,
+      radius_px: 5, working_bytes: 256 * 1024 ** 2, control: "Synthetic paired-control fixture",
+    });
+    const output = { result: { id: "c".repeat(32), parent_id: request.result_id } };
+    control.request.mockImplementation(async (method: string) => {
+      // Mirror the engine's task-only RPC guard, so an omitted registration
+      // reproduces the packaged GUI failure instead of silently returning {}.
+      if (method === "research_execute") throw new Error("Submit a durable task before execution");
+      if (method === "research_submit") return { id: jobId };
+      throw new Error(`Unexpected control method: ${method}`);
+    });
+    worker.request.mockResolvedValueOnce(output);
+
+    await expect(call("execute", "perinuclear_run", request)).resolves.toBe(output);
+
+    expect(control.request).toHaveBeenLastCalledWith("research_submit", {
+      project, operation: "perinuclear_run", request, request_key: expect.any(String),
+    });
+    expect(worker.request).toHaveBeenLastCalledWith("research_run", { project, job_id: jobId }, 0);
+    expect(control.request).not.toHaveBeenCalledWith(
+      "research_execute", expect.objectContaining({ operation: "perinuclear_run" }),
+    );
+  });
+
+  it("serializes perinuclear jobs, cancels the exact durable job and permits retry after cancellation", async () => {
+    const project = path.join(root, "Perinuclear cancellation.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const worker = mocks.clients[0];
+    const control = mocks.clients[1];
+    const jobId = "d".repeat(32), retryId = "e".repeat(32);
+    const request = {
+      result_id: "a".repeat(32), revision_hash: "b".repeat(64), signal_channel: 0,
+      radius_px: 5, working_bytes: 256 * 1024 ** 2, control: "Synthetic paired-control fixture",
+    };
+    let submissions = 0;
+    let finishCancel!: () => void;
+    control.request.mockImplementation(async (method: string) => {
+      if (method === "research_submit") return { id: submissions++ === 0 ? jobId : retryId };
+      if (method === "research_cancel") return new Promise((resolve) => {
+        finishCancel = () => resolve({ id: jobId, state: "cancelled", cancel_requested: true });
+      });
+      if (method === "research_snapshot") return {};
+      throw new Error(`Unexpected control method: ${method}`);
+    });
+    let rejectRun!: (error: Error) => void;
+    worker.request.mockImplementationOnce(() => new Promise((_, reject) => { rejectRun = reject; }));
+    const pending = call("execute", "perinuclear_run", request);
+    const cancelled = expect(pending).rejects.toThrow("Perinuclear job cancelled");
+    await vi.waitFor(() => expect(worker.request).toHaveBeenCalledWith(
+      "research_run", { project, job_id: jobId }, 0,
+    ));
+    await expect(call("execute", "perinuclear_run", request)).rejects.toThrow("already running");
+    expect(submissions).toBe(1);
+    await call("snapshot");
+    expect(control.request).toHaveBeenLastCalledWith("research_snapshot", { project });
+    const cancellation = call("cancel", jobId);
+    await vi.waitFor(() => expect(control.request).toHaveBeenLastCalledWith(
+      "research_cancel", { project, job_id: jobId },
+    ));
+    expect(worker.cancelCurrent).not.toHaveBeenCalled();
+    finishCancel();
+    await cancellation;
+    expect(control.request).toHaveBeenLastCalledWith("research_cancel", { project, job_id: jobId });
+    expect(worker.cancelCurrent).toHaveBeenCalledOnce();
+    rejectRun(new Error("Perinuclear job cancelled"));
+    await cancelled;
+
+    const output = { result: { id: "f".repeat(32), parent_id: request.result_id } };
+    worker.request.mockResolvedValueOnce(output);
+    await expect(call("execute", "perinuclear_run", request)).resolves.toBe(output);
+    expect(submissions).toBe(2);
+    expect(worker.request).toHaveBeenLastCalledWith("research_run", { project, job_id: retryId }, 0);
+  });
+
   it("routes large result remote adoption through private grant and durable worker without path exposure", async () => {
     const project = path.join(root, "Study.loci-study");
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
