@@ -1,16 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { PERINUCLEAR_VIEWS, type ResearchPerinuclearView, type ResearchPerinuclearViewField } from "../shared/perinuclear-contracts";
 import type { ResearchDesktopApi, ResearchResult } from "../shared/research-contracts";
 import PopulationChartDialog from "./PopulationChartDialog";
 
 export function PerinuclearQC({ api, result }: { api: ResearchDesktopApi; result: ResearchResult }) {
+  const viewerLane = `perinuclear-qc-${useId().replace(/[^a-z0-9_-]/giu, "").toLowerCase()}`;
   const [field, setField] = useState<ResearchPerinuclearViewField>("nuclei");
   const [expanded, setExpanded] = useState(false);
   const [response, setResponse] = useState<{ key: string; view?: ResearchPerinuclearView; error?: string } | null>(null);
   const key = `${result.id}:${result.revision_hash}:${field}`;
   useEffect(() => {
     let current = true;
-    void api.execute("result_view", { result_id: result.id, axis: "z", index: 0, labels: true, label_field: field }).then((value) => {
+    // QC and the main history viewer own independent panes. Coalesce stale
+    // requests within this pane without cancelling another pane's exact view.
+    void api.execute("result_view", { result_id: result.id, axis: "z", index: 0, labels: true, label_field: field }, { viewer_lane: viewerLane }).then((value) => {
       const view = value as ResearchPerinuclearView;
       if (!view || view.result_id !== result.id || view.revision_hash !== result.revision_hash ||
           view.axis !== "z" || view.index !== 0 || view.label_field !== field || view.label_field_basis !== PERINUCLEAR_VIEWS[field].basis ||
@@ -25,7 +28,7 @@ export function PerinuclearQC({ api, result }: { api: ResearchDesktopApi; result
       if (current) setResponse({ key, error: caught instanceof Error ? caught.message : "Could not show the saved perinuclear labels." });
     });
     return () => { current = false; };
-  }, [api, key, result.id, result.revision_hash, field]);
+  }, [api, key, result.id, result.revision_hash, field, viewerLane]);
   const current = response?.key === key ? response : null;
   const name = PERINUCLEAR_VIEWS[field].label;
   const image = current?.view ? <figure className="perinuclear-qc-image"><img src={current.view.image} alt={`${name} over the saved raw signal channel`} /><figcaption>{current.view.label_field_basis}</figcaption></figure> : null;

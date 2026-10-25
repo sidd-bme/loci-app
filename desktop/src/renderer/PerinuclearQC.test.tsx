@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { ResearchDesktopApi, ResearchResult } from "../shared/research-contracts";
 import { PERINUCLEAR_VIEWS, type ResearchPerinuclearViewField } from "../shared/perinuclear-contracts";
 import { PerinuclearQC } from "./PerinuclearQC";
+import { ViewerRequestQueue } from "../main/viewer-request-queue";
 
 afterEach(cleanup);
 const geometry = { axes: "YX", unit: "pixel", frame: "image", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
@@ -23,7 +24,7 @@ it("inspects all three saved masks with honest labels and enlarges them with key
   field.focus(); expect(field).toHaveFocus();
   fireEvent.change(field, { target: { value: "rings" } });
   expect(await screen.findByRole("img", { name: "Perinuclear rings (proxy) over the saved raw signal channel" })).toHaveAttribute("src", view("rings").image);
-  expect(execute).toHaveBeenLastCalledWith("result_view", { result_id: result.id, axis: "z", index: 0, labels: true, label_field: "rings" });
+  expect(execute).toHaveBeenLastCalledWith("result_view", { result_id: result.id, axis: "z", index: 0, labels: true, label_field: "rings" }, { viewer_lane: expect.stringMatching(/^perinuclear-qc-[a-z0-9_-]+$/u) });
   expect(screen.getByText(PERINUCLEAR_VIEWS.rings.basis)).toBeVisible();
   const enlarge = screen.getByRole("button", { name: "Enlarge label inspection" });
   enlarge.focus(); fireEvent.click(enlarge);
@@ -49,4 +50,34 @@ it("suppresses stale mask responses and rejects an overlay for another saved rev
   fireEvent.change(screen.getByRole("combobox", { name: "Perinuclear overlay" }), { target: { value: "ambiguous" } });
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("does not match this saved revision"));
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
+});
+
+it.each(["history-first", "qc-first"])("keeps history and QC views independent behind a busy decoder (%s)", async (order) => {
+  let finishSource!: (value: unknown) => void;
+  const sourceDecode = new Promise((resolve) => { finishSource = resolve; });
+  const run = vi.fn(async (operation: string, request: unknown) => {
+    if (operation === "viewer_tile") return sourceDecode;
+    const field = (request as Record<string, unknown>).label_field;
+    return field ? view(field as ResearchPerinuclearViewField) : { history: true };
+  });
+  const queue = new ViewerRequestQueue(run);
+  const source = queue.request("viewer_tile", {});
+  const historyRequest = { result_id: result.id, axis: "z", index: 0, labels: true };
+  const history = () => queue.request("result_view", historyRequest).then(
+    value => ({ status: "fulfilled", value }),
+    error => ({ status: "rejected", message: (error as Error).message }),
+  );
+  const execute = vi.fn((operation: string, request: unknown, options?: { viewer_lane: string }) =>
+    queue.request(operation, request, options?.viewer_lane));
+  let historyOutcome;
+  if (order === "history-first") historyOutcome = history();
+  render(<PerinuclearQC api={{ execute } as unknown as ResearchDesktopApi} result={result} />);
+  if (order === "qc-first") historyOutcome = history();
+  await act(async () => { finishSource({ tile: true }); await source; });
+  await expect(historyOutcome).resolves.toEqual({ status: "fulfilled", value: { history: true } });
+  expect(await screen.findByRole("img", { name: "Nuclei (all) over the saved raw signal channel" })).toHaveAttribute("src", view("nuclei").image);
+  expect(screen.getByText(PERINUCLEAR_VIEWS.nuclei.basis)).toBeVisible();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(run).toHaveBeenCalledWith("result_view", historyRequest);
+  expect(run).toHaveBeenCalledWith("result_view", expect.objectContaining({ label_field: "nuclei" }));
 });

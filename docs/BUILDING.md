@@ -263,3 +263,20 @@ up to 420 seconds for an analysis, but observed cold MPS runs can vary widely
 and have sometimes exceeded that limit. Treat a passing run as functional
 evidence, not resolution of the open performance gate documented in
 [release status](RELEASE_STATUS.md).
+
+The perinuclear regression creates an explicit synthetic two-channel source and
+uses visible packaged controls for segmentation, raw-signal rings, QC, simulated
+review, native export and a fresh-profile cold reopen. Its independent reader
+checks raw integer sums, geometric masks and saved/exported values:
+
+```bash
+LOCI_PACKAGED_APP=/absolute/path/to/Loci.app \
+LOCI_QA_OUTPUT_ROOT=/absolute/path/to/ignored-evidence \
+node desktop/tests/perinuclear-workflow.qa.mjs
+```
+
+Run from the repository root. The default candidate pins identify development
+build 6; a later candidate requires `LOCI_QA_CANDIDATE_IDENTITY` pointing to a JSON
+file with `source_commit`, `executable_sha256`, `asar_sha256` and `worker_sha256`.
+This is automated synthetic software QA, including a simulated GUI review gate,
+and does not supply human scientific approval or biological qualification.
