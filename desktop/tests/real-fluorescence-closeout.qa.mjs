@@ -47,6 +47,7 @@ if (correctionRequested) {
   for (const coordinate of Object.values(correctionPoint)) assert.ok(Number.isSafeInteger(coordinate) && coordinate >= 0, "Correction coordinates are zero-based native integer pixel indices");
 }
 const report = { schema: "loci.real-fluorescence-closeout-scripted-gui/v1", status: "running", started_at: startedAt,
+  background_window: process.env.LOCI_QA_BACKGROUND === "1",
   app_bundle: appBundle, output_root: runRoot, study_path: studyPath, records_path: recordsPath,
   expected_candidate: expectedCandidate, settings, working_bytes: workingBytes,
   method: "Automated packaged renderer controls with injected native-dialog responses; not ordinary native computer use",
@@ -231,6 +232,8 @@ async function applyCorrection(entry) {
   const picked = await page.evaluate(request => window.lociResearch.execute("result_label_at", request), binding);
   assert.equal(picked.result_id, entry.result.id); assert.equal(picked.revision_hash, entry.result.revision_hash); assert.ok(picked.label > 0, "Lead-chosen coordinate must actually lie on a positive label");
   const viewer = page.locator(`[data-viewer-source="${entry.source.id}"]`);
+  await page.getByRole("button", { name: "Fit image", exact: true }).click();
+  await wait(() => viewer.getAttribute("data-result-overlay"), value => value === entry.result.id + ":" + entry.result.revision_hash, "exact result revision ready for pointer selection");
   await wait(() => viewer.getAttribute("data-prepared"), value => value === "true", "source/result canvas ready for actual object selection");
   const calibration = entry.source.metadata.physical_calibration?.spacing;
   const affine = entry.source.metadata.geometry?.affine;
@@ -241,11 +244,18 @@ async function applyCorrection(entry) {
     const camera = JSON.parse(element.getAttribute("data-camera")), box = element.getBoundingClientRect();
     const x = box.left + box.width / 2 + (point.x + .5 - camera.x) * camera.scale;
     const y = box.top + box.height / 2 + (point.y + .5 - camera.y) * camera.scale * aspectY;
+    const target = document.elementFromPoint(x, y);
     return { x, y, camera, aspectY, box: { x: box.x, y: box.y, width: box.width, height: box.height },
+      overlay: element.getAttribute("data-result-overlay"), prepared: element.getAttribute("data-prepared"), target_tag: target?.tagName,
       inside: x >= box.left && y >= box.top && x < box.right && y < box.bottom,
-      hits_viewer: !!document.elementFromPoint(x, y)?.closest(`[data-viewer-source="${element.getAttribute("data-viewer-source")}"]`) };
+      hits_canvas: target === element.querySelector(":scope > canvas") };
   }, { point: correctionPoint, aspectY });
-  assert.ok(mapping.inside && mapping.hits_viewer, "The chosen native coordinate must be visible and unobscured");
+  report.correction_attempt = { source_key: entry.source_key, native_coordinate: correctionPoint,
+    result_id: entry.result.id, revision_hash: entry.result.revision_hash, selected_label: picked.label, pointer_mapping: mapping };
+  assert.equal(mapping.overlay, entry.result.id + ":" + entry.result.revision_hash);
+  assert.equal(mapping.prepared, "true");
+  assert.ok(mapping.inside && mapping.hits_canvas, "The chosen native coordinate must hit the prepared exact canvas");
+  await capture("correction-00-exact-canvas-before-click");
   await page.mouse.click(mapping.x, mapping.y);
   const population = page.getByRole("region", { name: "Object population explorer", exact: true });
   await population.getByLabel("Selected population object").getByRole("heading", { name: `Object #${picked.label}`, exact: true }).waitFor();
