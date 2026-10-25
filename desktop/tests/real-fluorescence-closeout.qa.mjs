@@ -268,8 +268,14 @@ async function applyCorrection(entry) {
   const children = changed.results.filter(result => !oldIds.has(result.id)); assert.equal(children.length, 1);
   const child = children[0]; assert.equal(child.parent_id, entry.result.id); assert.equal(child.object_count, entry.result.object_count - 1); assert.equal(child.review, null);
   const record = await inspect(child.id); assert.equal(record.measurements.some(row => row.label === picked.label), false);
-  const withoutNeighborhoodDistance = row => { const { nearest_centroid_distance: _distance, ...stable } = row; return stable; };
-  assert.deepEqual(record.measurements.map(withoutNeighborhoodDistance), entry.record.measurements.filter(row => row.label !== picked.label).map(withoutNeighborhoodDistance), "Deleting one label preserves other raw intensities/geometry/IDs; nearest-neighbor distances are recomputed");
+  const withoutNeighborhoodDistance = row => {
+    const { nearest_centroid_distance: _distance, ...stable } = row;
+    // Editing recomputes measurements with an empty marker-gate list,
+    // which adds an empty decision map even when the adaptive parent omitted it.
+    if (Object.hasOwn(row, "marker_gates")) assert.deepEqual(row.marker_gates, {});
+    return { ...stable, marker_gates: {} };
+  };
+  assert.deepEqual(record.measurements.map(withoutNeighborhoodDistance), entry.record.measurements.filter(row => row.label !== picked.label).map(withoutNeighborhoodDistance), "Deleting one label preserves raw intensities/geometry/IDs; only nearest distances and the documented empty gate map are recomputed");
   assert.deepEqual(await inspect(entry.result.id), entry.record, "Correction must not alter the automatic parent");
   const exported = await exportNative(record, path.join(runRoot, "corrected-" + entry.source_key));
   records.correction = exported.record;
