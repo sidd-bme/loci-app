@@ -21,6 +21,7 @@ const outputParent = requiredPath("LOCI_QA_OUTPUT_ROOT");
 const startedAt = new Date().toISOString();
 const runRoot = path.join(outputParent, "real-fluorescence-closeout-" + startedAt.replaceAll(/[:.]/g, "-"));
 const studyPath = path.join(runRoot, "SIMULATED automated development GUI review.loci-study");
+let openStudyPath = studyPath;
 const recordsPath = path.join(runRoot, "inspected-records.json");
 const executable = path.join(appBundle, "Contents/MacOS/Loci");
 const asar = path.join(appBundle, "Contents/Resources/app.asar");
@@ -112,7 +113,7 @@ async function dialogs(sources = []) {
     globalThis.lociFluorescenceCloseoutDialogs ??= [];
     dialog.showOpenDialog = async (...args) => {
       const title = args.at(-1)?.title;
-      const filePaths = title === "Add microscopy or medical images" ? values.sources : title === "Open research study" ? [values.study] : null;
+      const filePaths = title === "Add microscopy or medical images" ? values.sources : title === "Open research study" ? [values.open_study] : null;
       if (!filePaths?.length) throw new Error("Unexpected scripted GUI open dialog: " + title);
       globalThis.lociFluorescenceCloseoutDialogs.push({ title, file_names: filePaths.map(file => file.split(/[\\/]/).at(-1)) });
       return { canceled: false, filePaths };
@@ -125,7 +126,7 @@ async function dialogs(sources = []) {
       return { canceled: false, filePath };
     };
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  }, { sources, study: studyPath, export: exportDestination });
+  }, { sources, study: studyPath, open_study: openStudyPath, export: exportDestination });
 }
 async function launch(sources = []) {
   const userData = path.join(runRoot, "user-data-" + ++session); await fs.mkdir(userData);
@@ -324,10 +325,11 @@ try {
     assert.equal(prior.input_manifest.sha256, report.input_manifest.sha256); assert.equal(prior.automatic.length, 8);
     assert.equal(await hash(prior.records_path), prior.records_sha256);
     originalStudyFiles = await studyFiles(prior.study_path); assert.deepEqual(originalStudyFiles, prior.saved_study_files);
-    await fs.cp(prior.study_path, studyPath, { recursive: true, force: false, errorOnExist: true });
-    assert.deepEqual(await studyFiles(studyPath), originalStudyFiles);
+    openStudyPath = path.join(runRoot, "resumed-input-copy.loci-study");
+    await fs.cp(prior.study_path, openStudyPath, { recursive: true, force: false, errorOnExist: true });
+    assert.deepEqual(await studyFiles(openStudyPath), originalStudyFiles);
     records = JSON.parse(await fs.readFile(prior.records_path, "utf8")); assert.equal(records.correction, null);
-    report.automatic = prior.automatic; report.resume = { receipt: priorPath, sha256: await hash(priorPath), original_study: prior.study_path, original_study_files: originalStudyFiles };
+    report.automatic = prior.automatic; report.resume = { receipt: priorPath, sha256: await hash(priorPath), original_study: prior.study_path, original_study_files: originalStudyFiles, working_copy: openStudyPath };
     await launch(); await page.getByRole("button", { name: "Open study", exact: true }).click();
     await wait(snapshot, state => state.results.length === 8 && state.sources.length === 8, "cold open copied exact eight-result study");
     for (const entry of report.automatic) {
@@ -378,6 +380,7 @@ try {
   await fileMenuAction(page, "Save study");
   await wait(() => fs.stat(path.join(studyPath, "study.sqlite3")).catch(error => { if (error.code === "ENOENT") return null; throw error; }), stat => stat?.size > 0, "saved native study");
   records.snapshot = await snapshot(); await capture("all-results-saved-SIMULATED-automated-reviews"); await close();
+  openStudyPath = studyPath;
   await launch(); await page.getByRole("button", { name: "Open study", exact: true }).click();
   const expectedCount = correctionRequested ? 9 : 8;
   const cold = await wait(snapshot, state => state.results.length === expectedCount && state.sources.length === 8, "fresh-profile cold reopen all exact records");
