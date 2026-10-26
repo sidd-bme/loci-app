@@ -179,9 +179,9 @@
     "schema": "loci.agent-capability-map/v1",
     "counts": {
       "supported_via_mcp": 11,
-      "supported_with_grant": 25,
-      "gui_only_gap": 79,
-      "total": 115
+      "supported_with_grant": 32,
+      "gui_only_gap": 74,
+      "total": 117
     },
     "entries": [
       {
@@ -326,7 +326,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Saved source-bound exploration records and exact comparison/adoption receipts have no registered MCP tool or delegated action. Recipe tools do not expose the saved exploration contract."
       },
       {
         "operation": "exploration_get",
@@ -335,7 +335,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Saved source-bound exploration records and exact comparison/adoption receipts have no registered MCP tool or delegated action. Recipe tools do not expose the saved exploration contract."
       },
       {
         "operation": "exploration_list",
@@ -344,7 +344,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Saved source-bound exploration records and exact comparison/adoption receipts have no registered MCP tool or delegated action. Recipe tools do not expose the saved exploration contract."
       },
       {
         "operation": "exploration_preview",
@@ -353,7 +353,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Saved source-bound exploration records and exact comparison/adoption receipts have no registered MCP tool or delegated action. Recipe tools do not expose the saved exploration contract."
       },
       {
         "operation": "exploration_run",
@@ -362,7 +362,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Saved source-bound exploration records and exact comparison/adoption receipts have no registered MCP tool or delegated action. Recipe tools do not expose the saved exploration contract."
       },
       {
         "operation": "export_result",
@@ -389,7 +389,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "The field-assay preview contract has no registered MCP tool or delegated action. A recipe preview does not produce its field metrics and effective-mask receipt."
       },
       {
         "operation": "field_assay_run",
@@ -398,7 +398,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Reviewed field-assay adoption has no registered MCP tool or delegated action. submit_recipe does not adopt the field-assay receipt and signed integral."
       },
       {
         "operation": "histology_preview",
@@ -791,19 +791,19 @@
         "operation": "remote_attach",
         "summary": "Validate and atomically attach unreviewed remote results",
         "mutates": true,
-        "status": "gui_only_gap",
-        "mcp_tool": null,
-        "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "status": "supported_with_grant",
+        "mcp_tool": "remote_attach",
+        "grant_requirement": "Requires an exact human-prestaged remote_grants entry with 'attach' in its operations, pinned request/profile/source identities and resource limits. Does not grant staging or SSH profile administration.",
+        "reason": null
       },
       {
         "operation": "remote_cancel",
         "summary": "Cancel the explicitly selected server job",
         "mutates": true,
-        "status": "gui_only_gap",
-        "mcp_tool": null,
-        "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "status": "supported_with_grant",
+        "mcp_tool": "remote_cancel",
+        "grant_requirement": "Requires an exact human-prestaged remote_grants entry with 'cancel' in its operations, pinned request/profile/source identities and resource limits. Does not grant staging or SSH profile administration.",
+        "reason": null
       },
       {
         "operation": "remote_logs",
@@ -863,10 +863,10 @@
         "operation": "remote_retrieve",
         "summary": "Retrieve and verify an explicitly authorized result archive",
         "mutates": true,
-        "status": "gui_only_gap",
-        "mcp_tool": null,
-        "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "status": "supported_with_grant",
+        "mcp_tool": "remote_retrieve",
+        "grant_requirement": "Requires an exact human-prestaged remote_grants entry with 'retrieve' in its operations, pinned request/profile/source identities and resource limits. Does not grant staging or SSH profile administration.",
+        "reason": null
       },
       {
         "operation": "remote_run_list",
@@ -890,19 +890,19 @@
         "operation": "remote_status",
         "summary": "Reconnect and inspect the exact server job identity",
         "mutates": true,
-        "status": "gui_only_gap",
-        "mcp_tool": null,
-        "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "status": "supported_with_grant",
+        "mcp_tool": "remote_status",
+        "grant_requirement": "Requires an exact human-prestaged remote_grants entry with 'status' in its operations, pinned request/profile/source identities and resource limits. Does not grant staging or SSH profile administration.",
+        "reason": null
       },
       {
         "operation": "remote_submit",
         "summary": "Submit one staged request without duplicating a recovered job",
         "mutates": true,
-        "status": "gui_only_gap",
-        "mcp_tool": null,
-        "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "status": "supported_with_grant",
+        "mcp_tool": "remote_submit",
+        "grant_requirement": "Requires an exact human-prestaged remote_grants entry with 'submit' in its operations, pinned request/profile/source identities and resource limits. Does not grant staging or SSH profile administration.",
+        "reason": null
       },
       {
         "operation": "resample_grid",
@@ -1028,7 +1028,7 @@
         "status": "gui_only_gap",
         "mcp_tool": null,
         "grant_requirement": null,
-        "reason": "Interactive desktop viewport or human-authored study administration surface."
+        "reason": "Planned scientific CSV package export through a private destination grant has no registered MCP action. export_result provides a separate result export contract."
       },
       {
         "operation": "select_result",
@@ -1038,6 +1038,24 @@
         "mcp_tool": null,
         "grant_requirement": null,
         "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "set_source_display",
+        "summary": "Update granted channel display settings at an exact saved revision",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "set_source_display",
+        "grant_requirement": "Requires set_source_display operation, a vision-capable policy, and geometry, provenance and agent_metadata disclosures. Source fingerprint, view revision and granted channels must match; session permission mode also applies.",
+        "reason": null
+      },
+      {
+        "operation": "source_display",
+        "summary": "Read granted channel display settings and saved view revision",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "source_display",
+        "grant_requirement": "Requires source_display operation, a vision-capable policy, and geometry, provenance and agent_metadata disclosures. Only granted channels are returned.",
+        "reason": null
       },
       {
         "operation": "study_compare",

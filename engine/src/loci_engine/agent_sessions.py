@@ -111,13 +111,50 @@ _DIRECT_MCP_MAPPING: dict[str, tuple[str, str]] = {
     "review_history": ("review_history", "Inspect revision-bound review decision history"),
     "action_guide": ("action_guide", "Discover shared research action schemas and contracts"),
     "view": ("source_image", "Render a bounded source crop and channel composite image"),
-    "source_view": ("source_display", "Read saved channel display settings and view revision"),
-    "save_source_view": ("set_source_display", "Update saved channel display settings"),
     "channel_metadata": ("inspect_source", "Disclosed when source_names is granted"),
     "recipe_preflight": ("validate_recipe", "Resource estimate returned by validate_recipe"),
 }
 
+# These tools are registered only when the policy includes an exact remote grant.
+# A run must already have been staged by a human; the tools cannot stage sources
+# or administer SSH profiles.
+_GRANTED_MCP_MAPPING: dict[str, tuple[str, str]] = {
+    f"remote_{operation}": (
+        f"remote_{operation}",
+        "Requires an exact human-prestaged remote_grants entry with "
+        f"'{operation}' in its operations, pinned request/profile/source identities "
+        "and resource limits. Does not grant staging or SSH profile administration.",
+    )
+    for operation in ("submit", "status", "cancel", "retrieve", "attach")
+}
+
 _GUI_ONLY_REASONS: dict[str, str] = {
+    "field_assay_preview": (
+        "The field-assay preview contract has no registered MCP tool or delegated action. "
+        "A recipe preview does not produce its field metrics and effective-mask receipt."
+    ),
+    "field_assay_run": (
+        "Reviewed field-assay adoption has no registered MCP tool or delegated action. "
+        "submit_recipe does not adopt the field-assay receipt and signed integral."
+    ),
+    "scientific_data_export": (
+        "Planned scientific CSV package export through a private destination grant has no "
+        "registered MCP action. export_result provides a separate result export contract."
+    ),
+    **{
+        name: (
+            "Saved source-bound exploration records and exact comparison/adoption receipts "
+            "have no registered MCP tool or delegated action. Recipe tools do not expose "
+            "the saved exploration contract."
+        )
+        for name in (
+            "exploration_list",
+            "exploration_get",
+            "exploration_preview",
+            "exploration_compare",
+            "exploration_run",
+        )
+    },
     "labels_import": (
         "Requires a human-selected local TIFF path grant via the native OS file picker."
     ),
@@ -240,14 +277,17 @@ def capability_map() -> dict[str, Any]:
         info = OPERATION_CATALOG[name]
         mutates = bool(info["mutates"])
         summary = str(info["summary"])
-        if name in _DIRECT_MCP_MAPPING:
-            mcp_tool, note = _DIRECT_MCP_MAPPING[name]
+        if name in _DIRECT_MCP_MAPPING or name in _GRANTED_MCP_MAPPING:
+            mapping = _GRANTED_MCP_MAPPING if name in _GRANTED_MCP_MAPPING else _DIRECT_MCP_MAPPING
+            mcp_tool, note = mapping[name]
             entries.append(
                 {
                     "operation": name,
                     "summary": summary,
                     "mutates": mutates,
-                    "status": "supported_via_mcp",
+                    "status": "supported_with_grant"
+                    if name in _GRANTED_MCP_MAPPING
+                    else "supported_via_mcp",
                     "mcp_tool": mcp_tool,
                     "grant_requirement": note,
                     "reason": None,
@@ -288,6 +328,21 @@ def capability_map() -> dict[str, Any]:
             )
 
     for mcp_only_name, summary, mutates, grant_note in (
+        (
+            "source_display",
+            "Read granted channel display settings and saved view revision",
+            False,
+            "Requires source_display operation, a vision-capable policy, and geometry, "
+            "provenance and agent_metadata disclosures. Only granted channels are returned.",
+        ),
+        (
+            "set_source_display",
+            "Update granted channel display settings at an exact saved revision",
+            True,
+            "Requires set_source_display operation, a vision-capable policy, and geometry, "
+            "provenance and agent_metadata disclosures. Source fingerprint, view revision "
+            "and granted channels must match; session permission mode also applies.",
+        ),
         (
             "analysis_context",
             "Read bounded pages of permitted source handles, recipe hashes, and limits",

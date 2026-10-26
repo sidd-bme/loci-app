@@ -799,3 +799,85 @@ def test_portable_owned_job_is_historical_and_cannot_restore_live_authority(tmp_
     assert Workbench(restored).snapshot()["agent_sessions"]["connected_count"] == 0
     with pytest.raises(AgentSessionApprovalError, match="disconnected"):
         require_session_authority(restored, **owner)
+
+
+def test_capability_map_targets_registered_tools_and_delegated_actions(tmp_path, monkeypatch):
+    from test_agent_remote import fixture as remote_fixture
+
+    from loci_engine.research_action_registry import READ_ACTIONS, REQUESTS, TASK_ACTIONS
+    from loci_engine.research_mcp import build_server
+
+    local_root = tmp_path / "local"
+    local_root.mkdir()
+    _, _, _, local_path, _, _, _ = session_fixture(local_root)
+    remote_root = tmp_path / "remote"
+    remote_root.mkdir()
+    _, _, _, _, _, remote_path, _, _ = remote_fixture(remote_root, monkeypatch)
+
+    async def registered_tools(path):
+        return {tool.name for tool in await build_server(path).list_tools()}
+
+    local_tools = asyncio.run(registered_tools(local_path))
+    remote_tools = asyncio.run(registered_tools(remote_path))
+    entries = {entry["operation"]: entry for entry in capability_map()["entries"]}
+    supported = {
+        name: entry for name, entry in entries.items() if entry["status"] != "gui_only_gap"
+    }
+    assert {entry["mcp_tool"] for entry in supported.values()} <= local_tools | remote_tools
+    for operation, entry in supported.items():
+        if entry["mcp_tool"] in {"inspect_action", "submit_action"}:
+            assert operation in REQUESTS
+            assert operation in (
+                READ_ACTIONS if entry["mcp_tool"] == "inspect_action" else TASK_ACTIONS
+            )
+            assert operation in entry["grant_requirement"]
+
+    for operation in ("submit", "status", "cancel", "retrieve", "attach"):
+        name = f"remote_{operation}"
+        entry = entries[name]
+        assert name not in local_tools
+        assert name in remote_tools
+        assert entry["mcp_tool"] == name
+        assert entry["status"] == "supported_with_grant"
+        assert "human-prestaged" in entry["grant_requirement"]
+        assert "remote_grants" in entry["grant_requirement"]
+        assert f"'{operation}'" in entry["grant_requirement"]
+
+    # Shared aliases remain advertised, but human session controls never become
+    # executable through a delegated action or direct tool.
+    assert entries["classical_run"]["mcp_tool"] == "submit_action"
+    assert entries["describe_result"]["mcp_tool"] == "inspect_action"
+    assert entries["run_recipe"]["mcp_tool"] == "submit_recipe"
+    for operation in ("source_display", "set_source_display"):
+        assert entries[operation]["mcp_tool"] == operation
+        assert operation in local_tools
+        assert "granted channels" in entries[operation]["grant_requirement"]
+    assert entries["channel_metadata"]["mcp_tool"] == "inspect_source"
+    assert "source_names" in entries["channel_metadata"]["grant_requirement"]
+    assert "research_agent_session_control" not in local_tools | remote_tools | set(REQUESTS)
+    assert not any("session_control" in name for name in supported)
+
+
+def test_capability_map_distinguishes_unexposed_workbench_contracts():
+    from loci_engine.research_action_registry import REQUESTS
+
+    entries = {entry["operation"]: entry for entry in capability_map()["entries"]}
+    for name in (
+        "field_assay_preview",
+        "field_assay_run",
+        "scientific_data_export",
+        "exploration_list",
+        "exploration_get",
+        "exploration_preview",
+        "exploration_compare",
+        "exploration_run",
+    ):
+        entry = entries[name]
+        assert name not in REQUESTS
+        assert entry["status"] == "gui_only_gap"
+        assert entry["mcp_tool"] is None
+        assert entry["grant_requirement"] is None
+        assert "no registered MCP" in entry["reason"]
+
+    for name in ("remote_stage", "remote_profile_save", "remote_remove_owned"):
+        assert entries[name]["status"] == "gui_only_gap"
