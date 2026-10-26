@@ -43,6 +43,12 @@ export interface ResearchSource {
     channel_names?: string[];
     channel_dtypes?: string[];
     sample_semantics?: string;
+    palette?: {
+      stored_index_dtype: "uint8" | "uint16";
+      lookup_dtype: "uint16";
+      lookup_policy: "actual-IFD-ColorMap";
+      expansion: "exact-RGB-lookup-no-normalization";
+    } | null;
     physical_calibration?: { unit?: string; spacing?: number[] } | null;
     timing?: {
       source?: string;
@@ -241,10 +247,24 @@ export interface ResearchVisionReceipt {
   status: "provisional-visualization";
   artifacts: Record<string, { sha256: string; size_bytes: number }>;
 }
+export type ResearchAgentPermissionMode =
+  | "inspect_only"
+  | "ask_approval"
+  | "full_access";
+export type ResearchAgentSessionState =
+  | "configuration_ready"
+  | "connected_idle"
+  | "executing"
+  | "awaiting_approval"
+  | "paused"
+  | "interrupted"
+  | "disconnected"
+  | "failed";
 export interface ResearchAgentAccessRequest {
   source_id: string;
   selection: ResearchSelection;
   recipe: ResearchRecipe;
+  permission_mode?: ResearchAgentPermissionMode;
   interactive?: ResearchAgentInteractiveAccess;
   delegation?: {
     client_id: string;
@@ -263,13 +283,14 @@ export interface ResearchAgentAccessRequest {
   limits: { cpu_seconds: number; memory_bytes: number; concurrency: number };
 }
 export interface ResearchAgentAccessReceipt {
-  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4";
+  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5";
   policy_sha256: string;
   project_id: string;
   recipe_sha256: string;
   policy_filename: string;
   config_filename: string;
   plugin_filename?: "plugin/plugin.json";
+  permission_mode?: ResearchAgentPermissionMode;
   delegation?: { id: string; client_id: string; expires_at: string | null; result_scope: "pinned-recipes" | "granted-sources" };
   actions?: string[];
   sources?: Array<{ id: string; sha256: string }>;
@@ -279,6 +300,129 @@ export interface ResearchAgentAccessReceipt {
   source_id: string;
   selection: ResearchSelection;
 }
+// Wire records from agent_sessions_snapshot; private_* fields never cross RPC.
+export interface ResearchAgentPolicyRecord {
+  policy_sha256: string;
+  project_id: string;
+  schema: string;
+  permission_mode: ResearchAgentPermissionMode;
+  initial_permission_mode: ResearchAgentPermissionMode;
+  created_at: string;
+  updated_at: string;
+  paused: boolean;
+  revoked: boolean;
+  revoke_reason: string | null;
+  bundle_name: string;
+  client_id: string;
+  identity_assurance: "declared";
+  has_export_grant: boolean;
+  allow_agent_review: boolean;
+  operations: string[];
+  actions: string[];
+  disclosures: string[];
+  source_ids: string[];
+  state: ResearchAgentSessionState;
+}
+export interface ResearchAgentSessionRecord {
+  session_id: string;
+  policy_sha256: string;
+  project_id: string;
+  bundle_name: string;
+  client_id: string;
+  client_version: string | null;
+  identity_assurance: "declared";
+  permission_mode: ResearchAgentPermissionMode;
+  state: ResearchAgentSessionState;
+  current_operation: string | null;
+  current_target: Record<string, unknown> | null;
+  active_job_id: string | null;
+  active_approval_id: string | null;
+  owned_job_ids: string[];
+  recent_result_ids: string[];
+  tool_calls_count: number;
+  last_operation: string | null;
+  last_error: string | null;
+  disconnect_reason: string | null;
+  started_at: string;
+  last_heartbeat_at: string;
+  updated_at: string;
+  ended_at: string | null;
+}
+export interface ResearchAgentApprovalRecord {
+  id: string;
+  session_id: string | null;
+  policy_sha256: string;
+  project_id: string;
+  client_id: string;
+  operation: string;
+  action_name: string;
+  category: string;
+  request_hash: string;
+  source_id: string | null;
+  source_sha256: string | null;
+  result_id: string | null;
+  revision_hash: string | null;
+  display_revision: number | null;
+  destination_name: string | null;
+  summary: string;
+  parameters_summary: Record<string, unknown>;
+  state: "pending" | "approved" | "consumed" | "denied" | "cancelled" | "expired" | "stale";
+  decided_by: string | null;
+  decision_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  decided_at: string | null;
+  consumed_at: string | null;
+  expires_at: string;
+}
+export interface ResearchAgentEventRecord {
+  id: string;
+  session_id: string | null;
+  policy_sha256: string | null;
+  approval_id: string | null;
+  kind: string;
+  operation: string | null;
+  summary: string;
+  actor: string;
+  timestamp: string;
+}
+export interface ResearchAgentCapabilityEntry {
+  operation: string;
+  summary: string;
+  mutates: boolean;
+  status: "supported_via_mcp" | "supported_with_grant" | "gui_only_gap";
+  mcp_tool: string | null;
+  grant_requirement: string | null;
+  reason: string | null;
+}
+export interface ResearchAgentCapabilityMap {
+  schema: "loci.agent-capability-map/v1";
+  entries: ResearchAgentCapabilityEntry[];
+  counts: {
+    supported_via_mcp: number;
+    supported_with_grant: number;
+    gui_only_gap: number;
+    total: number;
+  };
+}
+export interface ResearchAgentSessionsSnapshot {
+  schema: "loci.agent-sessions/v1";
+  status: ResearchAgentSessionState | "none";
+  connected_count: number;
+  pending_approval_count: number;
+  policies: ResearchAgentPolicyRecord[];
+  sessions: ResearchAgentSessionRecord[];
+  approvals: ResearchAgentApprovalRecord[];
+  events: ResearchAgentEventRecord[];
+  capability_map: ResearchAgentCapabilityMap;
+}
+export type ResearchAgentControlRequest =
+  | { action: "approve_request" | "deny_request"; approval_id: string; reason?: string }
+  | { action: "set_permission_mode"; policy_sha256: string; permission_mode: ResearchAgentPermissionMode }
+  | { action: "pause_session" | "resume_session"; policy_sha256: string }
+  | { action: "disconnect_session"; session_id: string }
+  | { action: "stop_job"; job_id: string; session_id: string }
+  | { action: "revoke_policy"; policy_sha256: string };
 export interface ResearchSample {
   id: string;
   revision: number;
@@ -301,6 +445,7 @@ export type ResearchJobState =
   | "interrupted";
 export interface ResearchJob {
   id: string;
+  owner?: { policy_sha256: string; session_id: string | null };
   operation: string;
   request: Record<string, unknown>;
   request_key: string;
@@ -363,6 +508,7 @@ export interface ResearchSnapshot {
   }>;
   jobs: ResearchJob[];
   operations: Record<string, { mutates: boolean; summary: string; agent_execution?: "read" | "task" }>;
+  agent_sessions?: ResearchAgentSessionsSnapshot;
 }
 export interface ResearchSelection {
   x: number;
@@ -683,6 +829,10 @@ export interface ResearchDesktopApi {
   createAgentAccess?(
     request: ResearchAgentAccessRequest,
   ): Promise<ResearchAgentAccessReceipt | null>;
+  /** Controls active MCP sessions, permission modes, and single-use approval records. */
+  controlAgentSession?(
+    request: ResearchAgentControlRequest,
+  ): Promise<ResearchSnapshot>;
   /** Exports a provisional image and context through a native destination picker. */
   exportVisionHandoff?(request: ResearchVisionRequest, sourceSha256: string): Promise<ResearchVisionReceipt | null>;
   execute(

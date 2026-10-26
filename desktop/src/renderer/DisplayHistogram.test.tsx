@@ -7,9 +7,15 @@ import { checkedHistogram, HistogramPlot, type HistogramRecord } from "./Display
 afterEach(cleanup);
 const record: HistogramRecord = { component: 0, label: "Channel 1", units: "native scalar sample values", dtype: "uint16",
   sample_count: 100, min: 0, max: 4000, bin_range: [0, 4000], counts: [1, 49, 49, 1], percentile_1: 0, percentile_99: 3000 };
-const source = { id: "a".repeat(32), sha256: "b".repeat(64) } as ResearchSource;
+const source = { id: "a".repeat(32), sha256: "b".repeat(64), metadata: { sample_semantics: "none" } } as ResearchSource;
 const response = { source_id: source.id, source_sha256: source.sha256, sample: { kind: "deterministic-native-pyramid-level", t: 0, z: 3, level: 1, viewport_dependent: false, shape: [10, 10], sample_count_per_component: 100 }, histograms: [record] };
 describe("source histogram contract", () => {
+  it("binds RGB histograms to the selected logical channel", () => {
+    const rgb = { ...source, metadata: { sample_semantics: "RGB" } };
+    expect(() => checkedHistogram(response, rgb, 0, 3, 1)).toThrow(/does not match/);
+    expect(() => checkedHistogram({ ...response, sample: { ...response.sample, c: 0 } }, rgb, 0, 3, 1)).toThrow(/does not match/);
+    expect(checkedHistogram({ ...response, sample: { ...response.sample, c: 1 } }, rgb, 0, 3, 1).sample.c).toBe(1);
+  });
   it("rejects a stale source, different plane, viewport sample, and malformed sample totals", () => {
     expect(checkedHistogram(response, source, 0, 3).histograms[0].sample_count).toBe(100);
     for (const value of [{ ...response, source_sha256: "c".repeat(64) },

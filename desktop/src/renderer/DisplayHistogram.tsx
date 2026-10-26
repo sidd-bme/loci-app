@@ -9,15 +9,16 @@ export type HistogramRecord = {
 };
 export type SourceHistogram = {
   source_id: string; source_sha256: string; sample_semantics: string;
-  sample: { kind: string; level: number; t: number; z: number; shape: [number, number];
+  sample: { kind: string; level: number; t: number; z: number; c?: number; shape: [number, number];
     sample_count_per_component: number; viewport_dependent: false };
   histograms: HistogramRecord[]; display_revision: string;
 };
 
-export function checkedHistogram(value: unknown, source: ResearchSource, t: number, z: number): SourceHistogram {
+export function checkedHistogram(value: unknown, source: ResearchSource, t: number, z: number, c = 0): SourceHistogram {
   const data = value as SourceHistogram | null;
   if (!data || data.source_id !== source.id || data.source_sha256 !== source.sha256 ||
     !data.sample || data.sample.viewport_dependent !== false || data.sample.t !== t || data.sample.z !== z ||
+    (["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "") && data.sample.c !== c) ||
     !["deterministic-native-pyramid-level", "deterministic-nearest-whole-source"].includes(data.sample.kind) ||
     !Array.isArray(data.sample.shape) || data.sample.shape.length !== 2 ||
     !data.sample.shape.every((size) => Number.isSafeInteger(size) && size > 0) ||

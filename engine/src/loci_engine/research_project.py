@@ -1264,7 +1264,24 @@ class ResearchProject:
             check()
         return history[-1] if history else None
 
-    def submit(self, operation: str, request: dict[str, Any], request_key: str) -> dict[str, Any]:
+    def submit(
+        self,
+        operation: str,
+        request: dict[str, Any],
+        request_key: str,
+        *,
+        owner: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if owner is not None:
+            if (
+                not isinstance(owner, dict)
+                or set(owner) != {"policy_sha256", "session_id"}
+                or not isinstance(owner["policy_sha256"], str)
+                or not SHA_PATTERN.fullmatch(owner["policy_sha256"])
+            ):
+                raise ValueError("Job owner requires an exact policy and session identity")
+            if owner["session_id"] is not None:
+                checked_id(owner["session_id"])
         checked_text(request_key, "Submission key", 160)
         checked_text(operation, "Operation", 64)
         fingerprint = hashlib.sha256(
@@ -1278,7 +1295,14 @@ class ResearchProject:
             if existing:
                 if existing[0] != fingerprint:
                     raise ValueError("Repeated submission key has different parameters")
-                return parse_json(existing[1])
+                existing_record = parse_json(existing[1])
+                if existing_record.get("owner") != owner:
+                    raise PermissionError("Repeated submission key belongs to a different owner")
+                return existing_record
+            if owner is not None:
+                from .agent_sessions import require_session_authority
+
+                require_session_authority(self, **owner, connection=connection)
             record = {
                 "id": uuid.uuid4().hex,
                 "operation": operation,
@@ -1293,6 +1317,8 @@ class ResearchProject:
                 "result_ids": [],
                 "error": None,
             }
+            if owner is not None:
+                record["owner"] = dict(owner)
             connection.execute(
                 "INSERT INTO jobs VALUES(?,?,?,?)",
                 (record["id"], request_key, fingerprint, canonical_json(record)),

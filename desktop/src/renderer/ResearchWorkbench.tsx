@@ -40,7 +40,7 @@ import {
   Ban,
   Laptop,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { flushSync } from "react-dom";
 import { InspectorResizeHandle, loadInspectorWidth } from "./InspectorResizeHandle";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
@@ -61,7 +61,7 @@ import type {
 } from "../shared/research-contracts";
 import "./ResearchWorkbench.css";
 import { firstStudyDisplayChannels } from "./first-study-display";
-import { initialSourceDisplay, type SourceDisplayDefaults } from "./initial-source-display";
+import { initialSourceDisplay, rgbChannelsForPlane, type SourceDisplayDefaults } from "./initial-source-display";
 import { ResultContextPanel } from "./ResultContextPanel";
 import { ResearchReviewHistory, researcherReviewed, reviewLabel } from "./ResearchReviewHistory";
 import { resultTitle } from "./result-title";
@@ -81,6 +81,8 @@ import { PerinuclearResultSummary } from "./ResearchPerinuclearPanel";
 import { AgentImagePanel } from "./AgentImagePanel";
 import { SourceDisplayFollower } from "./source-display-follower";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
+import { AgentSessionIndicator } from "./AgentSessionIndicator";
+import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { ResearchPortabilityPanel } from "./ResearchPortabilityPanel";
 import { ResearchVendorPanel } from "./ResearchVendorPanel";
 import { ResearchRemotePanel } from "./ResearchRemotePanel";
@@ -428,7 +430,8 @@ function useComparisonPane(
     !view.loading && view.channels.length > 0;
   const setSelection = useCallback((selection: ResearchSelection) => {
     setView((previous) => previous.sourceId === source.id && previous.sourceSha256 === source.sha256
-      ? { ...previous, selection: clamp(selection, dimensions) }
+      ? { ...previous, selection: clamp(selection, dimensions),
+        channels: rgbChannelsForPlane(previous.channels, ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? ""), selection.c) }
       : previous);
   }, [dimensions, source.id, source.sha256]);
   const setChannels = useCallback((channels: Channel[]) => {
@@ -490,6 +493,7 @@ function ComparisonPane({
   onError: (value: string) => void;
 }) {
   const dimensions = meta(source).dimensions;
+  const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const visible = pane.channels.filter((item) => item.visible).map((item) => item.channel);
   const channelMode = visible.length === 1
     ? String(visible[0])
@@ -517,6 +521,7 @@ function ComparisonPane({
           View
           <select aria-label={`Pane ${label} channel view`} value={channelMode} disabled={!pane.ready}
             onChange={(event) => {
+              if (rgb) { pane.setSelection({ ...pane.selection, c: Number(event.target.value) }); return; }
               if (event.target.value === "all") {
                 pane.setChannels(pane.channels.map((item) => ({ ...item, visible: true })));
                 return;
@@ -526,8 +531,8 @@ function ComparisonPane({
               pane.setSelection({ ...pane.selection, c: selected });
             }}>
             {channelMode === "custom" && <option value="custom" disabled>Custom</option>}
-            <option value="all">All visible</option>
-            {pane.channels.map((item) => <option key={item.channel} value={item.channel}>
+            {!rgb && <option value="all">All visible</option>}
+            {(rgb ? Array.from({ length: dimensions.c }, (_, channel) => ({ channel })) : pane.channels).map((item) => <option key={item.channel} value={item.channel}>
               {source.metadata.channel_names?.[item.channel] ?? `Channel ${item.channel + 1}`}
             </option>)}
           </select>
@@ -826,7 +831,7 @@ export default function ResearchWorkbench({
   const [studyFocused, setStudyFocused] = useState(false);
   const [studyOpened, setStudyOpened] = useState(false);
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
-  const [channels, setChannels] = useState<Channel[]>([]);
+  const [channelSettings, setChannelSettings] = useState<Channel[]>([]);
   const [image, setImage] = useState<string | null>(null);
   const [volume, setVolume] = useState<Volume | null>(null);
   const [projection, setProjection] = useState<"plane" | "max" | "mean">(
@@ -946,7 +951,7 @@ export default function ResearchWorkbench({
     annotationViewportReady.current = Boolean(key);
     setViewReadyKey(key);
   }, []);
-  const [defaultChannels, setDefaultChannels] = useState<Channel[]>([]);
+  const [sourceDefaultChannels, setDefaultChannels] = useState<Channel[]>([]);
   const [displayBasis, setDisplayBasis] = useState("");
   const [interpretation, setInterpretation] = useState<SourceInterpretation>("auto");
   const [rgbMapping, setRgbMapping] = useState<[number, number, number] | null>(null);
@@ -964,6 +969,10 @@ export default function ResearchWorkbench({
   const [assistantFollowBusy, setAssistantFollowBusy] = useState(false);
   const assistantFollower = useRef<SourceDisplayFollower | null>(null);
   const assistantFollowGeneration = useRef(0);
+  const [followAgent, setFollowAgent] = useState(false);
+  const agentResultTracker = useRef(new AgentResultTracker());
+  const [agentRefreshError, setAgentRefreshError] = useState<string | null>(null);
+  const agentInteraction = useRef({ pointers: new Set<number>(), lastInput: 0 });
   const batchViewAdoption = useRef<{
     sourceId: string;
     sourceSha256: string;
@@ -989,6 +998,8 @@ export default function ResearchWorkbench({
   const [studyEpoch, setStudyEpoch] = useState(0);
   const [scientificExportDraft, setScientificExportDraft] = useState<{ study: string; draft: ScientificDataExportDraft } | null>(null);
   const exportDraftStudy = JSON.stringify([snapshot?.project.project_id ?? null, studyEpoch]);
+  const currentStudyScope = useRef(exportDraftStudy);
+  currentStudyScope.current = exportDraftStudy;
   const [intensitySeed, setIntensitySeed] = useState<{ study: string; result: ResearchResult; serial: number } | null>(null);
   const scientificExportDraftControl: ScientificDataExportDraftControl = {
     draft: scientificExportDraft?.study === exportDraftStudy ? scientificExportDraft.draft : null,
@@ -1452,6 +1463,20 @@ export default function ResearchWorkbench({
     },
     [selection, dimensions, maxViewPixels, sourceIsChanging],
   );
+  const channels = useMemo(() => rgbChannelsForPlane(channelSettings, isRgb, shownSelection.c),
+    [channelSettings, isRgb, shownSelection.c]);
+  const defaultChannels = useMemo(() => rgbChannelsForPlane(sourceDefaultChannels, isRgb, shownSelection.c),
+    [sourceDefaultChannels, isRgb, shownSelection.c]);
+  const setChannels = useCallback((update: SetStateAction<Channel[]>) => {
+    setChannelSettings((previous) => typeof update === "function"
+      ? update(rgbChannelsForPlane(previous, isRgb, shownSelection.c)) : update);
+  }, [isRgb, shownSelection.c]);
+  const selectSourcePlane = (next: ResearchSelection) => {
+    if (isRgb && next.c !== shownSelection.c) {
+      setResultId(null); setResultView(null); setImage(null); setVolume(null);
+    }
+    setSelection(next);
+  };
   const labelImportScope = JSON.stringify([documentEpoch, source?.id, source?.sha256, shownSelection]);
   const liveLabelImportScope = useRef(labelImportScope);
   const labelImportBusyOwner = useRef<{ owner: string; message: string } | null>(null);
@@ -1464,7 +1489,7 @@ export default function ResearchWorkbench({
     // is not ready. Never write those old coordinates into the new plane's slot.
     if (annotationViewportReady.current) setAnnotationDraft(points);
   }, [setAnnotationDraft]);
-  const autoPlaneKey = `${source?.id}:${source?.sha256}:${shownSelection.t}:${shownSelection.z}`;
+  const autoPlaneKey = `${source?.id}:${source?.sha256}:${shownSelection.t}:${shownSelection.z}:${shownSelection.c}`;
   const autoPlaneRef = useRef(autoPlaneKey);
   autoPlaneRef.current = autoPlaneKey;
   const autoRequestToken = useRef(0);
@@ -1929,27 +1954,56 @@ export default function ResearchWorkbench({
       );
     }
   };
+  const hasPendingJobs = Boolean(
+    busy === "run" || busy === "Large image segmentation" || busy === "Removing object" ||
+    busy === "Importing remote result" || busy === "Export" ||
+    snapshot?.jobs.some((job) => job.state === "queued" || job.state === "running"),
+  );
+  const hasActiveAgentActivity = Boolean(
+    snapshot?.agent_sessions &&
+      (snapshot.agent_sessions.connected_count > 0 ||
+        snapshot.agent_sessions.pending_approval_count > 0 ||
+        snapshot.agent_sessions.policies.some((policy) => !policy.revoked)),
+  );
+  useWorkspaceSnapshotPolling({
+    snapshot, scope: exportDraftStudy,
+    enabled: hasPendingJobs || hasActiveAgentActivity,
+    suspended: documentSwitching,
+    interval: hasPendingJobs ? 1000 : 2000,
+    getSnapshot: api.getSnapshot,
+    setSnapshot,
+    onError: (caught) => {
+      if (hasActiveAgentActivity) setAgentRefreshError(caught === null ? null :
+        message(caught, "Agent status could not be refreshed. Retrying automatically."));
+      else if (caught !== null) setError(message(caught, "Could not refresh durable job status."));
+    },
+  });
+  useEffect(() => { setAgentRefreshError(null); }, [exportDraftStudy]);
   useEffect(() => {
-    if (
-      busy !== "run" && busy !== "Large image segmentation" && busy !== "Removing object" &&
-      busy !== "Importing remote result" && busy !== "Export" &&
-      !snapshot?.jobs.some(
-        (job) => job.state === "queued" || job.state === "running",
-      )
-    )
-      return;
-    let active = true;
-    const timer = window.setInterval(() => {
-      void report(async () => {
-        const next = await api.getSnapshot();
-        if (active && next) setSnapshot(next);
-      }, "Could not refresh durable job status.");
-    }, 1000);
+    if (!followAgent) return;
+    const state = agentInteraction.current;
+    const touched = () => { state.lastInput = Date.now(); };
+    const down = (event: PointerEvent) => { state.pointers.add(event.pointerId); touched(); };
+    const up = (event: PointerEvent) => { state.pointers.delete(event.pointerId); touched(); };
+    const blur = () => { state.pointers.clear(); touched(); };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("keydown", touched, true);
+    window.addEventListener("wheel", touched, { passive: true, capture: true });
+    window.addEventListener("input", touched, true);
+    window.addEventListener("blur", blur);
     return () => {
-      active = false;
-      window.clearInterval(timer);
+      state.pointers.clear();
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("keydown", touched, true);
+      window.removeEventListener("wheel", touched, true);
+      window.removeEventListener("input", touched, true);
+      window.removeEventListener("blur", blur);
     };
-  }, [api, busy, snapshot?.jobs, report]);
+  }, [followAgent]);
   const openVolume = async (crosshair?: [number, number, number]) => {
     if (!source || !dimensions) return;
     setBusy("volume");
@@ -2059,6 +2113,24 @@ export default function ResearchWorkbench({
     setPendingResultNavigation(null);
     await loadResult(target.id, target, undefined, true, nextSection);
   };
+  const agentFollowContext = useRef({ followAgent, canNavigate: false, navigateExactResult });
+  agentFollowContext.current = {
+    followAgent, navigateExactResult,
+    canNavigate: !busy && !documentSwitching && !sourceIsChanging && viewSettingsReady &&
+      !pendingResultNavigation && !pendingModel && !correctionPreview && !drawingAnalysisRegion &&
+      correctionPoints.length === 0 && annotationDraft.length === 0 &&
+      (tab === "Display" || tab === "Agent" || (tab === "Info" && resultSection === "review")),
+  };
+  useEffect(() => {
+    const target = agentResultTracker.current.observe(snapshot, exportDraftStudy);
+    const context = agentFollowContext.current;
+    const interaction = agentInteraction.current;
+    const editing = document.activeElement?.matches("input, textarea, select, [contenteditable=true]");
+    if (!target || !context.followAgent || !context.canNavigate || documentSwitch.current || editing ||
+      interaction.pointers.size > 0 || Date.now() - interaction.lastInput < 1500) return;
+    // Observed results are never queued to interrupt a later human action or draft.
+    void context.navigateExactResult(target);
+  }, [snapshot, exportDraftStudy]);
   useEffect(() => {
     const guard = pendingStudyNavigation.current;
     if (guard) {
@@ -2964,6 +3036,7 @@ export default function ResearchWorkbench({
         <div className="research-view-toolbar">
         {source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
           source={source} channels={channels} onChannels={setChannels}
+          onSourceChannel={(c) => selectSourcePlane({ ...shownSelection, c })}
           disabled={documentSwitching || assistantFollowing || assistantFollowBusy}
           onOpenDisplay={() => openWorkbenchTab("Display")} />}
         {(source?.browser_location || resultId || (dimensions && dimensions.z > 1) || snapshot.sources.length >= 2) && <div className="research-canvas-toolbar">
@@ -3466,7 +3539,7 @@ export default function ResearchWorkbench({
             onProjection={setProjection}
             selection={shownSelection}
             channels={channels}
-            onSelection={setSelection}
+            onSelection={selectSourcePlane}
             onChannels={(value) => { setChannels(value); setRgbMapping(null); }}
             onBeforeBatch={async () => {
               const store = viewStore.current;
@@ -3523,7 +3596,8 @@ export default function ResearchWorkbench({
               const autoToken = ++autoRequestToken.current;
               const planeKey = autoPlaneKey;
               void report(async () => {
-                const output = await api.execute("viewer_defaults", { source_id: currentSource, t: shownSelection.t, z: shownSelection.z, auto: true }) as { source_id: string; source_sha256: string; channels: Channel[] };
+                const output = await api.execute("viewer_defaults", { source_id: currentSource, t: shownSelection.t, z: shownSelection.z,
+                  ...(isRgb ? { c: shownSelection.c } : {}), auto: true }) as { source_id: string; source_sha256: string; channels: Channel[] };
                 if (displayToken.current !== token || projectionSourceId.current !== currentSource ||
                     autoRequestToken.current !== autoToken || autoPlaneRef.current !== planeKey) return;
                 if (output.source_id !== currentSource || output.source_sha256 !== source.sha256 || !Array.isArray(output.channels))
@@ -3800,10 +3874,20 @@ export default function ResearchWorkbench({
             source={source}
             studySources={[...snapshot.sources, ...(snapshot.workspace?.closed_sources ?? [])]}
             operations={snapshot.operations}
+            agentSessions={snapshot.agent_sessions}
             selection={shownSelection}
             recipe={recipe}
             report={report}
             busy={busy !== null}
+            onCreated={() => {
+              void api.getSnapshot().then((next) => {
+                if (next && !documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
+                  next.project.project_id === snapshot.project.project_id) setSnapshot(next);
+              }).catch((caught) => {
+                if (currentStudyScope.current === exportDraftStudy)
+                  setAgentRefreshError(message(caught, "Could not refresh the new agent access bundle."));
+              });
+            }}
             onBusyChange={(value) =>
               setBusy((current) =>
                 value
@@ -4035,6 +4119,19 @@ export default function ResearchWorkbench({
         <button className={`workbench-jobs__trigger ${jobsOpen ? "active" : ""}`} title="View running and completed jobs" onClick={() => setJobsOpen((open) => !open)}><Activity size={14} aria-hidden="true" /> Jobs{localJobCount + remoteJobCount > 0 ? <span className="workbench-jobs__badge">{localJobCount + remoteJobCount}</span> : null}</button>
         <span role="status">{documentSwitching ? "Updating workspace…" : busy ? `Working: ${busy}` : remoteJobCount ? `${remoteJobCount} remote ${remoteJobCount === 1 ? "job" : "jobs"}` : "Local"}</span>
         <span>{source ? `${meta(source).dimensions.x.toLocaleString()} × ${meta(source).dimensions.y.toLocaleString()}` : ""}</span>
+        <AgentSessionIndicator
+          key={exportDraftStudy}
+          api={api}
+          snapshot={snapshot}
+          refreshError={agentRefreshError}
+          followAgent={followAgent}
+          onFollowAgentChange={setFollowAgent}
+          onSnapshot={(next) => {
+            if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
+              next.project.project_id === snapshot.project.project_id) setSnapshot(next);
+          }}
+          onError={setError}
+        />
       </footer>
       {jobsOpen && <section className="workbench-jobs" aria-label="Job center">
         <header className="workbench-jobs__header">

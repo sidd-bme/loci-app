@@ -119,6 +119,16 @@ def validate_view_data(data: dict[str, Any], source: dict[str, Any]) -> None:
         integer(selection["z_stop"], "Z stop", selection["z"] + 1, d["z"])
     if state["projection"] != "plane" and "z_stop" not in selection:
         raise ValueError("Saved projection requires an explicit Z extent")
+    if metadata.get("sample_semantics") in {"RGB", "RGBA"} and (
+        len(channels) != 1
+        or channels[0]["channel"] != selection["c"]
+        or state["projection"] != "plane"
+        or "z_stop" in selection
+    ):
+        raise ValueError(
+            "Interleaved RGB requires one mapping for the selected logical channel "
+            "and no projection"
+        )
     camera = state.get("camera")
     if camera is not None:
         exact_keys(camera, {"x", "y", "scale"}, "camera")
@@ -195,7 +205,8 @@ def _default_view_state_for_source(source: dict[str, Any]) -> dict[str, Any]:
         "t": 1,
         "c": 1,
     }
-    c_count = max(1, d.get("c", 1))
+    interleaved = metadata.get("sample_semantics") in {"RGB", "RGBA"}
+    c_count = 1 if interleaved else max(1, d.get("c", 1))
     max_val = 65535.0 if metadata.get("channel_dtypes", ["uint16"])[0] == "uint16" else 255.0
     channels = [
         {
@@ -203,7 +214,7 @@ def _default_view_state_for_source(source: dict[str, Any]) -> dict[str, Any]:
             "low": 0.0,
             "high": max_val,
             "gamma": 1.0,
-            "color": default_palette[i % len(default_palette)],
+            "color": "#ffffff" if interleaved else default_palette[i % len(default_palette)],
             "opacity": 1.0,
             "visible": True,
         }

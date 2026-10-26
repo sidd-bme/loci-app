@@ -1,6 +1,6 @@
 # Policy-bound agent access
 
-Loci can expose a deliberately narrow research surface to a local agent over
+Loci can expose explicitly granted study operations to a local agent over
 Model Context Protocol (MCP) stdio. The MCP process opens no HTTP or other
 network listener. It uses the same validated project, recipe, job, result, and
 export code as the desktop and CLI.
@@ -364,6 +364,59 @@ reason and coverage. The server supplies actor and delegation fields. A stale
 decision cannot replace a newer one. The UI distinguishes agent and researcher
 reviews and lets the researcher supersede an agent decision without erasing it.
 Identity assurance is declared, not authenticated model/person identity.
+
+## V5: live MCP session presence, permission modes, and single-use approval
+
+Loci records access bundles, initialized MCP clients, approvals and activity as
+namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them in
+`Workbench.snapshot()["agent_sessions"]` (`loci.agent-sessions/v1`).
+
+- **Truthful session states**: Generating a bundle records `configuration_ready`
+  and never presents a connected client. Only a successful MCP `initialize` handshake after policy and project
+  validation transitions a
+  session to `connected_idle`, `executing`, `awaiting_approval`, or `paused`.
+  Clean exit transitions to `disconnected`; uncaught errors transition to
+  `failed`; dead PIDs or expired heartbeats reconcile to `interrupted` and
+  cancel pending approvals for that session.
+- **Permission modes (`loci.agent-policy/v5`)**: Users can select
+  `ask_approval`, `full_access`, or `inspect_only` at bundle creation and switch
+  modes live from the lower-right session drawer (`research_agent_session_control`):
+  - `inspect_only`: read-only inspection within disclosed scope; mutating,
+    task-submitting, review, and export tools fail closed.
+  - `ask_approval`: read-only inspection proceeds within disclosed scope;
+    mutating or consequential calls (`preview_recipe`, `submit_recipe`,
+    `submit_action`, `set_source_display`, `review_result`, `export_result`,
+    `export_vision_handoff`, `remote_submit`, `remote_retrieve`,
+    `remote_attach`) create a durable pending approval record bound to the exact
+    `operation`, `request_hash`, `source_id`/`source_sha256`,
+    `result_id`/`revision_hash`, `display_revision`, and `destination_name`, and
+    wait for a researcher decision in Loci before executing.
+  - `full_access`: permitted actions within the policy's scope and resource
+    limits execute without per-call prompts.
+- **Single-use atomic approvals and stale-target protection**: Approving a
+  pending request in Loci transitions it from `pending` to `approved`, and the
+  waiting (or retried) MCP tool call atomically consumes it (`approved` ->
+  `consumed`) for that single invocation. If the bound source fingerprint,
+  result revision, or display revision changes before execution, the approval is
+  marked `stale` and rejected. Approval decision RPCs exist only on the desktop
+  control channel (`research_agent_session_control`), never as MCP tools, so an
+  agent cannot approve its own request. Execution approval never creates a
+  human scientific review record.
+- **Interactive controls and non-destructive updates**: The lower-right session
+  drawer provides policy-wide **Pause access**, **Resume access**, **Stop active job**,
+  **Disconnect client**, **Revoke access**, and a **Follow agent** toggle. While
+  **Follow agent** is off (or while the user is editing), agent updates merge
+  into study history without overwriting the user's selected source, result,
+  viewport camera, or unsaved drafts. Follow opens only newly completed results
+  attributed to that session while the researcher is idle in Display, Results
+  or Agent. Results received during editing are not queued to interrupt later.
+  Stop targets an exact session-owned job. Disconnect revokes that session
+  immediately; revoke ends access for the policy. Both preserve unrelated human
+  and other-policy jobs. Reconnection creates a distinct session.
+  Expired approvals cannot be consumed, even before the next desktop refresh.
+- **Capability map (`loci.agent-capability-map/v1`)**: Derived from
+  `OPERATION_CATALOG` and `ACTION_NAMES`, reporting each operation as
+  `supported_via_mcp`, `supported_with_grant`, or `gui_only_gap`.
 
 New reviews use `loci.result-review/v2` and append-only events. Existing legacy
 human receipts retain their original bytes and semantics. Exports contain hashed

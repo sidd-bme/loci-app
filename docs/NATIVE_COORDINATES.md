@@ -43,11 +43,14 @@ frame whose first voxel centre is zero. A selected crop translates that origin
 by the selected-level spacing. Uncalibrated data use explicit `pixel` units.
 An XY plane retains its calibrated Z coordinate only when Z spacing is declared.
 
-PNG and JPEG print-density metadata (DPI or pixels per metre) does not establish
-specimen calibration. These formats use pixel coordinates and pixel-based
-measurements. A calibrated acquisition should retain its microscopy metadata in
-a supported scientific format, such as OME-TIFF. Sources imported by an older
-Loci version with print DPI converted to specimen spacing remain in their saved
+Raster print-density metadata (PNG/JPEG DPI or pixels per metre, and TIFF
+XResolution/YResolution/ResolutionUnit) does not establish specimen calibration.
+Ordinary TIFF and BigTIFF therefore also use pixel coordinates and pixel-based
+measurements. OME-TIFF uses explicit OME PhysicalSize values; TIFF density never
+supplies missing specimen spacing. A calibrated acquisition should retain its
+microscopy metadata in a supported scientific format, such as OME-TIFF.
+Sources imported by an older Loci version with print DPI converted to specimen
+spacing remain in their saved
 history, but new analysis and result export are refused. Preserve that study and
 import the unchanged image into a new study to measure in pixels; no saved
 measurement or annotation is silently rescaled.
@@ -88,3 +91,31 @@ Loci rejects mixtures of pixels and physical lengths instead of inventing a
 conversion. See the [OME units definition](https://ome-model.readthedocs.io/en/latest/developers/ome-units.html).
 These variants were encountered during local, owner-authorized TIFF checks;
 regression fixtures are generated and contain no private source pixels or names.
+
+## Palette TIFF presentation
+
+Native PALETTE TIFF supports one unsigned 8- or 16-bit index sample per pixel,
+Orientation 1, and a complete unsigned 16-bit RGB ColorMap. Each actual IFD is
+validated, including pages represented internally as TIFF frames. Palettes may
+vary across logical C/T/Z and pyramid levels; the selected page's own ColorMap
+is authoritative. A shared TIFF decoding keyframe never supplies another
+page's palette. Source bytes and stored array axes remain unchanged.
+
+The native region contains exact uint16 RGB lookup values on sample axis S=3,
+with logical C/T/Z and physical geometry preserved. Metadata `palette` records
+the stored index dtype and the exact per-IFD expansion policy; the source SHA-256
+binds the lookup tables. OME metadata is interpreted using its original single
+index sample before adding the presentation sample axis. Indices are not scalar
+fluorescence intensities, and expanded RGB components cannot be declared as
+independent biological channels. Reads admit the indices, RGB output, lookup
+scratch, coverage, ColorMap, and encoded/decoded strip or tile memory before
+pixel decoding.
+
+The viewer displays one selected logical C at a time, using that C for tiles,
+overviews, histograms, saved views and rendered exports. Interleaved RGB composites
+and Z projections are rejected. The canvas rounds uint16 RGB to the nearest
+8-bit code using `(value + 128) // 257`; it does not stretch an observed palette
+maximum such as 65280 to 65535. Neutral rendered TIFF exports retain exact uint16
+lookup values. Adjusted exports remain presentation data. A uint16 ICC transform
+is refused when the available transform would change precision. These are
+software interpretation guarantees, not biological or clinical validation.

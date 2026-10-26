@@ -89,12 +89,14 @@ def perform_child(agent, wb, operation):
         "agent_remote_" + operation,
         {"grant_key": KEY, "policy_sha256": policy.content_sha256},
         "agent-remote:" + policy.content_sha256 + ":" + operation,
+        owner=agent.job_owner,
     )
     if job["state"] == "succeeded":
         job = wb.project.submit(
             "agent_remote_" + operation,
             {"grant_key": KEY, "policy_sha256": policy.content_sha256},
             "agent-remote:" + policy.content_sha256 + ":" + operation + ":test-retry",
+            owner=agent.job_owner,
         )
     from unittest.mock import patch
 
@@ -615,6 +617,7 @@ def test_cancel_remains_responsive_for_pending_local_adoption(tmp_path, monkeypa
         "agent_remote_attach",
         {"grant_key": KEY, "policy_sha256": agent.policy.content_sha256},
         "agent-remote:" + agent.policy.content_sha256 + ":attach",
+        owner=agent.job_owner,
     )
     dto = agent.remote_operation(KEY, "cancel")
     assert dto["run"]["cancel_requested"] is True

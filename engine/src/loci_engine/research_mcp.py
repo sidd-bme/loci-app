@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,10 +21,20 @@ from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 from .agent_experiments import matching_templates
 from .agent_policy import (
     DISCLOSURES,
-    STUDY_POLICY_SCHEMA,
     VISION_POLICY_SCHEMAS,
     AgentPolicy,
     load_policy,
+)
+from .agent_sessions import (
+    DEFAULT_APPROVAL_WAIT_SECONDS,
+    READ_ONLY_TOOLS,
+    AgentSessionApprovalError,
+    check_or_await_approval,
+    effective_permission_mode,
+    finish_session,
+    heartbeat_session,
+    require_session_authority,
+    start_session,
 )
 from .export import _rename_noreplace
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
@@ -150,6 +162,12 @@ class JobSupervisor:
         self._children: dict[str, subprocess.Popen[bytes]] = {}
         self._external_children: dict[str, subprocess.Popen[bytes]] = {}
         self._preview_count = 0
+        self.agent: PolicyAgent | None = None
+
+    def _recheck(self) -> None:
+        self.policy.recheck()
+        if self.agent is not None:
+            self.agent._recheck_session()
 
     def owned_worker_active(self, job_id: str) -> bool:
         """Report only this server's exact owned handle, without exposing a PID."""
@@ -228,7 +246,7 @@ class JobSupervisor:
     def _watch(self, job_id: str, process: subprocess.Popen[bytes]) -> None:
         while process.poll() is None:
             try:
-                self.policy.recheck()
+                self._recheck()
             except (PermissionError, ValueError, OSError):
                 try:
                     project = ResearchProject(self.policy.project_path)
@@ -251,7 +269,15 @@ class JobSupervisor:
         request_key: str,
         operation: str = "run_recipe",
     ) -> dict[str, Any]:
-        job = submit_job(workbench, request, request_key, operation=operation)
+        job = submit_job(
+            workbench,
+            request,
+            request_key,
+            operation=operation,
+            owner=self.agent.job_owner
+            if self.agent
+            else {"policy_sha256": self.policy.content_sha256, "session_id": None},
+        )
         if job["state"] != "queued":
             return job
         project = workbench.project
@@ -437,7 +463,14 @@ class JobSupervisor:
     def _preview(self, workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         """Keep preview CPU limits out of the long-lived MCP server process."""
         project = workbench.project
-        job = project.submit("preview_recipe", request, uuid.uuid4().hex)
+        job = project.submit(
+            "preview_recipe",
+            request,
+            uuid.uuid4().hex,
+            owner=self.agent.job_owner
+            if self.agent
+            else {"policy_sha256": self.policy.content_sha256, "session_id": None},
+        )
         command = self._command(project, job["id"])
         # File output avoids a pipe deadlock while policy revocation is
         # polled. The private temporary files are never disclosed.
@@ -453,13 +486,13 @@ class JobSupervisor:
             try:
                 deadline = time.monotonic() + self.policy.cpu_seconds * 2 + 30
                 while process.poll() is None:
-                    self.policy.recheck()
+                    self._recheck()
                     if project.job(job["id"])["cancel_requested"]:
                         raise ValueError("The preview was cancelled before disclosure")
                     if time.monotonic() > deadline or output.tell() > 32 * 1024**2:
                         raise ValueError("Preview exceeded its time or response-size limit")
                     time.sleep(0.05)
-                self.policy.recheck()
+                self._recheck()
                 if process.returncode:
                     raise ValueError(
                         "The bounded preview stopped before producing a valid response"
@@ -493,21 +526,48 @@ class JobSupervisor:
 class PolicyAgent:
     """Narrow application facade; every method begins from the pinned policy."""
 
-    def __init__(self, policy: AgentPolicy, supervisor: JobSupervisor | None = None) -> None:
+    def __init__(
+        self,
+        policy: AgentPolicy,
+        supervisor: JobSupervisor | None = None,
+        *,
+        session_id: str | None = None,
+        approval_wait_seconds: float = DEFAULT_APPROVAL_WAIT_SECONDS,
+    ) -> None:
         self.policy = policy
+        self.session_id = session_id
+        self.approval_wait_seconds = approval_wait_seconds
         self.supervisor = supervisor or JobSupervisor(policy)
+        self.supervisor.agent = self
         from .agent_remote import RemoteSupervisor
 
         self.remote_supervisor = RemoteSupervisor(self)
         self.supervisor._external_children = self.remote_supervisor._children
 
-    def _workbench(self, operation: str) -> Workbench:
+    def _recheck_session(self) -> None:
         self.policy.recheck()
+        require_session_authority(
+            ResearchProject(self.policy.project_path), self.policy.content_sha256, self.session_id
+        )
+
+    @property
+    def job_owner(self) -> dict[str, Any]:
+        return {"policy_sha256": self.policy.content_sha256, "session_id": self.session_id}
+
+    def _workbench(self, operation: str) -> Workbench:
+        self._recheck_session()
         self.policy.require_operation(operation)
         project = ResearchProject(self.policy.project_path)
         if project.meta["project_id"] != self.policy.project_id:
             raise PermissionError("The project identity is outside the pinned policy")
-        return Workbench(project)
+        workbench = Workbench(project)
+        if operation in READ_ONLY_TOOLS:
+            try:
+                check_or_await_approval(self, workbench, operation, {})
+            except Exception:
+                workbench.close()
+                raise
+        return workbench
 
     def _measurements(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         output = []
@@ -618,6 +678,9 @@ class PolicyAgent:
 
     def _authorize_job(self, workbench: Workbench, job_id: str) -> dict[str, Any]:
         job = workbench.project.job(checked_id(job_id))
+        if job.get("owner") != self.job_owner:
+            raise PermissionError("The job belongs to a different policy or session")
+        self._recheck_session()
         if job.get("operation") in self.policy.actions:
             from .agent_actions import authorize_action
 
@@ -726,10 +789,16 @@ class PolicyAgent:
             safe_run,
         )
 
-        self.policy.recheck()
+        self._recheck_session()
         workbench = Workbench(ResearchProject(self.policy.project_path))
         try:
             grant, envelope, profile = authorize(self, workbench, grant_key, operation)
+            check_or_await_approval(
+                self,
+                workbench,
+                f"remote_{operation}",
+                {"grant_key": grant_key, "source_id": grant.get("source_id")},
+            )
             project = workbench.project
             request = {"alias": envelope["data"]["alias"], "request_key": grant["request_key"]}
             if operation in {"retrieve", "attach"}:
@@ -806,7 +875,7 @@ class PolicyAgent:
                 for job in project.list_jobs():
                     if (
                         job["operation"].startswith("agent_remote_")
-                        and job["request"].get("policy_sha256") == self.policy.content_sha256
+                        and job.get("owner") == self.job_owner
                         and job["state"] in {"queued", "running"}
                     ):
                         cancel_job(project, job["id"])
@@ -817,13 +886,13 @@ class PolicyAgent:
                         project,
                         envelope,
                         {**envelope["data"], "cancel_requested": True},
-                        publication_guard=self.policy.recheck,
+                        publication_guard=self._recheck_session,
                     )
                 else:
                     remote._cancel(workbench, request)
             else:
                 raise PermissionError("Unknown remote grant operation")
-            self.policy.recheck()
+            self._recheck_session()
             output = safe_run(self, grant, remote._load_run(project, grant["request_key"])["data"])
             output["work"] = [
                 {
@@ -839,7 +908,7 @@ class PolicyAgent:
             workbench.close()
 
     def catalog(self) -> dict[str, Any]:
-        self.policy.recheck()
+        self._recheck_session()
         output: dict[str, Any] = {
             "schema": "loci.agent-tools/v1",
             "transport": "stdio",
@@ -857,7 +926,7 @@ class PolicyAgent:
                     _TOOL_CATALOG
                     + (_VISION_TOOL_CATALOG if self.policy.schema in VISION_POLICY_SCHEMAS else ())
                     + (_REMOTE_TOOL_CATALOG if self.policy.remote_grants else ())
-                    + (_STUDY_TOOL_CATALOG if self.policy.schema == STUDY_POLICY_SCHEMA else ())
+                    + (_STUDY_TOOL_CATALOG if self.policy.delegation is not None else ())
                 )
             ],
             "dataset_contents_included": False,
@@ -869,6 +938,10 @@ class PolicyAgent:
                 "operations": sorted(self.policy.operations),
                 "disclosures": sorted(self.policy.disclosures),
             }
+            if self.policy.permission_mode is not None:
+                output["policy"]["permission_mode"] = effective_permission_mode(
+                    ResearchProject(self.policy.project_path), self.policy
+                )
         return output
 
     def analysis_context(self, offset: int = 0, limit: int = 50) -> dict[str, Any]:
@@ -935,6 +1008,10 @@ class PolicyAgent:
                 "continuation": "Use analysis_context(offset=next_offset, limit=limit) for "
                 "subsequent pages. Grants are authorization, not scientific validation.",
             }
+            if self.policy.permission_mode is not None:
+                output["policy"]["permission_mode"] = effective_permission_mode(
+                    workbench.project, self.policy
+                )
             if self.policy.schema in VISION_POLICY_SCHEMAS:
                 templates = sorted(self.policy.experimental_recipes)
                 output["experimental_recipes"] = [
@@ -953,7 +1030,7 @@ class PolicyAgent:
                     "next_offset": offset + limit if offset + limit < len(names) else None,
                     "overwrite": False,
                 }
-            self.policy.recheck()
+            self._recheck_session()
             return output
         finally:
             workbench.close()
@@ -1044,6 +1121,7 @@ class PolicyAgent:
         try:
             self.policy.require_disclosure("previews")
             self._validate(workbench, request, "preview")
+            check_or_await_approval(self, workbench, "preview_recipe", request)
             preview = self.supervisor.preview(workbench, request)
             output: dict[str, Any] = {
                 "preview": True,
@@ -1066,7 +1144,10 @@ class PolicyAgent:
         workbench = self._workbench("submit_recipe")
         try:
             self._validate(workbench, request, "run")
+            check_or_await_approval(self, workbench, "submit_recipe", request)
             job = self.supervisor.start(workbench, request, request_key)
+            if self.session_id is not None:
+                heartbeat_session(workbench.project, self.session_id, active_job_id=job["id"])
             return {"job": self._safe_job(job)}
         finally:
             workbench.close()
@@ -1105,6 +1186,7 @@ class PolicyAgent:
         workbench = self._workbench("cancel_job")
         try:
             self._authorize_job(workbench, job_id)
+            check_or_await_approval(self, workbench, "cancel_job", {"job_id": job_id})
             return {"job": self._safe_job(self.supervisor.cancel(workbench.project, job_id))}
         finally:
             workbench.close()
@@ -1218,7 +1300,7 @@ class PolicyAgent:
         for channel in checked["channels"]:
             if not grant.allows({**checked["selection"], "c": channel["channel"]}, []):
                 raise PermissionError("Vision crop, axes, level or display channel exceeds policy")
-        self.policy.recheck()
+        self._recheck_session()
         frame = (
             self.supervisor.vision(workbench, request, operation)
             if supervised
@@ -1232,7 +1314,7 @@ class PolicyAgent:
         ):
             raise ValueError("Vision child returned an incompatible source frame")
         self.policy.source_grant(workbench.project, checked["source_id"])
-        self.policy.recheck()
+        self._recheck_session()
         return frame
 
     def source_image(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -1302,7 +1384,7 @@ class PolicyAgent:
         workbench = self._workbench("source_display")
         try:
             grant, value, state = self._display_state(workbench, source_id)
-            self.policy.recheck()
+            self._recheck_session()
             return self._display_response(grant, value, state)
         finally:
             workbench.close()
@@ -1346,8 +1428,20 @@ class PolicyAgent:
             def guard():
                 self.policy.require_runtime(runtime_record())
                 self.policy.source_grant(workbench.project, source_id)
-                self.policy.recheck()
+                self._recheck_session()
 
+            guard()
+            check_or_await_approval(
+                self,
+                workbench,
+                "set_source_display",
+                {
+                    "source_id": source_id,
+                    "source_sha256": source_sha256,
+                    "expected_revision": expected_revision,
+                    "channels": channels,
+                },
+            )
             guard()
             value = execute_view_state(
                 workbench,
@@ -1361,12 +1455,14 @@ class PolicyAgent:
                 publication_guard=guard,
             )
             self.policy.source_grant(workbench.project, source_id)
-            self.policy.recheck()
+            self._recheck_session()
             return self._display_response(grant, value, state)
         finally:
             workbench.close()
 
     def export_vision_handoff(self, request: dict[str, Any], filename: str) -> dict[str, Any]:
+        from .agent_vision import validate_source_image
+
         workbench = self._workbench("export_vision_handoff")
         try:
             for category in ("previews", "geometry", "provenance", "agent_metadata"):
@@ -1375,6 +1471,25 @@ class PolicyAgent:
                 ".loci-vision"
             ):
                 raise PermissionError("Vision export destination is outside policy")
+            if not isinstance(request, dict):
+                raise ValueError("Vision request must be an object")
+            grant = self.policy.source_grant(workbench.project, request.get("source_id"))
+            checked = validate_source_image(
+                workbench, request, working_bytes=self.policy.memory_bytes
+            )
+            if not grant.allows(checked["selection"], []):
+                raise PermissionError("Vision selection exceeds policy")
+            for channel in checked["channels"]:
+                if not grant.allows({**checked["selection"], "c": channel["channel"]}, []):
+                    raise PermissionError(
+                        "Vision crop, axes, level or display channel exceeds policy"
+                    )
+            check_or_await_approval(
+                self,
+                workbench,
+                "export_vision_handoff",
+                {"source_id": checked["source_id"], "request": request, "filename": filename},
+            )
             frame = self._vision_frame(workbench, request, operation="export_vision_handoff")
             context = {
                 "schema": "loci.vision-context/v1",
@@ -1389,7 +1504,7 @@ class PolicyAgent:
                 context["source_name"] = workbench.project.source(frame["source_id"])["name"]
 
             def guard():
-                self.policy.recheck()
+                self._recheck_session()
                 self.policy.source_grant(workbench.project, frame["source_id"])
 
             from .vision_handoff import write_vision_handoff
@@ -1423,7 +1538,7 @@ class PolicyAgent:
                 }
                 for event in history[offset : offset + limit]
             ]
-            self.policy.recheck()
+            self._recheck_session()
             return {
                 "events": events,
                 "total_events": len(history),
@@ -1437,7 +1552,7 @@ class PolicyAgent:
     def action_guide(self, operation: str | None = None) -> dict[str, Any]:
         from .research_action_registry import action_guide
 
-        self.policy.recheck()
+        self._recheck_session()
         return action_guide(operation)
 
     def validate_action(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -1478,7 +1593,15 @@ class PolicyAgent:
         workbench = self._workbench("submit_action")
         try:
             normalized = authorize_action(self, workbench, operation, request, mode="task")
+            check_or_await_approval(
+                self,
+                workbench,
+                "submit_action",
+                {"operation": operation, "request": normalized},
+            )
             job = self.supervisor.start(workbench, normalized, request_key, operation=operation)
+            if self.session_id is not None:
+                heartbeat_session(workbench.project, self.session_id, active_job_id=job["id"])
             return {"job": self._safe_job(job)}
         finally:
             workbench.close()
@@ -1534,7 +1657,7 @@ class PolicyAgent:
             if "geometry" in self.policy.disclosures:
                 item["selection"] = record["provenance"].get("selection")
             authorized.append(item)
-        self.policy.recheck()
+        self._recheck_session()
         return {
             "results": authorized[offset : offset + limit],
             "total_results": len(authorized),
@@ -1564,9 +1687,10 @@ class PolicyAgent:
             result = self._authorize_result(workbench, request["result_id"])
             if result["revision_hash"] != request["revision_hash"]:
                 raise PermissionError("Agent review requires the exact inspected revision")
+            check_or_await_approval(self, workbench, "review_result", dict(request))
 
             def guard():
-                self.policy.recheck()
+                self._recheck_session()
                 self._authorize_result(workbench, result["id"])
 
             receipt = workbench.project.review(
@@ -1609,6 +1733,19 @@ class PolicyAgent:
                 raise PermissionError(
                     "Export of agent-reviewed results requires delegated approval and export"
                 )
+            if expected_review is None or expected_review.get("disposition") != "reviewed":
+                raise ValueError("Review the exact result revision before exporting")
+            check_or_await_approval(
+                self,
+                workbench,
+                "export_result",
+                {
+                    "source_id": result["source_id"],
+                    "result_id": result_id,
+                    "revision_hash": revision_hash,
+                    "filename": filename,
+                },
+            )
             # research_export performs the exact review, source, artifact and
             # round-trip checks and publishes with a no-replace atomic rename.
             from .research_export import export_research_result
@@ -1625,7 +1762,7 @@ class PolicyAgent:
                 )
                 # The policy and exact review are checked again immediately before
                 # the only rename that exposes the policy-authorized filename.
-                self.policy.recheck()
+                self._recheck_session()
                 self._authorize_result(workbench, result_id)
                 review = workbench.project.review_state(result_id)
                 if (
@@ -1634,6 +1771,7 @@ class PolicyAgent:
                     or review != expected_review
                 ):
                     raise PermissionError("The exact result revision is no longer reviewed")
+                self._recheck_session()
                 _rename_noreplace(staging, target)
                 return {**receipt, "export_name": filename}
             finally:
@@ -1647,6 +1785,41 @@ class PolicyAgent:
 
 def build_server(policy_path: str | Path) -> MCPServer:
     agent = PolicyAgent(load_policy(policy_path))
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_server: MCPServer):
+        async def _heartbeat_loop() -> None:
+            while True:
+                await asyncio.sleep(2.0)
+                with suppress(Exception):
+                    if agent.session_id is not None:
+                        heartbeat_session(
+                            ResearchProject(agent.policy.project_path), agent.session_id
+                        )
+
+        hb_task = asyncio.create_task(_heartbeat_loop())
+        failed = False
+        try:
+            yield {"session_id": agent.session_id}
+        except Exception:
+            failed = True
+            raise
+        finally:
+            hb_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await hb_task
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    finish_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        reason="MCP server session ended with an error"
+                        if failed
+                        else "MCP stdio connection closed",
+                        failed=failed,
+                    )
+                agent.session_id = None
+
     server = MCPServer(
         "loci-research",
         description="Local policy-scoped biomedical image research tools",
@@ -1655,6 +1828,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "Tools cannot import data, alter policy, create human review, or execute "
             "shell commands."
         ),
+        lifespan=lifespan,
     )
     descriptions = dict(
         _TOOL_CATALOG + _REMOTE_TOOL_CATALOG + _VISION_TOOL_CATALOG + _STUDY_TOOL_CATALOG
@@ -1701,6 +1875,20 @@ def build_server(policy_path: str | Path) -> MCPServer:
         # The SDK's default Pydantic argument model ignores extra keys. Reject
         # extra remote arguments at the public raw-request middleware boundary.
         params = context.params
+        if context.method == "initialize":
+            response = await call_next(context)
+            # The SDK validates and commits initialization before returning here.
+            if agent.session_id is None:
+                info = params.get("clientInfo", {}) if isinstance(params, Mapping) else {}
+                session = start_session(
+                    ResearchProject(agent.policy.project_path),
+                    agent.policy,
+                    client_id=info.get("name") or "mcp-stdio-client",
+                    client_version=info.get("version"),
+                    pid=os.getpid(),
+                )
+                agent.session_id = session["session_id"]
+            return response
         if context.method == "tools/call" and isinstance(params, dict):
             name = params.get("name")
             action_arguments = {
@@ -1841,18 +2029,62 @@ def build_server(policy_path: str | Path) -> MCPServer:
         boundary_error = ResourceError if resource else ToolError
 
         try:
-            agent.policy.recheck()
+            agent._recheck_session()
             result = action()
             # Revocation during a long read prevents a late response from
             # disclosing previously authorized image or metadata content.
-            agent.policy.recheck()
+            agent._recheck_session()
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        state="connected_idle",
+                        current_operation=None,
+                        active_approval_id=None,
+                        increment_calls=True,
+                        last_error=None,
+                    )
             return result
+        except AgentSessionApprovalError as exc:
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        current_operation=None,
+                        increment_calls=True,
+                        last_error=exc.public_message,
+                    )
+            raise boundary_error(exc.public_message) from None
         except PermissionError:
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        state="connected_idle",
+                        current_operation=None,
+                        active_approval_id=None,
+                        increment_calls=True,
+                        last_error="Operation not authorized by policy",
+                    )
             raise boundary_error(
                 "The operation, source scope, disclosure or resource limit "
                 "is not authorized by the active policy."
             ) from None
         except (ValueError, OSError, RuntimeError, TypeError, KeyError):
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        state="connected_idle",
+                        current_operation=None,
+                        active_approval_id=None,
+                        increment_calls=True,
+                        last_error="Operation failed validation or execution",
+                    )
             # Native decoder and filesystem exceptions can contain private
             # paths or source metadata. Keep exact diagnostics in local tools.
             raise boundary_error(
@@ -1860,6 +2092,17 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "Inspect the source and settings in Loci."
             ) from None
         except Exception:
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        state="connected_idle",
+                        current_operation=None,
+                        active_approval_id=None,
+                        increment_calls=True,
+                        last_error="Unexpected operation failure",
+                    )
             # Unexpected implementation failures must not put exception text or
             # tracebacks containing local paths onto the client-visible stdio
             # diagnostic stream.
@@ -2033,7 +2276,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
     def export_result(result_id: str, revision_hash: str, filename: str) -> dict[str, Any]:
         return invoke(lambda: agent.export_result(result_id, revision_hash, filename))
 
-    if agent.policy.schema == STUDY_POLICY_SCHEMA:
+    if agent.policy.delegation is not None:
 
         @server.tool(
             name="action_guide",

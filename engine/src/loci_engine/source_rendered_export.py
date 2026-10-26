@@ -350,9 +350,12 @@ def _tiff_plan(
         raise ValueError(f"A TIFF projection is limited to {MAX_PROJECTION_PLANES} source planes")
     settings = _request_settings(view.get("channels"), metadata)
     if metadata.sample_semantics != "none" and (
-        len(settings) != 1 or settings[0].channel != 0 or projection is not None
+        len(settings) != 1 or settings[0].channel != c or projection is not None
     ):
-        raise ValueError("Interleaved source RGB uses channel zero and no Z projection")
+        raise ValueError(
+            "Interleaved source RGB uses one mapping for the selected logical channel "
+            "and no Z projection"
+        )
     return (
         metadata,
         {
@@ -378,7 +381,7 @@ def _rgb_tiff_tile(
     embedded_icc: bytes | None,
     display: Any,
 ) -> tuple[np.ndarray, str]:
-    dtype = np.dtype(metadata.channel_dtypes[0])
+    dtype = np.dtype(metadata.channel_dtypes[selection.c])
     policy = metadata.rgb_color_policy
     if policy is None or policy.source_space != "source-device-RGB":
         raise ValueError("Interleaved source RGB has no validated colour policy")
@@ -454,7 +457,7 @@ def _tiff_tiles(
                             width=width,
                             height=source_height,
                             t=selection["t"],
-                            c=0,
+                            c=selection["c"],
                             z=selection["z"],
                             level=0,
                             series=metadata.selected_series,
@@ -602,6 +605,7 @@ def _export_tiff(
         "display_basis": basis,
         "geometry": geometry,
         "rgb_color_policy": color_policy,
+        "palette": asdict(metadata.palette) if metadata.palette is not None else None,
         "precision_policy": precision_policy,
         "figure": {
             "request": figure.request_payload(),
@@ -767,6 +771,15 @@ def _export_png(
             },
             "source_sha256": source["sha256"],
             "meaning": "display RGB; not original-value quantitative data",
+            "palette": asdict(source_metadata.palette)
+            if source_metadata.palette is not None
+            else None,
+            "canvas_quantization": (
+                "uint16-fixed-range-nearest-v1"
+                if source_metadata.sample_semantics != "none"
+                and np.dtype(source_metadata.channel_dtypes[settings[0].channel]) == np.uint16
+                else None
+            ),
             "annotations_included": False,
             "sampling": "full-extent overview" if view.get("overview") else "selected source grid",
             "request": {key: value for key, value in view.items() if key != "source_id"},

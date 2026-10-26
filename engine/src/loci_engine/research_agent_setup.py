@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from .agent_plugin import plugin_documents
-from .agent_policy import DISCLOSURES, write_policy
+from .agent_policy import DISCLOSURES, PERMISSION_MODES, load_policy, write_policy
+from .agent_sessions import register_policy
 from .export import _fsync_directory, _rename_noreplace
 from .quantitative import exact_keys, finite_number
 from .research_process import research_command
@@ -179,10 +180,19 @@ def create_agent_access(
         "disclosures",
         "limits",
     }
-    optional = {"interactive", "delegation", "actions", "source_scope", "export_scope"}
+    optional = {
+        "interactive",
+        "delegation",
+        "actions",
+        "source_scope",
+        "export_scope",
+        "permission_mode",
+    }
     exact_keys(request, expected | optional, "agent access")
     if set(request) - optional != expected:
         raise ValueError("Agent access requires every explicit permission and limit")
+    if "permission_mode" in request and request["permission_mode"] not in PERMISSION_MODES:
+        raise ValueError("Choose inspect_only, ask_approval or full_access permission mode")
     for name in ("allow_preview", "allow_run", "allow_export"):
         if not isinstance(request[name], bool):
             raise ValueError("Agent operation grants must be boolean")
@@ -366,6 +376,8 @@ def create_agent_access(
             specification["sources"] = _whole_source_grants(
                 workbench, request["source_scope"], source["id"]
             )
+    if "permission_mode" in request:
+        specification["permission_mode"] = request["permission_mode"]
     include_plugin = interactive is not None or delegation is not None
     target = Path(destination).expanduser()
     if not target.is_absolute() or target.is_symlink() or target.exists():
@@ -527,6 +539,13 @@ def create_agent_access(
             raise ValueError("Agent access staging directory changed before publication")
         _rename_noreplace(stage, target)
         _fsync_directory(parent)
+        published_policy = load_policy(target / "agent-policy.json")
+        register_policy(
+            workbench.project,
+            published_policy,
+            permission_mode=request.get("permission_mode"),
+            bundle_name=target.name,
+        )
         return {
             **receipt,
             "recipe_sha256": validated["recipe_sha256"],

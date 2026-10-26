@@ -938,6 +938,17 @@ def _validate_job(record: Any, expected_id: str, result_ids: set[str]) -> dict[s
     if not isinstance(record, dict) or record.get("id") != expected_id or "pid" in record:
         raise ValueError("Interchanged job identity or process state is invalid")
     checked_id(record["id"])
+    if "owner" in record:
+        owner = record["owner"]
+        if (
+            not isinstance(owner, dict)
+            or set(owner) != {"policy_sha256", "session_id"}
+            or not isinstance(owner["policy_sha256"], str)
+            or not SHA_PATTERN.fullmatch(owner["policy_sha256"])
+        ):
+            raise ValueError("Interchanged job owner is invalid")
+        if owner["session_id"] is not None:
+            checked_id(owner["session_id"])
     checked_text(record.get("operation"), "Job operation", 64)
     checked_text(record.get("request_key"), "Submission key", 160)
     fingerprint = _sha256_bytes(
@@ -1755,7 +1766,17 @@ def relink_interchanged_source(
         raise ValueError("Imported source kind is unsupported")
     if actual != source["sha256"] or size != source["size_bytes"]:
         raise ValueError("Relink rejected: selected bytes do not exactly match the source")
-    if canonical_json(actual_metadata) != canonical_json(source.get("metadata")):
+    saved_metadata = source.get("metadata")
+    if (
+        isinstance(saved_metadata, dict)
+        and "palette" not in saved_metadata
+        and actual_metadata.get("palette") is None
+    ):
+        # Before palette support, non-palette sources omitted this optional key.
+        # Compare without that absent/None difference only; never omit a real LUT
+        # interpretation or rewrite the saved scientific metadata.
+        actual_metadata = {key: value for key, value in actual_metadata.items() if key != "palette"}
+    if canonical_json(actual_metadata) != canonical_json(saved_metadata):
         raise ValueError(
             "Relink rejected: inspected shape, calibration, or metadata differs from the study"
         )

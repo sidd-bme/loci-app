@@ -4,6 +4,8 @@ import type {
   ResearchAgentAccessRequest,
   ResearchAgentInteractiveAccess,
   ResearchAgentDisclosure,
+  ResearchAgentPermissionMode,
+  ResearchAgentSessionsSnapshot,
   ResearchDesktopApi,
   ResearchRecipe,
   ResearchSelection,
@@ -94,11 +96,15 @@ function exactReceipt(
   actions: string[] = [],
   sources?: Array<{ id: string; sha256: string }>,
   exportScope: "listed" | "directory" = "listed",
+  permissionMode?: ResearchAgentPermissionMode,
 ): ResearchAgentAccessReceipt {
   const receipt = value as ResearchAgentAccessReceipt;
+  const baseSchema = delegation ? "loci.agent-policy/v4" : interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1";
+  const expectedSchema = permissionMode ? "loci.agent-policy/v5" : baseSchema;
   if (
     !receipt ||
-    receipt.schema !== (delegation ? "loci.agent-policy/v4" : interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1") ||
+    receipt.schema !== expectedSchema ||
+    (permissionMode && receipt.permission_mode !== permissionMode) ||
     ((interactive || delegation) && receipt.plugin_filename !== "plugin/plugin.json") ||
     (delegation && (!receipt.delegation || !/^[a-f0-9]{32}$/.test(receipt.delegation.id) ||
       !same({ client_id: receipt.delegation.client_id, expires_at: receipt.delegation.expires_at, result_scope: receipt.delegation.result_scope },
@@ -136,24 +142,29 @@ export function ResearchAgentPanel({
   source,
   studySources,
   operations,
+  agentSessions,
   selection,
   recipe,
   report,
   busy,
   onBusyChange,
+  onCreated,
 }: {
   api: ResearchDesktopApi;
   source: ResearchSource;
   studySources?: ResearchSource[];
   operations?: ResearchSnapshot["operations"];
+  agentSessions?: ResearchAgentSessionsSnapshot;
   selection: ResearchSelection;
   recipe: ResearchRecipe;
   report: Report;
   busy: boolean;
   onBusyChange: (busy: boolean) => void;
+  onCreated?: () => void;
 }): React.JSX.Element {
   const [allowPreview, setAllowPreview] = useState(false);
   const [preset, setPreset] = useState("custom");
+  const [permissionMode, setPermissionMode] = useState<"default" | ResearchAgentPermissionMode>("default");
   const [advanced, setAdvanced] = useState(false);
   const [sourceMode, setSourceMode] = useState<"selected" | "study">("selected");
   const [actionMode, setActionMode] = useState<"none" | "inspect" | "analyze">("none");
@@ -198,7 +209,7 @@ export function ResearchAgentPanel({
     validationFingerprint, allowPreview, allowRun, allowExport, disclosures,
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
-    allowReview, resultScope, expiryHours, client,
+    allowReview, resultScope, expiryHours, client, permissionMode,
     sourceMode, actionMode, actions, exportMode, sourceMode === "study" ? scopedSources.map(item => [item.id, item.sha256]) : [],
   ]);
   const currentGrant = useRef(grantFingerprint);
@@ -217,7 +228,7 @@ export function ResearchAgentPanel({
   }, [grantFingerprint]);
   useEffect(() => {
     setAllowPreview(false);
-    setPreset("custom"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
+    setPreset("custom"); setPermissionMode("default"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
     setAllowRun(false);
     setAllowExport(false);
     setAllowReview(false); setResultScope("pinned-recipes"); setExpiryHours("0");
@@ -334,10 +345,12 @@ export function ResearchAgentPanel({
     const generation = ++creationGeneration.current;
     // The deliberate grant click authorizes this displayed policy, not later edits.
     const authorizedGrant = grantFingerprint;
+    const resolvedPermissionMode = permissionMode === "default" ? undefined : permissionMode;
     const request: ResearchAgentAccessRequest = {
       source_id: source.id,
       selection,
       recipe: agentRecipe,
+      ...(resolvedPermissionMode ? { permission_mode: resolvedPermissionMode } : {}),
       allow_preview: allowPreview,
       allow_run: allowRun,
       allow_export: allowExport,
@@ -375,10 +388,13 @@ export function ResearchAgentPanel({
           actions,
           request.source_scope?.sources ?? [{ id: source.id, sha256: source.sha256 }],
           exportMode,
+          resolvedPermissionMode,
         );
       }, "Could not create bounded local agent access.");
-      if (output && generation === creationGeneration.current && currentGrant.current === authorizedGrant)
+      if (output && generation === creationGeneration.current && currentGrant.current === authorizedGrant) {
         setReceipt(output);
+        onCreated?.();
+      }
     } finally {
       setLocalBusy(false);
       onBusyChange(false);
@@ -399,6 +415,12 @@ export function ResearchAgentPanel({
       <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
         <option value="custom">Custom permissions</option><option value="inspect">Inspect</option>
         <option value="analyze" disabled={!actionChoices.length}>Analyze</option><option value="full" disabled={!actionChoices.length}>Full study</option>
+      </select></label>
+      <label>Session permission mode<select aria-label="Session permission mode" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as "default" | ResearchAgentPermissionMode)}>
+        <option value="default">Automatic (ask approval for mutating actions)</option>
+        <option value="ask_approval">Ask for approval (confirm mutating actions in Loci)</option>
+        <option value="full_access">Full access (run granted actions without per-call prompts)</option>
+        <option value="inspect_only">Inspect only (read-only; mutating actions blocked)</option>
       </select></label>
       {preset !== "custom" && <p className="research-agent-preset-summary">{preset === "inspect" ? "Read images, measurements and review history within the region shown." : preset === "analyze" ? "Inspect, run analyses, correct labels and remeasure within the region shown. Review decisions stay with you." : `Inspect and analyze all ${scopedSources.length} current sources, correct results, approve revisions as an agent, and export into your chosen folder.`} Your connected provider may receive these images and records.</p>}
 
@@ -558,8 +580,10 @@ export function ResearchAgentPanel({
         Exports require review of the exact result revision. {allowReview ? "This grant permits agent review." : "Review stays with the researcher."} The built-in recipe runs locally on CPU.</p></details>
 
       {receipt && <section className="research-agent-card research-agent-ready" aria-label="Created agent access receipt">
-        <h3>Local agent access is ready</h3>
+        <h3>Local agent access bundle is ready (not connected yet)</h3>
         <dl className="research-kv">
+          <div><dt>Connection state</dt><dd>{agentSessions?.sessions.some(s => s.policy_sha256 === receipt.policy_sha256 && ["connected_idle", "executing", "awaiting_approval", "paused"].includes(s.state)) ? "Connected over STDIO" : "Bundle ready · Waiting for MCP client connection"}</dd></div>
+          <div><dt>Permission mode</dt><dd>{receipt.permission_mode ?? (permissionMode === "default" ? "ask_approval (or inspect_only when read-only)" : permissionMode)}</dd></div>
           <div><dt>Policy file</dt><dd>{receipt.policy_filename}</dd></div>
           <div><dt>MCP config</dt><dd>{receipt.config_filename}</dd></div>
           {receipt.plugin_filename && <div><dt>Local plugin</dt><dd>{receipt.plugin_filename}</dd></div>}

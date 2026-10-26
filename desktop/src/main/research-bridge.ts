@@ -1680,6 +1680,29 @@ export class ResearchBridge {
         }, 0);
       } finally { this.switching = false; }
     });
+    handle("agent-session-control", async (value) => {
+      const project = this.requireProject();
+      if (!value || typeof value !== "object" || Array.isArray(value) ||
+          JSON.stringify(value).length > 32 * 1024)
+        throw new Error("Invalid agent session control request.");
+      const request = structuredClone(value) as Record<string, unknown>;
+      const validActions = new Set([
+        "approve_request",
+        "deny_request",
+        "set_permission_mode",
+        "pause_session",
+        "resume_session",
+        "stop_job",
+        "disconnect_session",
+        "revoke_policy",
+      ]);
+      if (typeof request.action !== "string" || !validActions.has(request.action))
+        throw new Error("Invalid agent session control action.");
+      return await this.control.request("research_agent_session_control", {
+        project,
+        request,
+      }, 0);
+    });
     handle("import", (kind) => this.addSources(kind));
     handle("import-model", async (working_bytes, recovery_model_id) => {
       if (recovery_model_id !== undefined &&

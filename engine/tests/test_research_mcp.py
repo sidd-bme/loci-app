@@ -423,7 +423,9 @@ def test_terminal_job_reports_owned_worker_cleanup_and_preserves_capacity(tmp_pa
     from loci_engine.research_jobs import run_job
 
     agent, workbench, _, request, _, _ = make_agent(tmp_path)
-    job = workbench.project.submit("run_recipe", request, "completed-with-live-worker")
+    job = workbench.project.submit(
+        "run_recipe", request, "completed-with-live-worker", owner=agent.job_owner
+    )
     run_job(workbench, job["id"])
     process = FakeProcess([])
     agent.supervisor._children[job["id"]] = process
@@ -489,7 +491,9 @@ def test_cancel_signals_only_the_owned_process_with_matching_durable_pid(tmp_pat
     workbench.project.update_job(
         unowned["id"], expected_state="queued", state="running", pid=os.getpid()
     )
-    assert controlled.cancel_job(unowned["id"])["job"]["cancel_requested"] is True
+    with pytest.raises(PermissionError, match="different policy or session"):
+        controlled.cancel_job(unowned["id"])
+    assert workbench.project.job(unowned["id"])["cancel_requested"] is False
     assert process.terminated is True
     assert process.terminate_calls == 1
 

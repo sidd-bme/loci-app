@@ -416,6 +416,72 @@ describe("ResearchAgentPanel", () => {
     expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
   });
 
+  it.each([
+    { schema: "loci.agent-policy/v1", permission_mode: "ask_approval" },
+    { schema: "loci.agent-policy/v5", permission_mode: undefined },
+    { schema: "loci.agent-policy/v5", permission_mode: "full_access" },
+  ] as const)("rejects a receipt that cannot confirm the requested approval mode: %j", async (returnedMode) => {
+    const errors: string[] = [];
+    const onCreated = vi.fn();
+    render(<ResearchAgentPanel api={bridge(vi.fn().mockResolvedValue(validation), vi.fn().mockResolvedValue({ ...receipt, ...returnedMode }))}
+      source={source} selection={selection} recipe={recipe} busy={false} onBusyChange={vi.fn()} onCreated={onCreated}
+      report={async <T,>(work: () => Promise<T>) => {
+        try { return await work(); } catch (error) { errors.push((error as Error).message); return undefined; }
+      }} />);
+    fireEvent.change(screen.getByLabelText("Session permission mode"), { target: { value: "ask_approval" } });
+    fireEvent.click(screen.getByText("Customize permissions"));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow display-only recipe previews"));
+    fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
+    fireEvent.click(screen.getByLabelText("Disclose previews"));
+    fireEvent.click(screen.getByLabelText("Disclose measurements"));
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(errors).toEqual([expect.stringContaining("receipt did not match")]));
+    expect(onCreated).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+
+  it("supports explicit permission_mode selection and shows bundle ready as not connected", async () => {
+    const v5Receipt: ResearchAgentAccessReceipt = {
+      ...receipt,
+      schema: "loci.agent-policy/v5",
+      permission_mode: "ask_approval",
+    };
+    const createAgentAccess = vi.fn().mockResolvedValue(v5Receipt);
+    const onCreated = vi.fn();
+    render(
+      <ResearchAgentPanel
+        api={bridge(vi.fn().mockResolvedValue(validation), createAgentAccess)}
+        source={source}
+        selection={selection}
+        recipe={recipe}
+        report={async <T,>(work: () => Promise<T>) => work()}
+        busy={false}
+        onBusyChange={vi.fn()}
+        onCreated={onCreated}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Session permission mode"), {
+      target: { value: "ask_approval" },
+    });
+    fireEvent.click(screen.getByText("Customize permissions"));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe"));
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow display-only recipe previews"));
+    fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
+    fireEvent.click(screen.getByLabelText("Disclose previews"));
+    fireEvent.click(screen.getByLabelText("Disclose measurements"));
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    const readyCard = await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ permission_mode: "ask_approval" }),
+    );
+    expect(readyCard).toHaveTextContent("not connected yet");
+    expect(readyCard).toHaveTextContent("Bundle ready · Waiting for MCP client connection");
+    expect(onCreated).toHaveBeenCalledOnce();
+  });
+
 });
 
 it("points file-based vision clients to Agent and keeps source fingerprints in a closed record", () => {

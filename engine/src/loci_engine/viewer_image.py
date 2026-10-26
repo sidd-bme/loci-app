@@ -19,7 +19,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -91,8 +91,9 @@ def _require_working_budget(
 ) -> None:
     pixels = width * height
     if metadata.sample_semantics != "none":
-        # Decoder RGB(A), transformed/output RGB, PNG encoder input and scratch.
-        required = pixels * 32
+        # Native RGB(A), float64 tone mapping, fixed-range canvas quantization,
+        # PNG encoder input and scratch. Native segment reads have their own gate.
+        required = pixels * 64
     else:
         source_bytes = 0
         for setting in settings:
@@ -427,6 +428,7 @@ def _sample_rgb_plane(
     metadata: NativeImageMetadata,
     *,
     t: int,
+    c: int,
     z: int,
     output_width: int,
     output_height: int,
@@ -460,7 +462,7 @@ def _sample_rgb_plane(
                     width=width,
                     height=height,
                     t=t,
-                    c=0,
+                    c=c,
                     z=z,
                     level=0,
                     series=metadata.selected_series,
@@ -470,7 +472,7 @@ def _sample_rgb_plane(
                 display=display,
                 cancellation_check=cancellation_check,
             )
-            result[np.ix_(output_y, output_x)] = tile[
+            result[np.ix_(output_y, output_x)] = _canvas_rgb(tile)[
                 np.ix_(y_indices[output_y] - y0, x_indices[output_x] - x0)
             ]
             wrote = True
@@ -485,6 +487,7 @@ def _native_rgb_overview(
     *,
     level: int,
     t: int,
+    c: int,
     z: int,
     embedded_icc: bytes | None,
     display: ResolvedChannelDisplay | None,
@@ -500,7 +503,7 @@ def _native_rgb_overview(
             width=dimensions.x,
             height=dimensions.y,
             t=t,
-            c=0,
+            c=c,
             z=_mapped_z(z, metadata.dimensions.z, dimensions.z),
             level=level,
             series=metadata.selected_series,
@@ -567,6 +570,7 @@ def _revision(metadata: NativeImageMetadata, display: Any, basis: Any) -> str:
         "display": display,
         "basis": basis,
         "rgb_policy": asdict(metadata.rgb_color_policy) if metadata.rgb_color_policy else None,
+        "rgb_canvas_quantization": "uint16-fixed-range-nearest-v1",
     }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -580,13 +584,14 @@ def viewer_defaults(
 ) -> dict[str, Any]:
     """Resolve source-stable acquisition or explicit Auto display settings."""
 
-    _exact_keys(request, {"source_id", "t", "z", "auto"}, "viewer_defaults request")
+    _exact_keys(request, {"source_id", "t", "c", "z", "auto"}, "viewer_defaults request")
     metadata = _metadata(session)
     source_id = _source_id(request.get("source_id"))
     auto = request.get("auto", False)
     if not isinstance(auto, bool):
         raise ViewerImageError("auto must be boolean.")
     t, z, _ = _validate_t_z(metadata, request.get("t", 0), request.get("z", 0))
+    c = _integer(request.get("c", 0), "c", 0, metadata.dimensions.c - 1)
     samples: dict[int, np.ndarray] | None = None
     basis: dict[str, Any] = {"mode": "acquisition", "viewport_dependent": False}
     if auto:
@@ -609,7 +614,7 @@ def viewer_defaults(
                         width=dimensions.x,
                         height=dimensions.y,
                         t=t,
-                        c=0,
+                        c=c,
                         z=_mapped_z(z, metadata.dimensions.z, dimensions.z),
                         level=level,
                         series=metadata.selected_series,
@@ -624,6 +629,7 @@ def viewer_defaults(
                     session,
                     metadata,
                     t=t,
+                    c=c,
                     z=z,
                     output_width=width,
                     output_height=height,
@@ -637,7 +643,7 @@ def viewer_defaults(
                 p1, p99 = 0.0, dtype_max
             channels = [
                 {
-                    "channel": 0,
+                    "channel": c,
                     "low": p1,
                     "high": p99,
                     "gamma": 1.0,
@@ -659,7 +665,7 @@ def viewer_defaults(
                 "viewport_dependent": False,
                 "channels": [
                     {
-                        "channel": 0,
+                        "channel": c,
                         "range": "auto-deterministic-coarse-level-percentiles",
                         "gamma": "neutral-gamma-fallback",
                         "color": "neutral-grayscale-fallback",
@@ -737,6 +743,18 @@ def viewer_defaults(
         )
     except ViewerDisplayError as exc:
         raise ViewerImageError(str(exc)) from exc
+    if metadata.sample_semantics != "none":
+        # RGB samples already encode colour; OME channel tint is not a second LUT.
+        selected = resolved[c]
+        resolved = (
+            replace(
+                selected,
+                color_rgb=(1.0, 1.0, 1.0),
+                opacity=1.0,
+                visible=True,
+                color_basis="source-RGB-components",
+            ),
+        )
     channels = _display_payload(resolved)
     basis["channels"] = _display_basis(resolved)
     return {
@@ -781,6 +799,7 @@ def _sample_stored_rgb_plane(
     metadata: NativeImageMetadata,
     *,
     t: int,
+    c: int,
     z: int,
     output_width: int,
     output_height: int,
@@ -811,7 +830,7 @@ def _sample_stored_rgb_plane(
                     width=width,
                     height=height,
                     t=t,
-                    c=0,
+                    c=c,
                     z=z,
                     level=0,
                     series=metadata.selected_series,
@@ -915,10 +934,11 @@ def viewer_histogram(
 
     if not isinstance(request, Mapping):
         raise ViewerImageError("viewer_histogram request must be a mapping.")
-    _exact_keys(request, {"source_id", "t", "z", "bins"}, "viewer_histogram request")
+    _exact_keys(request, {"source_id", "t", "c", "z", "bins"}, "viewer_histogram request")
     source_id = _source_id(request.get("source_id"))
     metadata = _metadata(session)
     t, z, _ = _validate_t_z(metadata, request.get("t", 0), request.get("z", 0))
+    c = _integer(request.get("c", 0), "c", 0, metadata.dimensions.c - 1)
     bins = _integer(request.get("bins", 256), "bins", 2, MAX_HISTOGRAM_BINS)
     component_count = (
         metadata.dimensions.c if metadata.sample_semantics == "none" else metadata.dimensions.s
@@ -996,7 +1016,7 @@ def viewer_histogram(
                     width=dimensions.x,
                     height=dimensions.y,
                     t=t,
-                    c=0,
+                    c=c,
                     z=_mapped_z(z, metadata.dimensions.z, dimensions.z),
                     level=level,
                     series=metadata.selected_series,
@@ -1009,6 +1029,7 @@ def viewer_histogram(
                 session,
                 metadata,
                 t=t,
+                c=c,
                 z=z,
                 output_width=width,
                 output_height=height,
@@ -1021,7 +1042,11 @@ def viewer_histogram(
                     sample[..., component],
                     component=component,
                     label=labels[component],
-                    units="stored source-device component values",
+                    units=(
+                        "palette lookup RGB component values"
+                        if metadata.palette is not None
+                        else "stored source-device component values"
+                    ),
                     bins=bins,
                 )
             )
@@ -1034,6 +1059,7 @@ def viewer_histogram(
         "t": t,
         "z": z,
         "shape": [sample_height, sample_width],
+        **({"c": c} if metadata.sample_semantics != "none" else {}),
         "sample_count_per_component": sample_height * sample_width,
         "viewport_dependent": False,
     }
@@ -1130,18 +1156,32 @@ def _render_rgb(
 ) -> np.ndarray:
     assert metadata.rgb_color_policy is not None
     try:
-        if display is None:
+        if display is None and array.dtype == np.uint8:
             return render_source_rgb(array, metadata.rgb_color_policy, embedded_icc=embedded_icc)
         return render_adjusted_source_rgb(
             array,
             metadata.rgb_color_policy,
-            low=display.low,
-            high=display.high,
-            gamma=display.gamma,
+            low=display.low if display else 0.0,
+            high=display.high if display else float(np.iinfo(array.dtype).max),
+            gamma=display.gamma if display else 1.0,
             embedded_icc=embedded_icc,
         )
     except ViewerDisplayError as exc:
         raise ViewerImageError(str(exc)) from exc
+
+
+def _canvas_rgb(pixels: np.ndarray) -> np.ndarray:
+    """Quantize display only: nearest 8-bit code on the fixed 0..65535 range.
+
+    Never stretch a palette's observed maximum (for example 65280) to white.
+    Native reads and rendered uint16 TIFF exports retain exact lookup values.
+    """
+
+    if pixels.dtype == np.uint16:
+        return ((pixels.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    if pixels.dtype != np.uint8:
+        raise ViewerImageError("Viewer canvas RGB requires unsigned 8- or 16-bit components.")
+    return pixels
 
 
 def _normal_tile(
@@ -1209,9 +1249,10 @@ def _normal_tile(
         }
         pixels = _render_scalar(arrays, settings)
     else:
-        if len(settings) != 1 or settings[0].channel != 0 or projection is not None:
+        if len(settings) != 1 or settings[0].channel != active_c or projection is not None:
             raise ViewerImageError(
-                "Interleaved RGB uses one channel-zero mapping and no projection."
+                "Interleaved RGB uses one mapping for the selected logical channel "
+                "and no projection."
             )
         pixels = _read_rgb_display(
             session,
@@ -1222,7 +1263,7 @@ def _normal_tile(
                 width=width,
                 height=height,
                 t=t,
-                c=0,
+                c=active_c,
                 z=z,
                 level=level,
                 series=metadata.selected_series,
@@ -1235,8 +1276,7 @@ def _normal_tile(
     geometry = session.geometry(resolved_selection, False)
     display = _display_payload(settings)
     basis = {"mode": "explicit", "viewport_dependent": False}
-    if pixels.dtype != np.uint8:
-        raise ViewerImageError("Viewer canvas RGB rendering requires uint8 stored components.")
+    pixels = _canvas_rgb(pixels)
     return {
         "image": _data_url(_png_bytes(pixels)),
         "selection": resolved_selection,
@@ -1445,10 +1485,11 @@ def _overview_tile(
     projection = _projection(request.get("projection"), z_stop)
     if metadata.sample_semantics != "none" and (projection is not None or z_stop is not None):
         raise ViewerImageError("Interleaved RGB overview does not support Z projection.")
-    if metadata.sample_semantics != "none" and np.dtype(metadata.channel_dtypes[0]) != np.uint8:
-        # Match native canvas tiles, including before accepting an old cached PNG.
-        raise ViewerImageError("Viewer canvas RGB rendering requires uint8 stored components.")
     requested_c = _integer(request.get("c", settings[0].channel), "c", 0, metadata.dimensions.c - 1)
+    if metadata.sample_semantics != "none" and (
+        len(settings) != 1 or settings[0].channel != requested_c
+    ):
+        raise ViewerImageError("Interleaved RGB uses one mapping for the selected logical channel.")
     level = _select_native_overview_level(metadata, max_edge, exact_plane=projection is None)
     display = _display_payload(settings)
     if level is None:
@@ -1496,13 +1537,12 @@ def _overview_tile(
         _validate_cached_source(session)
     if encoded is None:
         if metadata.sample_semantics != "none":
-            if len(settings) != 1 or settings[0].channel != 0:
-                raise ViewerImageError("Interleaved RGB uses one channel-zero display mapping.")
             if preparation == "derived-cache":
                 pixels = _sample_rgb_plane(
                     session,
                     metadata,
                     t=t,
+                    c=requested_c,
                     z=z,
                     output_width=width,
                     output_height=height,
@@ -1517,6 +1557,7 @@ def _overview_tile(
                     metadata,
                     level=level,
                     t=t,
+                    c=requested_c,
                     z=z,
                     embedded_icc=embedded_icc,
                     display=settings[0],
@@ -1556,8 +1597,7 @@ def _overview_tile(
                 for setting in settings
             }
             pixels = _render_scalar(arrays, settings)
-        if pixels.dtype != np.uint8:
-            raise ViewerImageError("Viewer canvas RGB rendering requires uint8 stored components.")
+        pixels = _canvas_rgb(pixels)
         encoded = _png_bytes(pixels)
         if cancellation_check is not None:
             cancellation_check()

@@ -349,7 +349,13 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     raise PermissionError(
                         "The execution policy changed before this process started"
                     )
-                policy_agent = PolicyAgent(policy)
+                owner = project.job(args.job).get("owner")
+                if (
+                    not isinstance(owner, dict)
+                    or owner.get("policy_sha256") != policy.content_sha256
+                ):
+                    raise PermissionError("The execution job is not owned by the pinned policy")
+                policy_agent = PolicyAgent(policy, session_id=owner.get("session_id"))
                 policy_agent._authorize_job(workbench, args.job)
                 if (
                     args.cpu_seconds != policy.cpu_seconds
@@ -359,7 +365,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     raise PermissionError(
                         "The execution resource limits differ from the pinned policy"
                     )
-                guard = policy.recheck
+                guard = policy_agent._recheck_session
             return run_job(
                 workbench, args.job, publication_guard=guard, max_concurrency=args.max_concurrency
             )

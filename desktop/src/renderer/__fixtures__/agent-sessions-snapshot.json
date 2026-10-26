@@ -1,0 +1,1224 @@
+{
+  "schema": "loci.agent-sessions/v1",
+  "status": "awaiting_approval",
+  "connected_count": 1,
+  "pending_approval_count": 1,
+  "policies": [
+    {
+      "actions": [
+        "associate_results",
+        "classical_run",
+        "colocalisation_run",
+        "correct_result",
+        "correct_tracks",
+        "correction_info",
+        "describe_result",
+        "large_components_preflight",
+        "large_components_run",
+        "large_result_delete",
+        "large_result_locate",
+        "large_result_pick",
+        "large_result_view",
+        "perinuclear_run",
+        "population_locate",
+        "population_query",
+        "puncta_run",
+        "roi_add",
+        "run_recipe",
+        "track_results",
+        "tracking_result"
+      ],
+      "allow_agent_review": true,
+      "bundle_name": "session-test-bundle",
+      "client_id": "declared-test-client",
+      "created_at": "2026-10-26T06:10:57.568751+00:00",
+      "disclosures": [
+        "agent_metadata",
+        "geometry",
+        "measurements",
+        "previews",
+        "provenance",
+        "source_names"
+      ],
+      "has_export_grant": true,
+      "identity_assurance": "declared",
+      "initial_permission_mode": "ask_approval",
+      "operations": [
+        "analysis_context",
+        "cancel_job",
+        "export_result",
+        "inspect_action",
+        "inspect_source",
+        "job_status",
+        "preview_recipe",
+        "result",
+        "result_view",
+        "review_history",
+        "review_result",
+        "set_source_display",
+        "source_display",
+        "study_results",
+        "submit_action",
+        "submit_recipe",
+        "validate_action",
+        "validate_recipe"
+      ],
+      "paused": false,
+      "permission_mode": "ask_approval",
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "project_id": "a55141ceb84c4cfd92bd4504d8c75b8e",
+      "revoke_reason": null,
+      "revoked": false,
+      "schema": "loci.agent-policy/v5",
+      "source_ids": [
+        "d8bdc6480f654b2596ca17cafba8c8c9"
+      ],
+      "state": "awaiting_approval",
+      "updated_at": "2026-10-26T06:10:57.568751+00:00"
+    }
+  ],
+  "sessions": [
+    {
+      "active_approval_id": "36af67f6d30c4d7ba35e388fd22d5f33",
+      "active_job_id": null,
+      "bundle_name": "session-test-bundle",
+      "client_id": "codex-cli",
+      "client_version": "1.0.0",
+      "current_operation": "review_result",
+      "current_target": {
+        "action_name": "review_result",
+        "result_id": "fe651121952541b08e1ae1439f963d36",
+        "revision_hash": "b742f992ccbdbc2bf44652fdc622702978bee5e4123cfc88f06587c44284dbf4",
+        "source_id": "d8bdc6480f654b2596ca17cafba8c8c9"
+      },
+      "disconnect_reason": null,
+      "ended_at": null,
+      "identity_assurance": "declared",
+      "last_error": null,
+      "last_heartbeat_at": "2026-10-26T06:10:57.578621+00:00",
+      "last_operation": "review_result",
+      "permission_mode": "ask_approval",
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "project_id": "a55141ceb84c4cfd92bd4504d8c75b8e",
+      "session_id": "9951b797da924963a2c49fffb56bceeb",
+      "started_at": "2026-10-26T06:10:57.570014+00:00",
+      "state": "awaiting_approval",
+      "tool_calls_count": 0,
+      "updated_at": "2026-10-26T06:10:57.578621+00:00",
+      "owned_job_ids": [],
+      "recent_result_ids": []
+    }
+  ],
+  "approvals": [
+    {
+      "action_name": "review_result",
+      "category": "review",
+      "client_id": "declared-test-client",
+      "consumed_at": null,
+      "created_at": "2026-10-26T06:10:57.577753+00:00",
+      "decided_at": null,
+      "decided_by": null,
+      "decision_reason": null,
+      "destination_name": null,
+      "display_revision": null,
+      "expires_at": "2026-10-26T06:25:57.577753+00:00",
+      "id": "36af67f6d30c4d7ba35e388fd22d5f33",
+      "operation": "review_result",
+      "parameters_summary": {
+        "disposition": "reviewed"
+      },
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "project_id": "a55141ceb84c4cfd92bd4504d8c75b8e",
+      "request_hash": "2edecceed012678b1fbfb535f7e64ac68f0f99682e7c0800dbdc02f7237052af",
+      "result_id": "fe651121952541b08e1ae1439f963d36",
+      "revision_hash": "b742f992ccbdbc2bf44652fdc622702978bee5e4123cfc88f06587c44284dbf4",
+      "session_id": "9951b797da924963a2c49fffb56bceeb",
+      "source_id": "d8bdc6480f654b2596ca17cafba8c8c9",
+      "source_sha256": "aad8264c944417d471d5b8b3bd7c15a0e466067be4c03449d78b3c015a9738e5",
+      "state": "pending",
+      "summary": "review_result on source d8bdc648, result fe651121@b742f992",
+      "updated_at": "2026-10-26T06:10:57.577753+00:00"
+    }
+  ],
+  "events": [
+    {
+      "actor": "agent",
+      "approval_id": "36af67f6d30c4d7ba35e388fd22d5f33",
+      "id": "1792995057578221-402b8826",
+      "kind": "approval_requested",
+      "operation": "review_result",
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "session_id": "9951b797da924963a2c49fffb56bceeb",
+      "summary": "Agent requested approval for 'review_result on source d8bdc648, result fe651121@b742f992'.",
+      "timestamp": "2026-10-26T06:10:57.578219+00:00"
+    },
+    {
+      "actor": "agent",
+      "approval_id": null,
+      "id": "1792995057570268-eb473279",
+      "kind": "session_connected",
+      "operation": null,
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "session_id": "9951b797da924963a2c49fffb56bceeb",
+      "summary": "MCP client 'codex-cli' connected over stdio.",
+      "timestamp": "2026-10-26T06:10:57.570263+00:00"
+    },
+    {
+      "actor": "human",
+      "approval_id": null,
+      "id": "1792995057569026-b351b854",
+      "kind": "access_bundle_created",
+      "operation": null,
+      "policy_sha256": "bd2537c9a27bb287617e44b90eba8e066efe4f046b4b48162f07f7a283018a73",
+      "session_id": null,
+      "summary": "Access bundle 'session-test-bundle' ready (ask approval); no client connected.",
+      "timestamp": "2026-10-26T06:10:57.569023+00:00"
+    }
+  ],
+  "capability_map": {
+    "schema": "loci.agent-capability-map/v1",
+    "counts": {
+      "supported_via_mcp": 11,
+      "supported_with_grant": 25,
+      "gui_only_gap": 79,
+      "total": 115
+    },
+    "entries": [
+      {
+        "operation": "action_guide",
+        "summary": "Discover shared research action schemas and execution contracts",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "action_guide",
+        "grant_requirement": "Discover shared research action schemas and contracts",
+        "reason": null
+      },
+      {
+        "operation": "analysis_context",
+        "summary": "Read bounded pages of permitted source handles, recipe hashes, and limits",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "analysis_context",
+        "grant_requirement": "Requires analysis_context operation and agent_metadata disclosure.",
+        "reason": null
+      },
+      {
+        "operation": "associate_results",
+        "summary": "Associate exact declared nucleus and cell revisions with overlap ambiguity",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'associate_results' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "batch_channel_colors",
+        "summary": "Apply channel colors across selected or all loaded sources",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "cellpose_run",
+        "summary": "Run an exact provisioned Cellpose profile on a selected 2D source plane",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Provisioned Cellpose runtime execution is configured in the desktop segmentation panel."
+      },
+      {
+        "operation": "channel_metadata",
+        "summary": "Inspect original acquisition names and explicit channel declarations",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "inspect_source",
+        "grant_requirement": "Disclosed when source_names is granted",
+        "reason": null
+      },
+      {
+        "operation": "channels",
+        "summary": "Save declared channel identities independently of display or raw metadata",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "classical_run",
+        "summary": "Run the established adaptive 2D baseline on an exact selected source plane",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'classical_run' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "colocalisation",
+        "summary": "Declared descriptive two-channel spatial association",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "colocalisation_run",
+        "summary": "Persist descriptive raw-channel correlation and thresholded Manders measures",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'colocalisation_run' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "correct_result",
+        "summary": "Correct labels and recompute measurements in a new revision",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'correct_result' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "correct_tracks",
+        "summary": "Correct temporal associations in a new immutable revision",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'correct_tracks' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "correction_info",
+        "summary": "Inspect the exact label revision for editing",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'correction_info' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "describe_result",
+        "summary": "Inspect saved analysis context for an exact result revision",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'describe_result' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "display",
+        "summary": "Save display mapping separately from scientific input",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "exploration_compare",
+        "summary": "Compare bounded ROIs/settings and retain the context receipt",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "exploration_get",
+        "summary": "Read an exact saved parameter comparison record",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "exploration_list",
+        "summary": "List saved source-bound parameter comparisons",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "exploration_preview",
+        "summary": "Preview bounded unsaved classical settings on an exact ROI",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "exploration_run",
+        "summary": "Adopt exact preview settings as a provenance-bound result",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "export_result",
+        "summary": "Atomically export a reviewed result revision to an authorized filename",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "export_result",
+        "grant_requirement": "Requires export_result operation, all result disclosures, and a pinned export root.",
+        "reason": null
+      },
+      {
+        "operation": "export_vision_handoff",
+        "summary": "Write a provisional .loci-vision visualization handoff bundle",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "export_vision_handoff",
+        "grant_requirement": "Requires export_vision_handoff operation and an authorized .loci-vision filename.",
+        "reason": null
+      },
+      {
+        "operation": "field_assay_preview",
+        "summary": "Preview nuclear segmentation, effective mask and field metrics",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "field_assay_run",
+        "summary": "Adopt reviewed field assay with signed integral and provenance",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "histology_preview",
+        "summary": "Preview a declared stain separation and region analysis",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "histology_run",
+        "summary": "Adopt a declared stain analysis on a bounded native slide region",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "inspect",
+        "summary": "Inspect registered native geometry and capabilities",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "inspect_source",
+        "grant_requirement": "Direct source metadata and calibration inspection",
+        "reason": null
+      },
+      {
+        "operation": "intensity_catalog",
+        "summary": "Inspect stored raw mean-intensity endpoints",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Saved compartment intensity comparisons are authored in the desktop study panel."
+      },
+      {
+        "operation": "intensity_export",
+        "summary": "Publish a saved intensity report through a private grant",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Requires a human-selected destination folder via the native OS file picker."
+      },
+      {
+        "operation": "intensity_get",
+        "summary": "Reopen a saved intensity comparison without recomputation",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Saved compartment intensity comparisons are authored in the desktop study panel."
+      },
+      {
+        "operation": "intensity_list",
+        "summary": "List saved intensity comparisons",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Saved compartment intensity comparisons are authored in the desktop study panel."
+      },
+      {
+        "operation": "intensity_preview",
+        "summary": "Preview equal image and declared replicate intensity means",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Saved compartment intensity comparisons are authored in the desktop study panel."
+      },
+      {
+        "operation": "intensity_save",
+        "summary": "Save an immutable exact intensity comparison",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Saved compartment intensity comparisons are authored in the desktop study panel."
+      },
+      {
+        "operation": "labels_import",
+        "summary": "Adopt a checked external scalar TIFF label plane on its declared native grid",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Requires a human-selected local TIFF path grant via the native OS file picker."
+      },
+      {
+        "operation": "large_components_preflight",
+        "summary": "Validate a bounded large scalar analysis",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'large_components_preflight' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "large_components_run",
+        "summary": "Segment a calibrated plane with global component identity",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'large_components_run' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "large_result_adopt",
+        "summary": "Verify and adopt an uncorrected large-components result bundle",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "large_result_delete",
+        "summary": "Remove one complete object in an immutable revision",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'large_result_delete' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "large_result_export",
+        "summary": "Stream reviewed large result to an absent destination directory",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "large_result_locate",
+        "summary": "Find an actual native pixel of an exact quantitative object",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'large_result_locate' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "large_result_pick",
+        "summary": "Read a native label and quantitative object",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'large_result_pick' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "large_result_view",
+        "summary": "Inspect a bounded region of a large result",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'large_result_view' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "model_list",
+        "summary": "Inspect explicitly imported project model packages",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Managed ONNX/Cellpose model provisioning is human-administered in the desktop workbench."
+      },
+      {
+        "operation": "model_preview",
+        "summary": "Qualify a source-chosen preview before model adoption",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Model qualification requires human visual inspection before adoption."
+      },
+      {
+        "operation": "model_run",
+        "summary": "Adopt only an exact verified model preview",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Requires an exact human-qualified model preview receipt."
+      },
+      {
+        "operation": "perinuclear_run",
+        "summary": "Measure raw nuclear-to-perinuclear-ring enrichment on an exact native 2D grid",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'perinuclear_run' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "population_gate_apply",
+        "summary": "Evaluate a saved gate on a compatible result as a new group",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_gate_evaluate",
+        "summary": "Evaluate a rectangle or polygon against every measurement row",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_gate_export",
+        "summary": "Export exact evaluated gate membership JSON",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_group_combine",
+        "summary": "Save union, intersection or unclassified membership",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_group_export",
+        "summary": "Export a saved group as exact server-canonical JSON",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_group_get",
+        "summary": "Verify exact saved population membership",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_group_list",
+        "summary": "List durable population groups",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_group_save",
+        "summary": "Save immutable exact-revision population membership",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "population_locate",
+        "summary": "Find the nearest owned pixel of an exact measured object",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'population_locate' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "population_query",
+        "summary": "Explore a bounded exact object population with descriptive metrics",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'population_query' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "preview_recipe",
+        "summary": "Run a bounded preview without adopting a result",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "preview_recipe",
+        "grant_requirement": "Run a bounded non-adopted recipe preview",
+        "reason": null
+      },
+      {
+        "operation": "puncta_preview",
+        "summary": "Preview declared bright-blob candidates on an explicit physical grid",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "puncta_run",
+        "summary": "Adopt puncta candidates with raw intensities, scale, controls and assumptions",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'puncta_run' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "recipe",
+        "summary": "Save a reusable validated recipe with optimistic revision",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "recipe_preflight",
+        "summary": "Preflight recipe resource estimation and validation without executing",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "validate_recipe",
+        "grant_requirement": "Resource estimate returned by validate_recipe",
+        "reason": null
+      },
+      {
+        "operation": "registration_preview",
+        "summary": "Estimate a physical transform with exact result bindings and quality gates",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "registration_run",
+        "summary": "Adopt only an exact registration preview into a derived output grid",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_analysis_advance",
+        "summary": "Recover or advance one authorized remote analysis step",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Direct SSH remote compute staging is human-authorized; use remote_* tools for prestaged grants."
+      },
+      {
+        "operation": "remote_analysis_cancel",
+        "summary": "Cancel a remote analysis bound to the current study",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Direct SSH remote compute staging is human-authorized; use remote_* tools for prestaged grants."
+      },
+      {
+        "operation": "remote_analysis_plan",
+        "summary": "Inspect an exact normal-analysis transfer and compute plan",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Direct SSH remote compute staging is human-authorized; use remote_* tools for prestaged grants."
+      },
+      {
+        "operation": "remote_analysis_start",
+        "summary": "Start one authorized normal analysis on a saved compute target",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Direct SSH remote compute staging is human-authorized; use remote_* tools for prestaged grants."
+      },
+      {
+        "operation": "remote_attach",
+        "summary": "Validate and atomically attach unreviewed remote results",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_cancel",
+        "summary": "Cancel the explicitly selected server job",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_logs",
+        "summary": "Read bounded path-redacted logs from an exact remote run",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_profile_list",
+        "summary": "List saved remote connections with private paths redacted",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_profile_save",
+        "summary": "Save a declared SSH connection, host key and resource policy",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_profile_test",
+        "summary": "Verify an explicitly configured SSH host identity",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_readiness",
+        "summary": "Verify the configured remote worker runtime and permitted roots",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_remove_owned",
+        "summary": "Remove only verified Loci-owned remote run files after exact attachment",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_retrieve",
+        "summary": "Retrieve and verify an explicitly authorized result archive",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_run_list",
+        "summary": "Inspect persisted remote run identities and recovery states",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_stage",
+        "summary": "Stage only the exact sources covered by explicit transfer authority",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_status",
+        "summary": "Reconnect and inspect the exact server job identity",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "remote_submit",
+        "summary": "Submit one staged request without duplicating a recovered job",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "resample_grid",
+        "summary": "Crop and resample an immutable result onto a declared physical grid",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "result",
+        "summary": "Inspect exact revision and linked measurements",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "result",
+        "grant_requirement": "Read quantitative measurements and provenance for a result",
+        "reason": null
+      },
+      {
+        "operation": "result_label_at",
+        "summary": "Lookup the exact discrete integer label at a result pixel coordinate",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "result_view",
+        "summary": "Render an exact derived image or label revision",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "result_view",
+        "grant_requirement": "Render a 2D plane and label overlay for a result",
+        "reason": null
+      },
+      {
+        "operation": "review_history",
+        "summary": "Read the ordered revision-bound review decisions",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "review_history",
+        "grant_requirement": "Inspect revision-bound review decision history",
+        "reason": null
+      },
+      {
+        "operation": "review_result",
+        "summary": "Record an explicitly delegated agent review decision (actor='agent')",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "review_result",
+        "grant_requirement": "Requires delegated study access with allow_review=True; never creates human review.",
+        "reason": null
+      },
+      {
+        "operation": "roi_add",
+        "summary": "Add a calibrated source-intensity ROI in a new revision",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'roi_add' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "roi_import",
+        "summary": "Import exact-grid GeoJSON or ImageJ polygon annotations into a new revision",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Requires a human-selected GeoJSON/ImageJ file via the native OS file picker."
+      },
+      {
+        "operation": "run_recipe",
+        "summary": "Create an immutable derived image or label result",
+        "mutates": true,
+        "status": "supported_via_mcp",
+        "mcp_tool": "submit_recipe",
+        "grant_requirement": "Submit a durable recipe execution job",
+        "reason": null
+      },
+      {
+        "operation": "sample",
+        "summary": "Set explicit study/sample/replicate metadata",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "sample_sheet_apply",
+        "summary": "Apply one current sample CSV preview atomically",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Study replicate metadata assignment is human-authored in the desktop workbench."
+      },
+      {
+        "operation": "sample_sheet_preview",
+        "summary": "Validate exact sample CSV changes before applying",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Study replicate CSV validation is managed in the desktop study table."
+      },
+      {
+        "operation": "sample_sheet_template",
+        "summary": "Inspect a stable source-ID sample CSV template",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Study replicate metadata authoring is managed in the desktop study table."
+      },
+      {
+        "operation": "scientific_data_export",
+        "summary": "Publish a planned scientific CSV package through a private destination grant",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "select_result",
+        "summary": "Persist an existing result selection for undo or redo",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "study_compare",
+        "summary": "Compare and save two compatible reviewed runs without treating objects as independent",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Pooled biological-replicate comparisons require human-authored sample declarations."
+      },
+      {
+        "operation": "study_correction_effect",
+        "summary": "Save exact paired correction effects with equal biological-replicate weighting",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Paired correction-effect reports are authored in the desktop study panel."
+      },
+      {
+        "operation": "study_results",
+        "summary": "Discover accessible result revisions across granted study sources",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "study_results",
+        "grant_requirement": "Requires delegated study access and agent_metadata disclosure.",
+        "reason": null
+      },
+      {
+        "operation": "study_summary",
+        "summary": "Summarize declared biological replicates using exact result revisions",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Cross-replicate statistical summaries are reviewed in the desktop study panel."
+      },
+      {
+        "operation": "surface_view",
+        "summary": "Inspect a bounded display isosurface in calibrated world coordinates",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "tissue_preview",
+        "summary": "Preview a declared bounded tissue-region mask",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "tissue_run",
+        "summary": "Create calibrated tissue-region masks and measurements",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "track_results",
+        "summary": "Track exact timed object revisions with explicit missing observations",
+        "mutates": true,
+        "status": "supported_with_grant",
+        "mcp_tool": "submit_action",
+        "grant_requirement": "Requires delegated study access with 'track_results' in policy.actions (validate with validate_action, run with submit_action).",
+        "reason": null
+      },
+      {
+        "operation": "tracking_result",
+        "summary": "Inspect temporal associations, uncertainty and trajectories",
+        "mutates": false,
+        "status": "supported_with_grant",
+        "mcp_tool": "inspect_action",
+        "grant_requirement": "Requires delegated study access with 'tracking_result' in policy.actions (validate with validate_action, run with inspect_action).",
+        "reason": null
+      },
+      {
+        "operation": "validate_recipe",
+        "summary": "Validate an explicit processing/analysis recipe",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "validate_recipe",
+        "grant_requirement": "Normalize and preflight a processing/segmentation recipe",
+        "reason": null
+      },
+      {
+        "operation": "view",
+        "summary": "Render selected biological channels/plane or region",
+        "mutates": false,
+        "status": "supported_via_mcp",
+        "mcp_tool": "source_image",
+        "grant_requirement": "Render a bounded source crop and channel composite image",
+        "reason": null
+      },
+      {
+        "operation": "volume_view",
+        "summary": "Linked orthogonal and bounded volume display",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Interactive desktop viewport or human-authored study administration surface."
+      },
+      {
+        "operation": "workflow_get",
+        "summary": "Inspect an exact saved workflow",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_list",
+        "summary": "List saved visual workflows",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_preflight",
+        "summary": "Validate exact workflow/source bindings and resources",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_preview",
+        "summary": "Preview a typed workflow processing prefix",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_run",
+        "summary": "Publish a durable workflow result and run receipt",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_save",
+        "summary": "Save a source-independent workflow revision",
+        "mutates": true,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_status",
+        "summary": "Inspect exact workflow run review and export state",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      },
+      {
+        "operation": "workflow_validate",
+        "summary": "Validate a typed linear workflow",
+        "mutates": false,
+        "status": "gui_only_gap",
+        "mcp_tool": null,
+        "grant_requirement": null,
+        "reason": "Visual node workflows are authored in the desktop workflow builder."
+      }
+    ]
+  }
+}

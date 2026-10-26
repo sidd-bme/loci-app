@@ -361,6 +361,7 @@ class Workbench:
         self.sessions.clear()
 
     def snapshot(self) -> dict[str, Any]:
+        from .agent_sessions import agent_sessions_snapshot
         from .research_action_registry import operation_catalog
         from .research_jobs import public_job
         from .research_workspace_records import ordered_sources, read_visibility
@@ -394,6 +395,7 @@ class Workbench:
             "comparisons": self.project.documents("comparison"),
             "jobs": [public_job(job) for job in self.project.list_jobs()],
             "operations": operation_catalog(),
+            "agent_sessions": agent_sessions_snapshot(self.project),
         }
 
     def import_native(
