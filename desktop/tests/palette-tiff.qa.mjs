@@ -211,7 +211,7 @@ try {
   stage = "open synthetic and optional authorized source";
   await launch("initial");
   await page.getByRole("button", { name: "Open images", exact: true }).click();
-  const snapshot = await waitForSnapshot(page, value => value.sources.length === sourcePaths.length,
+  const snapshot = await waitForSnapshot(page, value => value?.sources?.length === sourcePaths.length,
     "registered palette sources", 120_000);
   const synthetic = snapshot.sources.find(source => source.name === path.basename(fixture));
   assert.ok(synthetic); assert.equal(synthetic.sha256, reference.source_sha256);
@@ -282,10 +282,13 @@ try {
     assert.equal(real.metadata.palette.lookup_policy, "actual-IFD-ColorMap");
     await choose(real);
     const z = Math.floor(real.metadata.dimensions.z / 2);
-    await setPlane(real, 0, 0);
+    // The authorized stack's first C0 plane is entirely black. Compare the
+    // populated central plane; a valid empty plane cannot prove color dominance.
+    await setPlane(real, 0, z);
     const c0 = await canvas(real);
-    await setPlane(real, 1, 0);
+    await setPlane(real, 1, z);
     const c1 = await canvas(real);
+    report.real_source = { source_sha256: real.sha256, compared_z: z, c0_canvas: c0, c1_canvas: c1 };
     assert.notEqual(c0.rgba_sha256, c1.rgba_sha256, "C change must change actual rendered pixels.");
     assert.ok(c0.component_dominance[0] > c0.component_dominance[1]);
     assert.ok(c1.component_dominance[1] > c1.component_dominance[0]);
@@ -303,7 +306,7 @@ try {
   stage = "cold app launch and explicit saved study reopen";
   await launch("cold");
   await fileMenuAction(page, "Open study");
-  await waitForSnapshot(page, value => value.sources.length === sourcePaths.length, "cold reopened sources", 120_000);
+  await waitForSnapshot(page, value => value?.sources?.length === sourcePaths.length, "cold reopened sources", 120_000);
   const cold = [];
   for (const [source, saved, expected] of [[synthetic, syntheticSaved, [0, reference.centre_canvas_codes[2], 0]],
     ...(real ? [[real, realSaved, null]] : [])]) {
