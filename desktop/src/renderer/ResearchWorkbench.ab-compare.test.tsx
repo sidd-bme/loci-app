@@ -283,7 +283,7 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Image channel" })).toHaveValue("1"));
     expect(screen.getByLabelText("RGB gamma")).toHaveValue("1.4");
-    fireEvent.click(screen.getByRole("button", { name: "Reset", exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     await waitFor(() => expect(saved.state?.channels[0]).toEqual(expect.objectContaining({ channel: 1, gamma: 1 })));
     fireEvent.click(screen.getByRole("button", { name: "Compare A/B" }));
     await waitFor(() => expect(screen.getByLabelText("Pane A channel view")).toHaveValue("1"));
