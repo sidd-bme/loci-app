@@ -379,6 +379,31 @@ try {
   receipt.checks.push('agent-owned-completed-results-refresh-without-human-view-change-unless-follow-enabled-and-idle');
   await checkpoint('follow-on-exact-owned-result');
   await selectWorkbenchTool(page, 'Display');
+  const editingField = page.getByLabel('X', { exact: true });
+  const draft = String(Number(await editingField.inputValue()) + 1);
+  await editingField.fill(draft);
+  const editingBefore = await viewerState(source.id);
+  const editingJob = (await client.call('submit_recipe', { request: approved, request_key: 'follow-during-human-edit' })).job;
+  const editingComplete = await waitJob(editingJob.id);
+  await selectedResult(editingComplete.result_ids[0]).waitFor();
+  await client.call('source_image', { request: { source_id: source.id,
+    selection: { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 },
+    channels: [{ channel: 1, low: 0, high: 4095, gamma: 1, color: '#ffffff', opacity: 1, visible: true }], projection: 'plane', max_size: 64 } });
+  await delay(1800);
+  assert.equal(await editingField.inputValue(), draft);
+  assert.equal(await editingField.evaluate(element => element === document.activeElement), true);
+  const editingAfter = await viewerState(source.id);
+  assert.equal(editingAfter.selected_result, editingBefore.selected_result);
+  assert.deepEqual(editingAfter.camera, editingBefore.camera);
+  assert.deepEqual(editingAfter.source_view.state.selection, editingBefore.source_view.state.selection);
+  await editingField.press('Tab');
+  await delay(1800);
+  assert.equal((await viewerState(source.id)).selected_result, editingBefore.selected_result,
+    'Consumed agent activity must not replay after the human finishes editing');
+  receipt.follow_during_edit = { draft, job_id: editingJob.id, before: editingBefore, after: editingAfter };
+  receipt.checks.push('Focused human numeric draft, selected revision and camera survive live MCP result and source-image activity; no delayed replay after blur');
+  await checkpoint('follow-preserves-human-edit');
+  await selectWorkbenchTool(page, 'Display');
   await delay(1800);
   const sourceBefore = await viewerState(source.id);
   const inspectedSelection = { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 };

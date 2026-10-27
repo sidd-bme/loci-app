@@ -181,15 +181,19 @@ def validate_inputs(worker, report_file):
     expected_selection = {
         "x": 0,
         "y": 0,
-        "width": SHAPE[1],
-        "height": SHAPE[0],
+        "width": 1024,
+        "height": 1024,
         "t": 0,
         "c": 0,
         "z": 0,
         "level": 0,
     }
-    if selection != expected_selection or provenance["measurement_channels"] != [0]:
-        raise ValueError("Expected the complete single-channel synthetic XY plane")
+    if (
+        selection != expected_selection
+        or model.get("selection") != expected_selection
+        or provenance["measurement_channels"] != [0]
+    ):
+        raise ValueError("Expected the exact 1024px single-channel synthetic XY region")
     if any(job["state"] in {"queued", "running"} for job in records["jobs"].values()):
         raise ValueError(
             "Finish existing QA jobs before the read/review/export journey"
@@ -215,7 +219,7 @@ def verify_arrays(study, result, reported_count):
             raise ValueError("Native adopted array changed")
         array = np.load(path, allow_pickle=False, mmap_mode="r")
         if (
-            array.shape != SHAPE
+            array.shape != (1024, 1024)
             or list(array.shape) != descriptor["shape"]
             or array.dtype != np.dtype(descriptor["dtype"])
         ):
@@ -239,7 +243,7 @@ def verify_arrays(study, result, reported_count):
         raise ValueError(
             "Native measurement count is inconsistent or outside QA bounds"
         )
-    raw = phantom()
+    raw = phantom()[:1024, :1024]
     for row in rows:
         values = raw[labels == row["label"]].astype(np.float64)
         assert (
@@ -363,7 +367,7 @@ async def journey(args):
                 {
                     "id": result["source_id"],
                     "sha256": report["fixture_sha256"],
-                    "crop": {"x": 0, "y": 0, "width": SHAPE[1], "height": SHAPE[0]},
+                    "crop": {"x": 0, "y": 0, "width": 1024, "height": 1024},
                     "t": [0],
                     "c": [0],
                     "z": [0],
