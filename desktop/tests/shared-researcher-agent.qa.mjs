@@ -77,7 +77,7 @@ const sdk = (policy, name) => {
   }
   const controller = { ready, command, expectCrash() { crashExpected = true; },
     async call(name, args, expectedError = false) {
-      const response = await command({ action: 'call', name, arguments: args }); info.calls++;
+      const response = await command({ action: 'call', name, arguments: args }); info.calls++; controller.lastResponse = response;
       receipt.calls.push({ client: info.name, tool: name, expected_error: expectedError, is_error: response.is_error,
         operation: args.operation ?? null, targets: args.job_id ?? args.result_id ?? args.request?.source_id ?? null });
       assert.equal(response.is_error, expectedError, `${name}: ${JSON.stringify(response)}`); return response.structured_content;
@@ -94,6 +94,26 @@ const sdk = (policy, name) => {
 };
 const inspect = (operation, request = {}) => client.call('inspect_action', { operation, request });
 const submit = async (operation, request, key) => (await client.call('submit_action', { operation, request, request_key: key })).job;
+async function retainedPreview(jobId) {
+  const value = await inspect('task_preview_get', { job_id: jobId });
+  const response = client.lastResponse;
+  const transport = value.image_transport;
+  assert.equal(transport.schema, 'loci.mcp-preview-images/v1');
+  assert.equal(transport.output_sha256_scope, 'original-canonical-output-including-image-data-urls');
+  assert.deepEqual(transport.images.map(item => item.json_pointer), ['/preview/output/image', '/preview/output/label_image']);
+  const images = response.content.filter(item => item.type === 'image'); assert.equal(images.length, 2);
+  for (const mapping of transport.images) {
+    const block = response.content[mapping.content_index]; assert.equal(block.type, 'image'); assert.equal(block.mimeType, 'image/png'); assert.ok(block.size_bytes > 0); assert.equal(block.sha256, mapping.sha256);
+  }
+  assert.doesNotMatch(JSON.stringify(value), /data:image|base64/);
+  (receipt.preview_transports ??= []).push({ job_id: jobId, output_sha256: value.preview.output_sha256, image_transport: transport, images });
+  return value.preview;
+}
+async function expandPreviewIdentity(pane, jobId, outputHash) {
+  const details = pane.locator('details'); if (!(await details.evaluate(element => element.open))) await details.locator(':scope > summary').click();
+  await pane.getByText(jobId, { exact: true }).waitFor(); await pane.getByText(outputHash, { exact: true }).waitFor();
+}
+
 const drawer = () => page.getByRole('region', { name: 'Agent session and approvals', exact: true });
 async function openDrawer() { const trigger = page.getByRole('button', { name: 'Agent session status', exact: true }); if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click(); await drawer().waitFor(); }
 async function closeDrawer() { if (await drawer().count()) await drawer().getByRole('button', { name: 'Close agent session drawer', exact: true }).click(); }
@@ -143,9 +163,21 @@ try {
   const guiState = await page.evaluate(() => window.lociResearch.getSnapshot()); const guiJob = [...guiState.jobs].reverse().find(item => item.operation === 'workflow_run' && item.request.task_request.workflow_id === saved.id); assert.equal(guiJob.state, 'succeeded');
   const guiResult = (await operation('workflow_status', { run_id: guiJob.id })).run.data; await oracle(guiResult.result_id, 0);
   const binding = source => ({ workflow_id: saved.id, workflow_revision: saved.revision, definition_sha256: saved.data.definition_sha256, source_id: source.id, source_sha256: source.sha256, selection: fixture.selection });
-  const cliRequestFile = path.join(output, 'cli-workflow.json'); await fs.writeFile(cliRequestFile, JSON.stringify(binding(sources[0])));
-  const direct = await cli('submit', '--project', study, '--operation', 'workflow_run', '--request', `@${cliRequestFile}`, '--request-key', 'cli-workflow', '--run'); await oracle(direct.result.id, 0);
-  receipt.checks.push('Actual workflow UI author/save/preview/run and frozen CLI match independent known arrays'); await shot('01-human-workflow');
+  const batch = workflow.locator('details.workflow-batch'); if (!(await batch.evaluate(element => element.open))) await batch.locator(':scope > summary').click();
+  for (const source of sources) await batch.getByLabel(source.name, { exact: true }).check();
+  const beforeBatch = new Set((await snapshot()).jobs.map(item => item.id));
+  await batch.getByRole('button', { name: 'Check and run batch', exact: true }).click();
+  await workflow.getByText('Batch requests retained. Follow Jobs for exact status and recovery.', { exact: true }).waitFor({ timeout: 120000 });
+  const batchState = await waitForSnapshot(page, value => { const added = value.jobs.filter(item => !beforeBatch.has(item.id)); return added.length === 2 && added.every(item => item.state === 'succeeded'); }, 'two selected GUI workflow sources', 120000);
+  const batchJobs = batchState.jobs.filter(item => !beforeBatch.has(item.id));
+  assert.deepEqual(batchJobs.map(item => item.request.task_request.source_id).sort(), sources.map(item => item.id).sort());
+  for (const item of batchJobs) { assert.equal(item.result_ids.length, 1); await oracle(item.result_ids[0], sources.findIndex(source => source.id === item.request.task_request.source_id)); }
+  for (const [variant, source] of sources.entries()) {
+    const cliRequestFile = path.join(output, `cli-workflow-${variant}.json`); await fs.writeFile(cliRequestFile, JSON.stringify(binding(source)));
+    const direct = await cli('submit', '--project', study, '--operation', 'workflow_run', '--request', `@${cliRequestFile}`, '--request-key', `cli-workflow-${variant}`, '--run'); await oracle(direct.result.id, variant);
+  }
+  receipt.checks.push('Actual workflow UI author/save/preview, selected two-source GUI batch and frozen CLI match independent known arrays'); await shot('01-human-workflow');
+  await page.locator('.research-sources-list button').filter({ hasText: sources[0].name }).click();
   await selectWorkbenchTool(page, 'Agent'); const panel = page.locator('.research-agent'); await panel.getByLabel('Assistant access level', { exact: true }).selectOption('full'); await panel.getByLabel('Session permission mode', { exact: true }).selectOption('ask_approval');
   const custom = panel.locator('details.research-agent-custom'); if (!(await custom.evaluate(element => element.open))) await custom.locator(':scope > summary').click();
   await panel.getByLabel('Agent memory MiB', { exact: true }).fill('1024'); await panel.getByLabel('Agent CPU seconds', { exact: true }).fill('120');
@@ -162,14 +194,21 @@ try {
   const pending = submit('workflow_preview', previewRequest, 'approved-shared-preview'); pending.catch(() => {});
   const awaiting = await waitForSnapshot(page, value => value.agent_sessions.approvals.some(item => item.state === 'pending' && item.operation === 'submit_action'), 'exact preview approval'); const approval = awaiting.agent_sessions.approvals.find(item => item.state === 'pending' && item.operation === 'submit_action');
   assert.equal(approval.session_id, firstSession.session_id); await openDrawer(); await drawer().getByRole('button', { name: 'Approve submit_action', exact: true }).click();
-  const approvedPreviewJob = await pending; await waitJob(approvedPreviewJob.id); const preview = (await inspect('task_preview_get', { job_id: approvedPreviewJob.id })).preview;
+  const approvedPreviewJob = await pending; await waitJob(approvedPreviewJob.id); const preview = await retainedPreview(approvedPreviewJob.id);
   assert.equal(preview.adopted, false); assert.deepEqual(measurements(preview.output.measurements), fixture.expected[0]);
   await drawer().getByLabel('Agent permission mode', { exact: true }).selectOption('full_access'); await closeDrawer();
   await openDrawer(); await drawer().getByRole('button', { name: `Inspect preview ${approvedPreviewJob.id}`, exact: true }).first().click();
-  const comparison = page.getByRole('region', { name: 'Agent preview comparison', exact: true }); await comparison.waitFor(); await comparison.getByText(preview.output_sha256, { exact: true }).waitFor(); await comparison.getByRole('button', { name: 'Close preview comparison', exact: true }).click(); await closeDrawer();
+  const comparison = page.getByRole('region', { name: 'Agent preview comparison', exact: true }); await comparison.waitFor(); await closeDrawer(); await expandPreviewIdentity(comparison.getByRole('region', { name: 'Current preview', exact: true }), approvedPreviewJob.id, preview.output_sha256); await comparison.getByRole('button', { name: 'Pin current preview', exact: true }).click();
   const mcpResults = [];
   for (const [variant, source] of sources.entries()) {
-    const previewJob = await submit('workflow_preview', { ...binding(source), target_node_id: 'measure' }, `preview-source-${variant}`); await waitJob(previewJob.id); const cached = (await inspect('task_preview_get', { job_id: previewJob.id })).preview; assert.deepEqual(measurements(cached.output.measurements), fixture.expected[variant]);
+    const previewJob = await submit('workflow_preview', { ...binding(source), target_node_id: 'measure' }, `preview-source-${variant}`); await waitJob(previewJob.id); const cached = await retainedPreview(previewJob.id); assert.deepEqual(measurements(cached.output.measurements), fixture.expected[variant]);
+    if (variant === 0) {
+      assert.notEqual(previewJob.id, approvedPreviewJob.id); await openDrawer(); await drawer().getByRole('button', { name: `Inspect preview ${previewJob.id}`, exact: true }).first().click(); await closeDrawer();
+      const pinned = comparison.getByRole('region', { name: 'Pinned reference', exact: true }); const current = comparison.getByRole('region', { name: 'Current preview', exact: true });
+      await pinned.waitFor(); await current.waitFor(); await expandPreviewIdentity(pinned, approvedPreviewJob.id, preview.output_sha256); await expandPreviewIdentity(current, previewJob.id, cached.output_sha256);
+      assert.equal(await comparison.locator('img').count(), 4); await comparison.locator('img').evaluateAll(async images => { for (const image of images) { await image.decode(); if (!image.naturalWidth || !image.naturalHeight) throw new Error('Recorded preview image failed to decode'); } });
+      await shot('02-pinned-actual-agent-previews'); await comparison.getByRole('button', { name: 'Close preview comparison', exact: true }).click(); receipt.checks.push('Actual same-source pinned and current previews retain distinct job identities, decoded source/label images and original output digests');
+    }
     const job = await submit('workflow_run', binding(source), `run-source-${variant}`); const complete = await waitJob(job.id); assert.equal(complete.result_ids.length, 1);
     const status = await inspect('workflow_status', { run_id: job.id }); assert.equal(status.state, 'waiting_review'); const result = (await client.call('result', { result_id: complete.result_ids[0] })).result; mcpResults.push(result); await oracle(result.id, variant);
     assert.equal((await submit('workflow_run', binding(source), `run-source-${variant}`)).id, job.id, 'Stable retry must not duplicate publication');
@@ -203,6 +242,6 @@ try {
   await client.close(); await app.close(); app = null; await launch('cold-reopen-user-data');
   await page.locator(`.research-sources [data-result-id="${child.id}"]`).click(); await selectWorkbenchTool(page, 'Info'); await page.getByRole('status').filter({ hasText: 'Reviewed by agent' }).waitFor(); await oracle(child.id, 0, true);
   assert.equal((await operation('intensity_get', { report_id: savedReport.report_id })).report.report_hash, report.report_hash); const cold = await snapshot(); assert.equal(cold.jobs.find(item => item.id === humanQueued.id).state, 'queued'); assert.equal(cold.results.length, beforeCrash.results.length); receipt.checks.push('Cold reopen preserves exact corrected arrays, agent review, report snapshot, job histories and immutable source hashes');
-  await shot('02-cold-reopen-reviewed-correction'); assert.deepEqual(receipt.renderer_errors, []); assert.deepEqual(await identity(), receipt.build); for (const source of fixture.sources) assert.equal(await hash(source.path), source.sha256); receipt.status = 'passed';
+  await shot('03-cold-reopen-reviewed-correction'); assert.deepEqual(receipt.renderer_errors, []); assert.deepEqual(await identity(), receipt.build); for (const source of fixture.sources) assert.equal(await hash(source.path), source.sha256); receipt.status = 'passed';
 } catch (error) { receipt.status = 'failed'; receipt.error = error.stack ?? String(error); if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {}); throw error; }
 finally { for (const item of clients) await item.close().catch(error => { receipt.cleanup_error = String(error); }); await app?.close().catch(() => {}); receipt.finished_at = new Date().toISOString(); await save(); console.log(JSON.stringify({ status: receipt.status, output, checks: receipt.checks.length })); }

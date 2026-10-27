@@ -311,3 +311,38 @@ An optional real-source run requires both `LOCI_PALETTE_SOURCE` and its exact
 stack with a populated central plane. Original source bytes are verified unchanged.
 These journeys substitute native dialog responses in isolated profiles and are
 software regressions, not ordinary manual GUI review or scientific validation.
+
+
+### Shared workflow and recovery checks
+
+The shared researcher/agent journey compares generated-source measurements and
+arrays across visible workflow controls, frozen CLI and an actual MCP SDK client.
+It exercises selected-source batch execution, retained image previews and pinned
+comparison, corrections, native summaries, review/export, cold reopen, exact
+worker loss and reconnect. Enable the explicit synthetic stress fixture to test
+cancellation while a workflow is running:
+
+```sh
+LOCI_PACKAGED_APP=/absolute/path/to/Loci.app \
+LOCI_QA_SOURCE_COMMIT='<packaged-source-commit>' \
+LOCI_QA_PYTHON=/absolute/path/to/engine/.venv/bin/python \
+LOCI_QA_OUTPUT_ROOT=/absolute/path/to/ignored-shared-workflow-evidence \
+LOCI_QA_INTERRUPT_STRESS=1 \
+node desktop/tests/shared-researcher-agent.qa.mjs
+```
+
+A separate SDK check waits for the real 900-second approval deadline in a newly
+generated study, without changing timestamps or the application database. Create
+a new empty evidence directory and run the helper with its exact path. This
+wait-only client can remain active while serial foreground journeys use separate
+synthetic studies; it owns no foreground app or inference worker.
+
+```sh
+engine/.venv/bin/python scripts/qa/shared-researcher-agent-client.py \
+  approval-expiry /absolute/path/to/Loci.app/Contents/Resources/loci-engine/loci-engine \
+  /absolute/path/to/new-empty-expiry-evidence
+```
+
+These tests establish only the named client and source/candidate identities in
+their receipts. They do not establish equivalence of other agent hosts, biological
+accuracy, or learned-model support in the classical saved-workflow contract.

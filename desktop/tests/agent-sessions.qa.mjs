@@ -42,7 +42,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const canonicalJson = value => Array.isArray(value) ? `[${value.map(canonicalJson).join(',')}]`
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
     : JSON.stringify(value);
-const requestHash = (policySha, operation, request) => createHash('sha256').update(canonicalJson({ policy_sha256: policySha, operation, request })).digest('hex');
+const requestHash = (policySha, operation, request, targets) => createHash('sha256').update(canonicalJson({ policy_sha256: policySha, operation, request, targets })).digest('hex');
 const packageIdentity = async () => ({ executable_sha256: await hash(executable), asar_sha256: await hash(asar), worker_sha256: await hash(worker), build_identity_sha256: await hash(buildFile) });
 const receipt = {
   schema: 'loci.agent-session-packaged-qa/v1', status: 'running', started_at: new Date().toISOString(),
@@ -198,7 +198,7 @@ async function viewerState(sourceId) {
   await page.waitForFunction(id => document.querySelector(`[data-viewer-source="${id}"]`)?.getAttribute('data-prepared') === 'true', sourceId);
   return {
     source_id: await viewer.getAttribute('data-viewer-source'), camera: JSON.parse(await viewer.getAttribute('data-camera')),
-    selected_result: await page.locator('.research-sources [data-result-id][aria-pressed="true"]').getAttribute('data-result-id'),
+    selected_result: await page.locator('.research-sources [data-result-id][aria-pressed="true"]').count() ? await page.locator('.research-sources [data-result-id][aria-pressed="true"]').getAttribute('data-result-id') : null,
     source_view: await page.evaluate(id => window.lociResearch.execute('source_view', { source_id: id }), sourceId),
     analysis_controls: await page.locator('.analysis-region-settings input').evaluateAll(inputs => inputs.map(input => ({ label: input.getAttribute('aria-label'), value: input.value }))),
   };
@@ -311,7 +311,13 @@ try {
   const approval = await pendingApproval('review_result', humanResult.id, humanResult.revision_hash);
   assert.equal(approval.session_id, firstSession.session_id);
   assert.equal(approval.policy_sha256, policySha);
-  assert.equal(approval.request_hash, requestHash(policySha, 'review_result', decision));
+  const exactApprovalTargets = [
+    { kind: 'result', id: humanResult.id, revision_hash: humanResult.revision_hash, source_id: source.id, source_sha256: source.sha256 },
+    { kind: 'source', id: source.id, sha256: source.sha256, selection: fixture.selection },
+    { kind: 'job', id: humanRun.job.id },
+  ].map(canonicalJson).sort().map(item => JSON.parse(item));
+  assert.deepEqual(approval.targets.map(canonicalJson).sort().map(item => JSON.parse(item)), exactApprovalTargets);
+  assert.equal(approval.request_hash, requestHash(policySha, 'review_result', decision, exactApprovalTargets));
   await checkpoint('review-awaiting-exact-approval');
   assert.equal((await client.command({ action: 'ping' })).pong, true, 'Controller and transport remain responsive while the tool waits');
   await drawer().getByRole('button', { name: 'Approve review_result', exact: true }).click();
@@ -372,6 +378,26 @@ try {
   receipt.follow_on = { job_id: onJob.id, result_id: onCompleted.result_ids[0], selected_result: (await viewerState(source.id)).selected_result };
   receipt.checks.push('agent-owned-completed-results-refresh-without-human-view-change-unless-follow-enabled-and-idle');
   await checkpoint('follow-on-exact-owned-result');
+  await selectWorkbenchTool(page, 'Display');
+  await delay(1800);
+  const sourceBefore = await viewerState(source.id);
+  const inspectedSelection = { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 };
+  await client.call('source_image', { request: { source_id: source.id, selection: inspectedSelection,
+    channels: [{ channel: 1, low: 0, high: 4095, gamma: 1, color: '#ffffff', opacity: 1, visible: true }], projection: 'plane', max_size: 64 } });
+  await page.waitForFunction(async id => {
+    const view = await window.lociResearch.execute('source_view', { source_id: id });
+    return view.state?.selection.c === 1 && !document.querySelector('.research-sources [data-result-id][aria-pressed="true"]');
+  }, source.id);
+  const sourceAfter = await viewerState(source.id);
+  assert.equal(sourceAfter.selected_result, null);
+  assert.equal(sourceAfter.source_view.state.selection.c, 1);
+  assert.equal(sourceAfter.camera.x, 20); assert.equal(sourceAfter.camera.y, 22);
+  assert.deepEqual(sourceAfter.source_view.state.channels.map(item => item.color), sourceBefore.source_view.state.channels.map(item => item.color));
+  for (const key of ['x', 'y', 'width', 'height', 'level'])
+    assert.equal(sourceAfter.source_view.state.selection[key], sourceBefore.source_view.state.selection[key]);
+  receipt.follow_source = { requested: inspectedSelection, before: sourceBefore, after: sourceAfter };
+  receipt.checks.push('Explicit Follow adopts exact inspected source plane and region camera while retaining channel colors and analysis ROI');
+  await checkpoint('follow-on-exact-inspected-source');
   await openDrawer();
   await drawer().getByLabel('Follow agent', { exact: true }).uncheck();
   await drawer().getByRole('button', { name: 'Disconnect client', exact: true }).click();
