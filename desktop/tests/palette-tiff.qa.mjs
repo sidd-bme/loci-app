@@ -305,7 +305,7 @@ try {
   await closeWithConfirmedQuit(app); app = null; page = null;
   stage = "cold app launch and explicit saved study reopen";
   await launch("cold");
-  await fileMenuAction(page, "Open study");
+  await page.getByRole("button", { name: "Open study", exact: true }).click();
   await waitForSnapshot(page, value => value?.sources?.length === sourcePaths.length, "cold reopened sources", 120_000);
   const cold = [];
   for (const [source, saved, expected] of [[synthetic, syntheticSaved, [0, reference.centre_canvas_codes[2], 0]],
