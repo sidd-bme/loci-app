@@ -345,6 +345,13 @@ portable study artifact. An evicted or mismatched preview fails explicitly and
 is never recomputed by inspection. `exploration_compare` additionally saves the
 native comparison receipt; discovery declares that side effect.
 
+MCP preview inspection returns actual PNG image blocks with explicit JSON-pointer
+mappings in `image_transport`. Metadata omits the mapped data URLs; the retained
+`output_sha256` still covers the original canonical output including those URLs.
+To verify it, reconstruct the declared image paths from their mapped blocks.
+Each block also carries a PNG-byte hash. Image count, bytes and metadata are
+bounded before disclosure; invalid image content fails the whole response.
+
 The desktop activity timeline records inspected, proposed, submitted and
 completed operations, including exact source/result/job references. Pending
 approvals show their targets and become stale when a bound source, result or
