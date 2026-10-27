@@ -357,7 +357,9 @@ completed operations, including exact source/result/job references. Pending
 approvals show their targets and become stale when a bound source, result or
 workflow changes. Byte verification occurs at approval and consumption; routine
 status polling uses recorded identity. Opening a timeline target rechecks its
-identity. Preview inspection supports a pinned comparison within one source;
+identity. Source, result and job links support navigation; other target kinds
+currently expose identity details without direct navigation. Preview inspection
+supports a pinned comparison within one source;
 different recorded selections are labelled without claiming pixel alignment.
 
 The workflow panel uses the source rail's selected images for preflight and
