@@ -346,3 +346,28 @@ engine/.venv/bin/python scripts/qa/shared-researcher-agent-client.py \
 These tests establish only the named client and source/candidate identities in
 their receipts. They do not establish equivalence of other agent hosts, biological
 accuracy, or learned-model support in the classical saved-workflow contract.
+
+
+For the shared learned-result check, the resource journey generates its own
+phantom, imports an explicitly supplied existing original `cpsam` checkpoint
+through the UI, and records an adopted result from a 1024 × 1024 region. This
+region fits the existing 2048px MCP image bound. It records the actual object
+count and resolved device, without treating either as an accuracy claim:
+
+```sh
+LOCI_PACKAGED_APP=/absolute/path/to/Loci.app \
+LOCI_QA_OUTPUT_ROOT=/absolute/path/to/ignored-model-evidence \
+LOCI_QA_CELLPOSE_CHECKPOINT=/absolute/path/to/existing-official-cpsam \
+LOCI_QA_CELLPOSE_MAX_EDGE=256 \
+node desktop/tests/segmentation-resources.qa.mjs
+
+engine/.venv/bin/python scripts/qa/shared-model-result-client.py \
+  --worker /absolute/path/to/Loci.app/Contents/Resources/loci-engine/loci-engine \
+  --report /absolute/path/to/generated-run/report.json
+```
+
+The helper validates the exact generated source, region, worker and adopted
+arrays before creating a scoped policy. It compares CLI/MCP results and PNGs,
+records an agent review and verifies every exported artifact. It submits no
+inference job. The new shared-summary action's refusal of heterogeneous learned
+provenance is explicit; this is not learned-model saved-workflow support.

@@ -933,6 +933,7 @@ export default function ResearchWorkbench({
   const [emptyDropActive, setEmptyDropActive] = useState(false);
   const [imageScale, setImageScale] = useState<"fit" | "actual">("fit");
   const [canvasContentSize, setCanvasContentSize] = useState({ width: 1, height: 1 });
+  const [sourceViewportSize, setSourceViewportSize] = useState<{ scope: string; width: number; height: number } | null>(null);
   const pendingResultSection = useRef<"review" | "export">("review");
   const [pendingResultNavigation, setPendingResultNavigation] =
     useState<ResearchResult | null>(null);
@@ -1132,6 +1133,10 @@ export default function ResearchWorkbench({
   }, [source?.id, tab, preferences.textSize, preferences.font]);
   const resultDiscriminators = useMemo(() => resultRowDiscriminators(sourceResults), [sourceResults]);
   const numberScope = `${documentEpoch}:${source?.id}:${source?.sha256}`;
+  const reportSourceViewportSize = useCallback((size: { width: number; height: number }) => {
+    setSourceViewportSize((previous) => previous?.scope === numberScope && previous.width === size.width && previous.height === size.height
+      ? previous : { scope: numberScope, ...size });
+  }, [numberScope]);
   const numberKey = `${numberScope}:${numberResetEpoch}`;
   const configurationValid = !Object.keys(invalidNumberForms).some((key) => key.startsWith(`${numberScope}:`));
   const reportNumberValidity = useCallback((form: string, valid: boolean) => {
@@ -2141,7 +2146,7 @@ export default function ResearchWorkbench({
     try {
       const exact = agentSourceTarget(snapshot, target);
       // Validate the recorded grid before changing the selected source.
-      agentSourceView(snapshot, target, canvasContentSize);
+      agentSourceView(snapshot, target, sourceViewportSize ?? { width: 1, height: 1 });
       const generation = agentInteraction.current.generation, scope = exportDraftStudy;
       const isCurrent = () => agentInteraction.current.generation === generation &&
         currentStudyScope.current === scope && !documentSwitch.current &&
@@ -2216,16 +2221,20 @@ export default function ResearchWorkbench({
     if (!pendingAgentSource) return;
     if (!pendingAgentSource.isCurrent()) { setPendingAgentSource(null); return; }
     if (!snapshot || sourceId !== pendingAgentSource.target.id || sourceIsChanging || !viewSettingsReady) return;
+    if (sourceViewportSize?.scope !== numberScope || sourceViewportSize.width <= 0 || sourceViewportSize.height <= 0) return;
     try {
-      const view = agentSourceView(snapshot, pendingAgentSource.target, canvasContentSize);
+      const view = agentSourceView(snapshot, pendingAgentSource.target, sourceViewportSize);
       if (view && pendingAgentSource.isCurrent()) {
         setProjection("plane");
         setSelection((current) => ({ ...current, ...view.selection }));
+        // Scalar source navigation makes the recorded channel visible without
+        // replacing local colors/contrast. RGB samples retain their component mix.
+        if (!isRgb) setChannels((current) => current.map((channel) => ({ ...channel, visible: channel.channel === view.selection.c })));
         setControlledViewCamera(view.camera); setViewCamera(view.camera);
       }
     } catch (caught) { if (pendingAgentSource.isCurrent()) setError(message(caught, "The recorded agent view is unavailable.")); }
     setPendingAgentSource(null);
-  }, [pendingAgentSource, snapshot, sourceId, sourceIsChanging, viewSettingsReady, canvasContentSize]);
+  }, [pendingAgentSource, snapshot, sourceId, sourceIsChanging, viewSettingsReady, sourceViewportSize, numberScope, isRgb]);
   useEffect(() => {
     const guard = pendingStudyNavigation.current;
     if (guard) {
@@ -3464,6 +3473,7 @@ export default function ResearchWorkbench({
             projection={sourceResultOverlay ? "plane" : resolvedProjection}
             initialCamera={viewCamera ?? savedCamera}
             controlledCamera={controlledViewCamera}
+            onViewportSize={reportSourceViewportSize}
             onCamera={(camera) => {
               setViewCamera(camera);
               if (controlledViewCamera) {

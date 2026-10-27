@@ -198,7 +198,7 @@ async function viewerState(sourceId) {
   await page.waitForFunction(id => document.querySelector(`[data-viewer-source="${id}"]`)?.getAttribute('data-prepared') === 'true', sourceId);
   return {
     source_id: await viewer.getAttribute('data-viewer-source'), camera: JSON.parse(await viewer.getAttribute('data-camera')),
-    selected_result: await page.locator('.research-sources [data-result-id][aria-pressed="true"]').count() ? await page.locator('.research-sources [data-result-id][aria-pressed="true"]').getAttribute('data-result-id') : null,
+    selected_result: await page.evaluate(() => document.querySelector('.research-sources [data-result-id][aria-pressed="true"]')?.getAttribute('data-result-id') ?? null),
     source_view: await page.evaluate(id => window.lociResearch.execute('source_view', { source_id: id }), sourceId),
     analysis_controls: await page.locator('.analysis-region-settings input').evaluateAll(inputs => inputs.map(input => ({ label: input.getAttribute('aria-label'), value: input.value }))),
   };
@@ -409,14 +409,27 @@ try {
   const inspectedSelection = { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 };
   await client.call('source_image', { request: { source_id: source.id, selection: inspectedSelection,
     channels: [{ channel: 1, low: 0, high: 4095, gamma: 1, color: '#ffffff', opacity: 1, visible: true }], projection: 'plane', max_size: 64 } });
-  await page.waitForFunction(async id => {
-    const view = await window.lociResearch.execute('source_view', { source_id: id });
-    return view.state?.selection.c === 1 && !document.querySelector('.research-sources [data-result-id][aria-pressed="true"]');
-  }, source.id);
-  const sourceAfter = await viewerState(source.id);
+  const followDeadline = Date.now() + 30000;
+  let sourceAfter;
+  do {
+    sourceAfter = await viewerState(source.id);
+    if (sourceAfter.source_view.state.selection.c === 1 && sourceAfter.selected_result === null) break;
+    await delay(100);
+  } while (Date.now() < followDeadline);
   assert.equal(sourceAfter.selected_result, null);
   assert.equal(sourceAfter.source_view.state.selection.c, 1);
   assert.equal(sourceAfter.camera.x, 20); assert.equal(sourceAfter.camera.y, 22);
+  const followedViewport = page.locator(`[data-viewer-source="${source.id}"]`);
+  const viewportBounds = await followedViewport.boundingBox(); assert.ok(viewportBounds);
+  const expectedScale = Math.min(32, Math.min(viewportBounds.width / 16, viewportBounds.height / 16) * 0.96);
+  assert.ok(Math.abs(sourceAfter.camera.scale - expectedScale) < 1e-9, 'Follow fits the inspected crop to the live viewport');
+  assert.deepEqual(sourceAfter.source_view.state.channels.filter(item => item.visible).map(item => item.channel), [1]);
+  const centerPixel = await followedViewport.locator('canvas').first().evaluate(canvas =>
+    Array.from(canvas.getContext('2d').getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data));
+  assert.ok(centerPixel[0] >= 85 && centerPixel[0] <= 92 && centerPixel[0] === centerPixel[1] && centerPixel[1] === centerPixel[2],
+    `The followed canvas must show the known Channel 2 ramp, received ${centerPixel}`);
+  assert.equal(centerPixel[3], 255);
+  receipt.follow_canvas = { viewport: viewportBounds, expected_scale: expectedScale, center_rgba: centerPixel };
   assert.deepEqual(sourceAfter.source_view.state.channels.map(item => item.color), sourceBefore.source_view.state.channels.map(item => item.color));
   for (const key of ['x', 'y', 'width', 'height', 'level'])
     assert.equal(sourceAfter.source_view.state.selection[key], sourceBefore.source_view.state.selection[key]);

@@ -11,7 +11,7 @@ const wire = engineFixture as ResearchAgentSessionsSnapshot;
 const ID_A = "a".repeat(32), ID_B = "b".repeat(32), SHA_A = "c".repeat(64), SHA_B = "d".repeat(64);
 const RESULT_ID = "e".repeat(32);
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO1sAAAAASUVORK5CYII=";
-const dimensions = { x: 512, y: 512, z: 5, t: 2, c: 1 };
+const dimensions = { x: 512, y: 512, z: 5, t: 2, c: 2 };
 const selection: ResearchSelection = { x: 0, y: 0, width: 512, height: 512, t: 0, c: 0, z: 2, level: 0 };
 const geometry = { axes: "YX", unit: "um", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
 const result: ResearchResult = { id: RESULT_ID, source_id: ID_A, source_sha256: SHA_A, kind: "cell-segmentation",
@@ -50,7 +50,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function source(id: string, sha256: string, name: string): ResearchSource {
   return { id, sha256, name, source_kind: "native", metadata: { axes: "TCZYX", dimensions,
-    levels: [{ index: 0, dimensions }], channel_names: ["Raw"], channel_dtypes: ["uint16"],
+    levels: [{ index: 0, dimensions }], channel_names: ["Raw", "Ramp"], channel_dtypes: ["uint16", "uint16"],
     physical_calibration: { unit: "um", spacing: [1, 1, 1] } } };
 }
 
@@ -69,7 +69,8 @@ function harness() {
   const execute = vi.fn(async (operation: string, request: Record<string, unknown>): Promise<unknown> => {
     const target = current.sources.find((item) => item.id === request.source_id);
     if (operation === "viewer_defaults") return { source_id: target!.id, source_sha256: target!.sha256, basis: "Synthetic acquisition range",
-      channels: [{ channel: 0, low: 0, high: 65535, gamma: 1, color: "#ffffff", opacity: 1, visible: true }] };
+      channels: [{ channel: 0, low: 0, high: 65535, gamma: 1, color: "#ff0000", opacity: 1, visible: true },
+        { channel: 1, low: 10, high: 4095, gamma: 1.2, color: "#00ff00", opacity: 0.8, visible: false }] };
     if (operation === "source_view") {
       if (request.source_id === delayedSource) return new Promise((resolve) => { sourceView = resolve; });
       return { source_id: target!.id, source_sha256: target!.sha256, revision: 0, state: null };
@@ -95,7 +96,7 @@ function harness() {
     publishSource() { current = { ...current, agent_sessions: { ...current.agent_sessions!, events: [{ ...wire.events[0],
       id: "new-source-event", approval_id: null, operation: "source_image", kind: "operation_inspected", summary: "Source B region inspected",
       timestamp: "2026-10-27T00:02:00Z", targets: [{ kind: "source", id: ID_B, sha256: SHA_B,
-        selection: { ...selection, x: 10, y: 20, width: 100, height: 120, z: 4 } }] }] } }; },
+        selection: { ...selection, x: 10, y: 20, width: 100, height: 120, z: 4, c: 1 } }] }] } }; },
     delaySource() { delayedSource = ID_B; },
     publishPreview() { current = { ...current, jobs: [{ id: "9".repeat(32), operation: "workflow_preview",
       state: "succeeded", request: { source_id: ID_A, source_sha256: SHA_A }, request_hash: "8".repeat(64), request_key: "preview-request",
@@ -135,6 +136,22 @@ async function poll() {
 function viewer() { return screen.getByLabelText(/^Image viewer:/); }
 
 describe("Agent navigation integration", () => {
+  it("fits followed regions to the live viewport and shows the inspected scalar channel with local display settings", async () => {
+    const state = harness(); await startFollowing(state);
+    state.publishSource(); await poll();
+    await screen.findByLabelText("Image viewer: Source B");
+    await waitFor(() => expect(JSON.parse(viewer().getAttribute("data-camera")!)).toEqual({ x: 60, y: 80, scale: 3.84 }));
+    expect(screen.getByRole("checkbox", { name: "Raw visible" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Ramp visible" })).toBeChecked();
+    expect(screen.getByLabelText("Z plane")).toHaveValue("4");
+    await waitFor(() => expect(state.execute).toHaveBeenCalledWith("viewer_tile", expect.objectContaining({
+      source_id: ID_B, channels: [
+        { channel: 0, low: 0, high: 65535, gamma: 1, color: "#ff0000", opacity: 1, visible: false },
+        { channel: 1, low: 10, high: 4095, gamma: 1.2, color: "#00ff00", opacity: 0.8, visible: true },
+      ],
+    }), expect.anything()));
+  });
+
   it("discards a late result view after a human changes the plane and camera", async () => {
     const state = harness(); await startFollowing(state);
     state.publishResult(); await poll();

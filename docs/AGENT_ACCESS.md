@@ -363,7 +363,9 @@ different recorded selections are labelled without claiming pixel alignment.
 The workflow panel uses the source rail's selected images for preflight and
 batch execution. Explicit **Follow agent views and results** can follow inspected
 source planes/regions and newly produced results. Regions affect the display
-camera, not the analysis ROI. User channel colors stay unchanged. Editing,
+camera, not the analysis ROI. For scalar data, Follow shows the reported channel
+using the researcher's existing colors and contrast; RGB sample component mixes
+stay unchanged. Editing,
 pointer activity and later human input suppress automatic navigation, including
 late asynchronous responses. Disabling Follow does not cancel computations.
 Exact job controls retain policy/session ownership, and reconnecting does not
@@ -461,7 +463,7 @@ namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them
   **Disconnect client**, **Revoke access**, and a **Follow agent** toggle. While
   **Follow agent** is off (or while the user is editing), agent updates merge
   into study history without overwriting the user's selected source, result,
-  viewport camera, or unsaved drafts. Follow opens only newly completed results
+  viewport camera, or unsaved drafts. Follow opens inspected source views and newly completed results
   attributed to that session while the researcher is idle in Display, Results
   or Agent. Results received during editing are not queued to interrupt later.
   Stop targets an exact session-owned job. Disconnect revokes that session
@@ -489,7 +491,7 @@ reports the mode and permitted names without disclosing the private root path.
 ## SDK clients
 
 The client contract is handshake-based MCP stdio. The source protocol tests
-exercise version `2025-11-25` with the locked Python MCP SDK `2.1.1`.
+exercise version `2025-11-25` with the locked Python MCP SDK `2.2.0`.
 The guide/context additions retain that client flow; they do not claim support
 for every newer specification revision. Packaging receipts record the actual
 negotiated protocol and tested worker identity. Use the generated access-bundle
