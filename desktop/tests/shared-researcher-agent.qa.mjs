@@ -114,6 +114,17 @@ async function expandPreviewIdentity(pane, jobId, outputHash) {
   await pane.getByText(jobId, { exact: true }).waitFor(); await pane.getByText(outputHash, { exact: true }).waitFor();
 }
 
+async function assertPreviewBounds(comparison) {
+  const stage = await page.locator('#research-image-stage').boundingBox();
+  const preview = await comparison.boundingBox();
+  assert.ok(stage && preview);
+  assert.ok(preview.x >= stage.x && preview.y >= stage.y &&
+    preview.x + preview.width <= stage.x + stage.width &&
+    preview.y + preview.height <= stage.y + stage.height,
+    'Preview must remain within the image workspace');
+  await page.getByRole('button', { name: 'Agent session status', exact: true }).click({ trial: true });
+}
+
 const drawer = () => page.getByRole('region', { name: 'Agent session and approvals', exact: true });
 async function openDrawer() { const trigger = page.getByRole('button', { name: 'Agent session status', exact: true }); if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click(); await drawer().waitFor(); }
 async function closeDrawer() { if (await drawer().count()) await drawer().getByRole('button', { name: 'Close agent session drawer', exact: true }).click(); }
@@ -158,7 +169,7 @@ try {
   await workflow.getByLabel('Workflow name', { exact: true }).fill('Shared synthetic components'); await workflow.getByRole('button', { name: 'Save workflow', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('.workflow-save-state')?.textContent === 'Saved revision 1');
   const saved = (await operation('workflow_list', {})).workflows.find(item => item.data.definition.name === 'Shared synthetic components'); assert.ok(saved);
-  await workflow.getByRole('button', { name: 'Select Measure raw pixels', exact: true }).click(); await workflow.getByRole('button', { name: 'Preview through this step', exact: true }).click(); await workflow.getByText(/Preview through measure/).waitFor();
+  await workflow.getByRole('button', { name: 'Select Measure raw pixels', exact: true }).click(); await workflow.getByRole('button', { name: 'Preview through this step', exact: true }).click(); await workflow.getByText(/Preview through Measure raw pixels · 3 objects/).waitFor();
   await workflow.getByRole('button', { name: 'Run workflow', exact: true }).click(); await workflow.getByText(/objects · waiting review/).waitFor({ timeout: 120000 });
   const guiState = await page.evaluate(() => window.lociResearch.getSnapshot()); const guiJob = [...guiState.jobs].reverse().find(item => item.operation === 'workflow_run' && item.request.task_request.workflow_id === saved.id); assert.equal(guiJob.state, 'succeeded');
   const guiResult = (await operation('workflow_status', { run_id: guiJob.id })).run.data; await oracle(guiResult.result_id, 0);
@@ -198,7 +209,7 @@ try {
   assert.equal(preview.adopted, false); assert.deepEqual(measurements(preview.output.measurements), fixture.expected[0]);
   await drawer().getByLabel('Agent permission mode', { exact: true }).selectOption('full_access'); await closeDrawer();
   await openDrawer(); await drawer().getByRole('button', { name: `Inspect preview ${approvedPreviewJob.id}`, exact: true }).first().click();
-  const comparison = page.getByRole('region', { name: 'Agent preview comparison', exact: true }); await comparison.waitFor(); await closeDrawer(); await expandPreviewIdentity(comparison.getByRole('region', { name: 'Current preview', exact: true }), approvedPreviewJob.id, preview.output_sha256); await comparison.getByRole('button', { name: 'Pin current preview', exact: true }).click();
+  const comparison = page.getByRole('region', { name: 'Agent preview comparison', exact: true }); await comparison.waitFor(); await closeDrawer(); await expandPreviewIdentity(comparison.getByRole('region', { name: 'Current preview', exact: true }), approvedPreviewJob.id, preview.output_sha256); await comparison.getByRole('button', { name: 'Pin current preview', exact: true }).click(); await assertPreviewBounds(comparison);
   const mcpResults = [];
   for (const [variant, source] of sources.entries()) {
     const previewJob = await submit('workflow_preview', { ...binding(source), target_node_id: 'measure' }, `preview-source-${variant}`); await waitJob(previewJob.id); const cached = await retainedPreview(previewJob.id); assert.deepEqual(measurements(cached.output.measurements), fixture.expected[variant]);
@@ -207,7 +218,7 @@ try {
       const pinned = comparison.getByRole('region', { name: 'Pinned reference', exact: true }); const current = comparison.getByRole('region', { name: 'Current preview', exact: true });
       await pinned.waitFor(); await current.waitFor(); await expandPreviewIdentity(pinned, approvedPreviewJob.id, preview.output_sha256); await expandPreviewIdentity(current, previewJob.id, cached.output_sha256);
       assert.equal(await comparison.locator('img').count(), 4); await comparison.locator('img').evaluateAll(async images => { for (const image of images) { await image.decode(); if (!image.naturalWidth || !image.naturalHeight) throw new Error('Recorded preview image failed to decode'); } });
-      await shot('02-pinned-actual-agent-previews'); await comparison.getByRole('button', { name: 'Close preview comparison', exact: true }).click(); receipt.checks.push('Actual same-source pinned and current previews retain distinct job identities, decoded source/label images and original output digests');
+      await assertPreviewBounds(comparison); await shot('02-pinned-actual-agent-previews'); await comparison.getByRole('button', { name: 'Close preview comparison', exact: true }).click(); receipt.checks.push('Actual same-source pinned and current previews retain distinct job identities, decoded source/label images and original output digests');
     }
     const job = await submit('workflow_run', binding(source), `run-source-${variant}`); const complete = await waitJob(job.id); assert.equal(complete.result_ids.length, 1);
     const status = await inspect('workflow_status', { run_id: job.id }); assert.equal(status.state, 'waiting_review'); const result = (await client.call('result', { result_id: complete.result_ids[0] })).result; mcpResults.push(result); await oracle(result.id, variant);

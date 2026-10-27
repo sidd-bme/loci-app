@@ -396,7 +396,7 @@ async def approval_expiry(worker: Path, directory: Path, *, prepare_only=False):
                 keepalive = await session.call_tool(
                     "inspect_source", {"source_id": source["id"]}
                 )
-                assert not keepalive.isError
+                assert not keepalive.is_error
             state = cli("snapshot", "--project", str(study))
             final = next(
                 item
@@ -412,7 +412,7 @@ async def approval_expiry(worker: Path, directory: Path, *, prepare_only=False):
             )
             assert len(state["jobs"]) == 1 and len(state["results"]) == 1
             response = await response_task
-            assert response.isError
+            assert response.is_error
             receipt.update(
                 status="passed",
                 final_approval=final,

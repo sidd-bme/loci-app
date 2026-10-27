@@ -277,6 +277,7 @@
   color: var(--ink-muted);
 }
 .research-canvas {
+  position: relative;
   display: grid;
   grid-template-rows: 38px minmax(180px, 1fr) auto;
   min-width: 0;
