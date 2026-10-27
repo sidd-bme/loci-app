@@ -220,6 +220,34 @@ def test_mcp_workflow_export_records_only_verified_native_receipt(tmp_path):
     assert status["exports"][0]["data"]["receipt"] == {
         k: v for k, v in receipt.items() if k != "workflow_run_id"
     }
+    # A correction retains historical workflow settings but is a distinct
+    # revision, not the exact original workflow run's export.
+    correction = wb.execute(
+        "correction_info", {"result_id": result["id"], "revision_hash": result["revision_hash"]}
+    )
+    child = wb.execute(
+        "correct_result",
+        {
+            "result_id": result["id"],
+            "revision_hash": result["revision_hash"],
+            "operations": [
+                {
+                    "op": "delete",
+                    "label": correction["label_ids"][0],
+                    "expected_input_sha256": correction["label_sha256"],
+                }
+            ],
+        },
+    )["result"]
+    wb.project.review(child["id"], child["revision_hash"], "reviewed")
+    child_receipt = agent.export_result(
+        child["id"], child["revision_hash"], "corrected-workflow-export"
+    )
+    assert child_receipt["result_id"] == child["id"]
+    assert "workflow_run_id" not in child_receipt
+    assert len(wb.project.documents("workflow_export")) == 1
+    assert (root / child_receipt["export_name"] / "manifest.json").is_file()
+
     from loci_engine.research_workflow import record_verified_export
 
     manifest = root / receipt["export_name"] / "manifest.json"

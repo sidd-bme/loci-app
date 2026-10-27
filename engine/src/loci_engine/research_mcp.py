@@ -1836,6 +1836,21 @@ class PolicyAgent:
             # round-trip checks and publishes with a no-replace atomic rename.
             from .research_export import export_research_result
 
+            # Corrections retain their producing workflow as history, but are
+            # distinct revisions. Only the original run result can advance that
+            # workflow's export state. Resolve this binding before publication.
+            workflow_run = None
+            if result.get("parent_id") is None and isinstance(
+                result.get("provenance", {}).get("workflow"), dict
+            ):
+                from .research_workflow import _recover_run
+
+                workflow_run = _recover_run(workbench, result["provenance"].get("job_id"))
+                if any(
+                    workflow_run["data"][key] != result[value]
+                    for key, value in (("result_id", "id"), ("revision_hash", "revision_hash"))
+                ):
+                    raise ValueError("Workflow export requires its exact original run result")
             target = self.policy.export_root / filename
             staging_parent = Path(
                 tempfile.mkdtemp(prefix=".loci-agent-stage-", dir=self.policy.export_root)
@@ -1860,11 +1875,10 @@ class PolicyAgent:
                 self._recheck_session()
                 _rename_noreplace(staging, target)
                 receipt = {**receipt, "export_name": filename}
-                if isinstance(result.get("provenance", {}).get("workflow"), dict):
-                    from .research_workflow import _recover_run, record_verified_export
+                if workflow_run is not None:
+                    from .research_workflow import record_verified_export
 
-                    run = _recover_run(workbench, result["provenance"].get("job_id"))
-                    return record_verified_export(workbench, run, receipt, target)
+                    return record_verified_export(workbench, workflow_run, receipt, target)
                 return receipt
             finally:
                 if staging_parent.exists() and not staging_parent.is_symlink():
