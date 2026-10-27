@@ -280,3 +280,34 @@ build 6; a later candidate requires `LOCI_QA_CANDIDATE_IDENTITY` pointing to a J
 file with `source_commit`, `executable_sha256`, `asar_sha256` and `worker_sha256`.
 This is automated synthetic software QA, including a simulated GUI review gate,
 and does not supply human scientific approval or biological qualification.
+
+## Agent-session and palette TIFF packaged journeys
+
+Run these serially against an explicitly selected macOS candidate. Use Node 24
+and the Python environment installed from this checkout's locked engine profile.
+The source commit must match the package's embedded build identity.
+
+```sh
+LOCI_PACKAGED_APP=/absolute/path/to/Loci.app \
+LOCI_QA_SOURCE_COMMIT='<packaged-source-commit>' \
+LOCI_QA_PYTHON=/absolute/path/to/engine/.venv/bin/python \
+LOCI_QA_OUTPUT_ROOT=/absolute/path/to/ignored-agent-evidence \
+node desktop/tests/agent-sessions.qa.mjs
+
+LOCI_PACKAGED_APP=/absolute/path/to/Loci.app \
+LOCI_QA_SOURCE_COMMIT='<packaged-source-commit>' \
+LOCI_QA_REFERENCE_PYTHON=/absolute/path/to/engine/.venv/bin/python \
+LOCI_QA_OUTPUT_ROOT=/absolute/path/to/ignored-palette-evidence \
+node desktop/tests/palette-tiff.qa.mjs
+```
+
+The agent journey uses a real MCP SDK stdio client, deferred initialization,
+exact approvals, live permission controls, safe result following, disconnect and
+reconnect. Its receipt lists scenarios not exercised by that packaged journey.
+The palette journey creates a synthetic C/Z stack and checks actual canvas pixels,
+histograms, native uint16 export values, scalar-analysis refusal, and cold reopening.
+An optional real-source run requires both `LOCI_PALETTE_SOURCE` and its exact
+`LOCI_PALETTE_SOURCE_SHA256`; use only an explicitly authorized red/green palette
+stack with a populated central plane. Original source bytes are verified unchanged.
+These journeys substitute native dialog responses in isolated profiles and are
+software regressions, not ordinary manual GUI review or scientific validation.
