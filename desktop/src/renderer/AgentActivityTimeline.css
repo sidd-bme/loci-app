@@ -1,0 +1,99 @@
+.agent-activity-list,
+.agent-target-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-activity-list > li {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+}
+
+.agent-activity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-activity-meta span:last-child {
+  font-weight: 600;
+}
+
+.agent-activity-summary {
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--type-sm);
+  overflow-wrap: anywhere;
+}
+
+.agent-activity-note,
+.agent-target-reason,
+.agent-approval-consequence {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.agent-target-list {
+  display: grid;
+  gap: 8px;
+}
+
+.agent-target-list > li,
+.agent-approval-inspection {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-target-link {
+  justify-self: start;
+  min-height: 28px;
+  padding: 3px 7px;
+  color: var(--mineral-bright);
+  font-size: var(--type-xs);
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.agent-target-link span {
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-target-link:disabled {
+  color: var(--ink-secondary);
+  cursor: default;
+}
+
+.agent-target-identity,
+.agent-activity-request {
+  min-width: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+}
+
+.agent-target-identity summary,
+.agent-activity-request summary {
+  min-height: 24px;
+  cursor: pointer;
+}
+
+.agent-target-identity[open] > dl,
+.agent-activity-request[open] > .agent-approval-inspection {
+  margin-top: 6px;
+}
+
+.agent-activity button:focus-visible,
+.agent-approval-card button:focus-visible,
+.agent-session-drawer summary:focus-visible {
+  outline: 2px solid var(--mineral);
+  outline-offset: 2px;
+}

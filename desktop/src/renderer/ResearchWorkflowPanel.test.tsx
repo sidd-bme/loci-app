@@ -39,6 +39,44 @@ async function save() {
   await waitFor(() => expect(screen.getByRole("button", { name: "Run workflow" })).toBeEnabled());
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+it("uses the workspace source selection for batch preflight and submission", async () => {
+  const other = { ...source, id: "4".repeat(32), sha256: "e".repeat(64), name: "Second field.tif" };
+  const changed = vi.fn();
+  const { props, execute, desktopApi } = setup({ sources: [source, other], selectedSourceIds: [other.id], onSelectedSourceIdsChange: changed });
+  desktopApi.submitBatch = vi.fn(async () => ({ batch_id: "5".repeat(32), jobs: [] }));
+  desktopApi.runBatchJob = vi.fn();
+  await save();
+  execute.mockClear();
+  fireEvent.click(screen.getByRole("button", { name: "Check and run batch" }));
+  await waitFor(() => expect(desktopApi.submitBatch).toHaveBeenCalledTimes(1));
+  expect(desktopApi.submitBatch).toHaveBeenCalledWith([expect.objectContaining({
+    source: { id: other.id, sha256: other.sha256 }, request: expect.objectContaining({ source_id: other.id, source_sha256: other.sha256 }),
+  })]);
+  expect(execute.mock.calls.filter(([operation]) => operation === "workflow_preflight").map(([, request]) => request.source_id)).toEqual([other.id]);
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check and run batch" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("checkbox", { name: source.name }));
+  expect(changed).toHaveBeenCalledWith([other.id, source.id]);
+  expect(props.onResult).not.toHaveBeenCalled();
+});
+
+it("does not submit a batch after workspace selection changes during preflight", async () => {
+  const other = { ...source, id: "4".repeat(32), name: "Second field.tif" };
+  let finish: (() => void) | undefined;
+  const { props, rerender, desktopApi } = setup({ sources: [source, other], selectedSourceIds: [other.id] }, (operation, request, normal) => {
+    if (operation === "workflow_preflight" && request.source_id === other.id)
+      return new Promise((resolve) => { finish = () => resolve(normal()); });
+    return normal();
+  });
+  desktopApi.submitBatch = vi.fn(async () => ({ batch_id: "5".repeat(32), jobs: [] }));
+  desktopApi.runBatchJob = vi.fn();
+  await save();
+  fireEvent.click(screen.getByRole("button", { name: "Check and run batch" }));
+  await waitFor(() => expect(finish).toBeDefined());
+  rerender(<ResearchWorkflowPanel {...props} selectedSourceIds={[source.id]} />);
+  finish!();
+  await waitFor(() => expect(screen.getByRole("button", { name: "Check and run batch" })).toBeEnabled());
+  expect(desktopApi.submitBatch).not.toHaveBeenCalled();
+});
 describe("Visual workflow interaction and bindings", () => {
   it("saves exact graph identity and previews only the selected prefix", async () => {
     const { execute, props } = setup(); await save();

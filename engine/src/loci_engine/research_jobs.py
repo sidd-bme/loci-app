@@ -324,17 +324,9 @@ def run_job(
                 publication_guard=publication_guard,
             )
         if preview:
-            if publication_guard is not None:
-                publication_guard()
-            if project.job(job_id)["cancel_requested"]:
-                raise ValueError("The preview was cancelled before disclosure")
-            project.update_job(
-                job_id,
-                expected_state="running",
-                state="succeeded",
-                progress=1.0,
-                finished_at=timestamp(),
-            )
+            from .research_task_preview import complete_preview
+
+            complete_preview(project, job_id, output, check=publication_guard)
         return {**output, "job": public_job(project.job(job_id))}
     except BaseException as exc:
         current = project.job(job_id)

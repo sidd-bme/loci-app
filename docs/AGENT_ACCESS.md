@@ -316,6 +316,53 @@ executors as the GUI and CLI. Read and task workers retain CPU, memory and share
 concurrency limits, policy/source checks, and publication guards. There is no
 generic operation, shell or model-install escape hatch.
 
+### Shared researcher and agent workflows
+
+The action contract now distinguishes `inspection`, `preview-task` and
+`publication-task`, with the native operation, output type, required scope,
+resource bounds and cancellation behavior exposed in discovery. Availability
+never adds authority to an existing policy.
+
+Named actions cover saved workflow list/get/preflight/preview/run/status;
+exploration list/get/preview/compare/run; population gate evaluation and saved
+group reads; study summaries; intensity catalog/preview and saved report reads.
+They reuse native validators and numerical execution. Document lists are scoped
+before inspection; result ancestry, source selections, measured channels, runtime
+and model identities remain subject to grants. These new summary and comparison
+reads currently accept the flat native runtime/model identity profile; learned
+Cellpose/ONNX producer provenance is rejected rather than reduced to a partial
+identity. The existing `granted-sources` adopted-data delegation remains
+method-independent for result inspection/review/export; that data access does
+not grant model execution or prove a pinned learned runtime. Workflow authoring
+and runtime or model provisioning remain researcher-controlled.
+
+Preview tasks use ordinary durable job ownership and cancellation. A succeeded
+preview can be read with `task_preview_get` by its owning session, after the
+original action is authorized again. The local display cache retains at most
+eight previews, each with at most 8 MiB of output. Each record binds the task,
+request, source fingerprint and output digest. It is not an adopted result or a
+portable study artifact. An evicted or mismatched preview fails explicitly and
+is never recomputed by inspection. `exploration_compare` additionally saves the
+native comparison receipt; discovery declares that side effect.
+
+The desktop activity timeline records inspected, proposed, submitted and
+completed operations, including exact source/result/job references. Pending
+approvals show their targets and become stale when a bound source, result or
+workflow changes. Byte verification occurs at approval and consumption; routine
+status polling uses recorded identity. Opening a timeline target rechecks its
+identity. Preview inspection supports a pinned comparison within one source;
+different recorded selections are labelled without claiming pixel alignment.
+
+The workflow panel uses the source rail's selected images for preflight and
+batch execution. Explicit **Follow agent views and results** can follow inspected
+source planes/regions and newly produced results. Regions affect the display
+camera, not the analysis ROI. User channel colors stay unchanged. Editing,
+pointer activity and later human input suppress automatic navigation, including
+late asynchronous responses. Disabling Follow does not cancel computations.
+Exact job controls retain policy/session ownership, and reconnecting does not
+transfer jobs or retry publication automatically. Verified workflow exports
+made through the agent also update the native workflow export receipt.
+
 `classical_run` requires the `loci-classical` profile, all native segmentation
 settings, one fully resolved 2D source selection (`x,y,width,height,t,c,z,level`),
 explicit raw measurement channels and a working-memory allowance. Its source,

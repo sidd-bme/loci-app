@@ -617,6 +617,17 @@ def export_run(workbench, request):
         workbench.project, record["result_id"], record["revision_hash"], request["destination"]
     )
     target = Path(request["destination"]).parent / receipt["export_name"]
+    return record_verified_export(workbench, run, receipt, target)
+
+
+def record_verified_export(workbench, run, receipt, target):
+    """Verify the published native bundle before recording a path-free workflow receipt."""
+    record = run["data"]
+    if (
+        receipt.get("result_id") != record["result_id"]
+        or receipt.get("revision_hash") != record["revision_hash"]
+    ):
+        raise ValueError("Workflow export requires its exact published result")
     manifest = target / "manifest.json"
     if (
         manifest.is_symlink()
@@ -739,6 +750,7 @@ def execute_workflow(workbench, operation, request, *, job_id=None, publication_
                 "recipe": recipe,
             },
             preview=True,
+            exploration_details=any(node["type"] == "segment" for node in prefix),
             workflow_context=workflow_context(resolved)
             if prefix[-1]["type"] == "population"
             else None,

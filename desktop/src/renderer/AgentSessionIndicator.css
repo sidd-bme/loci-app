@@ -95,7 +95,7 @@
   position: absolute;
   right: 8px;
   bottom: 37px;
-  width: 430px;
+  width: 460px;
   max-width: calc(100% - 16px);
   max-height: min(560px, 68vh);
   overflow: hidden;
@@ -193,6 +193,11 @@
   background: color-mix(in srgb, var(--warning-wash) 35%, var(--graphite-850));
 }
 
+.agent-approval-card--history {
+  border-color: var(--line);
+  background: transparent;
+}
+
 .agent-approval-card__header,
 .agent-policy-card__header {
   display: flex;
@@ -272,7 +277,7 @@
   overflow-wrap: anywhere;
 }
 
-.agent-approval-card pre {
+.agent-approval-inspection pre {
   margin: 4px 0 0;
   padding: 6px;
   max-height: 140px;
@@ -283,6 +288,22 @@
   font-size: 11px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.agent-approval-history {
+  margin-top: 8px;
+}
+
+.agent-session-drawer details > summary {
+  min-height: 24px;
+  cursor: pointer;
+  font-size: var(--type-xs);
+  color: var(--ink-secondary);
+}
+
+.agent-session-drawer input,
+.agent-session-drawer select {
+  accent-color: var(--mineral);
 }
 
 .agent-session-actions {

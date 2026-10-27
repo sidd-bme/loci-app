@@ -13,10 +13,12 @@ import hashlib
 import os
 import time
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .agent_activity import MAX_TARGETS, collect_targets, response_targets, targets_stale
 from .quantitative import exact_keys
 from .research_action_registry import ACTION_NAMES, READ_ACTIONS, TASK_ACTIONS
 from .research_jobs import cancel_job
@@ -419,6 +421,7 @@ def _append_event(
     approval_id: str | None = None,
     operation: str | None = None,
     actor: str = "system",
+    targets: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     now = timestamp()
     event_id = f"{int(time.time() * 1_000_000):016d}-{uuid.uuid4().hex[:8]}"
@@ -433,6 +436,8 @@ def _append_event(
         "operation": operation,
         "actor": actor,
     }
+    if targets:
+        record["targets"] = targets
     connection.execute(
         "INSERT OR REPLACE INTO metadata VALUES(?,?)",
         (_event_key(event_id), canonical_json(record)),
@@ -808,7 +813,13 @@ def _cancel_session_approvals(
         )
 
 
-def _target_is_stale(project: ResearchProject, approval: dict[str, Any]) -> bool:
+def _target_is_stale(
+    project: ResearchProject, approval: dict[str, Any], *, verify_sources: bool = False
+) -> bool:
+    if "targets" in approval and targets_stale(
+        project, approval["targets"], verify_sources=verify_sources
+    ):
+        return True
     source_id = approval.get("source_id")
     expected_source_sha = approval.get("source_sha256")
     if isinstance(source_id, str) and isinstance(expected_source_sha, str):
@@ -1025,6 +1036,7 @@ def reconcile_agent_sessions(
                     session_id=approval.get("session_id"),
                     approval_id=approval["id"],
                     operation=approval.get("operation"),
+                    targets=approval.get("targets"),
                 )
 
 
@@ -1156,6 +1168,7 @@ def _extract_binding(
         "display_revision": display_revision,
         "destination_name": destination_name,
         "parameters_summary": params_summary,
+        "targets": collect_targets(workbench.project, request_payload),
     }
 
 
@@ -1284,6 +1297,7 @@ def check_or_await_approval(
                 policy_sha256=policy.content_sha256,
                 session_id=session_id,
                 operation=operation,
+                targets=binding["targets"],
                 actor="agent",
             )
         if session_id is not None:
@@ -1306,6 +1320,7 @@ def check_or_await_approval(
                 policy_sha256=policy.content_sha256,
                 session_id=session_id,
                 operation=operation,
+                targets=binding["targets"],
                 actor="agent",
             )
         return None
@@ -1317,6 +1332,7 @@ def check_or_await_approval(
                 "policy_sha256": policy.content_sha256,
                 "operation": operation,
                 "request": request_payload,
+                "targets": sorted(binding["targets"], key=canonical_json),
             }
         ).encode("utf-8")
     ).hexdigest()
@@ -1345,7 +1361,7 @@ def check_or_await_approval(
             if _expire_approval(connection, key, existing):
                 continue
             if existing.get("state") == "approved":
-                if _target_is_stale(project, existing):
+                if _target_is_stale(project, existing, verify_sources=True):
                     existing["state"] = "stale"
                     existing["updated_at"] = now
                     existing["decision_reason"] = "Target revision changed before consumption"
@@ -1353,6 +1369,7 @@ def check_or_await_approval(
                         "INSERT OR REPLACE INTO metadata VALUES(?,?)",
                         (key, canonical_json(existing)),
                     )
+                    connection.commit()  # Retain the durable refusal when raising below.
                     raise AgentSessionApprovalError(
                         "The approved source or result revision changed before execution; "
                         "request approval again."
@@ -1374,6 +1391,7 @@ def check_or_await_approval(
                     session_id=session_id,
                     approval_id=existing["id"],
                     operation=operation,
+                    targets=binding["targets"],
                     actor="agent",
                 )
                 return _public_approval(existing)
@@ -1417,6 +1435,7 @@ def check_or_await_approval(
                 "display_revision": binding["display_revision"],
                 "destination_name": binding["destination_name"],
                 "parameters_summary": binding["parameters_summary"],
+                "targets": binding["targets"],
                 "state": "pending",
                 "created_at": now,
                 "updated_at": now,
@@ -1438,6 +1457,7 @@ def check_or_await_approval(
                 session_id=session_id,
                 approval_id=approval_id,
                 operation=operation,
+                targets=binding["targets"],
                 actor="agent",
             )
 
@@ -1496,7 +1516,11 @@ def check_or_await_approval(
                     "Operation blocked: the session was switched to Inspect-only mode."
                 )
 
-            if _target_is_stale(project, app_rec):
+            if _target_is_stale(
+                project,
+                app_rec,
+                verify_sources=app_rec["state"] == "approved" or live_mode == "full_access",
+            ):
                 app_rec["state"] = "stale"
                 app_rec["updated_at"] = timestamp()
                 app_rec["decided_at"] = app_rec["updated_at"]
@@ -1505,6 +1529,7 @@ def check_or_await_approval(
                     "INSERT OR REPLACE INTO metadata VALUES(?,?)",
                     (_approval_key(approval_id), canonical_json(app_rec)),
                 )
+                connection.commit()
                 raise AgentSessionApprovalError(
                     "The bound source or result revision changed while awaiting approval; "
                     "inspect the updated state and request approval again."
@@ -1551,6 +1576,7 @@ def check_or_await_approval(
                         session_id=session_id,
                         approval_id=approval_id,
                         operation=operation,
+                        targets=binding["targets"],
                         actor="agent",
                     )
                     consumed_rec = app_rec
@@ -1639,7 +1665,9 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 {"pending"} if action == "approve_request" else {"pending", "approved"}
             ):
                 raise ValueError(f"Approval request is already {approval['state']}")
-            if action == "approve_request" and _target_is_stale(project, approval):
+            if action == "approve_request" and _target_is_stale(
+                project, approval, verify_sources=True
+            ):
                 approval["state"] = "stale"
                 approval["updated_at"] = now
                 approval["decided_at"] = now
@@ -1650,6 +1678,7 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                     "INSERT OR REPLACE INTO metadata VALUES(?,?)",
                     (_approval_key(approval_id), canonical_json(approval)),
                 )
+                connection.commit()
                 raise ValueError(
                     "The target source or result revision changed since this request was created; "
                     "the agent must request approval for the new revision."
@@ -1672,6 +1701,7 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 session_id=approval.get("session_id"),
                 approval_id=approval_id,
                 operation=approval.get("operation"),
+                targets=approval.get("targets"),
                 actor="human",
             )
         return workbench.snapshot()
@@ -1882,6 +1912,115 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
     raise ValueError(f"Unsupported agent session control action: {action}")
 
 
+def record_agent_activity(agent, operation, arguments, response, *, failed=False):
+    """Record one actual MCP call outcome; raw arguments and error text are never saved."""
+    if agent.session_id is None:
+        return
+    project = ResearchProject(agent.policy.project_path)
+    if operation not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS:
+        return
+    action = arguments.get("operation", operation) if isinstance(arguments, dict) else operation
+    # Operation names come from the registered tool/action inventory, never free-form prose.
+    if not isinstance(action, str) or (
+        action not in ACTION_NAMES and action not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS
+    ):
+        action = operation
+    targets = []
+    if not failed:
+        targets = collect_targets(project, arguments)
+        body = response.get("structuredContent") or response.get("structured_content")
+        if not isinstance(body, dict):
+            for block in response.get("content", []):
+                if isinstance(block, dict) and block.get("type") == "text":
+                    try:
+                        candidate = parse_json(block.get("text", ""))
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(candidate, dict):
+                        body = candidate
+                        break
+        if isinstance(body, dict):
+            targets = response_targets(project, body) + targets
+        targets = list({canonical_json(target): target for target in targets}.values())[
+            :MAX_TARGETS
+        ]
+    if failed:
+        kind, verb = "operation_failed", "Failed"
+    elif operation in {"submit_action", "submit_recipe", "remote_submit"}:
+        kind, verb = "operation_submitted", "Submitted"
+    elif operation in {"validate_action", "validate_recipe"}:
+        kind, verb = "operation_proposed", "Validated proposal for"
+    elif operation in READ_ONLY_TOOLS:
+        kind, verb = "operation_inspected", "Inspected"
+    else:
+        kind, verb = "operation_completed", "Completed call to"
+    with project.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        _append_event(
+            connection,
+            kind=kind,
+            summary=f"{verb} {action}.",
+            policy_sha256=agent.policy.content_sha256,
+            session_id=agent.session_id,
+            operation=action,
+            actor="agent",
+            targets=targets,
+        )
+
+
+def reconcile_agent_activity(project):
+    """Recover terminal outcomes from durable owned jobs, with idempotent event insertion."""
+    for job in project.list_jobs():
+        owner = job.get("owner")
+        if not isinstance(owner, dict) or job["state"] not in {
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted",
+        }:
+            continue
+        marker = f"agent-job-outcome:{job['id']}"
+        with project.connection() as connection:
+            if connection.execute("SELECT 1 FROM metadata WHERE key=?", (marker,)).fetchone():
+                continue
+        targets = [{"kind": "job", "id": job["id"]}]
+        # The durable job remains inspectable after a dependency is removed.
+        with suppress(ValueError, OSError, KeyError):
+            targets.extend(collect_targets(project, job.get("request", {})))
+        if job["state"] == "succeeded":
+            for identity in job.get("result_ids", []):
+                targets.extend(collect_targets(project, {"result_id": identity}))
+            from .research_task_preview import get_preview
+
+            # Cache eviction never implies recomputation or result publication.
+            with suppress(ValueError, OSError, KeyError):
+                output = get_preview(project, job["id"])["preview"]["output"]
+                targets.extend(response_targets(project, output))
+        targets = list({canonical_json(target): target for target in targets}.values())[
+            :MAX_TARGETS
+        ]
+        with project.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM metadata WHERE key=?", (marker,)).fetchone():
+                continue
+            # Succeeded previews have no published result; only their job is a target.
+            kind = "operation_completed" if job["state"] == "succeeded" else "operation_failed"
+            _append_event(
+                connection,
+                kind=kind,
+                summary=f"Job {job['id'][:8]} {job['state']}.",
+                policy_sha256=owner.get("policy_sha256"),
+                session_id=owner.get("session_id"),
+                operation=job["operation"],
+                actor="agent",
+                targets=targets,
+            )
+            connection.execute(
+                "INSERT INTO metadata VALUES(?,?)",
+                (marker, canonical_json({"job_id": job["id"], "state": job["state"]})),
+            )
+
+
 def _public_policy(record: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in record.items() if not key.startswith("private_")}
 
@@ -1897,6 +2036,7 @@ def _public_approval(record: dict[str, Any]) -> dict[str, Any]:
 def agent_sessions_snapshot(project: ResearchProject) -> dict[str, Any]:
     """Return the renderer-safe snapshot of agent policies, live sessions, approvals, and events."""
     reconcile_agent_sessions(project)
+    reconcile_agent_activity(project)
     with project.connection() as connection:
         policies = [
             _public_policy(parse_json(row[0]))

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -33,6 +35,7 @@ from .agent_sessions import (
     effective_permission_mode,
     finish_session,
     heartbeat_session,
+    record_agent_activity,
     require_session_authority,
     start_session,
 )
@@ -145,6 +148,87 @@ _STUDY_TOOL_CATALOG = (
     ),
 )
 _EXPORT_DISCLOSURES = ("geometry", "source_names", "previews", "measurements", "provenance")
+
+
+def protocol_image_result(value, *, required=True, retained_preview=False):
+    """Expose verified images without changing cached output or its original digest scope."""
+    from .agent_vision import validate_png
+    from .research_project import SHA_PATTERN, canonical_json
+
+    value = copy.deepcopy(value)
+    images = []
+    mapping = []
+    image_bytes = 0
+
+    def extract(container, key, pointer):
+        nonlocal image_bytes
+        if key not in container:
+            return
+        if len(images) >= 20:
+            raise ValueError("Research image response exceeds its image count bound")
+        image_url = container.pop(key)
+        decoded = validate_png(image_url)
+        image_bytes += len(decoded)
+        if image_bytes > (8 if retained_preview else 16) * 1024**2:
+            raise ValueError("Research image response exceeds its aggregate byte bound")
+        images.append(
+            ImageContent(type="image", data=image_url.split(",", 1)[1], mime_type="image/png")
+        )
+        mapping.append(
+            {
+                "json_pointer": pointer,
+                "content_index": len(images),
+                "mime_type": "image/png",
+                "sha256": hashlib.sha256(decoded).hexdigest(),
+            }
+        )
+
+    if retained_preview:
+        preview = value.get("preview")
+        if (
+            not isinstance(preview, dict)
+            or preview.get("schema") != "loci.task-preview/v1"
+            or preview.get("adopted") is not False
+            or not isinstance(preview.get("output"), dict)
+            or not isinstance(preview.get("output_sha256"), str)
+            or not SHA_PATTERN.fullmatch(preview["output_sha256"])
+        ):
+            raise ValueError("Retained preview image identity is invalid")
+        output = preview["output"]
+        encoded_output = canonical_json(output).encode()
+        if (
+            len(encoded_output) > 8 * 1024**2
+            or hashlib.sha256(encoded_output).hexdigest() != preview["output_sha256"]
+        ):
+            raise ValueError("Retained preview image output identity changed")
+        for key in ("image", "label_image"):
+            extract(output, key, "/preview/output/" + key)
+        cells = output.get("cells", [])
+        if not isinstance(cells, list) or len(cells) > 9:
+            raise ValueError("Retained preview comparison exceeds its cell bound")
+        for index, cell in enumerate(cells):
+            if not isinstance(cell, dict):
+                raise ValueError("Retained preview comparison cell must be an object")
+            for key in ("image", "label_image"):
+                extract(cell, key, f"/preview/output/cells/{index}/{key}")
+        if images:
+            value["image_transport"] = {
+                "schema": "loci.mcp-preview-images/v1",
+                "output_sha256_scope": "original-canonical-output-including-image-data-urls",
+                "images": mapping,
+            }
+    elif "image" in value:
+        extract(value, "image", "/image")
+    elif required:
+        raise ValueError("The research response has no image")
+    if not images:
+        return value
+    metadata = canonical_json(value)
+    if len(metadata.encode()) > 4 * 1024**2:
+        raise ValueError("The research image metadata exceeds its bound")
+    return CallToolResult(
+        content=[TextContent(type="text", text=metadata), *images], structured_content=value
+    )
 
 
 class JobSupervisor:
@@ -403,6 +487,8 @@ class JobSupervisor:
                     identity(policy.export_root_identity),
                 ]
             )
+            if self.agent is not None and self.agent.session_id is not None:
+                command.extend(["--session-id", self.agent.session_id])
             with tempfile.TemporaryFile() as output:
                 process = subprocess.Popen(
                     command,
@@ -422,7 +508,7 @@ class JobSupervisor:
                             from .agent_actions import authorize_action
 
                             authorize_action(
-                                PolicyAgent(policy),
+                                self.agent or PolicyAgent(policy),
                                 workbench,
                                 request["operation"],
                                 request["request"],
@@ -1773,7 +1859,13 @@ class PolicyAgent:
                     raise PermissionError("The exact result revision is no longer reviewed")
                 self._recheck_session()
                 _rename_noreplace(staging, target)
-                return {**receipt, "export_name": filename}
+                receipt = {**receipt, "export_name": filename}
+                if isinstance(result.get("provenance", {}).get("workflow"), dict):
+                    from .research_workflow import _recover_run, record_verified_export
+
+                    run = _recover_run(workbench, result["provenance"].get("job_id"))
+                    return record_verified_export(workbench, run, receipt, target)
+                return receipt
             finally:
                 if staging_parent.exists() and not staging_parent.is_symlink():
                     import shutil
@@ -2021,7 +2113,32 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 }
         return await call_next(context)
 
-    server.middleware.append(strict_remote_arguments)
+    async def activity_arguments(context, call_next):
+        params = context.params
+        if context.method != "tools/call" or not isinstance(params, dict):
+            return await strict_remote_arguments(context, call_next)
+        name, arguments = params.get("name"), params.get("arguments", {})
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            return await strict_remote_arguments(context, call_next)
+        try:
+            response = await strict_remote_arguments(context, call_next)
+        except Exception:
+            with suppress(Exception):
+                record_agent_activity(agent, name, arguments, {}, failed=True)
+            raise
+        payload = response if isinstance(response, dict) else response.model_dump(by_alias=True)
+        # The middleware observes the actual typed response after the disclosure boundary.
+        with suppress(Exception):
+            record_agent_activity(
+                agent,
+                name,
+                arguments,
+                payload,
+                failed=bool(payload.get("isError") or payload.get("is_error")),
+            )
+        return response
+
+    server.middleware.append(activity_arguments)
 
     def invoke(action: Callable[[], Any], *, resource: bool = False) -> Any:
         from mcp.server.mcpserver.exceptions import ResourceError, ToolError
@@ -2111,29 +2228,13 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "Inspect the source and settings in Loci."
             ) from None
 
-    def image_result(action, *, required: bool = True):
+    def image_result(action, *, required: bool = True, retained_preview: bool = False):
         def response():
             value = action()
             if agent.policy.schema not in VISION_POLICY_SCHEMAS:
                 return value
-            if not required and "image" not in value:
-                return value
-            from .agent_vision import validate_png
-            from .research_project import canonical_json
-
-            image_url = value.pop("image")
-            validate_png(image_url)
-            metadata = canonical_json(value)
-            if len(metadata.encode()) > 4 * 1024**2:
-                raise ValueError("The research image metadata exceeds its bound")
-            return CallToolResult(
-                content=[
-                    TextContent(type="text", text=metadata),
-                    ImageContent(
-                        type="image", data=image_url.split(",", 1)[1], mime_type="image/png"
-                    ),
-                ],
-                structured_content=value,
+            return protocol_image_result(
+                value, required=required, retained_preview=retained_preview
             )
 
         # Image verification/serialization is inside the same sanitized boundary,
@@ -2314,7 +2415,11 @@ def build_server(policy_path: str | Path) -> MCPServer:
             annotations=annotations("inspect_action"),
         )
         def inspect_action(operation: str, request: dict[str, Any]) -> dict[str, Any]:
-            return image_result(lambda: agent.inspect_action(operation, request), required=False)
+            return image_result(
+                lambda: agent.inspect_action(operation, request),
+                required=False,
+                retained_preview=operation == "task_preview_get",
+            )
 
         @server.tool(
             name="submit_action",

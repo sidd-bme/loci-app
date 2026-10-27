@@ -385,7 +385,12 @@ print("Export oracle passed: exact normalized scalar array and corrected labels 
     assert.equal(record.provenance.accepted_request.working_bytes, 2 * 1024 ** 3);
     assert.equal(record.provenance.accepted_request.profile_id, "cellpose-sam");
     assert.equal(record.result.source_sha256, report.fixture_sha256);
-    report.cellpose_inference = {status:"passed", profile:"cellpose-sam", runtime:record.provenance.runtime.cellpose, count:record.result.object_count, biological_validation:false};
+    report.cellpose_inference = {status:"passed", profile:"cellpose-sam", runtime:record.provenance.runtime.cellpose,
+      result_id: record.result.id, revision_hash: record.result.revision_hash, source_id: record.result.source_id,
+      study, source: fixture, count:record.result.object_count, biological_validation:false};
+    await page.getByRole("button", { name: "Save study", exact: true }).click();
+    await until(async () => (await page.locator("main.image-first-workbench").getAttribute("aria-busy")) !== "true",
+      "save model result lock released");
     await capture("08-real-cellpose");
     assert.equal(await sha(fixture), report.fixture_sha256);
   }

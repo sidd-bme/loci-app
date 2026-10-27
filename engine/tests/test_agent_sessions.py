@@ -65,7 +65,7 @@ def test_renderer_wire_fixture_matches_live_session_snapshot(tmp_path):
     fixture = json.loads(fixture_path.read_text())
     assert set(actual) == set(fixture)
     for section in ("policies", "sessions", "approvals", "events"):
-        assert set(actual[section][0]) == set(fixture[section][0]), section
+        assert set(actual[section][0]) - {"targets"} == set(fixture[section][0]), section
     assert set(actual["capability_map"]) == set(fixture["capability_map"])
     assert set(actual["capability_map"]["counts"]) == set(fixture["capability_map"]["counts"])
     assert set(actual["capability_map"]["entries"][0]) == set(
@@ -866,11 +866,6 @@ def test_capability_map_distinguishes_unexposed_workbench_contracts():
         "field_assay_preview",
         "field_assay_run",
         "scientific_data_export",
-        "exploration_list",
-        "exploration_get",
-        "exploration_preview",
-        "exploration_compare",
-        "exploration_run",
     ):
         entry = entries[name]
         assert name not in REQUESTS
@@ -881,3 +876,21 @@ def test_capability_map_distinguishes_unexposed_workbench_contracts():
 
     for name in ("remote_stage", "remote_profile_save", "remote_remove_owned"):
         assert entries[name]["status"] == "gui_only_gap"
+
+    for name in (
+        "exploration_list",
+        "exploration_get",
+        "exploration_preview",
+        "exploration_compare",
+        "exploration_run",
+        "workflow_preview",
+        "workflow_run",
+        "task_preview_get",
+    ):
+        assert name in REQUESTS
+        assert entries[name]["status"] == "supported_with_grant"
+        assert entries[name]["mcp_tool"] == (
+            "inspect_action"
+            if name in {"exploration_list", "exploration_get", "task_preview_get"}
+            else "submit_action"
+        )
