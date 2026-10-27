@@ -24,7 +24,12 @@ POLICY_SCHEMA = "loci.agent-policy/v1"
 REMOTE_POLICY_SCHEMA = "loci.agent-policy/v2"
 VISION_POLICY_SCHEMA = "loci.agent-policy/v3"
 STUDY_POLICY_SCHEMA = "loci.agent-policy/v4"
-VISION_POLICY_SCHEMAS = frozenset({VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA})
+SESSION_POLICY_SCHEMA = "loci.agent-policy/v5"
+STUDY_POLICY_SCHEMAS = frozenset({STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA})
+VISION_POLICY_SCHEMAS = frozenset(
+    {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA}
+)
+PERMISSION_MODES = frozenset({"inspect_only", "ask_approval", "full_access"})
 MAX_POLICY_BYTES = 1024 * 1024
 DISCLOSURES = frozenset(
     {"geometry", "source_names", "previews", "measurements", "provenance", "agent_metadata"}
@@ -271,6 +276,7 @@ class AgentPolicy:
     delegation: dict[str, Any] | None = None
     actions: frozenset[str] = field(default_factory=frozenset)
     export_new_names: bool = False
+    permission_mode: str | None = None
 
     def recheck(self) -> None:
         if self.delegation is not None:
@@ -355,21 +361,34 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    v4 = isinstance(document, dict) and document.get("schema") == STUDY_POLICY_SCHEMA
-    v3 = isinstance(document, dict) and document.get("schema") in VISION_POLICY_SCHEMAS
-    v2 = isinstance(document, dict) and document.get("schema") in {
-        REMOTE_POLICY_SCHEMA,
-        VISION_POLICY_SCHEMA,
-        STUDY_POLICY_SCHEMA,
-    }
+    v5 = isinstance(document, dict) and document.get("schema") == SESSION_POLICY_SCHEMA
+    v4 = isinstance(document, dict) and (
+        document.get("schema") == STUDY_POLICY_SCHEMA or (v5 and "delegation" in document)
+    )
+    v3 = isinstance(document, dict) and (
+        document.get("schema") in {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA}
+        or (v5 and ("experimental_recipes" in document or v4))
+    )
+    v2 = isinstance(document, dict) and (
+        document.get("schema")
+        in {
+            REMOTE_POLICY_SCHEMA,
+            VISION_POLICY_SCHEMA,
+            STUDY_POLICY_SCHEMA,
+        }
+        or (v5 and ("remote_grants" in document or v3))
+    )
     extra = (
         ({"remote_grants"} if v2 else set())
         | ({"experimental_recipes"} if v3 else set())
         | ({"delegation", "actions"} if v4 else set())
+        | ({"permission_mode"} if v5 else set())
     )
     root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
     if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, *VISION_POLICY_SCHEMAS}:
         raise ValueError("Unsupported policy schema")
+    if v5 and root["permission_mode"] not in PERMISSION_MODES:
+        raise ValueError("Policy permission mode must be inspect_only, ask_approval or full_access")
     project_value = _exact_keys(root["project"], {"path", "id"}, "policy project")
     project_path, project_identity = _plain_directory(project_value["path"], "project path")
     project_id = checked_id(project_value["id"])
@@ -585,6 +604,7 @@ def load_policy(path: str | Path) -> AgentPolicy:
         actions=frozenset(document.get("actions", [])),
         export_new_names=document["export"] is not None
         and document["export"].get("filename_mode") == "directory",
+        permission_mode=document.get("permission_mode"),
     )
 
 
@@ -593,6 +613,7 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
+    v5 = isinstance(specification, dict) and "permission_mode" in specification
     v4 = isinstance(specification, dict) and "delegation" in specification
     v3 = isinstance(specification, dict) and ("experimental_recipes" in specification or v4)
     v2 = isinstance(specification, dict) and ("remote_grants" in specification or v3)
@@ -602,10 +623,13 @@ def write_policy(
         | ({"experimental_recipes"} if v3 else set())
         | ({"delegation"} if v4 else set())
         | ({"actions"} if v4 and "actions" in specification else set())
+        | ({"permission_mode"} if v5 else set())
     )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": STUDY_POLICY_SCHEMA
+        "schema": SESSION_POLICY_SCHEMA
+        if v5
+        else STUDY_POLICY_SCHEMA
         if v4
         else VISION_POLICY_SCHEMA
         if v3
@@ -666,4 +690,9 @@ def write_policy(
         "schema": document["schema"],
         "policy_sha256": loaded.content_sha256,
         "project_id": loaded.project_id,
+        **(
+            {"permission_mode": loaded.permission_mode}
+            if loaded.permission_mode is not None
+            else {}
+        ),
     }

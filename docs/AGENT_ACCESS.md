@@ -1,6 +1,6 @@
 # Policy-bound agent access
 
-Loci can expose a deliberately narrow research surface to a local agent over
+Loci can expose explicitly granted study operations to a local agent over
 Model Context Protocol (MCP) stdio. The MCP process opens no HTTP or other
 network listener. It uses the same validated project, recipe, job, result, and
 export code as the desktop and CLI.
@@ -294,7 +294,20 @@ publication. Existing policies are never widened automatically.
 | `review_history` | Ordered review events, current digest and pagination; assessment text requires all result disclosures |
 | `review_result` | Append an agent decision for an exact revision and observed prior review digest |
 
-The initial registry covers recipes, result context, label/ROI correction,
+`source_image` and `review_result` publish their complete nested `request` JSON
+schemas in MCP `list_tools` and `catalog.tools[].request_schema`. The latter is
+static documentation, contains no study data, and does not grant execution.
+`action_guide` accepts registered analysis/editing action names, not these tool
+names. Image requests require explicit selection, display channels, projection
+and thumbnail size; a plane forbids `z_stop`, while max/mean require an exclusive
+`z_stop`. Review requests require the exact inspected revision, disposition,
+nonblank reason and coverage, and `expected_review_sha256` copied from
+`review_history.current_review_sha256` (null only without a prior review).
+Native validators and all source, disclosure, runtime and delegation guards
+remain authoritative.
+
+The registry covers recipes, the built-in adaptive watershed (`classical_run`),
+result context, label/ROI correction,
 puncta, cell/nucleus association, colocalisation, tracking, population inspection,
 and bounded large-result inspection/deletion. The desktop operation catalogue
 marks each supported action as read or task. Named actions require all six
@@ -302,6 +315,45 @@ response disclosures and a source-scoped delegation. They use the same native
 executors as the GUI and CLI. Read and task workers retain CPU, memory and shared
 concurrency limits, policy/source checks, and publication guards. There is no
 generic operation, shell or model-install escape hatch.
+
+`classical_run` requires the `loci-classical` profile, all native segmentation
+settings, one fully resolved 2D source selection (`x,y,width,height,t,c,z,level`),
+explicit raw measurement channels and a working-memory allowance. Its source,
+measurement and runtime grants are checked before submission; the existing
+policy revocation and publication guards remain active during execution.
+The native adaptive executor supplies the same labels, raw measurements and
+provenance as desktop execution. It does not grant Cellpose execution or model
+installation. New results require their own review before reviewed export.
+
+`perinuclear_run` measures **Perinuclear enrichment**, a geometric ring proxy,
+through the same native operation used by the desktop. Its exact request contains
+`result_id`, `revision_hash`, `signal_channel`, `radius_px`, `working_bytes` and
+`control`. The bound nucleus result must occupy the full native scalar level-zero
+2D source plane; the raw signal must share its exact grid. The radius is explicit,
+finite, greater than zero and at most 128 pixels. Qualification protocols can pin
+a narrower choice, such as five pixels, without changing that general contract.
+
+Every nucleus blocks and competes for ring pixels, including excluded nuclei.
+Rings use inclusive Euclidean pixel-center distance outside every nucleus;
+pixels claimed by multiple nuclei are discarded from every ring. Nuclei touching
+the image boundary, empty rings and zero-mean rings are excluded explicitly.
+No epsilon, imputation or intensity gate is applied. The per-object endpoint is
+raw nuclear mean divided by raw ring mean. The saved source-plane summary records
+the median and mean eligible ratios, counts and every exclusion; for a one-field
+well, the median is its well endpoint. With no eligible objects, the endpoint is
+explicitly undefined (`null`), never a successful qualification claim.
+This fluorescence endpoint requires nonnegative raw values across the selected
+signal plane. Negative samples fail execution and restore/export validation with
+an actionable error; they are never clipped, offset or silently excluded.
+General signed raw-intensity workflows retain their existing behavior.
+
+The result preserves the original nucleus revision, raw signal, unique ring
+ownership and discarded-pixel masks, raw counts/sums/means, ratios and exclusions.
+Reviewed export includes these arrays, TIFF masks, `objects.csv` and
+`perinuclear-summary.json`; restore/export verify their arithmetic and bindings.
+`result_view` optionally accepts `label_field: nuclei`, `rings` or `ambiguous`
+only for this result kind. Its default remains nuclei. The selected field and its
+basis accompany every QC view; a ring proxy must never be called true cytoplasm.
 
 Read `correction_info` before editing: `expected_input_sha256` is the label-array
 hash, not `revision_hash`. Corrections preserve the parent, remeasure the changed
@@ -312,6 +364,59 @@ reason and coverage. The server supplies actor and delegation fields. A stale
 decision cannot replace a newer one. The UI distinguishes agent and researcher
 reviews and lets the researcher supersede an agent decision without erasing it.
 Identity assurance is declared, not authenticated model/person identity.
+
+## V5: live MCP session presence, permission modes, and single-use approval
+
+Loci records access bundles, initialized MCP clients, approvals and activity as
+namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them in
+`Workbench.snapshot()["agent_sessions"]` (`loci.agent-sessions/v1`).
+
+- **Truthful session states**: Generating a bundle records `configuration_ready`
+  and never presents a connected client. Only a successful MCP `initialize` handshake after policy and project
+  validation transitions a
+  session to `connected_idle`, `executing`, `awaiting_approval`, or `paused`.
+  Clean exit transitions to `disconnected`; uncaught errors transition to
+  `failed`; dead PIDs or expired heartbeats reconcile to `interrupted` and
+  cancel pending approvals for that session.
+- **Permission modes (`loci.agent-policy/v5`)**: Users can select
+  `ask_approval`, `full_access`, or `inspect_only` at bundle creation and switch
+  modes live from the lower-right session drawer (`research_agent_session_control`):
+  - `inspect_only`: read-only inspection within disclosed scope; mutating,
+    task-submitting, review, and export tools fail closed.
+  - `ask_approval`: read-only inspection proceeds within disclosed scope;
+    mutating or consequential calls (`preview_recipe`, `submit_recipe`,
+    `submit_action`, `set_source_display`, `review_result`, `export_result`,
+    `export_vision_handoff`, `remote_submit`, `remote_retrieve`,
+    `remote_attach`) create a durable pending approval record bound to the exact
+    `operation`, `request_hash`, `source_id`/`source_sha256`,
+    `result_id`/`revision_hash`, `display_revision`, and `destination_name`, and
+    wait for a researcher decision in Loci before executing.
+  - `full_access`: permitted actions within the policy's scope and resource
+    limits execute without per-call prompts.
+- **Single-use atomic approvals and stale-target protection**: Approving a
+  pending request in Loci transitions it from `pending` to `approved`, and the
+  waiting (or retried) MCP tool call atomically consumes it (`approved` ->
+  `consumed`) for that single invocation. If the bound source fingerprint,
+  result revision, or display revision changes before execution, the approval is
+  marked `stale` and rejected. Approval decision RPCs exist only on the desktop
+  control channel (`research_agent_session_control`), never as MCP tools, so an
+  agent cannot approve its own request. Execution approval never creates a
+  human scientific review record.
+- **Interactive controls and non-destructive updates**: The lower-right session
+  drawer provides policy-wide **Pause access**, **Resume access**, **Stop active job**,
+  **Disconnect client**, **Revoke access**, and a **Follow agent** toggle. While
+  **Follow agent** is off (or while the user is editing), agent updates merge
+  into study history without overwriting the user's selected source, result,
+  viewport camera, or unsaved drafts. Follow opens only newly completed results
+  attributed to that session while the researcher is idle in Display, Results
+  or Agent. Results received during editing are not queued to interrupt later.
+  Stop targets an exact session-owned job. Disconnect revokes that session
+  immediately; revoke ends access for the policy. Both preserve unrelated human
+  and other-policy jobs. Reconnection creates a distinct session.
+  Expired approvals cannot be consumed, even before the next desktop refresh.
+- **Capability map (`loci.agent-capability-map/v1`)**: Derived from
+  `OPERATION_CATALOG` and `ACTION_NAMES`, reporting each operation as
+  `supported_via_mcp`, `supported_with_grant`, or `gui_only_gap`.
 
 New reviews use `loci.result-review/v2` and append-only events. Existing legacy
 human receipts retain their original bytes and semantics. Exports contain hashed

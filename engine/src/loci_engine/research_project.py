@@ -835,6 +835,11 @@ class ResearchProject:
             "arrays": artifacts,
             "provenance": provenance,
         }
+        if kind == "perinuclear-enrichment" or "perinuclear" in provenance:
+            from .research_perinuclear import validate_record, validate_source
+
+            validate_record(record)
+            validate_source(record, source)
         record["revision_hash"] = hashlib.sha256(canonical_json(record).encode()).hexdigest()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1086,7 +1091,13 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
-            pass
+            if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record.get(
+                "provenance", {}
+            ):
+                from .research_perinuclear import validate_record, validate_source
+
+                validate_record(record)
+                validate_source(record, self.source(record["source_id"]))
         elif schema == "loci.research-result/v2" and self.schema_version == 2:
             from .research_tiled_store import validate_grid, validate_object_table
 
@@ -1253,7 +1264,24 @@ class ResearchProject:
             check()
         return history[-1] if history else None
 
-    def submit(self, operation: str, request: dict[str, Any], request_key: str) -> dict[str, Any]:
+    def submit(
+        self,
+        operation: str,
+        request: dict[str, Any],
+        request_key: str,
+        *,
+        owner: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if owner is not None:
+            if (
+                not isinstance(owner, dict)
+                or set(owner) != {"policy_sha256", "session_id"}
+                or not isinstance(owner["policy_sha256"], str)
+                or not SHA_PATTERN.fullmatch(owner["policy_sha256"])
+            ):
+                raise ValueError("Job owner requires an exact policy and session identity")
+            if owner["session_id"] is not None:
+                checked_id(owner["session_id"])
         checked_text(request_key, "Submission key", 160)
         checked_text(operation, "Operation", 64)
         fingerprint = hashlib.sha256(
@@ -1267,7 +1295,14 @@ class ResearchProject:
             if existing:
                 if existing[0] != fingerprint:
                     raise ValueError("Repeated submission key has different parameters")
-                return parse_json(existing[1])
+                existing_record = parse_json(existing[1])
+                if existing_record.get("owner") != owner:
+                    raise PermissionError("Repeated submission key belongs to a different owner")
+                return existing_record
+            if owner is not None:
+                from .agent_sessions import require_session_authority
+
+                require_session_authority(self, **owner, connection=connection)
             record = {
                 "id": uuid.uuid4().hex,
                 "operation": operation,
@@ -1282,6 +1317,8 @@ class ResearchProject:
                 "result_ids": [],
                 "error": None,
             }
+            if owner is not None:
+                record["owner"] = dict(owner)
             connection.execute(
                 "INSERT INTO jobs VALUES(?,?,?,?)",
                 (record["id"], request_key, fingerprint, canonical_json(record)),

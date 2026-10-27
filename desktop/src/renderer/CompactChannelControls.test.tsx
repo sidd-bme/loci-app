@@ -127,9 +127,22 @@ describe("compact channel display", () => {
     fireEvent.click(screen.getByText("More display")); expect(screen.getByLabelText("Nuclei gamma")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Full display options" })).toBeDisabled();
   });
+  it("selects a logical RGB plane without treating RGB components as biological channels", () => {
+    const onChannels = vi.fn(), onSourceChannel = vi.fn();
+    render(<CompactChannelControls source={{ ...source, metadata: { ...source.metadata, sample_semantics: "RGB",
+      dimensions: { ...source.metadata.dimensions!, c: 2, s: 3 }, channel_names: ["Plane A", "Plane B"] } }}
+      channels={[{ ...channelState()[0], channel: 1 }]} onChannels={onChannels} onSourceChannel={onSourceChannel} />);
+    expect(screen.getByLabelText("Display channel")).toHaveValue("1");
+    fireEvent.change(screen.getByLabelText("Display channel"), { target: { value: "0" } });
+    expect(onSourceChannel).toHaveBeenCalledWith(0);
+    expect(onChannels).not.toHaveBeenCalled();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
   it.each(["RGB", "RGBA"])("labels %s components without scalar or alpha edits", (sample_semantics) => {
     const onChannels = vi.fn();
-    render(<CompactChannelControls source={{ ...source, metadata: { ...source.metadata, sample_semantics } }} channels={[channelState()[0]]} onChannels={onChannels} />);
+    render(<CompactChannelControls source={{ ...source, metadata: { ...source.metadata, sample_semantics,
+      dimensions: { ...source.metadata.dimensions!, c: 1 } } }} channels={[channelState()[0]]} onChannels={onChannels} />);
     expect(screen.getByRole("option", { name: "RGB components" })).toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Solo" })).not.toBeInTheDocument();
     draft(screen.getByLabelText("RGB components low"), "-1"); fireEvent.blur(screen.getByLabelText("RGB components low"));

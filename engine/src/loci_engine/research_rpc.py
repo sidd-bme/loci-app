@@ -276,6 +276,11 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             params["destination"],
             params.get("export_root"),
         )
+    if method == "research_agent_session_control":
+        from .agent_sessions import control_agent_session
+
+        exact_keys(params, {"project", "request"}, method)
+        return control_agent_session(_open(params["project"]), params["request"])
     if method == "research_import_model":
         from .research_models import import_model
 

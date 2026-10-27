@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -834,9 +835,7 @@ def test_public_rgba_overview_reproduces_exact_pinned_pixel_and_alpha_identity(t
 
 
 @pytest.mark.parametrize("samples", [3, 4])
-def test_uint16_rgb_overview_refuses_wrapping_or_accepting_legacy_cache(
-    tmp_path, monkeypatch, samples
-) -> None:
+def test_uint16_rgb_canvas_quantizes_without_wrapping_and_preserves_native(tmp_path, samples):
     pixels = np.array([[[65535, 1024, 32768, 16384][:samples]]], dtype=np.uint16)
     source_path = tmp_path / "high-precision.tiff"
     tifffile.imwrite(
@@ -846,31 +845,70 @@ def test_uint16_rgb_overview_refuses_wrapping_or_accepting_legacy_cache(
         **({"extrasamples": "unassalpha"} if samples == 4 else {}),
     )
     before = source_path.read_bytes()
-    monkeypatch.setattr(
-        viewer_image_module,
-        "_cached_png",
-        lambda *args, **kwargs: pytest.fail(
-            "Unsupported precision cannot accept an old wrapped cache"
-        ),
-    )
     with NativeImageSession(source_path) as session:
         defaults = viewer_defaults(session, {"source_id": "a" * 32})
         channels = defaults["channels"]
+        # Seed the old cache identity with the historical uint16-wrapping bug.
+        # A changed rendering policy must never accept those already persisted bytes.
+        legacy_revision = hashlib.sha256(
+            json.dumps(
+                {
+                    "source_sha256": session.metadata.sha256,
+                    "display": channels,
+                    "basis": {
+                        "mode": "explicit",
+                        "overview": "derived-cache",
+                        "level": 0,
+                        "t": 0,
+                        "z": 0,
+                        "z_stop": None,
+                        "projection": None,
+                        "viewport_dependent": False,
+                    },
+                    "rgb_policy": asdict(session.metadata.rgb_color_policy),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        legacy_key = hashlib.sha256(
+            json.dumps(
+                {
+                    "source_sha256": session.metadata.sha256,
+                    "display_revision": legacy_revision,
+                    "width": 1,
+                    "height": 1,
+                    "max_edge": 16,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()[:32]
+        viewer_image_module._publish_cached_png(
+            tmp_path, legacy_key, viewer_image_module._png_bytes(pixels.astype(np.uint8))
+        )
         for view in (
             {"overview": True, "max_edge": 16},
+            {"overview": True, "max_edge": 16},  # replay the persisted cache
             {"selection": {"x": 0, "y": 0, "width": 1, "height": 1}},
         ):
-            with pytest.raises(ViewerImageError, match="requires uint8 stored components"):
-                viewer_tile(
-                    session,
-                    {"source_id": "a" * 32, "channels": channels, **view},
-                    cache_root=tmp_path,
+            result = viewer_tile(
+                session,
+                {"source_id": "a" * 32, "channels": channels, **view},
+                cache_root=tmp_path,
+            )
+            with Image.open(
+                io.BytesIO(base64.b64decode(result["image"].split(",", 1)[1]))
+            ) as image:
+                np.testing.assert_array_equal(
+                    np.asarray(image), np.array([[[255, 4, 128, 64][:samples]]], dtype=np.uint8)
                 )
         np.testing.assert_array_equal(
             session.read_region(NativeSelection(x=0, y=0, width=1, height=1)).pixels, pixels
         )
     assert source_path.read_bytes() == before
-    assert not list(tmp_path.glob("viewer-overviews/*.png"))
+    assert len(list(tmp_path.glob("viewer-overviews/*.png"))) == 2
 
 
 def _medical_projection_source(tmp_path, values):

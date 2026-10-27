@@ -641,8 +641,27 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
         )
     records = _archive_records(project, snapshot)
     artifacts: dict[str, Path] = {}
+    perinuclear_parents = {}
     for result in snapshot["results"]:
         project.result(result["id"])
+        if "perinuclear" in result["provenance"]:
+            from .research_perinuclear import validate_parent, validate_source
+
+            nucleus_parent = project.result(result["provenance"]["parent_result"]["result_id"])
+            validate_parent(result, nucleus_parent)
+            validate_source(result, project.source(result["source_id"]))
+            perinuclear_parents[result["id"]] = nucleus_parent
+    # Every persisted scientific scope/budget is preflighted before decoding
+    # even a parent artifact from another result in this portable study.
+    for result in snapshot["results"]:
+        if result["id"] in perinuclear_parents:
+            from .research_perinuclear import validate_arrays
+
+            validate_arrays(
+                result,
+                {name: project.load_array(item) for name, item in result["arrays"].items()},
+                parent=perinuclear_parents[result["id"]],
+            )
         for descriptor in result.get("arrays", {}).values():
             project.load_array(descriptor)
             artifacts[descriptor["sha256"]] = project.arrays / (descriptor["sha256"] + ".npy")
@@ -908,6 +927,10 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
+    if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record["provenance"]:
+        from .research_perinuclear import validate_record
+
+        validate_record(record)
     return record
 
 
@@ -915,6 +938,17 @@ def _validate_job(record: Any, expected_id: str, result_ids: set[str]) -> dict[s
     if not isinstance(record, dict) or record.get("id") != expected_id or "pid" in record:
         raise ValueError("Interchanged job identity or process state is invalid")
     checked_id(record["id"])
+    if "owner" in record:
+        owner = record["owner"]
+        if (
+            not isinstance(owner, dict)
+            or set(owner) != {"policy_sha256", "session_id"}
+            or not isinstance(owner["policy_sha256"], str)
+            or not SHA_PATTERN.fullmatch(owner["policy_sha256"])
+        ):
+            raise ValueError("Interchanged job owner is invalid")
+        if owner["session_id"] is not None:
+            checked_id(owner["session_id"])
     checked_text(record.get("operation"), "Job operation", 64)
     checked_text(record.get("request_key"), "Submission key", 160)
     fingerprint = _sha256_bytes(
@@ -944,6 +978,15 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if result.get("kind") == "perinuclear-enrichment" or "perinuclear" in provenance:
+        from .research_perinuclear import validate_parent, validate_record, validate_source
+
+        validate_record(result)
+        parent = results.get(provenance["parent_result"]["result_id"])
+        if parent is None:
+            raise ValueError("Perinuclear nucleus input is missing")
+        validate_parent(result, parent)
+        validate_source(result, sources[result["source_id"]])
     if "exploration" in provenance:
         from .research_exploration import validate_exploration_receipt
 
@@ -1530,6 +1573,15 @@ def import_project(
                     raise ValueError("Study artifact failed its manifest hash")
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
+            for result in results:
+                if "perinuclear" in result["provenance"]:
+                    from .research_perinuclear import validate_arrays
+
+                    validate_arrays(
+                        result,
+                        {name: project.load_array(item) for name, item in result["arrays"].items()},
+                        parent=result_by_id[result["provenance"]["parent_result"]["result_id"]],
+                    )
             from .research_correction_effect import validate_document as validate_effect_document
 
             for document in documents:
@@ -1714,7 +1766,17 @@ def relink_interchanged_source(
         raise ValueError("Imported source kind is unsupported")
     if actual != source["sha256"] or size != source["size_bytes"]:
         raise ValueError("Relink rejected: selected bytes do not exactly match the source")
-    if canonical_json(actual_metadata) != canonical_json(source.get("metadata")):
+    saved_metadata = source.get("metadata")
+    if (
+        isinstance(saved_metadata, dict)
+        and "palette" not in saved_metadata
+        and actual_metadata.get("palette") is None
+    ):
+        # Before palette support, non-palette sources omitted this optional key.
+        # Compare without that absent/None difference only; never omit a real LUT
+        # interpretation or rewrite the saved scientific metadata.
+        actual_metadata = {key: value for key, value in actual_metadata.items() if key != "palette"}
+    if canonical_json(actual_metadata) != canonical_json(saved_metadata):
         raise ValueError(
             "Relink rejected: inspected shape, calibration, or metadata differs from the study"
         )

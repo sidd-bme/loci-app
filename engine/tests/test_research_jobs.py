@@ -138,3 +138,38 @@ def test_invalid_job_state_is_rejected(task, changes):
     job = submit_job(workbench, request, "validation")
     with pytest.raises(ValueError):
         workbench.project.update_job(job["id"], expected_state="queued", state="running", **changes)
+
+
+def test_cancellation_preserves_job_that_finishes_after_lookup(task, monkeypatch):
+    wb, request = task
+    job = submit_job(wb, request, "completion-race")
+    original = wb.project.update_job
+
+    def finish_before_cancel(job_id, **changes):
+        original(job_id, expected_state="queued", state="failed", error="Worker stopped")
+        return original(job_id, **changes)
+
+    monkeypatch.setattr(wb.project, "update_job", finish_before_cancel)
+    completed = cancel_job(wb.project, job["id"])
+    assert completed["state"] == "failed"
+    assert completed["cancel_requested"] is False
+    assert completed["error"] == "Worker stopped"
+
+
+def test_cancellation_follows_job_claimed_after_lookup(task, monkeypatch):
+    wb, request = task
+    job = submit_job(wb, request, "claim-race")
+    original = wb.project.update_job
+    claimed = False
+
+    def claim_before_cancel(job_id, **changes):
+        nonlocal claimed
+        if not claimed:
+            claimed = True
+            original(job_id, expected_state="queued", state="running", pid=os.getpid())
+        return original(job_id, **changes)
+
+    monkeypatch.setattr(wb.project, "update_job", claim_before_cancel)
+    cancelled = cancel_job(wb.project, job["id"])
+    assert cancelled["state"] == "running"
+    assert cancelled["cancel_requested"] is True

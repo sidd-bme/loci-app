@@ -300,6 +300,8 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:vision-handoff", request, sourceSha256),
   createAgentAccess: (request) =>
     ipcRenderer.invoke("loci-research:agent-access", request),
+  controlAgentSession: (request) =>
+    ipcRenderer.invoke("loci-research:agent-session-control", request),
   importModel: (workingBytes, recoveryModelId) =>
     ipcRenderer.invoke("loci-research:import-model", workingBytes, recoveryModelId),
   createStudy: () => ipcRenderer.invoke("loci-research:create"),

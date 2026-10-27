@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LociDesktopApi, SegmentationProfile, SegmentationSettings } from "../shared/contracts";
@@ -110,20 +111,72 @@ function researchApi(execute = vi.fn().mockResolvedValue({ result })): ResearchD
 function renderPanel({
   api = researchApi(), activeSource = source, activeSelection = selection,
   onBusy = vi.fn(), onError = vi.fn(), onResult = vi.fn().mockResolvedValue(undefined),
-  onBatchConfiguration = vi.fn(),
+  onBatchConfiguration = vi.fn(), onSegmentationChannel = vi.fn(), busy = false, inputUnavailable = false,
 }: {
   api?: ResearchDesktopApi; activeSource?: ResearchSource; activeSelection?: ResearchSelection;
+  onSegmentationChannel?: (channel: number) => void; busy?: boolean; inputUnavailable?: boolean;
   onBusy?: (value: string | null) => void; onError?: (value: string) => void;
   onResult?: (value: ResearchResult) => Promise<void>;
   onBatchConfiguration?: Parameters<typeof ResearchAdaptivePanel>[0]["onBatchConfiguration"];
 } = {}) {
   render(<ResearchAdaptivePanel api={api} source={activeSource} selection={activeSelection}
-    busy={false} onBusy={onBusy} onError={onError} onResult={onResult}
+    busy={busy} inputUnavailable={inputUnavailable} onSegmentationChannel={onSegmentationChannel} onBusy={onBusy} onError={onError} onResult={onResult}
     onBatchConfiguration={onBatchConfiguration} />);
-  return { api, onBusy, onError, onResult, onBatchConfiguration };
+  return { api, onBusy, onError, onResult, onBatchConfiguration, onSegmentationChannel };
 }
 
 describe("ResearchAdaptivePanel", () => {
+  it("selects a named scalar input and measures that exact raw channel", async () => {
+    installNative();
+    const execute = vi.fn().mockResolvedValue({ result }), onError = vi.fn(), onBusy = vi.fn(), onResult = vi.fn();
+    const adaptiveApi = researchApi(execute);
+    function Controlled() {
+      const [plane, setPlane] = useState({ ...selection, c: 0 });
+      return <ResearchAdaptivePanel api={adaptiveApi} source={source} selection={plane} busy={false}
+        channelNames={["Recorded GFP", "Declared DNA", "Reference"]}
+        onSegmentationChannel={(channel) => setPlane((old) => ({ ...old, c: channel }))}
+        onBusy={onBusy} onError={onError} onResult={onResult} />;
+    }
+    render(<Controlled />);
+    const input = screen.getByRole("combobox", { name: "Segmentation input" });
+    input.focus(); expect(input).toHaveFocus();
+    expect(screen.getByRole("option", { name: "2: Declared DNA" })).toHaveValue("1");
+    fireEvent.change(input, { target: { value: "1" } });
+    expect(input).toHaveValue("1");
+    for (const value of ["", "-1", "99", "1.5"]) {
+      fireEvent.change(input, { target: { value } });
+      expect(input).toHaveValue("1");
+    }
+    expect(screen.getByText("Raw source channel · T 2 · Z 3")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("classical_run", expect.objectContaining({ selection, measurement_channels: [1] })));
+  });
+
+  it.each(["busy", "unavailable", "relink"])("blocks input changes while %s", async (guard) => {
+    installNative();
+    const view = renderPanel({ busy: guard === "busy", inputUnavailable: guard === "unavailable",
+      activeSource: guard === "relink" ? { ...source, locator_state: "relink-required" } : source });
+    const input = screen.getByRole("combobox", { name: "Segmentation input" });
+    expect(input).toBeDisabled();
+    fireEvent.change(input, { target: { value: "2" } });
+    expect(view.onSegmentationChannel).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: guard === "busy" ? "Running…" : "Segment image" })).toBeDisabled();
+  });
+
+  it("keeps a single scalar channel explicit without inventing additional channels", async () => {
+    installNative();
+    const single = { ...source, metadata: { ...source.metadata, dimensions: { ...source.metadata.dimensions!, c: 1 }, channel_names: undefined } };
+    const view = renderPanel({ activeSource: single, activeSelection: { ...selection, c: 0 } });
+    const input = screen.getByRole("combobox", { name: "Segmentation input" });
+    expect(input).toHaveValue("0");
+    expect(input.querySelectorAll("option")).toHaveLength(1);
+    expect(screen.getByRole("option", { name: "1: Channel 1" })).toHaveValue("0");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
+    await waitFor(() => expect(view.api.execute).toHaveBeenCalledWith("classical_run", expect.objectContaining({ measurement_channels: [0], selection: { ...selection, c: 0 } })));
+  });
+
   it("loads every setting from the established eight-setting profile contract", async () => {
     const native = installNative();
     renderPanel();
@@ -189,11 +242,11 @@ describe("ResearchAdaptivePanel", () => {
     expect(onBusy).toHaveBeenLastCalledWith(null);
   });
 
-  it("does not treat interleaved RGB components as biological measurement channels", async () => {
+  it.each(["RGB", "RGBA"])("does not treat interleaved %s components as biological measurement channels", async (semantics) => {
     installNative();
     const rgbSource: ResearchSource = {
       ...source, id: "e".repeat(32), name: "RGB source",
-      metadata: { ...source.metadata, sample_semantics: "RGB" },
+      metadata: { ...source.metadata, sample_semantics: semantics },
     };
     const rgbResult = { ...result, source_id: rgbSource.id };
     const execute = vi.fn().mockResolvedValue({ result: rgbResult });
@@ -201,6 +254,7 @@ describe("ResearchAdaptivePanel", () => {
     renderPanel({ api: researchApi(execute), activeSource: rgbSource, onBatchConfiguration });
 
     expect(await screen.findByText(/Input: RGB-derived grayscale/)).toBeVisible();
+    expect(screen.queryByRole("combobox", { name: "Segmentation input" })).not.toBeInTheDocument();
     await waitFor(() => expect(onBatchConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
       measurementChannels: [],
     })));
@@ -322,6 +376,7 @@ describe("ResearchAdaptivePanel", () => {
         source={source}
         selection={selection}
         busy={true}
+        onSegmentationChannel={vi.fn()}
         onBusy={vi.fn()}
         onError={vi.fn()}
         onResult={vi.fn()}

@@ -398,5 +398,13 @@ describe("preload research batch bridge", () => {
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(
       "loci-research:review-package-export", bindings, { rootLabel: "Synthetic RGB collection" },
     );
+    await researchApi.controlAgentSession!({
+      action: "approve_request",
+      approval_id: "1".repeat(32),
+    });
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(
+      "loci-research:agent-session-control",
+      { action: "approve_request", approval_id: "1".repeat(32) },
+    );
   });
 });

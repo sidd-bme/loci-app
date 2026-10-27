@@ -8,6 +8,12 @@ export interface SourceDisplayDefaults {
   basis: unknown;
 }
 
+/** Interleaved RGB has one tone curve; its logical C follows the selected plane. */
+export function rgbChannelsForPlane(channels: ViewerChannel[], rgb: boolean, c: number): ViewerChannel[] {
+  if (!rgb || channels.length !== 1 || channels[0].channel === c) return channels;
+  return [{ ...channels[0], channel: c }];
+}
+
 /** Fill only missing scalar acquisition ranges, using the engine's bounded,
  * deterministic whole-image sample. Saved settings and RGB rendering win. */
 export async function initialSourceDisplay(

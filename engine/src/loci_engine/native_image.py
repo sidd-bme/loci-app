@@ -17,7 +17,7 @@ import re
 import stat
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -281,6 +281,16 @@ class NativeCapabilities:
 
 
 @dataclass(frozen=True, slots=True)
+class NativePaletteInfo:
+    """Exact source-index to RGB interpretation, bound by the source fingerprint."""
+
+    stored_index_dtype: str
+    lookup_dtype: Literal["uint16"] = "uint16"
+    lookup_policy: Literal["actual-IFD-ColorMap"] = "actual-IFD-ColorMap"
+    expansion: Literal["exact-RGB-lookup-no-normalization"] = "exact-RGB-lookup-no-normalization"
+
+
+@dataclass(frozen=True, slots=True)
 class NativeImageMetadata:
     """Path-redacted source metadata with a full-file integrity fingerprint."""
 
@@ -304,6 +314,7 @@ class NativeImageMetadata:
     plane_times: tuple[NativePlaneTime, ...] = ()
     acquisition_display: tuple[NativeChannelDisplay, ...] = ()
     rgb_color_policy: NativeRgbColorPolicy | None = None
+    palette: NativePaletteInfo | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1231,6 +1242,32 @@ def _tiff_keyframe(page: tifffile.TiffPage | tifffile.TiffFrame) -> tifffile.Tif
     return page.keyframe if isinstance(page, tifffile.TiffFrame) else page
 
 
+def _tiff_actual_page(page: tifffile.TiffPage | tifffile.TiffFrame) -> tifffile.TiffPage:
+    # Frames share a decoding keyframe, including its ColorMap and Orientation.
+    # Those tags can differ between logical channels: consult the actual IFD.
+    return page.aspage() if isinstance(page, tifffile.TiffFrame) else page
+
+
+def _tiff_palette(page: tifffile.TiffPage) -> np.ndarray:
+    dtype = np.dtype(page.dtype)
+    bits = page.bitspersample
+    if (
+        dtype not in {np.dtype("uint8"), np.dtype("uint16")}
+        or bits not in {8, 16}
+        or bits != dtype.itemsize * 8
+        or page.samplesperpixel != 1
+        or page.planarconfig != 1
+    ):
+        raise NativeImageError("Palette TIFF requires one unsigned 8- or 16-bit index sample.")
+    tag = page.tags.get("ColorMap")
+    if tag is None or int(tag.dtype) != 3 or int(tag.count) != 3 * (1 << bits):
+        raise NativeImageError("Palette TIFF requires a complete unsigned 16-bit RGB ColorMap.")
+    palette = np.asarray(tag.value)
+    if palette.dtype != np.uint16 or palette.shape != (3, 1 << bits):
+        raise NativeImageError("Palette TIFF has an invalid RGB ColorMap layout.")
+    return palette
+
+
 def _tiff_page_layout(
     series: tifffile.TiffPageSeries, owner: tifffile.TiffFile
 ) -> tuple[int, bool, str]:
@@ -1251,7 +1288,7 @@ def _tiff_page_layout(
         )
     first = pages[0]
     assert first is not None
-    first_keyframe = _tiff_keyframe(first)
+    first_keyframe = _tiff_actual_page(first)
     page_axes = str(first_keyframe.axes)
     if set(page_axes) - set("YXS") or "Y" not in page_axes or "X" not in page_axes:
         raise NativeImageError("A TIFF plane contains unsupported non-spatial page axes.")
@@ -1264,6 +1301,7 @@ def _tiff_page_layout(
         tifffile.PHOTOMETRIC.MINISBLACK,
         tifffile.PHOTOMETRIC.MINISWHITE,
         tifffile.PHOTOMETRIC.RGB,
+        tifffile.PHOTOMETRIC.PALETTE,
     }:
         name = getattr(photometric, "name", str(photometric))
         raise NativeImageError(f"Native TIFF reads do not support {name} photometric data.")
@@ -1274,7 +1312,14 @@ def _tiff_page_layout(
         raise NativeImageError("Only RGB TIFF data may use a sample axis in native reads.")
     for page in pages:
         assert page is not None
-        keyframe = _tiff_keyframe(page)
+        keyframe = _tiff_actual_page(page)
+        orientation = keyframe.tags.get("Orientation")
+        if orientation is not None and int(orientation.value) != 1:
+            raise NativeImageError("Native rectangular reads currently require TIFF Orientation 1.")
+        if keyframe.shape != first_keyframe.shape or keyframe.axes != first_keyframe.axes:
+            raise NativeImageError("TIFF plane layout varies within a level.")
+        if photometric == tifffile.PHOTOMETRIC.PALETTE:
+            _tiff_palette(keyframe)
         if np.dtype(keyframe.dtype) != np.dtype(first_keyframe.dtype) or (
             keyframe.photometric != photometric
         ):
@@ -1554,6 +1599,11 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
             # cannot establish specimen spacing, including in an OME-TIFF that
             # has no PhysicalSize declaration. Keep such sources in pixels.
 
+            palette = NativePaletteInfo(str(dtype)) if photometric == "PALETTE" else None
+            stored_dimensions = dimensions
+            if palette is not None:
+                dimensions = replace(dimensions, s=3)
+                dtype = np.dtype("uint16")
             native_levels: list[NativeLevel] = []
             any_tiled = tiled
             for index, level in enumerate(series.levels):
@@ -1564,12 +1614,20 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
                     raise NativeImageError("TIFF pyramid axes vary between resolution levels.")
                 level_dimensions = _canonical_dimensions(level_axes, level_shape)
                 if (level_dimensions.t, level_dimensions.c, level_dimensions.s) != (
-                    dimensions.t,
-                    dimensions.c,
-                    dimensions.s,
+                    stored_dimensions.t,
+                    stored_dimensions.c,
+                    stored_dimensions.s,
                 ):
                     raise NativeImageError("TIFF T, C, or sample dimensions vary between levels.")
-                _, level_tiled, _ = _tiff_page_layout(level, tif)
+                _, level_tiled, level_photometric = _tiff_page_layout(level, tif)
+                if level_photometric != photometric or np.dtype(level.dtype) != np.dtype(
+                    series.dtype
+                ):
+                    raise NativeImageError(
+                        "TIFF type or photometric meaning varies between levels."
+                    )
+                if palette is not None:
+                    level_dimensions = replace(level_dimensions, s=3)
                 any_tiled = any_tiled or level_tiled
                 native_levels.append(
                     NativeLevel(
@@ -1585,8 +1643,10 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
             elif dimensions.s == 4:
                 sample_semantics = "RGBA"
             format_name = "OME-TIFF" if tif.is_ome else "BigTIFF" if tif.is_bigtiff else "TIFF"
-            modes = ["tiff-segments"]
-            if all(page is not None and page.is_memmappable for page in series.pages):
+            modes = ["tiff-palette-segments" if palette is not None else "tiff-segments"]
+            if palette is None and all(
+                page is not None and page.is_memmappable for page in series.pages
+            ):
                 modes.insert(0, "tiff-memmap")
             return NativeImageMetadata(
                 format=format_name,
@@ -1612,6 +1672,7 @@ def _inspect_tiff(path: Path, sha256: str, series_index: int) -> NativeImageMeta
                     tiled=any_tiled,
                     read_modes=tuple(modes),
                 ),
+                palette=palette,
                 timing=timing,
                 plane_positions=plane_positions,
                 plane_times=plane_times,
@@ -1806,8 +1867,14 @@ def _read_tiff_segments(
     page = series.pages[page_index]
     if page is None:
         raise NativeImageError("The selected TIFF plane is missing.")
+    palette = None
+    if metadata.palette is not None:
+        page = _tiff_actual_page(page)
+        if page.photometric != tifffile.PHOTOMETRIC.PALETTE:
+            raise NativeImageError("The selected TIFF plane is no longer palette data.")
+        palette = _tiff_palette(page)
     dtype = _validate_dtype(page.dtype, context="TIFF plane")
-    samples = metadata.dimensions.s
+    samples = 1 if palette is not None else metadata.dimensions.s
     output_shape = (
         (selection.height, selection.width, samples)
         if samples > 1
@@ -1853,6 +1920,10 @@ def _read_tiff_segments(
         raise NativeImageError("No TIFF segments cover the requested rectangle.")
     coverage_bytes = math.prod(output_shape)
     estimated_peak = output_bytes + coverage_bytes + largest_working
+    if palette is not None:
+        # Indices, RGB output, one component lookup temporary, coverage, LUT,
+        # and encoded/decoded strip scratch are all admitted before pixel I/O.
+        estimated_peak += selection.width * selection.height * 8 + palette.nbytes
     _require_budget(estimated_peak, selection.budget_bytes)
     output = np.empty(output_shape, dtype=dtype)
     coverage = np.zeros(output_shape, dtype=np.bool_)
@@ -1892,8 +1963,15 @@ def _read_tiff_segments(
             coverage[target + (separate_sample,)] = True
         else:
             raise NativeImageError("The TIFF segment has an inconsistent sample layout.")
+        # Do not retain the previous strip while allocating the next one.
+        del source, decoded, encoded
     if not coverage.all():
         raise NativeImageError("TIFF segments do not completely cover the requested rectangle.")
+    if palette is not None:
+        rgb = np.empty((selection.height, selection.width, 3), dtype=np.uint16)
+        for component in range(3):
+            rgb[..., component] = palette[component, output]
+        return rgb, "tiff-palette-segments:YXS", estimated_peak
     axes = "YXS" if samples > 1 else "YX"
     return output, f"tiff-segments:{axes}", estimated_peak
 
@@ -1906,7 +1984,7 @@ def _read_tiff(
             series = tif.series[selection.series].levels[selection.level]
             page_index = _series_plane_index(metadata.source_axes, tuple(series.shape), selection)
             page = series.pages[page_index]
-            if page is not None and page.is_memmappable:
+            if metadata.palette is None and page is not None and page.is_memmappable:
                 try:
                     return _read_tiff_memmap(path, metadata, selection)
                 except NativeImageError:

@@ -98,7 +98,12 @@ def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
 
 
 def submit_job(
-    workbench: Workbench, request: dict[str, Any], key: str, operation: str = "run_recipe"
+    workbench: Workbench,
+    request: dict[str, Any],
+    key: str,
+    operation: str = "run_recipe",
+    *,
+    owner: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if operation not in TASK_OPERATIONS:
         raise ValueError("Unknown local task operation")
@@ -136,6 +141,7 @@ def submit_job(
             raise ValueError("Task request must be an object")
         if operation in {
             "correct_result",
+            "perinuclear_run",
             "roi_add",
             "roi_import",
             "correct_tracks",
@@ -220,21 +226,31 @@ def submit_job(
             source_id = request.get("source_id")
         workbench.project.source(source_id, verify=True)
         normalized = {"source_id": source_id, "task_request": request}
-    return public_job(workbench.project.submit(operation, normalized, key))
+    return public_job(workbench.project.submit(operation, normalized, key, owner=owner))
 
 
 def cancel_job(project: ResearchProject, job_id: str) -> dict[str, Any]:
     job = project.job(job_id)
     if job["state"] not in {"running", "queued"}:
         return public_job(job)
-    return public_job(
-        project.update_job(
-            job_id,
-            expected_state=job["state"],
-            cancel_requested=True,
-            state="cancelled" if job["state"] == "queued" else "running",
+    try:
+        return public_job(
+            project.update_job(
+                job_id,
+                expected_state=job["state"],
+                cancel_requested=True,
+                state="cancelled" if job["state"] == "queued" else "running",
+            )
         )
-    )
+    except ValueError:
+        current = project.job(job_id)
+        if job["state"] == "queued" and current["state"] == "running":
+            # A worker claimed the job; the state machine cannot return to queued.
+            return cancel_job(project, job_id)
+        if current["state"] not in {"queued", "running"}:
+            # Publication/completion won the race; never rewrite a terminal job.
+            return public_job(current)
+        raise
 
 
 def run_job(
@@ -246,6 +262,18 @@ def run_job(
 ) -> dict[str, Any]:
     project = workbench.project
     job = project.job(job_id)
+    if job.get("owner") is not None:
+        from .agent_sessions import require_session_authority
+
+        prior_guard = publication_guard
+
+        def guard_owned_job() -> None:
+            if prior_guard is not None:
+                prior_guard()
+            require_session_authority(project, **job["owner"])
+
+        publication_guard = guard_owned_job
+        publication_guard()
     if job["state"] != "queued":
         if job["state"] == "succeeded" and job["operation"] == "workflow_run":
             from .research_workflow import _recover_run

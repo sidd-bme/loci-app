@@ -36,7 +36,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
 }) {
   const dimensions = source.metadata.dimensions ?? { x: source.metadata.shape?.at(-1) ?? 1,
     y: source.metadata.shape?.at(-2) ?? 1, z: source.metadata.shape?.length === 3 ? source.metadata.shape[0] : 1, t: 1, c: 1 };
-  const rgbMaximum = source.metadata.channel_dtypes?.[0] === "uint16" ? 65535 : 255;
+  const rgbMaximum = source.metadata.channel_dtypes?.[selection.c] === "uint16" ? 65535 : 255;
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const volumeUnavailable = rawVolumeUnavailableReason(source);
   const volumeAction = interpretation === "volume" || interpretation === "medical" && dimensions.z > 1;
@@ -57,13 +57,14 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
     const token = ++histogramToken.current;
     setHistogram(null); setHistogramError(null);
     if (!api || !histogramRequested || playing) return;
-    void api.execute("viewer_histogram", { source_id: source.id, t: selection.t, z: selection.z, bins: 256 })
+    void api.execute("viewer_histogram", { source_id: source.id, t: selection.t, z: selection.z,
+      ...(rgb ? { c: selection.c } : {}), bins: 256 })
       .then((value) => {
-        const output = checkedHistogram(value, source, selection.t, selection.z);
+        const output = checkedHistogram(value, source, selection.t, selection.z, selection.c);
         if (histogramToken.current === token) setHistogram(output);
       }).catch(() => { if (histogramToken.current === token) setHistogramError("The histogram is unavailable for this source plane."); });
     return () => { if (histogramToken.current === token) histogramToken.current++; };
-  }, [api, source.id, source.sha256, selection.t, selection.z, histogramRequested, playing]);
+  }, [api, source.id, source.sha256, selection.t, selection.z, selection.c, rgb, histogramRequested, playing]);
   const [mappingDraft, setMappingDraft] = useState<[number, number, number]>(rgbMapping ?? [0, 1, 2]);
   useEffect(() => { setMappingDraft(rgbMapping ?? [0, 1, 2]); }, [source.id, rgbMapping]);
   useEffect(() => { setPlaying(false); }, [source.id]);
@@ -126,7 +127,8 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
   const histogramFor = (channel: ViewerChannel, globalRgb = false) => {
     if (!api) return null;
     const current = histogram?.source_id === source.id && histogram.source_sha256 === source.sha256 &&
-      histogram.sample.t === selection.t && histogram.sample.z === selection.z ? histogram : null;
+      histogram.sample.t === selection.t && histogram.sample.z === selection.z &&
+      (!rgb || histogram.sample.c === selection.c) ? histogram : null;
     const records = current?.histograms.filter((record) => globalRgb ? record.component < 3 : record.component === channel.channel) ?? [];
     const label = globalRgb ? "RGB tone" : `Channel ${channel.channel + 1}`;
     return <details className="source-histogram-disclosure" onToggle={(event) => { if (event.currentTarget.open) setHistogramRequested(true); }}>
@@ -138,7 +140,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
           const nextHigh = globalRgb ? Math.min(rgbMaximum, high) : high;
           if (nextHigh > nextLow) update(channel.channel, { low: nextLow, high: nextHigh });
         }} />
-        <p className="source-histogram-basis">{globalRgb ? "Stored RGB component values" : "Native scalar values"} · {current!.sample.sample_count_per_component.toLocaleString()} samples per component · Z {current!.sample.z + 1}, T {current!.sample.t + 1}, level {current!.sample.level}. Full-plane sample; unchanged by pan or zoom.{projection !== "plane" && " This histogram describes the selected plane, not the Z projection."}</p></>
+        <p className="source-histogram-basis">{globalRgb ? source.metadata.palette ? "Palette lookup RGB values" : "Stored RGB component values" : "Native scalar values"} · {current!.sample.sample_count_per_component.toLocaleString()} samples per component · {globalRgb && `C ${selection.c + 1}, `}Z {current!.sample.z + 1}, T {current!.sample.t + 1}, level {current!.sample.level}. Full-plane sample; unchanged by pan or zoom.{projection !== "plane" && " This histogram describes the selected plane, not the Z projection."}</p></>
         : <p className="source-histogram-basis" role="status">{playing ? "Pause playback to inspect this plane's histogram." : histogramError ?? "Reading a stable image sample…"}</p>}
     </details>;
   };
@@ -154,6 +156,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
           <dt>Axes</dt><dd>{source.metadata.axes ?? "Source grid"}</dd>
           <dt>Channels / samples</dt><dd>{dimensions.c} {rgb ? `· ${source.metadata.sample_semantics} samples` : "scalar channels"}</dd>
           <dt>Depth / time</dt><dd>{dimensions.z} Z · {dimensions.t} T</dd>
+          {source.metadata.palette && <><dt>Colour storage</dt><dd>{source.metadata.palette.stored_index_dtype} palette indices, expanded through the source lookup table to uint16 RGB. Scalar fluorescence measurements are unavailable for these colour values.</dd></>}
           <dt>Calibration</dt><dd>{source.metadata.physical_calibration?.spacing?.map((value) => value.toLocaleString(undefined, { maximumSignificantDigits: 6 })).join(" × ") ?? "Not recorded"} {source.metadata.physical_calibration?.unit ?? ""}</dd></dl>
         <label>Open as <select aria-label="Open as" value={interpretation} onChange={(event) => onInterpretation(event.target.value as SourceInterpretation)}>
           <option value="auto">Automatic</option><option value="generic">Generic image</option>
@@ -185,27 +188,32 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       {volumeAction && volumeUnavailable && <small>{volumeUnavailable}</small>}
       {interpretation === "medical" && <small>{source.metadata.geometry?.frame ? `${source.metadata.geometry.frame} · source world coordinates` : "No patient coordinate frame is recorded; research display uses source axes."}</small>}
     </div>}
-    {(dimensions.z > 1 || dimensions.t > 1) && <div className="source-axes">
+    {(dimensions.z > 1 || dimensions.t > 1 || (rgb && dimensions.c > 1)) && <div className="source-axes">
+      {rgb && dimensions.c > 1 && <label>Image channel<select aria-label="Image channel" value={selection.c}
+        onChange={(event) => onSelection({ ...selection, c: Number(event.target.value) })}>
+        {Array.from({ length: dimensions.c }, (_, c) => <option key={c} value={c}>{source.metadata.channel_names?.[c] || `Channel ${c + 1}`}</option>)}
+      </select></label>}
       {dimensions.z > 1 && <label><span>Z <output>{selection.z + 1} / {dimensions.z}</output></span><input aria-label="Z plane" type="range" min={0} max={dimensions.z - 1} value={selection.z} onChange={(event) => onSelection({ ...selection, z: Number(event.target.value) })} /></label>}
       {dimensions.t > 1 && <label><span>Time <output>{selection.t + 1} / {dimensions.t}</output><button onClick={() => setPlaying((value) => !value)}>{playing ? "Pause" : "Play"}</button></span><input aria-label="Time frame" type="range" min={0} max={dimensions.t - 1} value={selection.t} onChange={(event) => { setPlaying(false); onSelection({ ...selection, t: Number(event.target.value) }); }} /></label>}
       {dimensions.z > 1 && <label>View <select aria-label="Display scope" value={projection} onChange={(event) => {
         const next = event.target.value as typeof projection; onProjection(next);
         const { z_stop: _stop, ...plane } = selection;
         onSelection(next === "plane" ? plane : { ...plane, z: 0, z_stop: dimensions.z });
-      }}><option value="plane">Single plane</option><option value="max">Maximum projection</option><option value="mean">Mean projection</option></select></label>}
+      }}><option value="plane">Single plane</option><option value="max" disabled={rgb}>Maximum projection</option><option value="mean" disabled={rgb}>Mean projection</option></select></label>}
+      {rgb && dimensions.z > 1 && <small>Colour images display one Z plane at a time.</small>}
       {projection !== "plane" && <small>Z {selection.z + 1}–{selection.z_stop} · display projection</small>}
     </div>}
     {rgb ? <><div className="source-channel-heading"><h2>Image tone</h2><div className="source-tone-actions"><button title="Automatically adjust tone for this histology or RGB image" onClick={() => onAuto()}>Auto</button><button title="Restore the source RGB display" onClick={onReset}>Reset</button></div></div>
       <p className="source-colour-policy">One tone curve for all RGB components. Embedded profiles are applied once.</p>
       {channels[0] && <div className="source-tone-settings">
         {histogramFor(channels[0], true)}
-        <label>Black point<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB black point" minimum={0} maximum={rgbMaximum} rejectionHint="Black point must be below white point." value={channels[0].low ?? 0} onValue={(low) => {
-          if (low >= (channels[0].high ?? rgbMaximum)) return false; update(0, { low }); return true;
-        }} /></label><label>White point<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB white point" minimum={0} maximum={rgbMaximum} rejectionHint="White point must be above black point." value={channels[0].high ?? rgbMaximum} onValue={(high) => {
-          if (high <= (channels[0].low ?? 0)) return false; update(0, { high }); return true;
-        }} /></label><label>Gamma<NumberSetting key={`${source.id}:${source.sha256}`} label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
-          onValue={(gamma) => { update(0, { gamma }); return true; }} /></label>
-        <label>Gamma slider<input aria-label="RGB gamma slider" type="range" min={0.1} max={5} step={0.05} value={Math.min(5, channels[0].gamma)} onChange={(event) => update(0, { gamma: Number(event.target.value) })} /></label>
+        <label>Black point<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB black point" minimum={0} maximum={rgbMaximum} rejectionHint="Black point must be below white point." value={channels[0].low ?? 0} onValue={(low) => {
+          if (low >= (channels[0].high ?? rgbMaximum)) return false; update(channels[0].channel, { low }); return true;
+        }} /></label><label>White point<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB white point" minimum={0} maximum={rgbMaximum} rejectionHint="White point must be above black point." value={channels[0].high ?? rgbMaximum} onValue={(high) => {
+          if (high <= (channels[0].low ?? 0)) return false; update(channels[0].channel, { high }); return true;
+        }} /></label><label>Gamma<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
+          onValue={(gamma) => { update(channels[0].channel, { gamma }); return true; }} /></label>
+        <label>Gamma slider<input aria-label="RGB gamma slider" type="range" min={0.1} max={5} step={0.05} value={Math.min(5, channels[0].gamma)} onChange={(event) => update(channels[0].channel, { gamma: Number(event.target.value) })} /></label>
       </div>}</> : <>
       <div className="source-channel-heading">
         <h2>{rgbMapping ? "Declared RGB planes" : "Channels"}</h2>
@@ -276,7 +284,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
         <label>Depth<select aria-label="Analysis depth" value={selection.z_stop === undefined ? "plane" : "volume"} onChange={(event) => {
           const { z_stop: _stop, ...plane } = selection;
           onSelection(event.target.value === "plane" ? plane : { ...plane, z_stop: dimensions.z });
-        }}><option value="plane">One plane</option><option value="volume">Z range</option></select></label>
+        }}><option value="plane">One plane</option><option value="volume" disabled={rgb}>Z range</option></select></label>
         {selection.z_stop !== undefined && <label>Stop Z (exclusive)<NumberSetting key={`${source.id}:${source.sha256}`} integer label="Z stop" value={selection.z_stop}
           minimum={selection.z + 1} maximum={dimensions.z} onValue={(z_stop) => { onSelection({ ...selection, z_stop }); return true; }} /></label>}
       </>}

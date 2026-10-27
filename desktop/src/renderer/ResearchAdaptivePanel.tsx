@@ -2,17 +2,21 @@ import { useEffect, useMemo, useState } from "react";
 import type { SegmentationProfile, SegmentationSettings } from "../shared/contracts";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { Setting } from "./ResearchCellposePanel";
+import { SegmentationInputControl } from "./SegmentationInputControl";
 import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
 
 export interface ResearchAdaptiveBatchConfiguration {
   configuredSourceId: string; profileId: "loci-classical"; settings: SegmentationSettings;
   measurementChannels: number[]; workingBytes: number;
 }
-export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange }: {
+export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, onError, onResult, onBatchConfiguration, workingBytes, onWorkingBytesChange, onSegmentationChannel, inputUnavailable = false, channelNames }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; busy: boolean;
   onBusy: (message: string | null) => void; onError: (message: string) => void;
   onResult: (result: ResearchResult) => Promise<void>;
   onBatchConfiguration?: (configuration: ResearchAdaptiveBatchConfiguration | null) => void;
+  onSegmentationChannel: (channel: number) => void;
+  inputUnavailable?: boolean;
+  channelNames?: string[];
   workingBytes?: number;
   onWorkingBytesChange?: (bytes: number) => void;
 }) {
@@ -28,9 +32,10 @@ export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, on
   };
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const bad = Object.values(invalid).some(Boolean);
+  const unavailable = inputUnavailable || source.locator_state === "relink-required";
   const configuration = useMemo(
     () =>
-      settings && !bad && selection.z_stop === undefined
+      settings && !bad && !unavailable && selection.z_stop === undefined
         ? {
             configuredSourceId: source.id,
             profileId: "loci-classical" as const,
@@ -39,7 +44,7 @@ export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, on
             workingBytes: currentWorkingBytes,
           }
         : null,
-    [bad, currentWorkingBytes, rgb, selection.c, selection.z_stop, settings, source.id],
+    [bad, unavailable, currentWorkingBytes, rgb, selection.c, selection.z_stop, settings, source.id],
   );
   useEffect(() => {
     let active = true;
@@ -68,7 +73,9 @@ export function ResearchAdaptivePanel({ api, source, selection, busy, onBusy, on
     finally { onBusy(null); }
   };
   return <div className="research-panel adaptive-panel">
-    <p>{rgb ? "Input: RGB-derived grayscale" : `Input: Channel ${selection.c + 1}`} · Z {selection.z + 1}, T {selection.t + 1}</p>
+    {rgb ? <p>Input: RGB-derived grayscale · Z {selection.z + 1}, T {selection.t + 1}</p> :
+      <SegmentationInputControl channelCount={source.metadata.dimensions?.c ?? 1} channelNames={channelNames ?? source.metadata.channel_names}
+        selection={selection} disabled={busy || unavailable} onChange={onSegmentationChannel} />}
     {selection.z_stop !== undefined && <p>Adaptive Watershed works on one 2D plane. Choose Classical methods for volumetric segmentation.</p>}
     {profile && settings ? <>
       <div className="research-grid">{profile.settingsContract.map((definition) => <Setting key={`${epoch}:${definition.key}`}

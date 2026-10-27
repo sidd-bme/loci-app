@@ -199,7 +199,7 @@ def validate_binding(wb, grant, sources, recipes, runtimes, memory_bytes, *, ini
 
 
 def authorize(agent, wb, key, operation):
-    agent.policy.recheck()
+    agent._recheck_session()
     grant = agent.policy.remote_grants.get(key)
     if grant is None or operation not in grant["operations"]:
         raise PermissionError("Remote grant or operation is not authorized")
@@ -375,7 +375,13 @@ class RemoteSupervisor:
         job = project.submit(
             "agent_remote_" + operation,
             request,
-            "agent-remote:" + policy.content_sha256 + ":" + operation,
+            "agent-remote:"
+            + policy.content_sha256
+            + ":"
+            + operation
+            + ":"
+            + (self.agent.session_id or "direct"),
+            owner=self.agent.job_owner,
         )
         with self.agent.supervisor._lock, self._lock:
             reconcile_jobs(project)
@@ -390,6 +396,7 @@ class RemoteSupervisor:
                     for item in project.list_jobs()
                     if item["operation"] == "agent_remote_" + operation
                     and item["request"] == request
+                    and item.get("owner") == self.agent.job_owner
                 ]
                 latest = attempts[-1]
                 if latest["state"] == "running":
@@ -409,7 +416,10 @@ class RemoteSupervisor:
                         + ":"
                         + operation
                         + ":retry:"
-                        + str(len(attempts)),
+                        + str(len(attempts))
+                        + ":"
+                        + (self.agent.session_id or "direct"),
+                        owner=self.agent.job_owner,
                     )
             if job["id"] in self._children and self._children[job["id"]].poll() is None:
                 return job
@@ -511,11 +521,15 @@ def execute_child(policy, grant_key, operation, job_id):
     from .resource_limits import apply_process_limits
 
     apply_process_limits(policy.cpu_seconds, policy.memory_bytes)
-    agent = PolicyAgent(policy)
     wb = Workbench(ResearchProject(policy.project_path))
     project = wb.project
     try:
         job = project.job(job_id)
+        owner = job.get("owner")
+        if not isinstance(owner, dict) or owner.get("policy_sha256") != policy.content_sha256:
+            raise PermissionError("Agent child job ownership changed")
+        agent = PolicyAgent(policy, session_id=owner.get("session_id"))
+        agent._recheck_session()
         expected = {"grant_key": grant_key, "policy_sha256": policy.content_sha256}
         if job["operation"] != "agent_remote_" + operation or job["request"] != expected:
             raise PermissionError("Agent child durable identity changed")

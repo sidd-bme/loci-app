@@ -558,3 +558,22 @@ def test_footer_memory_is_bounded_before_raster_allocation(monkeypatch):
             geometry={},
             legend=({"channel": 0, "name": "Channel 1", "color": "#ffffff"},),
         )
+
+
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+@pytest.mark.parametrize("rgb", [False, True])
+def test_png_quantization_provenance_only_claims_actual_uint16_rgb_conversion(tmp_path, dtype, rgb):
+    values = np.array([[0, 1, 127, 255]], dtype=dtype)
+    pixels = np.repeat(values[..., None], 3, axis=-1) if rgb else values
+    workbench, source, request, _ = _tiff_fixture(tmp_path, pixels)
+    try:
+        request["format"] = "png"
+        target = tmp_path / "precision.png"
+        export_rendered_source(workbench, request, target)
+        with Image.open(target) as image:
+            provenance = json.loads(image.info["Loci rendering provenance"])
+        assert provenance["canvas_quantization"] == (
+            "uint16-fixed-range-nearest-v1" if rgb and dtype == np.uint16 else None
+        )
+    finally:
+        workbench.close()

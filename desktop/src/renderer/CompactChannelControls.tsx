@@ -11,9 +11,10 @@ export type CompactChannelControlsProps = {
   disabled?: boolean;
   onOpenDisplay?: () => void;
   onAuto?: (channel: number) => void;
+  onSourceChannel?: (channel: number) => void;
 };
 
-/** Presentation controls only; selection here never changes the analysis channel. */
+/** Scalar tone selection is display-only; RGB logical C selects a source plane. */
 export function CompactChannelControls(props: CompactChannelControlsProps) {
   // Remount drafts and solo history when the immutable source or channel identities change.
   const identity = JSON.stringify([props.source.id, props.source.sha256,
@@ -59,9 +60,10 @@ function DisplayRange({ channel, label, rgb, maximum, disabled, onRange }: {
   </div>;
 }
 
-function ChannelControls({ source, channels, onChannels, disabled = false, onOpenDisplay, onAuto }: CompactChannelControlsProps) {
+function ChannelControls({ source, channels, onChannels, disabled = false, onOpenDisplay, onAuto, onSourceChannel }: CompactChannelControlsProps) {
   const rgb = source.metadata.sample_semantics === "RGB" || source.metadata.sample_semantics === "RGBA";
-  const rgbMaximum = source.metadata.channel_dtypes?.[0] === "uint16" ? 65535 : 255;
+  const rgbMaximum = source.metadata.channel_dtypes?.[channels[0]?.channel ?? 0] === "uint16" ? 65535 : 255;
+  const rgbChannelCount = source.metadata.dimensions?.c ?? 1;
   const [selected, setSelected] = useState(channels[0]?.channel);
   const [solo, setSolo] = useState<{ channel: number; visibility: Map<number, boolean> } | null>(null);
   const disclosure = useRef<HTMLDetailsElement>(null);
@@ -107,9 +109,11 @@ function ChannelControls({ source, channels, onChannels, disabled = false, onOpe
           </label>)}
         </div>}
         {active && <>
-          <label className="compact-channel-select">{rgb ? "Tone" : "Edit"}<select aria-label="Display channel" value={active.channel} disabled={disabled || rgb}
-            onChange={(event) => setSelected(Number(event.target.value))}>
-            {(rgb ? [active] : channels).map((channel) => <option key={channel.channel} value={channel.channel}>{labelFor(channel)}</option>)}
+          <label className="compact-channel-select">{rgb && rgbChannelCount > 1 ? "Image channel" : rgb ? "Tone" : "Edit"}<select aria-label="Display channel" value={active.channel} disabled={disabled || (rgb && (rgbChannelCount < 2 || !onSourceChannel))}
+            onChange={(event) => rgb ? onSourceChannel?.(Number(event.target.value)) : setSelected(Number(event.target.value))}>
+            {rgb && rgbChannelCount > 1 ? Array.from({ length: rgbChannelCount }, (_, channel) => <option key={channel} value={channel}>
+              {source.metadata.channel_names?.[channel] || `Channel ${channel + 1}`}
+            </option>) : (rgb ? [active] : channels).map((channel) => <option key={channel.channel} value={channel.channel}>{labelFor(channel)}</option>)}
           </select></label>
           {!rgb && channels.length > 1 && <button type="button" aria-pressed={solo?.channel === active.channel}
             disabled={disabled} onClick={toggleSolo} title={solo?.channel === active.channel ? "Restore visibility before solo" : `Show only ${label}`}>

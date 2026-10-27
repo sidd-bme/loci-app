@@ -461,11 +461,15 @@ def adjust_source_rgb_components(
     # also important for a source with a read-only backing array.
     if resolved_low == 0.0 and resolved_high == maximum and resolved_gamma == 1.0:
         return np.array(array, copy=True, order="C")
-    normalized = (array[..., :3].astype(np.float64) - resolved_low) / (resolved_high - resolved_low)
+    normalized = array[..., :3].astype(np.float64)
+    np.subtract(normalized, resolved_low, out=normalized)
+    np.divide(normalized, resolved_high - resolved_low, out=normalized)
     np.clip(normalized, 0.0, 1.0, out=normalized)
     np.power(normalized, 1.0 / resolved_gamma, out=normalized)
     output = np.array(array, copy=True, order="C")
-    output[..., :3] = np.asarray(np.rint(normalized * maximum), dtype=array.dtype)
+    np.multiply(normalized, maximum, out=normalized)
+    np.rint(normalized, out=normalized)
+    output[..., :3] = normalized
     return output
 
 

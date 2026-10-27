@@ -347,3 +347,43 @@ def test_relink_rejects_archive_metadata_that_disagrees_with_exact_source(tmp_pa
     restored = import_project(forged, tmp_path / "forged.loci-study")
     with pytest.raises(ValueError, match="shape, calibration, or metadata"):
         relink_interchanged_source(restored, source["id"], source_path)
+
+
+@pytest.mark.parametrize(
+    "owner",
+    [
+        None,
+        "invalid",
+        {},
+        {"policy_sha256": "x", "session_id": None},
+        {"policy_sha256": "a" * 64, "session_id": "invalid"},
+    ],
+)
+def test_import_rejects_invalid_job_owner_even_with_valid_manifest(tmp_path, owner):
+    wb, _, source = _workbench(tmp_path)
+    wb.project.submit("run_recipe", {"source_id": source["id"]}, "historical")
+    archive = tmp_path / "original.zip"
+    export_project(wb.project, archive)
+    forged = tmp_path / "forged.zip"
+
+    def transform(entries):
+        index = next(i for i, (info, _) in enumerate(entries) if info.filename.startswith("jobs/"))
+        info, payload = entries[index]
+        record = json.loads(payload)
+        record["owner"] = owner
+        changed = canonical_json(record).encode()
+        entries[index] = (info, changed)
+        manifest_index = next(
+            i for i, (entry, _) in enumerate(entries) if entry.filename == "manifest.json"
+        )
+        manifest_info, payload = entries[manifest_index]
+        manifest = json.loads(payload)
+        member = next(item for item in manifest["members"] if item["path"] == info.filename)
+        member.update(sha256=hashlib.sha256(changed).hexdigest(), size_bytes=len(changed))
+        entries[manifest_index] = (manifest_info, canonical_json(manifest).encode())
+        return entries
+
+    _rewrite(archive, forged, transform)
+    with pytest.raises(ValueError):
+        import_project(forged, tmp_path / "forged-study")
+    assert not (tmp_path / "forged-study").exists()

@@ -9,7 +9,7 @@ const labels: Record<string, string> = {
   processed: "Image processing", "annotated-result": "Annotated result", puncta: "Puncta detection",
   "declared-stain-analysis": "Declared stain analysis", "tissue-region-mask": "Tissue region mask",
   "puncta-quantification": "Puncta detection", "nucleus-cell-association": "Nucleus-cell association",
-  "field-assay": "Fluorescence field assay",
+  "field-assay": "Fluorescence field assay", "perinuclear-enrichment": "Perinuclear enrichment",
   tracking: "Object tracking", "temporal-tracking": "Object tracking",
   registration: "Image registration", "registered-derived": "Registered image", "resampled-derived": "Resampled image", colocalisation: "Colocalisation measurement",
   segmentation: "Segmentation",

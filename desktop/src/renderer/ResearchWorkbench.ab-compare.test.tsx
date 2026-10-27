@@ -245,6 +245,54 @@ function mockApi(snapshotToUse = twoSourceSnapshot): ResearchDesktopApi {
 }
 
 describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
+  it("keeps a palette source's selected C through tone edits, reset, reopen and comparison", async () => {
+    const snapshot = structuredClone(twoSourceSnapshot);
+    const rgb = snapshot.sources[0];
+    rgb.metadata = { ...rgb.metadata, sample_semantics: "RGB", channel_dtypes: ["uint16", "uint16"],
+      dimensions: { ...rgb.metadata.dimensions!, c: 2, s: 3 },
+      palette: { stored_index_dtype: "uint8", lookup_dtype: "uint16", lookup_policy: "actual-IFD-ColorMap", expansion: "exact-RGB-lookup-no-normalization" } };
+    let saved: { source_id: string; source_sha256: string; revision: number; state: any } = {
+      source_id: rgb.id, source_sha256: rgb.sha256, revision: 0, state: null,
+    };
+    const api = mockApi(snapshot);
+    const execute = vi.mocked(api.execute);
+    execute.mockImplementation(async (operation, request) => {
+      if (request.source_id === rgb.id) {
+        if (operation === "viewer_defaults") return { source_id: rgb.id, source_sha256: rgb.sha256, basis: "Native RGB",
+          channels: [{ channel: request.c ?? 0, low: 0, high: 65535, gamma: 1, color: "#ffffff", opacity: 1, visible: true }] };
+        if (operation === "source_view") return structuredClone(saved);
+        if (operation === "save_source_view") {
+          expect(request.expected_revision).toBe(saved.revision);
+          saved = { ...saved, revision: saved.revision + 1, state: structuredClone(request.state) };
+          expect(saved.state.channels).toHaveLength(1);
+          expect(saved.state.channels[0].channel).toBe(saved.state.selection.c);
+          return structuredClone(saved);
+        }
+      }
+      return viewerContractResponse(operation, request, snapshot) ?? {};
+    });
+    const view = render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.change(await screen.findByRole("combobox", { name: "Image channel" }), { target: { value: "1" } });
+    await waitFor(() => expect(execute.mock.calls.some(([operation, request]) => operation === "viewer_tile" &&
+      request.source_id === rgb.id && ((request.selection as { c?: number })?.c ?? request.c) === 1 &&
+      (request.channels as Array<{ channel: number }>)[0].channel === 1)).toBe(true));
+    fireEvent.change(screen.getByLabelText("RGB gamma"), { target: { value: "1.4" } });
+    fireEvent.blur(screen.getByLabelText("RGB gamma"));
+    await waitFor(() => expect(saved.state?.channels[0]).toEqual(expect.objectContaining({ channel: 1, gamma: 1.4 })));
+    view.unmount();
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Image channel" })).toHaveValue("1"));
+    expect(screen.getByLabelText("RGB gamma")).toHaveValue("1.4");
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() => expect(saved.state?.channels[0]).toEqual(expect.objectContaining({ channel: 1, gamma: 1 })));
+    fireEvent.click(screen.getByRole("button", { name: "Compare A/B" }));
+    await waitFor(() => expect(screen.getByLabelText("Pane A channel view")).toHaveValue("1"));
+    expect(within(screen.getByLabelText("Pane A channel view")).queryByText("All visible")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Pane A channel view"), { target: { value: "0" } });
+    await waitFor(() => expect(screen.getByLabelText("Pane A channel view")).toHaveValue("0"));
+    expect(saved.state.selection.c).toBe(1);
+  });
+
   it("renders Compare A/B toggle button when multiple sources are available", async () => {
     const api = mockApi();
     render(<ResearchWorkbench api={api} onBack={vi.fn()} />);

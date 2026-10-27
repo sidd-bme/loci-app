@@ -448,7 +448,7 @@ def test_pixel_source_and_preview_only_cli(scene, tmp_path):
     assert discovery["request_schema"]["additionalProperties"] is False
 
 
-def test_policy_cannot_authorize_imported_results_or_jobs(scene, tmp_path):
+def test_policy_cannot_authorize_imported_results_or_jobs(scene, tmp_path, monkeypatch):
     from test_agent_policy import specification
 
     from loci_engine.agent_policy import load_policy, write_policy
@@ -480,11 +480,24 @@ def test_policy_cannot_authorize_imported_results_or_jobs(scene, tmp_path):
     agent = PolicyAgent(load_policy(policy_path))
     _, job, _, result = adopt(scene)
     # The very same source/crop/channel is granted, so denials must result
-    # from unsupported operation/provenance rather than an ungranted source.
+    # from job ownership or unsupported provenance, not an ungranted source.
     assert agent.policy.source_grant(wb.project, source["id"])
     assert "recipe" not in result["provenance"]
-    with pytest.raises(PermissionError, match="operation"):
+    persisted_job = wb.project.job(job["id"])
+    assert persisted_job.get("owner") is None
+    with pytest.raises(PermissionError, match="different policy or session"):
         agent._authorize_job(wb, job["id"])
+    # Even a matching ownership claim cannot authorize this unsupported operation.
+    original_job = wb.project.job
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            wb.project,
+            "job",
+            lambda job_id: {**original_job(job_id), "owner": agent.job_owner},
+        )
+        with pytest.raises(PermissionError, match="operation"):
+            agent._authorize_job(wb, job["id"])
+    assert wb.project.job(job["id"]) == persisted_job
     with pytest.raises((PermissionError, ValueError)):
         agent._authorize_result(wb, result["id"])
 

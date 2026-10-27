@@ -137,6 +137,7 @@ _KIND_LABELS = {
     "puncta": "Puncta detection",
     "puncta-quantification": "Puncta detection",
     "nucleus-cell-association": "Nucleus-cell association",
+    "perinuclear-enrichment": "Perinuclear enrichment",
     "field-assay": "Fluorescence field assay",
     "tracking": "Object tracking",
     "temporal-tracking": "Object tracking",
@@ -497,6 +498,11 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
             ):
                 raise ValueError("Association parent revision binding is missing or mismatched")
             bound = True
+        elif current["kind"] == "perinuclear-enrichment":
+            from .research_perinuclear import validate_parent
+
+            validate_parent(current, parent)
+            bound = True
         if producing["id"] == current["id"] and current["kind"] == "corrected-labels":
             producing = parent
         lineage.append(
@@ -550,6 +556,25 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
             settings,
         )
     _fields(provenance.get("settings"), _SETTINGS, "provenance.settings", settings)
+    _fields(
+        provenance.get("perinuclear"),
+        (
+            "radius_px",
+            "signal_channel",
+            "control",
+            "distance_basis",
+            "overlap_policy",
+            "nucleus_policy",
+            "boundary_policy",
+            "empty_policy",
+            "zero_policy",
+            "signal_policy",
+            "interpretation",
+            "endpoint",
+        ),
+        "provenance.perinuclear",
+        settings,
+    )
     _fields(provenance.get("segmentation"), _SEGMENTATION, "provenance.segmentation", settings)
     _fields(provenance, ("working_bytes", "estimated_working_bytes"), "provenance", settings)
     _fields(

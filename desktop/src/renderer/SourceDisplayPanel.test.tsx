@@ -25,6 +25,34 @@ function mount(overrides: Partial<Parameters<typeof SourceDisplayPanel>[0]> = {}
   return { ...render(<SourceDisplayPanel {...props} />), onRgbMapping, onInterpretation, props };
 }
 describe("image information disclosure", () => {
+  it("selects logical RGB channels and edits the selected tone without recoloring the lookup table", async () => {
+    const rgb: ResearchSource = { ...source, metadata: { ...source.metadata, sample_semantics: "RGB",
+      dimensions: { ...source.metadata.dimensions!, c: 2, z: 3, s: 3 }, channel_dtypes: ["uint16", "uint16"],
+      palette: { stored_index_dtype: "uint8", lookup_dtype: "uint16", lookup_policy: "actual-IFD-ColorMap", expansion: "exact-RGB-lookup-no-normalization" } } };
+    const execute = vi.fn(async (_operation: string, request: Record<string, unknown>) => ({
+      source_id: source.id, source_sha256: source.sha256,
+      sample: { kind: "deterministic-native-pyramid-level", t: 0, z: 0, c: request.c, level: 0,
+        viewport_dependent: false, sample_count_per_component: 100, shape: [10, 10] },
+      histograms: [0, 1, 2].map((component) => ({ component, label: ["Red", "Green", "Blue"][component],
+        units: "palette lookup RGB component values", dtype: "uint16", sample_count: 100,
+        min: 0, max: 65280, bin_range: [0, 65535], counts: [10, 80, 10], percentile_1: 0, percentile_99: 65280 })),
+    }));
+    const view = mount({ source: rgb, api: { execute },
+      channels: [{ channel: 1, low: 0, high: 65535, gamma: 1, color: "#ffffff", opacity: 1, visible: true }],
+      selection: { t: 0, c: 1, z: 0, x: 0, y: 0, width: 32, height: 32, level: 0 } });
+    expect((screen.getByLabelText("Image channel") as HTMLSelectElement).value).toBe("1");
+    expect((screen.getByRole("option", { name: "Maximum projection" }) as HTMLOptionElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("RGB white point"), { target: { value: "60000" } });
+    fireEvent.blur(screen.getByLabelText("RGB white point"));
+    expect(view.props.onChannels).toHaveBeenLastCalledWith([expect.objectContaining({ channel: 1, high: 60000 })]);
+    const details = screen.getByText("Histogram & levels").closest("details")!;
+    details.open = true; fireEvent(details, new Event("toggle"));
+    await waitFor(() => expect(screen.getByRole("img", { name: "RGB tone histogram", hidden: true })).toBeTruthy());
+    expect(execute).toHaveBeenCalledWith("viewer_histogram", { source_id: source.id, t: 0, z: 0, c: 1, bins: 256 });
+    expect(screen.getByText(/Palette lookup RGB values/).textContent).toContain("C 2");
+    fireEvent.change(screen.getByLabelText("Image channel"), { target: { value: "0" } });
+    expect(view.props.onSelection).toHaveBeenLastCalledWith({ ...view.props.selection, c: 0 });
+  });
   it.each(["", "1.5", "0", "9000"])("rejects invalid analysis width draft %j without changing selection", (draft) => {
     const view = mount();
     fireEvent.click(screen.getByText("Analysis region", { exact: true }));

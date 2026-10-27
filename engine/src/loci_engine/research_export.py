@@ -105,6 +105,9 @@ def methods_text(result: dict[str, Any]) -> str:
                 "association": provenance.get("association"),
                 "association_inputs": provenance.get("association_inputs"),
                 "compartment_measurement": provenance.get("compartment_measurement"),
+                "perinuclear": provenance.get("perinuclear"),
+                "nucleus_analysis": provenance.get("nucleus_analysis"),
+                "parent_result": provenance.get("parent_result"),
                 "colocalisation": provenance.get("colocalisation"),
                 "transform": provenance.get("transform"),
                 "output_grid": provenance.get("output_grid"),
@@ -148,6 +151,11 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if "perinuclear" in provenance:
+        from .research_perinuclear import validate_parent, validate_source
+
+        validate_parent(result, project.result(provenance["parent_result"]["result_id"]))
+        validate_source(result, project.source(result["source_id"]))
     verify_result_derivation(project.source(result["source_id"]), provenance)
     for reference in provenance.get("references", {}).values():
         source = project.source(reference["source_id"], verify=True)
@@ -182,6 +190,12 @@ def _export_extended_records(
     provenance = result["provenance"]
     summary: dict[str, Any] = {"imagej_roi_files": [], "geojson_only_annotations": []}
     summary["quantification_files"] = []
+    if "perinuclear" in provenance:
+        filename = "perinuclear-summary.json"
+        (stage / filename).write_text(
+            canonical_json(provenance["perinuclear"]) + "\n", encoding="utf-8"
+        )
+        summary["quantification_files"].append(filename)
     for key, filename, rows in (
         ("puncta", "puncta-peaks.csv", provenance.get("peaks", [])),
         (
@@ -304,6 +318,14 @@ def export_research_result(
     if sum(descriptor["bytes"] for descriptor in result["arrays"].values()) > 512 * 1024**2:
         raise ValueError("Result export exceeds the 512 MiB decoded artifact budget")
     arrays = {name: project.load_array(descriptor) for name, descriptor in result["arrays"].items()}
+    if "perinuclear" in result["provenance"]:
+        from .research_perinuclear import validate_arrays
+
+        validate_arrays(
+            result,
+            arrays,
+            parent=project.result(result["provenance"]["parent_result"]["result_id"]),
+        )
     image = arrays.get("image")
     labels = arrays.get("labels")
     geometry = geometry_from_dict(result["provenance"]["geometry"])
@@ -338,7 +360,10 @@ def export_research_result(
                     metadata[f"PhysicalSize{axis}"] = step
                     metadata[f"PhysicalSize{axis}Unit"] = unit
             for name, array in arrays.items():
-                if name not in {"image", "labels", "probabilities"}:
+                if name not in {"image", "labels", "probabilities"} and not (
+                    "perinuclear" in result["provenance"]
+                    and name in {"ring_labels", "ring_ambiguous"}
+                ):
                     continue
                 array_metadata = dict(metadata)
                 if name == "probabilities":
