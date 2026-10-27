@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { _electron as electron } from "playwright";
-import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 const repo = path.resolve(import.meta.dirname, "../..");
 const bundle = process.env.LOCI_PACKAGED_APP;
@@ -348,7 +348,7 @@ print("Export oracle passed: exact normalized scalar array and corrected labels 
   assert.equal(restored.result.revision_hash, childResult.result.revision_hash);
   const unchangedParent = await page.evaluate(id => window.lociResearch.execute("result", {result_id:id}), parentId);
   assert.equal(unchangedParent.result.revision_hash, parentResult.result.revision_hash);
-  await page.getByRole("button", {name:/^corrected-labels/}).click();
+  await page.locator(`.research-sources [data-result-id="${childId}"]`).click();
   await selectWorkbenchTool(page, "Info");
   await page.locator("details.research-preview-rows > summary").click();
   await until(() => page.getByRole("region", {name:"Result measurements", exact:true}).locator("tbody tr").count().then(n => n === 1), "restored child visible measurements");
@@ -363,6 +363,11 @@ print("Export oracle passed: exact normalized scalar array and corrected labels 
   // Optional real inference uses only an explicitly supplied existing local checkpoint.
   if (process.env.LOCI_QA_CELLPOSE_CHECKPOINT) {
     await page.getByRole("button", {name:"Original image", exact:true}).click();
+    // Keep the model acceptance result inside the existing 2048px MCP image bound.
+    // This explicit region contains both authored objects; the source stays immutable.
+    await selectWorkbenchTool(page, "Display");
+    for (const [label, value] of [["Width", 1024], ["Height", 1024], ["X", 0], ["Y", 0]])
+      await setSelectionField(page, label, value);
     await selectWorkbenchTool(page, "Analyze");
     await page.getByLabel("Segmentation model").selectOption("cellpose-sam");
     await app.evaluate(({dialog}, checkpoint) => {
@@ -385,7 +390,12 @@ print("Export oracle passed: exact normalized scalar array and corrected labels 
     assert.equal(record.provenance.accepted_request.working_bytes, 2 * 1024 ** 3);
     assert.equal(record.provenance.accepted_request.profile_id, "cellpose-sam");
     assert.equal(record.result.source_sha256, report.fixture_sha256);
-    report.cellpose_inference = {status:"passed", profile:"cellpose-sam", runtime:record.provenance.runtime.cellpose, count:record.result.object_count, biological_validation:false};
+    report.cellpose_inference = {status:"passed", profile:"cellpose-sam", runtime:record.provenance.runtime.cellpose,
+      result_id: record.result.id, revision_hash: record.result.revision_hash, source_id: record.result.source_id,
+      study, source: fixture, selection:record.provenance.selection, count:record.result.object_count, biological_validation:false};
+    await page.getByRole("button", { name: "Save study", exact: true }).click();
+    await until(async () => (await page.locator("main.image-first-workbench").getAttribute("aria-busy")) !== "true",
+      "save model result lock released");
     await capture("08-real-cellpose");
     assert.equal(await sha(fixture), report.fixture_sha256);
   }

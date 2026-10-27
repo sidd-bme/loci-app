@@ -164,6 +164,7 @@ def parser() -> argparse.ArgumentParser:
         "export-directory-identity",
     ):
         vision.add_argument("--" + name, required=True)
+    vision.add_argument("--session-id")
     vision.add_argument(
         "--operation",
         choices=["source_image", "export_vision_handoff", "inspect_action", "study_results"],
@@ -219,7 +220,7 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
         if args.operation == "export_vision_handoff":
             for category in ("previews", "geometry", "provenance", "agent_metadata"):
                 policy.require_disclosure(category)
-        agent = PolicyAgent(policy)
+        agent = PolicyAgent(policy, session_id=args.session_id)
         workbench = agent._workbench(args.operation)
         try:
             request = _request(args.request)

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "task_preview_get": {
+        "mutates": False,
+        "summary": "Inspect an exact retained durable preview without recomputation",
+    },
     "sample_sheet_template": {
         "mutates": False,
         "summary": "Inspect a stable source-ID sample CSV template",

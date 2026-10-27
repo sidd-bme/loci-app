@@ -6,6 +6,7 @@ import "./ResearchWorkflowPanel.css";
 
 export interface ResearchWorkflowPanelProps {
   api: ResearchDesktopApi; source: ResearchSource; sources: ResearchSource[]; selection: ResearchSelection; recipe: ResearchRecipe; busy: boolean;
+  selectedSourceIds?: string[]; onSelectedSourceIdsChange?: (ids: string[]) => void;
   active: boolean; jobs: ResearchJob[]; displayedResult: ResearchResult | null; onBusyChange: (busy: boolean) => void;
   onPreview: (image: string | null) => void; onResult: (result: ResearchResult) => void | Promise<void>;
   onReview: (result: ResearchResult, runId: string) => void | Promise<void>;
@@ -23,7 +24,7 @@ const failure = (error: unknown) => error instanceof Error ? error.message : "Th
 const definitionJson = (definition: WorkflowDefinition) => exactJson({ ...definition, nodes: definition.nodes.map((node) => node.type === "population" ? { ...node, settings: { filters: [...node.settings.filters as unknown[]].sort((a, b) => exactJson(a).localeCompare(exactJson(b))) } } : node) });
 const exactJson = (value: unknown) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 export function ResearchWorkflowPanel(props: ResearchWorkflowPanelProps) { return <WorkflowEditor {...props} />; }
-function WorkflowEditor({ api, source, sources, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh }: ResearchWorkflowPanelProps) {
+function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSourceIdsChange, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh }: ResearchWorkflowPanelProps) {
   const [definition, setDefinition] = useState<WorkflowDefinition>(() => workflowFromRecipe(recipe));
   const [selectedId, setSelectedId] = useState("source"), [saved, setSaved] = useState<WorkflowRecord | null>(null);
   const [library, setLibrary] = useState<WorkflowRecord[]>([]), [openId, setOpenId] = useState("");
@@ -32,12 +33,19 @@ function WorkflowEditor({ api, source, sources, selection, recipe, busy, active,
   const [previewScope, setPreviewScope] = useState<string | null>(null);
   const [run, setRun] = useState<{ response: RunResponse; scope: string } | null>(null), [runState, setRunState] = useState("waiting_review");
   const [templateReferences, setTemplateReferences] = useState(Boolean(recipe.references && Object.keys(recipe.references).length));
-  const [targets, setTargets] = useState<string[]>([source.id]), [batchId, setBatchId] = useState<string | null>(null);
+  const [localTargets, setLocalTargets] = useState<string[]>([source.id]), [batchId, setBatchId] = useState<string | null>(null);
+  const targets = selectedSourceIds ?? localTargets;
+  const setTargets = (update: (ids: string[]) => string[]) => {
+    const next = update(targets);
+    if (onSelectedSourceIdsChange) onSelectedSourceIdsChange(next);
+    else setLocalTargets(next);
+  };
   const restoreGeneration = useRef(0), preflightGeneration = useRef(0);
   const metricsBinding = useRef("");
   const [metrics, setMetrics] = useState<Array<{ id: string; unit: string; label?: string }>>([]);
   const generation = useRef(0), mounted = useRef(true), nextNode = useRef(0), lock = useRef(false), stop = useRef(false);
-  const scope = exactJson({ definition, selection, source: [source.id, source.sha256], drafts, active });
+  const scope = exactJson({ definition, selection, source: [source.id, source.sha256], drafts, active,
+    targets: targets.map((id) => [id, sources.find((item) => item.id === id)?.sha256 ?? null]) });
   const scopeRef = useRef(scope); if (scopeRef.current !== scope) generation.current++; scopeRef.current = scope;
   const sourceScope = exactJson({ source: [source.id, source.sha256], selection });
   const sourceMetrics = metricsBinding.current === sourceScope ? metrics : [];

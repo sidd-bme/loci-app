@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
 
 from .agent_policy import DISCLOSURES, AgentPolicy
@@ -11,6 +13,70 @@ from .research_project import canonical_json, parse_json
 from .workbench import Workbench, result_working_bytes, runtime_record
 
 MAX_REQUEST_BYTES = 1024**2
+
+
+def _schema_check(value, schema, path="action request"):
+    """Enforce the advertised structural boundary before native validation."""
+    if "oneOf" in schema:
+        matches = 0
+        for candidate in schema["oneOf"]:
+            try:
+                _schema_check(value, candidate, path)
+            except ValueError:
+                continue
+            matches += 1
+        if matches != 1:
+            raise ValueError(f"{path} must match one declared request shape")
+        return
+    if "const" in schema and value != schema["const"]:
+        raise ValueError(f"{path} disagrees with its declared constant")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path} must be a declared value")
+    kind = schema.get("type")
+    types = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool}
+    if kind in types and type(value) is not types[kind]:
+        raise ValueError(f"{path} must be {kind}")
+    if kind in {"number", "integer"}:
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"{path} must be a finite number")
+        if (
+            "minimum" in schema
+            and value < schema["minimum"]
+            or "maximum" in schema
+            and value > schema["maximum"]
+        ):
+            raise ValueError(f"{path} exceeds its declared bounds")
+        if "exclusiveMinimum" in schema and value <= schema["exclusiveMinimum"]:
+            raise ValueError(f"{path} exceeds its declared bounds")
+    if kind == "string":
+        if (
+            not schema.get("minLength", 0)
+            <= len(value)
+            <= schema.get("maxLength", MAX_REQUEST_BYTES)
+        ):
+            raise ValueError(f"{path} exceeds its declared text bound")
+        if "pattern" in schema and re.fullmatch(schema["pattern"], value) is None:
+            raise ValueError(f"{path} has an invalid identity")
+    if kind == "array":
+        if not schema.get("minItems", 0) <= len(value) <= schema.get("maxItems", 10000):
+            raise ValueError(f"{path} exceeds its declared item bound")
+        for item in value:
+            _schema_check(item, schema.get("items", {}), path)
+    if kind == "object":
+        if not set(schema.get("required", [])) <= set(value):
+            raise ValueError(f"{path} is missing declared fields")
+        if not schema.get("minProperties", 0) <= len(value) <= schema.get("maxProperties", 10000):
+            raise ValueError(f"{path} exceeds its declared field bound")
+        properties = schema.get("properties", {})
+        for name, item in value.items():
+            if "propertyNames" in schema:
+                _schema_check(name, schema["propertyNames"], path)
+            if name in properties:
+                _schema_check(item, properties[name], path)
+            elif schema.get("additionalProperties") is False:
+                raise ValueError(f"{path} contains an undeclared field")
+            elif isinstance(schema.get("additionalProperties"), dict):
+                _schema_check(item, schema["additionalProperties"], path)
 
 
 def source_scope(policy, workbench, source_id, selection, channels):
@@ -81,6 +147,11 @@ def authorize_action(
     exact_keys(request, set(contract["properties"]), operation)
     if not set(contract["required"]) <= set(request):
         raise ValueError("Action request is missing required fields from its schema")
+    from .agent_shared_workflows import SHARED_ACTIONS, authorize_shared_action
+
+    if operation in SHARED_ACTIONS:
+        _schema_check(request, contract)
+        authorize_shared_action(agent, workbench, operation, request)
     budget = min(DEFAULT_WORKING_BYTES, policy.memory_bytes)
     if "working_bytes" in contract["properties"]:
         budget = integer(
@@ -238,7 +309,9 @@ def authorize_action(
 def inspect_action(agent, workbench, operation, request):
     """Run only in the disposable read worker, after independent authorization."""
     request = authorize_action(agent, workbench, operation, request, mode="read")
-    output = workbench.execute(operation, request)
+    from .agent_shared_workflows import inspect_shared_action
+
+    output = inspect_shared_action(agent, workbench, operation, request)
     if operation == "correction_info":
         result = agent._authorize_result(workbench, request["result_id"])
         if not result["provenance"].get("derived_measurement_arrays") and not result[

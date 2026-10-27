@@ -314,9 +314,204 @@ REQUESTS = {
     "large_result_delete": _object({**BOUND, "label": LABEL}),
 }
 REQUESTS["large_components_run"] = copy.deepcopy(REQUESTS["large_components_preflight"])
+# Named native contracts. Preview computation is a durable task even when no
+# scientific result is published; mutation flags alone do not describe execution.
+WORKFLOW_BINDING = {
+    "workflow_id": ID,
+    "workflow_revision": {"type": "integer", "minimum": 1, "maximum": 2**31 - 1},
+    "definition_sha256": SHA,
+    "source_id": ID,
+    "source_sha256": SHA,
+    "selection": SELECTION,
+}
+EXPLORATION_SOURCE = {"source_id": ID, "source_sha256": SHA}
+CONFIGURATION = _object({"threshold": NUMBER, "min_size": NUMBER}, ["threshold"])
+DESCRIPTOR = _object(
+    {
+        "id": TEXT,
+        "label": TEXT,
+        "unit": TEXT,
+        "kind": TEXT,
+        "channel": TEXT,
+        "statistic": TEXT,
+        "compartment": TEXT,
+    },
+    ["id", "label", "unit"],
+)
+GATE = _object(
+    {
+        "kind": {"enum": ["rectangle", "polygon"]},
+        **{f"{axis}_metric": TEXT for axis in ("x", "y")},
+        **{f"{axis}_transform": {"enum": ["linear", "log10"]} for axis in ("x", "y")},
+        **{f"{axis}_descriptor": DESCRIPTOR for axis in ("x", "y")},
+        "edge_policy": {"const": "include"},
+        "bounds": _array(NUMBER, 4, 4),
+        "vertices": _array(_array(NUMBER, 2, 2), 3, 64),
+    },
+    ["kind", "x_metric", "y_metric"],
+)
+REQUESTS.update(
+    {
+        "workflow_list": _object({}),
+        "workflow_get": _object({"workflow_id": ID}),
+        "workflow_preflight": _object(WORKFLOW_BINDING),
+        "workflow_preview": _object({**WORKFLOW_BINDING, "target_node_id": TEXT}),
+        "workflow_run": _object(WORKFLOW_BINDING),
+        "workflow_status": _object({"run_id": ID}),
+        "exploration_list": _object(EXPLORATION_SOURCE),
+        "exploration_get": _object({**EXPLORATION_SOURCE, "comparison_id": ID}),
+        "exploration_preview": _object(
+            {
+                **EXPLORATION_SOURCE,
+                "selection": SELECTION,
+                **CONFIGURATION["properties"],
+            },
+            [*EXPLORATION_SOURCE, "selection", "threshold"],
+        ),
+        "exploration_compare": _object(
+            {
+                **EXPLORATION_SOURCE,
+                "regions": _array(SELECTION, 1, 3),
+                "configurations": _array(CONFIGURATION, 1, 3),
+            }
+        ),
+        # The canonical native receipt representation retains exact numeric spelling.
+        "exploration_run": _object({"receipt_json": TEXT}),
+        "population_gate_evaluate": _object(
+            {
+                **BOUND,
+                "gate": GATE,
+                "include_centroids": {"type": "boolean"},
+            },
+            [*BOUND, "gate"],
+        ),
+        "population_group_list": _object(BOUND),
+        "population_group_get": _object(
+            {
+                **BOUND,
+                "group_id": ID,
+                "include_centroids": {"type": "boolean"},
+            },
+            [*BOUND, "group_id"],
+        ),
+        "study_summary": _object(
+            {"result_ids": _array(ID, 1, 100), "value": {"const": "measure"}}, ["result_ids"]
+        ),
+        "intensity_catalog": _object({"result_ids": _array(ID, 1, 100)}),
+        "intensity_preview": _object(
+            {
+                "result_ids": _array(ID, 1, 100),
+                "endpoint": _object(
+                    {
+                        "schema": {"const": "loci.intensity-endpoint/v1"},
+                        "kind": {"const": "raw-channel-intensity"},
+                        "statistic": {"const": "mean"},
+                        "unit": {"const": "source-intensity"},
+                        "compartment": {"enum": ["object", "cell", "nuclear", "cytoplasm"]},
+                    }
+                ),
+                "metric_ids": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 100,
+                    "propertyNames": ID,
+                    "additionalProperties": TEXT,
+                },
+                "declaration": _object(
+                    {name: TEXT for name in ("channel", "acquisition_context", "rationale")}
+                ),
+            }
+        ),
+        "intensity_get": _object({"report_id": ID}),
+        "intensity_list": _object({}),
+        "task_preview_get": _object({"job_id": ID}),
+    }
+)
+REQUESTS["exploration_run"]["properties"]["receipt_json"] = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 1024**2,
+}
+# Explicit execution membership is deliberate: a new native operation gains no
+# agent authority by changing its mutates flag or joining a general dispatcher.
+READ_ACTIONS = frozenset(
+    {
+        "describe_result",
+        "correction_info",
+        "tracking_result",
+        "population_locate",
+        "population_query",
+        "large_components_preflight",
+        "large_result_view",
+        "large_result_pick",
+        "large_result_locate",
+        "workflow_list",
+        "workflow_get",
+        "workflow_preflight",
+        "workflow_status",
+        "exploration_list",
+        "exploration_get",
+        "population_gate_evaluate",
+        "population_group_list",
+        "population_group_get",
+        "study_summary",
+        "intensity_catalog",
+        "intensity_preview",
+        "intensity_get",
+        "intensity_list",
+        "task_preview_get",
+    }
+)
+PREVIEW_ACTIONS = frozenset({"workflow_preview", "exploration_preview", "exploration_compare"})
+PUBLICATION_ACTIONS = frozenset(
+    {
+        "run_recipe",
+        "classical_run",
+        "perinuclear_run",
+        "correct_result",
+        "roi_add",
+        "puncta_run",
+        "associate_results",
+        "colocalisation_run",
+        "track_results",
+        "correct_tracks",
+        "large_components_run",
+        "large_result_delete",
+        "workflow_run",
+        "exploration_run",
+    }
+)
+TASK_ACTIONS = PREVIEW_ACTIONS | PUBLICATION_ACTIONS
 ACTION_NAMES = frozenset(REQUESTS)
-READ_ACTIONS = frozenset(name for name in REQUESTS if not OPERATION_CATALOG[name]["mutates"])
-TASK_ACTIONS = ACTION_NAMES - READ_ACTIONS
+EXECUTION_KINDS = {
+    **dict.fromkeys(READ_ACTIONS, "inspection"),
+    **dict.fromkeys(PREVIEW_ACTIONS, "preview-task"),
+    **dict.fromkeys(PUBLICATION_ACTIONS, "publication-task"),
+}
+assert set(EXECUTION_KINDS) == ACTION_NAMES
+assert not READ_ACTIONS & TASK_ACTIONS
+
+
+def _execution_contract(name):
+    return {
+        "execution_kind": EXECUTION_KINDS[name],
+        "native_operation": name,
+        "output_types": [
+            "retained-task-preview"
+            if name == "task_preview_get"
+            else "native-inspection"
+            if name in READ_ACTIONS
+            else "task-preview"
+            if name in PREVIEW_ACTIONS
+            else "immutable-result-revision"
+        ],
+        "cancellation": "Cancel only the exact policy/session-owned job"
+        if name in TASK_ACTIONS
+        else "Disposable worker CPU, memory and response bounds",
+        "resource_estimate": "Native preflight; request/recipe memory budget capped by policy"
+        if name in TASK_ACTIONS
+        else "Policy-bounded document and measurement inspection",
+    }
 
 
 def operation_catalog():
@@ -324,7 +519,10 @@ def operation_catalog():
         name: {
             **value,
             **(
-                {"agent_execution": "read" if name in READ_ACTIONS else "task"}
+                {
+                    "agent_execution": "read" if name in READ_ACTIONS else "task",
+                    **_execution_contract(name),
+                }
                 if name in ACTION_NAMES
                 else {}
             ),
@@ -344,7 +542,14 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "summary": OPERATION_CATALOG[name]["summary"],
                 "request_schema": copy.deepcopy(REQUESTS[name]),
                 "execution": "bounded-read" if name in READ_ACTIONS else "durable-task",
-                "side_effects": "none" if name in READ_ACTIONS else "new-result-revision",
+                **_execution_contract(name),
+                "side_effects": (
+                    "saved-comparison-receipt"
+                    if name == "exploration_compare"
+                    else "none"
+                    if name in READ_ACTIONS or name in PREVIEW_ACTIONS
+                    else "new-result-revision"
+                ),
                 "permissions": [
                     "explicit-action",
                     "all-response-disclosures",
@@ -354,9 +559,13 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "corrections also bind the label-array hash.",
                 "retry": "Reuse the exact request key for durable tasks; "
                 "use a new key for a changed request.",
-                "undo": "Select the immutable parent result; a new result starts without review."
-                if name in TASK_ACTIONS
-                else "not-applicable",
+                "undo": (
+                    "No result adopted; retained preview may expire"
+                    if name in PREVIEW_ACTIONS
+                    else "Select the immutable parent result; a new result starts without review."
+                    if name in TASK_ACTIONS
+                    else "not-applicable"
+                ),
                 "resource_limit": "Policy CPU, memory and concurrency limits "
                 "apply in a disposable process.",
             }

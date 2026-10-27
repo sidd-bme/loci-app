@@ -11,6 +11,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import { sourceLabelForId } from "./source-browser";
+import { AgentActivityTimeline, AgentApprovalDetails, type AgentActivityNavigation } from "./AgentActivityTimeline";
 import "./AgentSessionIndicator.css";
 
 const LIVE_SESSION_STATES = new Set<ResearchAgentSessionState>([
@@ -101,7 +102,14 @@ export function AgentSessionIndicator({
   onSnapshot,
   onError,
   refreshError = null,
-}: {
+  currentTargets,
+  onOpenSource,
+  onOpenResult,
+  onOpenJob,
+  onOpenWorkflow,
+  onInspectPreview,
+  inspectablePreviewJobIds,
+}: AgentActivityNavigation & {
   api: ResearchDesktopApi;
   snapshot: ResearchSnapshot;
   followAgent: boolean;
@@ -195,6 +203,8 @@ export function AgentSessionIndicator({
     }
   };
 
+  const navigation: AgentActivityNavigation = { currentTargets, onOpenSource, onOpenResult, onOpenJob, onOpenWorkflow, onInspectPreview, inspectablePreviewJobIds };
+
   const renderApproval = (approval: ResearchAgentApprovalRecord) => {
     const sourceLabel = approval.source_id
       ? sourceLabelForId(snapshot.sources, approval.source_id)
@@ -202,13 +212,13 @@ export function AgentSessionIndicator({
     return (
       <div
         key={approval.id}
-        className="agent-approval-card"
-        aria-label={`Pending approval for ${approval.operation}`}
+        className={`agent-approval-card${approval.state === "pending" ? "" : " agent-approval-card--history"}`}
+        aria-label={`${approval.state === "pending" ? "Pending approval" : "Approval record"} for ${approval.operation}`}
       >
         <div className="agent-approval-card__header">
           <strong>{approval.summary}</strong>
-          <span className="agent-session-badge tone-warning">
-            Single-use approval
+          <span className={`agent-session-badge${approval.state === "pending" ? " tone-warning" : ""}`}>
+            {approval.state === "pending" ? "Single-use approval" : approval.state}
           </span>
         </div>
         <dl className="agent-approval-meta">
@@ -240,11 +250,8 @@ export function AgentSessionIndicator({
             </>
           )}
         </dl>
-        <details>
-          <summary>Request parameters</summary>
-          <pre>{JSON.stringify(approval.parameters_summary, null, 2)}</pre>
-        </details>
-        <div className="agent-session-actions">
+        <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
+        {approval.state === "pending" && <div className="agent-session-actions">
           <button
             type="button"
             className="research-primary"
@@ -272,7 +279,7 @@ export function AgentSessionIndicator({
           >
             Deny
           </button>
-        </div>
+        </div>}
       </div>
     );
   };
@@ -333,11 +340,11 @@ export function AgentSessionIndicator({
                   checked={followAgent}
                   onChange={(event) => onFollowAgentChange(event.target.checked)}
                 />
-                Follow new agent results
+                Follow agent views and results
               </label>
               <small>
                 {followAgent
-                  ? "Completed agent job results open while you are idle in Display, Results or Agent. Editing and unfinished drafts take priority."
+                  ? "New inspected sources, planes and regions, and completed results open while you are idle in Display, Results or Agent. Display colours stay yours; editing and drafts take priority."
                   : "Your current source, result, viewport camera and drafts stay undisturbed while the agent works."}
               </small>
             </div>
@@ -514,21 +521,17 @@ export function AgentSessionIndicator({
               )}
             </section>
 
-            {agentSessions.events.length > 0 && (
-              <details>
-                <summary>
-                  Recent MCP activity ({agentSessions.events.length})
-                </summary>
-                <ul className="agent-events-list">
-                  {agentSessions.events.slice(0, 12).map((event) => (
-                    <li key={event.id}>
-                      <strong>{event.summary}</strong>
-                      {event.operation ? ` · ${event.operation}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
+            <AgentActivityTimeline events={agentSessions.events} approvals={agentSessions.approvals}
+              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
+
+            {agentSessions.approvals.some((approval) => approval.state !== "pending") && <details>
+              <summary>Past approval requests</summary>
+              <div className="agent-session-section agent-approval-history">
+                {agentSessions.approvals.filter((approval) => approval.state !== "pending").slice(0, 12).map(renderApproval)}
+                {agentSessions.approvals.filter((approval) => approval.state !== "pending").length > 12 &&
+                  <p className="agent-activity-note">Showing the latest 12 past requests.</p>}
+              </div>
+            </details>}
 
             {agentSessions.capability_map && (
               <details>

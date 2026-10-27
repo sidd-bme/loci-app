@@ -66,7 +66,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onError, onPoint, annotations = [], draft = [], drawingMode = "navigate", onDraftChange,
   showRegion = false, overrideImage = null,
   resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null, resultGroupCentroids = [],
-  initialCamera = null, controlledCamera = null, onCamera, onViewReady, onRegion, paused = false,
+  initialCamera = null, controlledCamera = null, onCamera, onViewportSize, onViewReady, onRegion, paused = false,
   showScaleBar = true, showNavigator = true, requestLane, overlayRight = 0,
   onObjectClick, onRelinkSource, relinkBusy = false,
 }: {
@@ -83,6 +83,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   resultGroupCentroids?: Array<{ u: number; v: number }>;
   initialCamera?: Camera | null; controlledCamera?: Camera | null;
   onCamera?: (camera: Camera) => void;
+  onViewportSize?: (size: { width: number; height: number }) => void;
   onViewReady?: (key: string) => void;
   onRegion?: (region: { x: number; y: number; width: number; height: number }) => void;
   paused?: boolean;
@@ -572,6 +573,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     draw();
   }, [scope, sourceScope, draw, onViewReady, onDraftChange, selection.z, selection.t, projection, source.id, channels]);
   useEffect(() => { if (size.width > 0 && size.height > 0) onCamera?.(camera); }, [camera, size, onCamera]);
+  useEffect(() => { if (size.width > 0 && size.height > 0) onViewportSize?.(size); }, [size, onViewportSize]);
   useEffect(() => {
     const element = frame.current;
     if (!element) return;

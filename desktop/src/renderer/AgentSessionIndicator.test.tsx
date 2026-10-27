@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchAgentSessionsSnapshot,
@@ -108,7 +108,7 @@ describe("AgentSessionIndicator", () => {
       followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
     expect(screen.getByText("1 connected session")).toBeVisible();
-    expect(screen.getByText(wire.approvals[0].summary)).toBeVisible();
+    expect(within(screen.getByLabelText("Pending approval for review_result")).getByText(wire.approvals[0].summary)).toBeVisible();
     expect(screen.getByText(`${wire.approvals[0].result_id!.slice(0, 8)} · rev ${wire.approvals[0].revision_hash!.slice(0, 8)}`)).toBeVisible();
     fireEvent.click(screen.getByLabelText("Approve review_result"));
     await waitFor(() => expect(control).toHaveBeenCalledWith({ action: "approve_request", approval_id: wire.approvals[0].id }));
@@ -317,5 +317,34 @@ describe("AgentSessionIndicator", () => {
       onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
     expect(screen.queryByText("Stop active job")).not.toBeInTheDocument();
+  });
+
+  it("passes exact activity targets to the host and restores focus after Escape within the timeline", () => {
+    const target = { kind: "source" as const, id: "a".repeat(32), sha256: "b".repeat(64),
+      selection: { x: 0, y: 0, width: 20, height: 20, c: 1, t: 0, z: 0, level: 0 } };
+    const onOpenSource = vi.fn();
+    render(<AgentSessionIndicator api={makeApi()} snapshot={makeSnapshot({ events: [{ ...wire.events[0], approval_id: null, targets: [target] }] })}
+      followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} onOpenSource={onOpenSource} />);
+    const trigger = screen.getByRole("button", { name: "Agent session status" });
+    fireEvent.click(trigger);
+    const openSource = screen.getByRole("button", { name: `Open source ${target.id}` });
+    openSource.focus();
+    fireEvent.click(openSource);
+    expect(onOpenSource).toHaveBeenCalledWith(target);
+    fireEvent.keyDown(openSource, { key: "Escape" });
+    expect(screen.queryByLabelText("Agent activity timeline")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps expired requests in history without offering another approval decision", () => {
+    const control = vi.fn();
+    render(<AgentSessionIndicator api={makeApi(control)} snapshot={makeSnapshot({ approvals: [{ ...wire.approvals[0], state: "expired" }] })}
+      followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+    fireEvent.click(screen.getByText("Past approval requests"));
+    const record = screen.getByLabelText("Approval record for review_result");
+    expect(within(record).getByText(wire.approvals[0].summary)).toBeVisible();
+    expect(within(record).queryByRole("button", { name: /Approve|Deny/ })).not.toBeInTheDocument();
+    expect(control).not.toHaveBeenCalled();
   });
 });

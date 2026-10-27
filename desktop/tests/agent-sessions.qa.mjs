@@ -42,7 +42,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const canonicalJson = value => Array.isArray(value) ? `[${value.map(canonicalJson).join(',')}]`
   : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
     : JSON.stringify(value);
-const requestHash = (policySha, operation, request) => createHash('sha256').update(canonicalJson({ policy_sha256: policySha, operation, request })).digest('hex');
+const requestHash = (policySha, operation, request, targets) => createHash('sha256').update(canonicalJson({ policy_sha256: policySha, operation, request, targets })).digest('hex');
 const packageIdentity = async () => ({ executable_sha256: await hash(executable), asar_sha256: await hash(asar), worker_sha256: await hash(worker), build_identity_sha256: await hash(buildFile) });
 const receipt = {
   schema: 'loci.agent-session-packaged-qa/v1', status: 'running', started_at: new Date().toISOString(),
@@ -198,7 +198,7 @@ async function viewerState(sourceId) {
   await page.waitForFunction(id => document.querySelector(`[data-viewer-source="${id}"]`)?.getAttribute('data-prepared') === 'true', sourceId);
   return {
     source_id: await viewer.getAttribute('data-viewer-source'), camera: JSON.parse(await viewer.getAttribute('data-camera')),
-    selected_result: await page.locator('.research-sources [data-result-id][aria-pressed="true"]').getAttribute('data-result-id'),
+    selected_result: await page.evaluate(() => document.querySelector('.research-sources [data-result-id][aria-pressed="true"]')?.getAttribute('data-result-id') ?? null),
     source_view: await page.evaluate(id => window.lociResearch.execute('source_view', { source_id: id }), sourceId),
     analysis_controls: await page.locator('.analysis-region-settings input').evaluateAll(inputs => inputs.map(input => ({ label: input.getAttribute('aria-label'), value: input.value }))),
   };
@@ -311,7 +311,13 @@ try {
   const approval = await pendingApproval('review_result', humanResult.id, humanResult.revision_hash);
   assert.equal(approval.session_id, firstSession.session_id);
   assert.equal(approval.policy_sha256, policySha);
-  assert.equal(approval.request_hash, requestHash(policySha, 'review_result', decision));
+  const exactApprovalTargets = [
+    { kind: 'result', id: humanResult.id, revision_hash: humanResult.revision_hash, source_id: source.id, source_sha256: source.sha256 },
+    { kind: 'source', id: source.id, sha256: source.sha256, selection: fixture.selection },
+    { kind: 'job', id: humanRun.job.id },
+  ].map(canonicalJson).sort().map(item => JSON.parse(item));
+  assert.deepEqual(approval.targets.map(canonicalJson).sort().map(item => JSON.parse(item)), exactApprovalTargets);
+  assert.equal(approval.request_hash, requestHash(policySha, 'review_result', decision, exactApprovalTargets));
   await checkpoint('review-awaiting-exact-approval');
   assert.equal((await client.command({ action: 'ping' })).pong, true, 'Controller and transport remain responsive while the tool waits');
   await drawer().getByRole('button', { name: 'Approve review_result', exact: true }).click();
@@ -372,6 +378,64 @@ try {
   receipt.follow_on = { job_id: onJob.id, result_id: onCompleted.result_ids[0], selected_result: (await viewerState(source.id)).selected_result };
   receipt.checks.push('agent-owned-completed-results-refresh-without-human-view-change-unless-follow-enabled-and-idle');
   await checkpoint('follow-on-exact-owned-result');
+  await selectWorkbenchTool(page, 'Display');
+  const editingField = page.getByLabel('X', { exact: true });
+  const draft = String(Number(await editingField.inputValue()) + 1);
+  await editingField.fill(draft);
+  const editingBefore = await viewerState(source.id);
+  const editingJob = (await client.call('submit_recipe', { request: approved, request_key: 'follow-during-human-edit' })).job;
+  const editingComplete = await waitJob(editingJob.id);
+  await selectedResult(editingComplete.result_ids[0]).waitFor();
+  await client.call('source_image', { request: { source_id: source.id,
+    selection: { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 },
+    channels: [{ channel: 1, low: 0, high: 4095, gamma: 1, color: '#ffffff', opacity: 1, visible: true }], projection: 'plane', max_size: 64 } });
+  await delay(1800);
+  assert.equal(await editingField.inputValue(), draft);
+  assert.equal(await editingField.evaluate(element => element === document.activeElement), true);
+  const editingAfter = await viewerState(source.id);
+  assert.equal(editingAfter.selected_result, editingBefore.selected_result);
+  assert.deepEqual(editingAfter.camera, editingBefore.camera);
+  assert.deepEqual(editingAfter.source_view.state.selection, editingBefore.source_view.state.selection);
+  await editingField.press('Tab');
+  await delay(1800);
+  assert.equal((await viewerState(source.id)).selected_result, editingBefore.selected_result,
+    'Consumed agent activity must not replay after the human finishes editing');
+  receipt.follow_during_edit = { draft, job_id: editingJob.id, before: editingBefore, after: editingAfter };
+  receipt.checks.push('Focused human numeric draft, selected revision and camera survive live MCP result and source-image activity; no delayed replay after blur');
+  await checkpoint('follow-preserves-human-edit');
+  await selectWorkbenchTool(page, 'Display');
+  await delay(1800);
+  const sourceBefore = await viewerState(source.id);
+  const inspectedSelection = { ...fixture.selection, x: 12, y: 14, width: 16, height: 16, c: 1 };
+  await client.call('source_image', { request: { source_id: source.id, selection: inspectedSelection,
+    channels: [{ channel: 1, low: 0, high: 4095, gamma: 1, color: '#ffffff', opacity: 1, visible: true }], projection: 'plane', max_size: 64 } });
+  const followDeadline = Date.now() + 30000;
+  let sourceAfter;
+  do {
+    sourceAfter = await viewerState(source.id);
+    if (sourceAfter.source_view.state.selection.c === 1 && sourceAfter.selected_result === null) break;
+    await delay(100);
+  } while (Date.now() < followDeadline);
+  assert.equal(sourceAfter.selected_result, null);
+  assert.equal(sourceAfter.source_view.state.selection.c, 1);
+  assert.equal(sourceAfter.camera.x, 20); assert.equal(sourceAfter.camera.y, 22);
+  const followedViewport = page.locator(`[data-viewer-source="${source.id}"]`);
+  const viewportBounds = await followedViewport.boundingBox(); assert.ok(viewportBounds);
+  const expectedScale = Math.min(32, Math.min(viewportBounds.width / 16, viewportBounds.height / 16) * 0.96);
+  assert.ok(Math.abs(sourceAfter.camera.scale - expectedScale) < 1e-9, 'Follow fits the inspected crop to the live viewport');
+  assert.deepEqual(sourceAfter.source_view.state.channels.filter(item => item.visible).map(item => item.channel), [1]);
+  const centerPixel = await followedViewport.locator('canvas').first().evaluate(canvas =>
+    Array.from(canvas.getContext('2d').getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data));
+  assert.ok(centerPixel[0] >= 85 && centerPixel[0] <= 92 && centerPixel[0] === centerPixel[1] && centerPixel[1] === centerPixel[2],
+    `The followed canvas must show the known Channel 2 ramp, received ${centerPixel}`);
+  assert.equal(centerPixel[3], 255);
+  receipt.follow_canvas = { viewport: viewportBounds, expected_scale: expectedScale, center_rgba: centerPixel };
+  assert.deepEqual(sourceAfter.source_view.state.channels.map(item => item.color), sourceBefore.source_view.state.channels.map(item => item.color));
+  for (const key of ['x', 'y', 'width', 'height', 'level'])
+    assert.equal(sourceAfter.source_view.state.selection[key], sourceBefore.source_view.state.selection[key]);
+  receipt.follow_source = { requested: inspectedSelection, before: sourceBefore, after: sourceAfter };
+  receipt.checks.push('Explicit Follow adopts exact inspected source plane and region camera while retaining channel colors and analysis ROI');
+  await checkpoint('follow-on-exact-inspected-source');
   await openDrawer();
   await drawer().getByLabel('Follow agent', { exact: true }).uncheck();
   await drawer().getByRole('button', { name: 'Disconnect client', exact: true }).click();

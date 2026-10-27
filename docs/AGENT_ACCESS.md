@@ -316,6 +316,64 @@ executors as the GUI and CLI. Read and task workers retain CPU, memory and share
 concurrency limits, policy/source checks, and publication guards. There is no
 generic operation, shell or model-install escape hatch.
 
+### Shared researcher and agent workflows
+
+The action contract now distinguishes `inspection`, `preview-task` and
+`publication-task`, with the native operation, output type, required scope,
+resource bounds and cancellation behavior exposed in discovery. Availability
+never adds authority to an existing policy.
+
+Named actions cover saved workflow list/get/preflight/preview/run/status;
+exploration list/get/preview/compare/run; population gate evaluation and saved
+group reads; study summaries; intensity catalog/preview and saved report reads.
+They reuse native validators and numerical execution. Document lists are scoped
+before inspection; result ancestry, source selections, measured channels, runtime
+and model identities remain subject to grants. These new summary and comparison
+reads currently accept the flat native runtime/model identity profile; learned
+Cellpose/ONNX producer provenance is rejected rather than reduced to a partial
+identity. The existing `granted-sources` adopted-data delegation remains
+method-independent for result inspection/review/export; that data access does
+not grant model execution or prove a pinned learned runtime. Workflow authoring
+and runtime or model provisioning remain researcher-controlled.
+
+Preview tasks use ordinary durable job ownership and cancellation. A succeeded
+preview can be read with `task_preview_get` by its owning session, after the
+original action is authorized again. The local display cache retains at most
+eight previews, each with at most 8 MiB of output. Each record binds the task,
+request, source fingerprint and output digest. It is not an adopted result or a
+portable study artifact. An evicted or mismatched preview fails explicitly and
+is never recomputed by inspection. `exploration_compare` additionally saves the
+native comparison receipt; discovery declares that side effect.
+
+MCP preview inspection returns actual PNG image blocks with explicit JSON-pointer
+mappings in `image_transport`. Metadata omits the mapped data URLs; the retained
+`output_sha256` still covers the original canonical output including those URLs.
+To verify it, reconstruct the declared image paths from their mapped blocks.
+Each block also carries a PNG-byte hash. Image count, bytes and metadata are
+bounded before disclosure; invalid image content fails the whole response.
+
+The desktop activity timeline records inspected, proposed, submitted and
+completed operations, including exact source/result/job references. Pending
+approvals show their targets and become stale when a bound source, result or
+workflow changes. Byte verification occurs at approval and consumption; routine
+status polling uses recorded identity. Opening a timeline target rechecks its
+identity. Source, result and job links support navigation; other target kinds
+currently expose identity details without direct navigation. Preview inspection
+supports a pinned comparison within one source;
+different recorded selections are labelled without claiming pixel alignment.
+
+The workflow panel uses the source rail's selected images for preflight and
+batch execution. Explicit **Follow agent views and results** can follow inspected
+source planes/regions and newly produced results. Regions affect the display
+camera, not the analysis ROI. For scalar data, Follow shows the reported channel
+using the researcher's existing colors and contrast; RGB sample component mixes
+stay unchanged. Editing,
+pointer activity and later human input suppress automatic navigation, including
+late asynchronous responses. Disabling Follow does not cancel computations.
+Exact job controls retain policy/session ownership, and reconnecting does not
+transfer jobs or retry publication automatically. Verified workflow exports
+made through the agent also update the native workflow export receipt.
+
 `classical_run` requires the `loci-classical` profile, all native segmentation
 settings, one fully resolved 2D source selection (`x,y,width,height,t,c,z,level`),
 explicit raw measurement channels and a working-memory allowance. Its source,
@@ -407,7 +465,7 @@ namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them
   **Disconnect client**, **Revoke access**, and a **Follow agent** toggle. While
   **Follow agent** is off (or while the user is editing), agent updates merge
   into study history without overwriting the user's selected source, result,
-  viewport camera, or unsaved drafts. Follow opens only newly completed results
+  viewport camera, or unsaved drafts. Follow opens inspected source views and newly completed results
   attributed to that session while the researcher is idle in Display, Results
   or Agent. Results received during editing are not queued to interrupt later.
   Stop targets an exact session-owned job. Disconnect revokes that session
@@ -435,7 +493,7 @@ reports the mode and permitted names without disclosing the private root path.
 ## SDK clients
 
 The client contract is handshake-based MCP stdio. The source protocol tests
-exercise version `2025-11-25` with the locked Python MCP SDK `2.1.1`.
+exercise version `2025-11-25` with the locked Python MCP SDK `2.2.0`.
 The guide/context additions retain that client flow; they do not claim support
 for every newer specification revision. Packaging receipts record the actual
 negotiated protocol and tested worker identity. Use the generated access-bundle

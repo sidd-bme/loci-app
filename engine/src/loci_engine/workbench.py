@@ -1488,6 +1488,11 @@ class Workbench:
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if operation == "task_preview_get":
+            from .research_task_preview import get_preview
+
+            exact_keys(request, {"job_id"}, operation)
+            return get_preview(self.project, request.get("job_id"), check=publication_guard)
         if operation == "scientific_data_export":
             from .research_data_export import execute_export_task
 

@@ -247,6 +247,12 @@ def test_previews_are_prefix_bound_nonadopting_and_full_population(workflow):
         assert output["target_node_id"] == target
         if target == "source":
             assert output["provenance"]["processing"] == [] and output["object_count"] == 0
+        if target in {"segment", "measure", "population"}:
+            assert output["label_image"].startswith("data:image/png")
+            assert output["label_image"] != output["image"]
+            assert output["size_summary"]["count"] == output["object_count"]
+        else:
+            assert "label_image" not in output
         if target == "population":
             assert output["population"]["filtered_count"] == 1
     assert wb.project.list_results() == []

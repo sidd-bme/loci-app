@@ -348,7 +348,18 @@ export interface ResearchAgentSessionRecord {
   updated_at: string;
   ended_at: string | null;
 }
+export interface ResearchAgentTargetReference {
+  kind: "source" | "result" | "job" | "workflow" | "population_group" | "intensity_report" | "exploration";
+  id: string;
+  sha256?: string;
+  revision_hash?: string;
+  revision?: number;
+  source_id?: string;
+  source_sha256?: string;
+  selection?: ResearchSelection;
+}
 export interface ResearchAgentApprovalRecord {
+  targets?: ResearchAgentTargetReference[];
   id: string;
   session_id: string | null;
   policy_sha256: string;
@@ -376,6 +387,7 @@ export interface ResearchAgentApprovalRecord {
   expires_at: string;
 }
 export interface ResearchAgentEventRecord {
+  targets?: ResearchAgentTargetReference[];
   id: string;
   session_id: string | null;
   policy_sha256: string | null;
