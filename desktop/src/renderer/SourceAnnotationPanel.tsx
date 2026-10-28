@@ -355,7 +355,7 @@ export function SourceAnnotationPanel({ api, source, selection, tool, onTool, po
         </div>
       );
     })()}
-    <details><summary>Import & export annotations</summary>
+    <details><summary>Source drawings</summary>
       <p>Vector coordinates and calibration bound to this exact source. Image pixels are not included.</p>
       <div className="research-actions">
         <button disabled={!receipt || busy || !api.exportSourceAnnotations} onClick={() => void interchange("export")}>Export annotations</button>

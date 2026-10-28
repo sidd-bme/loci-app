@@ -1,3 +1,4 @@
+import { researcherScopeLabel, sourceChannelLabel } from "./research-scope-labels";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ResearchAgentAccessReceipt,
@@ -149,6 +150,7 @@ export function ResearchAgentPanel({
   busy,
   onBusyChange,
   onCreated,
+  configurationValid = true,
 }: {
   api: ResearchDesktopApi;
   source: ResearchSource;
@@ -159,6 +161,7 @@ export function ResearchAgentPanel({
   recipe: ResearchRecipe;
   report: Report;
   busy: boolean;
+  configurationValid?: boolean;
   onBusyChange: (busy: boolean) => void;
   onCreated?: () => void;
 }): React.JSX.Element {
@@ -273,7 +276,7 @@ export function ResearchAgentPanel({
     (!experiment || (rangesValid && Object.keys(parameters).length > 0 && (allowPreview || allowRun)));
   const channelCount = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "") ? 1 : source.metadata.dimensions?.c ?? 1;
   const canCreate = Boolean(
-    api.createAgentAccess && validation && validatedScope === validationFingerprint &&
+    configurationValid && api.createAgentAccess && validation && validatedScope === validationFingerprint &&
     limitsValid && exportValid && operationValid && interactiveValid && delegationValid && !busy && !localBusy,
   );
 
@@ -295,6 +298,7 @@ export function ResearchAgentPanel({
   ])];
 
   const validate = async () => {
+    if (!configurationValid) return;
     const generation = ++validationGeneration.current;
     setLocalBusy(true);
     onBusyChange(true);
@@ -322,8 +326,8 @@ export function ResearchAgentPanel({
   };
 
   useEffect(() => {
-    if (preset !== "custom" && !hasReferences) void validate();
-  }, [preset, validationFingerprint]);
+    if (configurationValid && preset !== "custom" && !hasReferences) void validate();
+  }, [preset, validationFingerprint, configurationValid]);
 
   const applyPreset = (value: string) => {
     setPreset(value);
@@ -428,18 +432,20 @@ export function ResearchAgentPanel({
         <h3>Source and scope</h3>
         <dl className="research-kv">
           <div><dt>Display name</dt><dd>{source.name}</dd></div>
-          <div><dt>Crop and axes</dt><dd>{sourceMode === "study" ? `All pixels, channels, Z planes and timepoints in ${scopedSources.length} current sources` : scopeSummary(selection)}</dd></div>
-          <div><dt>Measurement channels</dt><dd>{sourceMode === "study" ? "All acquisition channels" : agentRecipe.measurement_channels.join(", ")}</dd></div>
+          <div><dt>Crop and axes</dt><dd>{sourceMode === "study" ? `All pixels, channels, Z planes and timepoints in ${scopedSources.length} current sources` : researcherScopeLabel(source, selection)}</dd></div>
+          <div><dt>Measurement channels</dt><dd>{sourceMode === "study" ? "All acquisition channels" : agentRecipe.measurement_channels.map((channel) => sourceChannelLabel(source, channel)).join(", ")}</dd></div>
           <div><dt>Memory limit</dt><dd>{Number(memoryMiB).toLocaleString()} MiB per task</dd></div>
         </dl>
         {sourceMode === "study" && <details><summary>Included sources ({scopedSources.length})</summary><ul>{scopedSources.map(item => <li key={item.id}>{item.name}</li>)}</ul><p>Sources added later require a new grant.</p></details>}
         <details><summary>Technical record</summary><dl className="research-kv">
+          <div><dt>API coordinates (zero-based)</dt><dd>{scopeSummary(selection)}</dd></div>
+          <div><dt>Coordinate basis</dt><dd>X/Y are zero-based pixel offsets; API intervals are half-open. C/Z/T above are one-based.</dd></div>
           <div><dt>Source ID</dt><dd>{source.id}</dd></div>
           <div><dt>Source SHA-256</dt><dd>{source.sha256}</dd></div>
         </dl></details>
         <details><summary>Displayed recipe settings</summary><pre>{JSON.stringify(agentRecipe, null, 2)}</pre></details>
         {hasReferences && <p role="alert">Agent recipes currently reject flat-field and dark-field references. Remove those bindings from this recipe before validation.</p>}
-        <button disabled={busy || localBusy || hasReferences} onClick={() => void validate()}>
+        <button disabled={busy || localBusy || hasReferences || !configurationValid} onClick={() => void validate()}>
           Validate exact scope and recipe
         </button>
         {validation && <div className="research-summary" aria-label="Exact recipe validation">

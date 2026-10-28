@@ -51,6 +51,34 @@ function renderPanel(execute: ResearchDesktopApi["execute"], onResults = vi.fn()
 }
 
 describe("ResearchRemotePanel", () => {
+  it("refuses recipe staging for unfinished numeric configuration while exact job cancellation stays live", async () => {
+    const run = { request_key: "5".repeat(32), request_sha256: "6".repeat(64), alias: "vanda", state: "running", remote_state: "running", remote_job_id: "123.server", status_detail: null, outputs: null, attachment: null, remote_cleanup: null };
+    const execute = vi.fn(async (operation: string) => {
+      if (operation === "remote_profile_list") return { profiles: [profile] };
+      if (operation === "remote_run_list") return { runs: [run] };
+      if (operation === "remote_cancel") return { run: { ...run, state: "cancelled" } };
+      if (operation === "remote_stage") return { run: { ...run, state: "staged" } };
+      return {};
+    });
+    const props = { api: api(execute), sources: [source], selection, recipe, onResults: vi.fn() };
+    const { rerender } = render(<ResearchRemotePanel {...props} configurationValid={false} />);
+    await screen.findByText("Saved remote state loaded.");
+    const stage = screen.getByRole("button", { name: /Stage & transfer/ });
+    expect(stage).toBeDisabled();
+    fireEvent.click(stage);
+    expect(execute).not.toHaveBeenCalledWith("remote_stage", expect.anything());
+    const cancel = screen.getByRole("button", { name: "Cancel job" });
+    expect(cancel).toBeEnabled();
+    fireEvent.click(cancel);
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_cancel", { alias: run.alias, request_key: run.request_key }));
+    rerender(<ResearchRemotePanel {...props} configurationValid />);
+    await waitFor(() => expect(stage).toBeEnabled());
+    fireEvent.click(stage);
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("remote_stage", expect.objectContaining({
+      tasks: [expect.objectContaining({ recipe })],
+    })));
+  });
+
   it("redacts scratch paths when loading remote state fails", async () => {
     const execute = vi.fn().mockRejectedValue(new Error("Cannot load /scratch/team/private run/state.json: denied"));
     renderPanel(execute);

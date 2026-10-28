@@ -170,7 +170,7 @@ try {
   await page.waitForFunction(() => document.querySelector('.workflow-save-state')?.textContent === 'Saved revision 1');
   const saved = (await operation('workflow_list', {})).workflows.find(item => item.data.definition.name === 'Shared synthetic components'); assert.ok(saved);
   await workflow.getByRole('button', { name: 'Select Measure raw pixels', exact: true }).click(); await workflow.getByRole('button', { name: 'Preview through this step', exact: true }).click(); await workflow.getByText(/Preview through Measure raw pixels · 3 objects/).waitFor();
-  await workflow.getByRole('button', { name: 'Run workflow', exact: true }).click(); await workflow.getByText(/objects · waiting review/).waitFor({ timeout: 120000 });
+  await workflow.getByRole('button', { name: 'Run workflow', exact: true }).click(); await workflow.getByText(/objects · review required/).waitFor({ timeout: 120000 });
   const guiState = await page.evaluate(() => window.lociResearch.getSnapshot()); const guiJob = [...guiState.jobs].reverse().find(item => item.operation === 'workflow_run' && item.request.task_request.workflow_id === saved.id); assert.equal(guiJob.state, 'succeeded');
   const guiResult = (await operation('workflow_status', { run_id: guiJob.id })).run.data; await oracle(guiResult.result_id, 0);
   const binding = source => ({ workflow_id: saved.id, workflow_revision: saved.revision, definition_sha256: saved.data.definition_sha256, source_id: source.id, source_sha256: source.sha256, selection: fixture.selection });

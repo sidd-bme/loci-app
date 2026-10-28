@@ -148,6 +148,7 @@ export function ResearchRemotePanel({
   recipe,
   onResults,
   busy = false,
+  configurationValid = true,
 }: {
   api: ResearchDesktopApi;
   sources: ResearchSource[];
@@ -155,6 +156,7 @@ export function ResearchRemotePanel({
   recipe: ResearchRecipe;
   onResults: (value: unknown) => void | Promise<void>;
   busy?: boolean;
+  configurationValid?: boolean;
 }): React.JSX.Element {
   const [profiles, setProfiles] = useState<RemoteProfile[]>([]);
   const [runs, setRuns] = useState<RemoteRun[]>([]);
@@ -366,7 +368,7 @@ export function ResearchRemotePanel({
   }
 
   async function stage(): Promise<void> {
-    if (disabled || !activeProfile?.runtime_ready || !selectedSources.length) return;
+    if (!configurationValid || disabled || !activeProfile?.runtime_ready || !selectedSources.length) return;
     // The transfer action authorizes only the source scope displayed at this click.
     const authorizedScope = stageScope;
     if (taskMode === "cellpose" && activeProfile && (
@@ -518,7 +520,7 @@ export function ResearchRemotePanel({
           <span className="wide">Saved requested resources: {activeProfile.resources.cpus} CPU · {activeProfile.resources.memory_mb} MiB · {activeProfile.resources.gpus} GPU · {activeProfile.resources.wall_minutes} min</span>
           <span className="wide">Pinned connection: {activeProfile.connection ? `${activeProfile.connection.runtime_version} · ${activeProfile.connection.host_key_sha256}` : "unknown"}</span>
         </div>}
-        <div className="research-remote-actions"><button disabled={disabled} onClick={() => void saveProfile()}>{scheduler === "direct" ? "Save standalone compute profile" : "Save cluster profile"}</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("profile_test")}>Test pinned connection</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("readiness")}>Check worker readiness</button></div>
+        <div className="research-remote-actions"><button disabled={disabled} onClick={() => void saveProfile()}>{scheduler === "direct" ? "Save standalone compute profile" : "Save cluster profile"}</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("profile_test")}>Test connection</button><button disabled={disabled || !activeProfile} onClick={() => void profileOperation("readiness")}>Check worker readiness</button></div>
       </details>
 
       <details open>
@@ -544,7 +546,7 @@ export function ResearchRemotePanel({
           {sources.map((source) => { const mapping = mappingFor(source.id); return <fieldset key={source.id}><legend><label><input aria-label={`Select ${source.name}`} type="checkbox" checked={selected.includes(source.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, source.id] : current.filter((id) => id !== source.id))} />{source.name}</label></legend><label className="research-remote-check"><input aria-label={`Use remote copy for ${source.name}`} type="checkbox" checked={mapping.enabled} onChange={(event) => updateMapping(source.id, { enabled: event.target.checked })} />Use an exact existing file under a permitted input root</label>{mapping.enabled && <div className="research-remote-map"><label>Root index<input aria-label={`Remote root index for ${source.name}`} type="number" min="0" value={mapping.rootIndex} onChange={(event) => updateMapping(source.id, { rootIndex: event.target.value })} /></label><label>Relative path<input aria-label={`Remote relative path for ${source.name}`} value={mapping.relativePath} onChange={(event) => updateMapping(source.id, { relativePath: event.target.value })} /></label><code>{source.sha256}</code></div>}</fieldset>; })}
         </div>
         <p className="research-remote-scope">C {selection.c + 1} · Z {selection.z + 1}{selection.z_stop === undefined ? "" : `–${selection.z_stop}`} · T {selection.t + 1} · {selection.width} × {selection.height} px at ({selection.x}, {selection.y})</p>
-        <div className="research-remote-actions"><button disabled={disabled || !activeProfile?.runtime_ready || !selectedSources.length} onClick={() => void stage()}>Stage &amp; transfer {selectedSources.length} {selectedSources.length === 1 ? "image" : "images"} to {alias}</button><button disabled={disabled} onClick={() => setRequestKey(randomKey())}>New request key</button></div>
+        <div className="research-remote-actions"><button disabled={!configurationValid || disabled || !activeProfile?.runtime_ready || !selectedSources.length} onClick={() => void stage()}>Stage &amp; transfer {selectedSources.length} {selectedSources.length === 1 ? "image" : "images"} to {alias}</button><button disabled={disabled} onClick={() => setRequestKey(randomKey())}>New request key</button></div>
       </details>
 
       <details open>
@@ -567,8 +569,8 @@ export function ResearchRemotePanel({
             : <span className="wide">Attached result runtime: {runtimeReceipt.state === "loading" ? "loading exact result…" : "unknown"}</span>}
           {activeRun.status_detail && <p>{activeRun.status_detail}</p>}
         </div>}
-        <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "staged"} onClick={() => void runOperation("submit")}>Submit or recover</button><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void runOperation("status")}>Refresh status</button><button disabled={disabled || !activeRun?.remote_job_id || ["retrieved", "attached", "cleaned"].includes(activeRun.state)} onClick={() => void runOperation("cancel")}>Cancel exact job</button></div>
-        <div className="research-remote-log"><label><input aria-label="Read stderr" type="checkbox" checked={stderr} onChange={(event) => setStderr(event.target.checked)} />stderr</label><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void readLog()}>Read bounded log</button><pre aria-label="Remote bounded log">{logText || "No log loaded."}</pre></div>
+        <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "staged"} onClick={() => void runOperation("submit")}>Submit or recover</button><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void runOperation("status")}>Refresh status</button><button disabled={disabled || !activeRun?.remote_job_id || ["retrieved", "attached", "cleaned"].includes(activeRun.state)} onClick={() => void runOperation("cancel")}>Cancel job</button></div>
+        <div className="research-remote-log"><label><input aria-label="Read stderr" type="checkbox" checked={stderr} onChange={(event) => setStderr(event.target.checked)} />Error output</label><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void readLog()}>View log</button><pre aria-label="Remote bounded log">{logText || "No log loaded."}</pre></div>
         <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "finished"} onClick={() => void retrieve()}>Retrieve {activeRun?.request_key.slice(0, 8) ?? "run"} into study</button><button disabled={disabled || activeRun?.state !== "retrieved"} onClick={() => void runOperation("attach")}>Attach unreviewed results</button></div>
         {activeRun?.state === "attached" && <p className="research-remote-scope">Removes this run’s two owned folders after verified attachment.</p>}
         <button className="research-remote-remove" disabled={disabled || activeRun?.state !== "attached"} onClick={() => void removeOwned()}>Remove {activeRun?.request_key.slice(0, 8) ?? "run"} data from {activeRun?.alias ?? "host"}</button>

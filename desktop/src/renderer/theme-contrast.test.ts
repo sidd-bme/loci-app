@@ -26,7 +26,9 @@ describe("theme text contrast", () => {
           expect(contrast(colors[foreground], colors[background]), `${foreground} on ${background}`).toBeGreaterThanOrEqual(4.5);
         }
       }
-      expect(contrast("#10201c", colors["--mineral"])).toBeGreaterThanOrEqual(4.5);
+      for (const background of ["--action-background", "--action-hover"]) {
+        expect(contrast(colors["--action-foreground"], colors[background]), `action text on ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
       for (const foreground of ["--ink", "--ink-muted"]) {
         expect(contrast(colors[foreground], colors[summaryBackground]), `quantitative summary ${foreground}`).toBeGreaterThanOrEqual(4.5);
       }

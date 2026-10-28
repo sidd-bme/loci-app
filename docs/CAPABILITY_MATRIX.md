@@ -11,6 +11,25 @@ qualification applies only to the exact source and packaged artifact tested.
 reads, memory, grids or supported variants. Source tests, actual packaged GUI
 journeys and external qualifications remain separate evidence categories.
 
+## Researcher activation in current source
+
+The source workbench keeps the four task groups (View, Annotate, Analyze and
+Results), with clearer first-study guidance, display controls and source/scope
+summaries. The optional **Practice: inspect, measure and export** guide navigates
+to the existing tools; it does not run analysis or record review for the researcher.
+Researcher-facing channel/plane summaries and technical API indices retain their
+separate coordinate conventions.
+
+Marker-gate thresholds retain empty, partial and invalid text without replacing
+the applied value. Dependent recipe preview, run, save, batch, workflow import,
+assistant recipe validation/access grants and remote staging require valid numeric
+configuration.
+Escape restores the applied value; switching tools retains the draft, while
+switching sources discards the uncommitted marker-threshold draft. Remote job
+cancellation remains available. These are interface and input-state changes, not
+new numerical methods or scientific qualification. Published and staged apps
+retain their own exact-build evidence; see [release status](RELEASE_STATUS.md).
+
 ## Source and pixel contracts
 
 | Source route | Concrete accepted subset | Axes, samples and dtype | Codec and resource boundary | Explicit refusals or limits |
@@ -106,6 +125,7 @@ limits remain separate; choosing a larger recipe allowance does not bypass them.
 - Folder tree, relative-path search and breadcrumbs organize imported sources. Batch folder selection includes descendants; browsing never changes scientific source identity or the analysis region.
 - Provisional review packages contain counts, provenance and boundary-outline PNGs for whole native uint8 RGB planes up to 16 megapixels. They may contain pending revisions and never grant review. Publication requires atomic no-replace directory support. Reviewed scientific exports retain their separate exact-revision gates.
 - Append-only review history distinguishes researcher and explicitly delegated agent decisions. A correction starts unreviewed; a researcher can supersede an agent event without erasing it. Legacy human receipts retain their semantics. Review is an assessment, not biological or clinical validation.
+- Current source exposes named workflow, exploration, population, study-summary and intensity actions to explicitly authorized agents, with retained previews, exact activity targets and optional Follow. Supported source/method profiles, disclosure grants, job ownership and review authority still apply. Source/result/job targets navigate; other target kinds may expose identity details only. The [agent-access guide](AGENT_ACCESS.md) records these boundaries. Source support or SDK evidence does not qualify a particular external host.
 - Saved compute targets support native classical and registered Cellpose tasks, with explicit whole-file transfer and a prepared runtime/model. Target edits affect future runs; existing runs retain their exact execution snapshot. No runtime/model installation or interactive password/MFA setup is provided. See [Remote workflow](REMOTE_WORKFLOW.md).
 
 ## What each source can do in the unified workspace

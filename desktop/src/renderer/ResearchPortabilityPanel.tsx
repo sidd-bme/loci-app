@@ -49,8 +49,12 @@ export function ResearchPortabilityPanel({
   onBusyChange,
   onSnapshot,
   onResult,
+  onOpenMethods, onOpenDrawings, onChooseResult,
 }: {
   api: ResearchDesktopApi;
+  onOpenMethods?: () => void;
+  onOpenDrawings?: () => void;
+  onChooseResult?: (result: ResearchResult) => void;
   snapshot: ResearchSnapshot;
   selectedSourceId: string | null;
   selectedResult: ResearchResult | null;
@@ -196,14 +200,6 @@ export function ResearchPortabilityPanel({
     <div className="research-portability">
       <section className="research-panel">
         <h2>Portable study</h2>
-        <div className="research-actions">
-          <button disabled={locked} onClick={() => void run(
-            () => api.openStudy(), "Could not open the selected study.",
-          ).then((next) => { if (next) onSnapshot(next); })}>Open study</button>
-          <button disabled={locked} onClick={() => void run(
-            () => api.createStudy(), "Could not create a new study.",
-          ).then((next) => { if (next) onSnapshot(next); })}>Create study</button>
-        </div>
         <p>Share results and settings. Original images stay separate.</p>
         <button disabled={locked || !api.exportStudy} onClick={() => void exportStudy()}>
           Export portable study
@@ -283,6 +279,8 @@ export function ResearchPortabilityPanel({
       <ResearchInterchangePanel
         api={api}
         result={selectedResult}
+        availableResults={snapshot.results.filter((item) => item.source_id === selectedSourceId && item.arrays?.labels)}
+        onOpenMethods={onOpenMethods} onOpenDrawings={onOpenDrawings} onChooseResult={onChooseResult}
         report={report}
         busy={locked}
         onBusyChange={onBusyChange}

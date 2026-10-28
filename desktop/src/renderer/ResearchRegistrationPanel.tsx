@@ -503,7 +503,7 @@ export function ResearchRegistrationPanel({
 
   return (
     <div className="research-panel research-registration">
-      <h2>Registration & physical grids</h2>
+      <h2>Register & resample</h2>
       <div className="research-mode-tabs" role="tablist" aria-label="Registration mode">
         <button
           role="tab"

@@ -136,7 +136,7 @@ try {
   assert.equal(beforeResult.provenance.runtime.fallback_reason, null);
   assert.equal(beforeResult.provenance.remote_attachment.request_key, requestKey);
 
-  await page.getByRole("button", { name: "Test pinned connection" }).click();
+  await page.getByRole("button", { name: "Test connection" }).click();
   await page.getByText("Pinned connection verified.", { exact: true })
     .waitFor({ state: "visible", timeout: 120_000 });
   await noUiError("pinned connection test");

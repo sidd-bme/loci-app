@@ -5,7 +5,30 @@ The internal desktop and engine version remains `0.2.0`.
 The [release page](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2)
 contains the application, checksums, software inventories and dependency licences.
 
-## What's new
+## Source development after this download
+
+The source tree includes newer shared researcher/agent workflows, named actions,
+retained image previews and comparisons, activity targets, expiring approvals and
+explicit Follow controls, plus scientific data packages and study intensity
+comparisons. These additions are not all included in **v0.2.0-beta.2**. See the
+[capability matrix](CAPABILITY_MATRIX.md), [agent-access guide](AGENT_ACCESS.md)
+and [scientific export guide](SCIENTIFIC_DATA_EXPORT.md) for their supported scopes.
+
+The researcher-activation source changes refine first-study guidance, analysis
+scope and channel/plane labels, input-state recovery, theme pairing and actions
+in longer forms. Unfinished marker thresholds no longer become zero; dependent
+recipe actions require a valid configuration. These changes preserve the
+numerical methods, source data, calibration, provenance and review authority.
+
+A staged development app is an unreleased candidate, not another public beta.
+Its identity and qualification record apply only to that exact artifact; an
+earlier staged app or source check does not qualify later source changes.
+[Development build numbering](DEVELOPMENT_BUILDS.md) explains the distinction.
+No new binary release, scientific validation or actual agent-host qualification
+is asserted by these source notes. The published-beta checks below retain their
+original source and artifact identities.
+
+## What's new in v0.2.0-beta.2
 
 Try classical segmentation settings on explicit image regions, compare up to three
 regions and three settings, and adopt the exact inspected preview. Persistent

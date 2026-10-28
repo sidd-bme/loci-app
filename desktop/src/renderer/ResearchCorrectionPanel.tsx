@@ -403,14 +403,14 @@ export function ResearchCorrectionPanel({
   if (!result)
     return (
       <div className="research-panel">
-        <h2>Corrections & ROI</h2>
+        <h2>Edit labels & ROIs</h2>
         <p>Select a segmentation result to edit labels or add an ROI.</p>
       </div>
     );
   if (!info)
     return (
       <div className="research-panel">
-        <h2>Corrections & ROI</h2>
+        <h2>Edit labels & ROIs</h2>
         {infoError ? (
           <p role="alert">{infoError}</p>
         ) : (
@@ -560,7 +560,7 @@ export function ResearchCorrectionPanel({
 
   return (
     <div className="research-panel research-correction">
-      <h2>Corrections & ROI</h2>
+      <h2>Edit labels & ROIs</h2>
       {targetError && <p role="alert">{targetError}</p>}
       <p>
         Choose a label, draw the edit, then apply it. Each edit creates a result for review.

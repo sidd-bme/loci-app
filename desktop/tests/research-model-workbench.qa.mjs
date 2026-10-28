@@ -342,7 +342,7 @@ async function previewAndAdopt(page, priorIds, label) {
   assert.match(previewSha256 ?? "", /^[a-f0-9]{64}$/u, `${label} preview fingerprint was not bound`);
   await screenshot(page, `${label}-preview`);
   await page
-    .getByRole("button", { name: "Adopt exact preview", exact: true })
+    .getByRole("button", { name: "Save preview as result", exact: true })
     .click();
   const snapshot = await waitFor(
     page,
@@ -573,7 +573,7 @@ try {
   );
   await page.getByLabel("Model working memory").selectOption(String(TWO_GIB));
   await page
-    .getByRole("button", { name: "Import managed package", exact: true })
+    .getByRole("button", { name: "Import model package…", exact: true })
     .click();
   const usefulModels = await waitFor(
     page,
@@ -746,7 +746,7 @@ try {
 
   await selectWorkbenchTool(page, "Model");
   await page
-    .getByRole("button", { name: "Import managed package", exact: true })
+    .getByRole("button", { name: "Import model package…", exact: true })
     .click();
   const bothModels = await waitFor(
     page,

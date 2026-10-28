@@ -823,6 +823,8 @@ export default function ResearchWorkbench({
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Display");
   const [workflowOpened, setWorkflowOpened] = useState(false);
+  const [quantificationOpened, setQuantificationOpened] = useState(false);
+  const [quantificationEntryKey, setQuantificationEntryKey] = useState(0);
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
   const [populationOpened, setPopulationOpened] = useState(false);
   const [statisticsFocused, setStatisticsFocused] = useState(false);
@@ -2847,6 +2849,7 @@ export default function ResearchWorkbench({
       setWorkflowOpened(true);
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
     }
+    if (next === "Quantify") setQuantificationOpened(true);
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
@@ -2950,7 +2953,7 @@ export default function ResearchWorkbench({
   const segmentationChannelNames = Array.from({ length: dimensions?.c ?? 0 }, (_, index) =>
     declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
-  const canFocusPanel = Boolean(source && (tab === "Analyze" || (tab === "Info" && !isLargeResult(selectedResult))));
+  const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
   const panelFocused = canFocusPanel && focusedPanel === tab;
   return (
     <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
@@ -2985,7 +2988,7 @@ export default function ResearchWorkbench({
           {source?.name ?? (snapshot.sources.length === 0 ? "No image open" : snapshot.project.title)}
         </strong>
         <span className="session-save-state" title="Changes to annotations, results and study records are saved locally. Original images remain in their selected locations.">{session.status === "ready" && session.storage === "managed" ? "Autosaved session" : "Saved locally"}</span>
-        <button title="Open images without changing the active study's existing sources" onClick={() => void openImages()}><ImagePlus /> Open images</button>
+        <button title="Open images without changing the active study's existing sources" onClick={() => void openImages()}><ImagePlus /> Add images…</button>
         <button aria-label="Save study" title="Choose a name and location for this study" disabled={!api.saveAs}
           onClick={() => void report(() => api.saveAs!().then(adopt), "Could not save this study.")}><Save /> Save study…</button>
         <details className="workbench-file-menu"
@@ -3143,7 +3146,7 @@ export default function ResearchWorkbench({
             sharedPreview.preview.source_sha256 === source?.sha256 ? sharedPreview.preview : null}
           sourceLabel={source ? sourceLabelForId(snapshot.sources, source.id) : "Source"} onClose={closeSharedPreview} />
         <div className="research-view-toolbar">
-        {source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
+        {tab !== "Display" && source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
           source={source} channels={channels} onChannels={setChannels}
           onSourceChannel={(c) => selectSourcePlane({ ...shownSelection, c })}
           disabled={documentSwitching || assistantFollowing || assistantFollowBusy}
@@ -3537,9 +3540,10 @@ export default function ResearchWorkbench({
         <div ref={toolHeaderRef} className={`research-tool-header${canFocusPanel ? " has-layout-tools" : ""}`}>
           <WorkbenchTools tab={tab} onTab={openWorkbenchTab} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0} />
           {canFocusPanel && <div className="research-panel-layout-tools" role="group" aria-label="Panel layout">
+            <span title={source?.name}>{source?.name}</span>
             <button type="button" aria-pressed={panelFocused} aria-controls="research-image-stage"
               onClick={() => setFocusedPanel((current) => current === tab ? null : tab)}>
-              {panelFocused ? "Show image" : "Focus panel"}
+              {panelFocused ? "Show image" : tab === "Workflow" ? "Focus workflow" : tab === "Model" || tab === "Agent" ? "Focus setup" : "Focus panel"}
             </button>
           </div>}
         </div>
@@ -3548,7 +3552,7 @@ export default function ResearchWorkbench({
             api={api} source={source} sources={snapshot.sources}
             selectedSourceIds={selectedSourceIds}
             onSelectedSourceIdsChange={setSelectedSourceIds}
-            selection={shownSelection} recipe={recipe} jobs={snapshot.jobs}
+            selection={shownSelection} recipe={recipe} configurationValid={configurationValid} jobs={snapshot.jobs}
             displayedResult={selectedResult && resultView?.resultId === selectedResult.id &&
               resultView.revisionHash === selectedResult.revision_hash ? selectedResult : null} active={tab === "Workflow"}
             busy={busy !== null}
@@ -3576,7 +3580,7 @@ export default function ResearchWorkbench({
           />
         </div>}
         {source && snapshot.project.first_study?.example_id === "synthetic-shapes-v1" &&
-          snapshot.project.first_study.source_id === source.id && snapshot.project.first_study.source_sha256 === source.sha256 && <FirstStudyGuide />}
+          snapshot.project.first_study.source_id === source.id && snapshot.project.first_study.source_sha256 === source.sha256 && tab !== "Workflow" && <FirstStudyGuide onNavigate={openWorkbenchTab} hasResult={Boolean(selectedResult)} />}
         {!source && (
           <div className="research-inspector-empty">
             <div className="research-inspector-empty-body">
@@ -3863,7 +3867,7 @@ export default function ResearchWorkbench({
         )}
         {populationOpened && selectedResult && (<div className="population-workspace-host" hidden={tab !== "Population"}>
           <ResearchPopulationExplorer key={`${selectedResult.id}:${selectedResult.revision_hash}`} api={api} result={selectedResult}
-            onMeasureCompartments={source && !isRgb ? () => { setQuantificationEntry("association"); openWorkbenchTab("Quantify"); } : undefined}
+            onMeasureCompartments={source && !isRgb ? () => { setQuantificationEntry("association"); setQuantificationEntryKey((key) => key + 1); openWorkbenchTab("Quantify"); } : undefined}
             onOpenReviewExport={() => openWorkbenchTab("Info")}
             onHighlight={setPopulationHighlight}
             active={tab === "Population"} focused={statisticsFocused} onToggleFocus={() => setStatisticsFocused((value) => !value)}
@@ -3880,9 +3884,12 @@ export default function ResearchWorkbench({
             }} />
         </div>)}
         {tab === "Population" && !selectedResult && <section className="research-panel population-empty-workspace"><h2>Statistics &amp; objects</h2><p>Select a saved segmentation result to explore object measurements alongside the image.</p><p>For this source image, pixel-value distributions are available under Histogram &amp; levels in Image &amp; channels.</p><button type="button" onClick={() => openWorkbenchTab("Display")}>Open image &amp; channels</button><button type="button" onClick={() => openWorkbenchTab("Analyze")}>Segment &amp; measure</button></section>}
-        {source && dimensions && tab === "Quantify" && (
-          <ResearchQuantificationPanel
-            initialMode={quantificationEntry}
+        {source && tab === "Quantify" && isRgb && <section className="research-prerequisite"><p>These methods require scalar acquisition channels. This source contains RGB components.</p><button onClick={() => openWorkbenchTab("Display")}>Open Image &amp; channels</button></section>}
+        {source && dimensions && !isRgb && quantificationOpened && (
+          <div hidden={tab !== "Quantify"}>
+          <ResearchQuantificationPanel key={numberScope} active={tab === "Quantify"}
+            numberKey={numberKey} onNumberValidity={(valid) => reportNumberValidity("quantify", valid)}
+            initialMode={quantificationEntry} entryKey={quantificationEntryKey}
             api={api}
             snapshot={snapshot}
             source={source}
@@ -3909,6 +3916,7 @@ export default function ResearchWorkbench({
             }}
             onPublished={publishGeneratedResult}
           />
+          </div>
         )}
         {selectedResult?.kind === "corrected-labels" && selectedResult.parent_id && ["Correction", "Info", "Population"].includes(tab) && (
           <div className="research-panel"><button disabled={busy !== null || documentSwitching} onClick={() => {
@@ -3917,7 +3925,13 @@ export default function ResearchWorkbench({
             openWorkbenchTab("Study");
           }}>Show experiment effect</button></div>
         )}
-        {tab === "Correction" && !isLargeResult(selectedResult) && (
+        {tab === "Correction" && !selectedResult && <section className="research-prerequisite">
+          <p>Select a segmentation result to edit its labels or ROIs.</p>
+          <div className="research-actions">{snapshot.results.filter((item) => item.source_id === source?.id && !isLargeResult(item) && item.arrays?.labels).map((item) =>
+            <button key={item.id} onClick={() => void loadResult(item.id, item)}>{resultTitle(item)} · {item.object_count} objects</button>)}
+            <button onClick={() => openWorkbenchTab("Analyze")}>Open Segment &amp; measure</button></div>
+        </section>}
+        {tab === "Correction" && selectedResult && !isLargeResult(selectedResult) && (
           <ResearchCorrectionPanel
             api={api}
             selectedObject={correctionObjectTarget?.result_id === resultId ? correctionObjectTarget : null}
@@ -3981,6 +3995,7 @@ export default function ResearchWorkbench({
           <><AgentImagePanel api={api} source={source} selection={shownSelection} channels={channels}
             projection={resolvedProjection} following={assistantFollowing} followBusy={assistantFollowBusy || !viewSettingsReady}
             onFollowing={(value) => void followAssistantDisplay(value)} onError={setError} />
+          {!configurationValid && <p role="status">Finish numeric fields before connecting with this recipe. {invalidNumberForms[`${numberScope}:quantify`] && <button onClick={() => openWorkbenchTab("Quantify")}>Review marker gates</button>}</p>}
           <ResearchAgentPanel
             api={api}
             source={source}
@@ -3990,6 +4005,7 @@ export default function ResearchWorkbench({
             selection={shownSelection}
             recipe={recipe}
             report={report}
+            configurationValid={configurationValid}
             busy={busy !== null}
             onCreated={() => {
               void api.getSnapshot().then((next) => {
@@ -4017,6 +4033,7 @@ export default function ResearchWorkbench({
             sources={snapshot.sources}
             selection={shownSelection}
             recipe={recipe}
+            configurationValid={configurationValid}
             busy={busy !== null}
             onResults={async () => {
               await report(
@@ -4031,6 +4048,7 @@ export default function ResearchWorkbench({
             key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("model", valid)}
             api={api}
             models={models}
+            onOpenMethods={() => openWorkbenchTab("Analyze")}
             refreshModels={refreshModels}
             report={report}
             modelId={modelId}
@@ -4073,7 +4091,7 @@ export default function ResearchWorkbench({
           focused={studyFocused} onToggleFocus={() => setStudyFocused((value) => !value)} sourceName={source?.name}
           samples={
             <SampleSheetPanel key={`samples:${exportDraftStudy}`} api={api} snapshot={snapshot} busy={busy !== null || documentSwitching} onSnapshot={adopt}
-              onInspectResult={inspectStudyResult} onEditMetadata={editStudyMetadata} />
+              onInspectResult={inspectStudyResult} onEditMetadata={editStudyMetadata} onAddImages={() => void openImages()} />
           }
           intensity={
             <ExperimentIntensityPanel key={`intensity:${exportDraftStudy}`} api={api} snapshot={snapshot} active={tab === "Study" && studySection === "intensity"}
@@ -4141,6 +4159,8 @@ export default function ResearchWorkbench({
             snapshot={snapshot}
             selectedSourceId={sourceId}
             selectedResult={selectedResult}
+            onOpenMethods={() => openWorkbenchTab("Analyze")} onOpenDrawings={() => openWorkbenchTab("Annotate")}
+            onChooseResult={(target) => void navigateExactResult(target)}
             report={report}
             busy={busy !== null}
             onBusyChange={(value) =>
@@ -4315,6 +4335,8 @@ export default function ResearchWorkbench({
   );
 }
 
+const processLabels: Record<string, string> = { gaussian: "Gaussian blur", subtract_background: "Background subtraction", subtract_constant: "Subtract constant", median: "Median filter", opening: "Morphological opening", closing: "Morphological closing" };
+
 type NumericFormProps = { numberKey: string; onNumberValidity: (valid: boolean) => void; configurationValid: boolean };
 
 function Process({
@@ -4359,7 +4381,7 @@ function Process({
     });
   return (
     <div className="research-panel">
-      <h2>Non-destructive recipe</h2>
+      <h2>Preprocess</h2>
       <p>
         Steps execute in this order. Spatial scales use the selected source
         geometry units.
@@ -4374,7 +4396,7 @@ function Process({
           "closing",
         ].map((op) => (
           <button key={op} onClick={() => add(op)}>
-            <Plus size={12} /> {op.replaceAll("_", " ")}
+            <Plus size={12} /> {processLabels[op]}
           </button>
         ))}
       </div>
@@ -4384,7 +4406,7 @@ function Process({
             "sigma" in step ? "sigma" : "radius" in step ? "radius" : "value";
           return (
             <li key={index}>
-              <strong>{String(step.op).replaceAll("_", " ")}</strong>
+              <strong>{processLabels[String(step.op)] ?? String(step.op)}</strong>
               <label>
                 {parameter}
                 <ValidatedNumberInput key={`${numberKey}:${index}:${parameter}`}
@@ -4824,6 +4846,8 @@ function Analyze({
 }
 function ModelPanel({
   api,
+  source,
+  onOpenMethods,
   models,
   refreshModels,
   report,
@@ -4863,6 +4887,7 @@ function ModelPanel({
   numberKey, onNumberValidity, configurationValid,
 }: NumericFormProps & {
   api: ResearchDesktopApi;
+  onOpenMethods: () => void;
   models: ModelRecord[];
   refreshModels: () => Promise<void>;
   report: <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
@@ -4955,9 +4980,12 @@ function ModelPanel({
         : [],
     );
   };
-  return (
-    <div className="research-panel">
-      <h2>Managed model package</h2>
+  const requirements = <details className="model-package-requirements"><summary>Package requirements</summary>
+    <p>Model files and reference tensors must be supplied locally.</p>
+    <p>Choose a directory with a loci-model.json or BioImage.IO 0.5 rdf.yaml description, ONNX weights and hashed .npy reference tensors. The supported profile uses one static float32 input and output, BCYX axes, batch size one and a 2D probability output on the input grid.</p>
+    <p>Channels, physical scale and units must be declared. Loci checks the package against its supported CPU runtime and reference tensors before import. This check does not establish biological accuracy or usage rights.</p>
+  </details>;
+  const resources = <details className="research-model-resources"><summary>Resources · {workingBytes / 1024 ** 3 < 1 ? "512 MiB" : `${workingBytes / 1024 ** 3} GiB`} working memory</summary>
       <label>
         Working memory{" "}
         <select
@@ -4974,16 +5002,28 @@ function ModelPanel({
           ))}
         </select>
       </label>
+          </details>;
+  if (!models.length) return <section className="research-panel research-prerequisite">
+    <h2>No model packages in this study.</h2>
+    <p>Import a local Loci-compatible ONNX package to use this tool.</p>
+    <div className="research-actions">
+      {api.importModel && <button className="research-primary" disabled={busy || importing} onClick={() => void importPackage()}>Import model package…</button>}
+      <button onClick={onOpenMethods}>Open Segment &amp; measure</button>
+    </div>{resources}{requirements}
+  </section>;
+  return (
+    <div className="research-panel">
+      <h2>Use a model</h2>
       {api.importModel && (
         <button
           disabled={busy || importing}
           onClick={() => void importPackage()}
         >
-          Import managed package
+          Import model package…
         </button>
       )}
-      {recoverable && api.importModel && <button disabled={busy || importing}
-        onClick={() => void importPackage(true)}>Re-import this exact model</button>}
+      {recoverable && <section className="research-prerequisite"><p>This model’s files are unavailable. Re-import the same package to restore it.</p>
+        {api.importModel && <button disabled={busy || importing} onClick={() => void importPackage(true)}>Re-import model package…</button>}</section>}
       <label>
         Package{" "}
         <select
@@ -5007,29 +5047,34 @@ function ModelPanel({
           ))}
         </select>
       </label>
+      {!selected && <p>Choose a model package to configure its channels and scale.</p>}
+      {requirements}
+      {resources}
       {selected && (
         <div className="research-model-records">
           <p>{recoverable ? "Re-import this package to run it." : "Reference check passed."}</p>
+          <dl className="research-kv">
+            <div><dt>Scientific validation</dt><dd>{JSON.stringify(selected.scientific_validation)}</dd></div>
+            <div><dt>Usage rights</dt><dd>{JSON.stringify(selected.usage_rights)}</dd></div>
+          </dl>
           <details className="research-technical-record">
             <summary>Technical record</summary>
             <dl className="research-kv">
               <div><dt>Compatibility</dt><dd>{String(selected.technical_compatibility)}</dd></div>
               <div><dt>Reference check</dt><dd>{JSON.stringify(selected.reference_qualification)}</dd></div>
-              <div><dt>Scientific validation</dt><dd>{JSON.stringify(selected.scientific_validation)}</dd></div>
-              <div><dt>Usage rights</dt><dd>{JSON.stringify(selected.usage_rights)}</dd></div>
             </dl>
           </details>
         </div>
       )}
-      {modelId && (
+      {selected && !recoverable && (
         <>
-          <h3>Declared source mapping</h3>
+          <h3>Source channels &amp; scale</h3>
           {mapping.map((item, index) => (
             <label key={item.model_input_index}>
-              Model input {item.model_input_index}: {item.model_channel}
+              Model input {item.model_input_index + 1}: {item.model_channel}
               <select
                 aria-label={
-                  "Model input " + item.model_input_index + " source channel"
+                  "Model input " + (item.model_input_index + 1) + " source channel"
                 }
                 value={item.source_channel}
                 onChange={(event) =>
@@ -5047,7 +5092,7 @@ function ModelPanel({
               >
                 {Array.from({ length: channelCount }, (_, c) => (
                   <option key={c} value={c}>
-                    Source scalar channel {c}
+                    {source.metadata.channel_names?.[c] || `Channel ${c + 1}`}
                   </option>
                 ))}
               </select>
@@ -5102,9 +5147,9 @@ function ModelPanel({
               </label>
             </>
           )}
-          <h3>Segmentation postprocessing</h3>
+          <h3>Create objects</h3>
           <label>
-            Probability channel{" "}
+            Probability output channel (zero-based){" "}
             <ValidatedNumberInput key={`${numberKey}:Probability channel`} label="Probability channel" value={probabilityChannel} integer minimum={0}
                   commitOnChange onValidity={(valid) => numbers.setValidity("Probability channel", valid)}
                   onValue={(value) => { setProbabilityChannel(value); return true; }} />
@@ -5142,6 +5187,7 @@ function ModelPanel({
                   onValue={(value) => { setSplitHeight(value); return true; }} />
             </label>
           )}
+          <h3>Measurements</h3>
           <label>
             Measurement channels{" "}
             <select
@@ -5158,7 +5204,7 @@ function ModelPanel({
             >
               {Array.from({ length: channelCount }, (_, c) => (
                 <option key={c} value={c}>
-                  Source scalar channel {c}
+                  {source.metadata.channel_names?.[c] || `Channel ${c + 1}`}
                 </option>
               ))}
             </select>
@@ -5172,12 +5218,12 @@ function ModelPanel({
               disabled={busy || !numbers.valid || !configurationValid || !pending}
               onClick={onAdopt}
             >
-              Adopt exact preview
+              Save preview as result
             </button>
           </div>
           {pending && (
             <p data-model-preview-id={pending.id} data-model-preview-sha256={pending.sha256}>
-              Preview ready to adopt.
+              Preview ready to save as a result.
             </p>
           )}
         </>

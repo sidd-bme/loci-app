@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchSource } from "../shared/research-contracts";
 import type { ViewerChannel } from "./ImageViewport";
 import { CompactChannelControls, type CompactChannelControlsProps } from "./CompactChannelControls";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 const source: ResearchSource = {
   id: "a".repeat(32), sha256: "b".repeat(64), name: "Synthetic channels.tif", source_kind: "native",
   metadata: { axes: "CYX", dimensions: { t: 1, c: 3, z: 1, y: 32, x: 32, s: 1 },
@@ -33,6 +33,25 @@ function solo() { fireEvent.click(screen.getByRole("button", { name: "Solo" }));
 function restore() { fireEvent.click(screen.getByRole("button", { name: "Restore" })); }
 
 describe("compact channel display", () => {
+  it("collapses a narrow image stage by default and retains deliberate disclosure choices on resize", () => {
+    let resize: ResizeObserverCallback;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = callback; }
+      observe() {} disconnect() {}
+    });
+    const view = mount();
+    const summary = screen.getByText("Display channels", { exact: true });
+    const changeWidth = (width: number) => act(() => resize([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver));
+    changeWidth(400);
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(summary);
+    expect(summary.closest("details")).toHaveAttribute("open");
+    changeWidth(350);
+    expect(summary.closest("details")).toHaveAttribute("open");
+    fireEvent.click(summary); changeWidth(900);
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(view.onChannels).not.toHaveBeenCalled();
+  });
   it("changes visibility without mutating source metadata or the supplied channels", () => {
     const original = structuredClone(source), channels = channelState(), preserved = structuredClone(channels);
     channels.forEach(Object.freeze); Object.freeze(channels);
@@ -101,7 +120,7 @@ describe("compact channel display", () => {
     const view = mount(); low().focus(); draft(low(), "5"); fireEvent.keyDown(low(), { key: "Enter" });
     expect(view.onChannels).toHaveBeenCalledTimes(1);
     draft(low(), "invalid"); fireEvent.keyDown(low(), { key: "Escape" }); expect(low()).toHaveValue("5");
-    const summary = screen.getByText("Channels", { exact: true }); expect(summary.closest("details")).toHaveAttribute("open");
+    const summary = screen.getByText("Display channels", { exact: true }); expect(summary.closest("details")).toHaveAttribute("open");
     const channelSelect = screen.getByRole("combobox", { name: "Display channel" });
     channelSelect.focus(); fireEvent.keyDown(channelSelect, { key: "Escape" });
     expect(summary.closest("details")).not.toHaveAttribute("open"); expect(summary).toHaveFocus();

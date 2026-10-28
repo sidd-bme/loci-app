@@ -69,3 +69,5 @@
   .compact-channel-visibility { flex-basis: 100%; }
   .compact-channel-range { flex-wrap: wrap; }
 }
+
+.compact-channel-controls:not([open]) { min-height: 40px; }

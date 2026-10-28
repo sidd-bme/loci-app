@@ -82,15 +82,16 @@ function panel(bridge: ResearchDesktopApi, onSnapshot = vi.fn()) {
 describe("ResearchPortabilityPanel", () => {
   it("switches to a natively imported study and keeps the current study on picker cancellation", async () => {
     const imported = { ...snapshot, sources: [missing] };
-    const importStudy = vi.fn().mockResolvedValue(imported);
+    const importStudy = vi.fn().mockResolvedValueOnce(imported).mockResolvedValueOnce(null);
     const openStudy = vi.fn().mockResolvedValue(null);
     const onSnapshot = vi.fn();
     panel(api({ importStudy, openStudy }), onSnapshot);
     fireEvent.click(screen.getByRole("button", { name: "Import portable study" }));
     await waitFor(() => expect(onSnapshot).toHaveBeenCalledWith(imported));
     onSnapshot.mockClear();
-    fireEvent.click(screen.getByRole("button", { name: "Open study" }));
-    await waitFor(() => expect(openStudy).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole("button", { name: "Import portable study" }));
+    await waitFor(() => expect(importStudy).toHaveBeenCalledTimes(2));
+    expect(openStudy).not.toHaveBeenCalled();
     expect(onSnapshot).not.toHaveBeenCalled();
   });
 
