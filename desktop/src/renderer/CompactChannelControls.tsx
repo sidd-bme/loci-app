@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ResearchSource } from "../shared/research-contracts";
 import type { ViewerChannel } from "./ImageViewport";
 import { ValidatedNumberInput } from "./ValidatedNumberInput";
@@ -67,6 +67,19 @@ function ChannelControls({ source, channels, onChannels, disabled = false, onOpe
   const [selected, setSelected] = useState(channels[0]?.channel);
   const [solo, setSolo] = useState<{ channel: number; visibility: Map<number, boolean> } | null>(null);
   const disclosure = useRef<HTMLDetailsElement>(null);
+  const [expanded, setExpanded] = useState(true);
+  const disclosureChosen = useRef(false);
+  useLayoutEffect(() => {
+    const element = disclosure.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const width = element.getBoundingClientRect().width;
+    if (width > 0) setExpanded(width >= 640);
+    const observer = new ResizeObserver(([entry]) => {
+      if (!disclosureChosen.current) setExpanded(entry.contentRect.width >= 640);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const active = channels.find((item) => item.channel === selected) ?? channels[0];
   const labelFor = (channel: ViewerChannel) => rgb ? "RGB components"
     : source.metadata.channel_names?.[channel.channel] || `Channel ${channel.channel + 1}`;
@@ -86,15 +99,18 @@ function ChannelControls({ source, channels, onChannels, disabled = false, onOpe
       onChannels(channels.map((item) => ({ ...item, visible: item.channel === active.channel })));
     }
   };
-  return <details className="compact-channel-controls" open ref={disclosure}
+  return <details className="compact-channel-controls" open={expanded} ref={disclosure}
     onKeyDown={(event) => {
       if (event.key === "Escape" && disclosure.current?.open) {
         event.preventDefault(); event.stopPropagation();
-        disclosure.current.open = false;
+        disclosureChosen.current = true;
+        setExpanded(false);
         disclosure.current.querySelector("summary")?.focus();
       }
     }}>
-    <summary title="Expand or collapse display controls">{rgb ? "Image tone" : "Channels"}</summary>
+    <summary title="Expand or collapse display controls" onClick={(event) => {
+      event.preventDefault(); disclosureChosen.current = true; setExpanded((value) => !value);
+    }}>{rgb ? "Image tone" : "Display channels"}</summary>
     <div className="compact-channel-body" role="group" aria-label="Channel display controls">
       {!channels.length ? <span className="compact-channel-empty">No display channels</span> : <>
         {!rgb && <div className="compact-channel-visibility" role="group" aria-label="Channel visibility">
@@ -109,7 +125,7 @@ function ChannelControls({ source, channels, onChannels, disabled = false, onOpe
           </label>)}
         </div>}
         {active && <>
-          <label className="compact-channel-select">{rgb && rgbChannelCount > 1 ? "Image channel" : rgb ? "Tone" : "Edit"}<select aria-label="Display channel" value={active.channel} disabled={disabled || (rgb && (rgbChannelCount < 2 || !onSourceChannel))}
+          <label className="compact-channel-select">{rgb && rgbChannelCount > 1 ? "Image channel" : rgb ? "Tone" : "Display channel"}<select aria-label="Display channel" value={active.channel} disabled={disabled || (rgb && (rgbChannelCount < 2 || !onSourceChannel))}
             onChange={(event) => rgb ? onSourceChannel?.(Number(event.target.value)) : setSelected(Number(event.target.value))}>
             {rgb && rgbChannelCount > 1 ? Array.from({ length: rgbChannelCount }, (_, channel) => <option key={channel} value={channel}>
               {source.metadata.channel_names?.[channel] || `Channel ${channel + 1}`}

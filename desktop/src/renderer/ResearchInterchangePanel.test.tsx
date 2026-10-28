@@ -87,6 +87,18 @@ function file(
 }
 
 describe("ResearchInterchangePanel", () => {
+  it("routes a missing ROI target without importing or changing a revision", () => {
+    const bridge = api(vi.fn()), choose = vi.fn(), methods = vi.fn(), drawings = vi.fn();
+    render(<ResearchInterchangePanel api={bridge} result={null} availableResults={[parent]}
+      onChooseResult={choose} onOpenMethods={methods} onOpenDrawings={drawings}
+      report={report} busy={false} onBusyChange={vi.fn()} onResult={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("ROI import target result"), { target: { value: parent.id } });
+    expect(choose).toHaveBeenCalledExactlyOnceWith(parent);
+    fireEvent.click(screen.getByRole("button", { name: "Open Segment & measure" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open source drawings" }));
+    expect(methods).toHaveBeenCalledOnce(); expect(drawings).toHaveBeenCalledOnce();
+    expect(bridge.execute).not.toHaveBeenCalled();
+  });
   it("keeps method and review visible with the full exact target in a selectable disclosure", async () => {
     const target = { ...parent, method_label: "Classical segmentation" };
     render(<ResearchInterchangePanel api={api(vi.fn(async () => info))} result={target}
@@ -235,7 +247,7 @@ describe("ResearchInterchangePanel", () => {
         onResult={vi.fn()}
       />,
     );
-    expect(screen.getByText(/Select an exact result/)).toBeVisible();
+    expect(screen.getByText(/Select the result that should receive these ROIs/)).toBeVisible();
     rerender(
       <ResearchInterchangePanel
         api={api(execute)}

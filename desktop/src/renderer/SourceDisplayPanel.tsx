@@ -203,7 +203,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       {rgb && dimensions.z > 1 && <small>Colour images display one Z plane at a time.</small>}
       {projection !== "plane" && <small>Z {selection.z + 1}–{selection.z_stop} · display projection</small>}
     </div>}
-    {rgb ? <><div className="source-channel-heading"><h2>Image tone</h2><div className="source-tone-actions"><button title="Automatically adjust tone for this histology or RGB image" onClick={() => onAuto()}>Auto</button><button title="Restore the source RGB display" onClick={onReset}>Reset</button></div></div>
+    {rgb ? <><div className="source-channel-heading"><h2>Image tone</h2><div className="source-tone-actions"><button title="Automatically adjust tone for this histology or RGB image" onClick={() => onAuto()}>Auto</button><button title="Restore the source RGB display" onClick={onReset}>Reset display</button></div></div>
       <p className="source-colour-policy">One tone curve for all RGB components. Embedded profiles are applied once.</p>
       {channels[0] && <div className="source-tone-settings">
         {histogramFor(channels[0], true)}
@@ -230,8 +230,8 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
             }}
           >
             {selectedSourceIds && selectedSourceIds.length > 1
-              ? `Apply colors (${selectedSourceIds.length})`
-              : "Apply colors"}
+              ? `Copy colours to images… (${selectedSourceIds.length})`
+              : "Copy colours to images…"}
           </button>
         )}
         {batchUndo && (
@@ -243,7 +243,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
           </button>
         )}
         <button title="Set stable ranges from a full-image sample." onClick={() => onAuto()}>Auto</button>
-        <button title="Restore acquisition display settings" onClick={onReset}>Reset</button>
+        <button title="Restore acquisition display settings" onClick={onReset}>Reset display</button>
       </div>
       {channels.map((channel) => <details className="source-channel" key={channel.channel}>
         <summary><input type="checkbox" aria-label={`Channel ${channel.channel + 1} visible`} checked={channel.visible} onClick={(event) => event.stopPropagation()} onChange={(event) => update(channel.channel, { visible: event.target.checked })} />
@@ -270,9 +270,9 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       </details>)}
     </>}
       <button className="compare-source" title="Hold to compare with acquisition/default display settings" onPointerDown={() => onCompare(true)} onPointerUp={() => onCompare(false)} onPointerLeave={() => onCompare(false)} onBlur={() => onCompare(false)}
-        onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); onCompare(true); } }} onKeyUp={(event) => { if (event.key === " ") onCompare(false); }}>Hold for source display</button>
-    <details className="analysis-region-settings"><summary>Analysis region</summary><p>Used by analysis tools. Moving the camera does not change this region.</p><div className="research-grid">
-      {(["x", "y", "width", "height", "c"] as const).map((key) => <label key={key}>{key === "c" ? "Analysis channel" : key}<NumberSetting
+        onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); onCompare(true); } }} onKeyUp={(event) => { if (event.key === " ") onCompare(false); }}>Hold to show default display</button>
+    <details className="analysis-region-settings"><summary>Analysis region</summary><p>Used by analysis tools. X/Y are zero-based pixel offsets; C/Z/T here are zero-based indices. Moving the camera does not change this region.</p><div className="research-grid">
+      {(["x", "y", "width", "height", "c"] as const).map((key) => <label key={key}>{key === "c" ? "Analysis channel (zero-based)" : key}<NumberSetting
         key={`${source.id}:${source.sha256}`} integer label={key === "c" ? "C" : key[0].toUpperCase() + key.slice(1)} value={selection[key]}
         minimum={key === "width" || key === "height" ? 1 : 0}
         maximum={key === "c" ? dimensions.c - 1 : key === "x" ? dimensions.x - selection.width

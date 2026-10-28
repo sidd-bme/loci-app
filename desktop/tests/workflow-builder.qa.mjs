@@ -59,10 +59,19 @@ try {
   await panel.getByRole('button', { name: 'Preview through this step', exact: true }).click();
   await panel.getByText(/Preview through gaussian/).waitFor();
   await page.mouse.move(0, 0);
-  assert.equal(await panel.locator('.workflow-graph-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth + 1), true, 'The seven-node chain fits the wide workspace.');
+  const firstStep = panel.getByRole('button', { name: 'Select Source image', exact: true });
+  const lastStep = panel.getByRole('button', { name: 'Select Export result', exact: true });
+  await firstStep.focus(); await firstStep.press('End');
+  assert.equal(await lastStep.getAttribute('aria-pressed'), 'true', 'Keyboard navigation reaches the final ordered step.');
+  assert.equal(await panel.locator('.workflow-graph-scroll').evaluate((element) => {
+    const strip = element.getBoundingClientRect(), panel = element.closest('.workflow-panel').getBoundingClientRect();
+    const last = element.querySelector('ol > li:last-child button').getBoundingClientRect();
+    return strip.left >= panel.left && strip.right <= panel.right + 1 && last.left >= strip.left && last.right <= strip.right + 1 && document.documentElement.scrollWidth <= innerWidth + 1;
+  }), true, 'The ordered chain scrolls inside its panel and exposes the keyboard-selected final step.');
+  await panel.getByRole('button', { name: 'Select gaussian', exact: true }).click();
   await page.screenshot({ path: path.join(output, '01-real-workflow-preview.png') });
   await panel.getByRole('button', { name: 'Run workflow', exact: true }).click();
-  await panel.getByText(/objects · waiting review/).waitFor({ timeout: 120000 });
+  await panel.getByText(/objects · review required/).waitFor({ timeout: 120000 });
   const after = await page.evaluate(() => window.lociResearch.getSnapshot());
   const job = [...after.jobs].reverse().find((item) => item.operation === 'workflow_run' && item.request.task_request.workflow_id === saved.id);
   assert.ok(job && job.state === 'succeeded');
@@ -110,9 +119,12 @@ try {
   assert.equal((await page.evaluate(() => window.lociResearch.getSnapshot())).jobs.length, jobsBeforeBatch.size + 2);
   receipt.checks.push({ name: 'two-source-batch-and-completed-resume-no-duplicate', jobs: batchJobs.map((item) => item.id) });
   await panel.locator('.workflow-batch summary').click();
+  const reviewBindings = value => value.results.map(item => ({ id: item.id, revision_hash: item.revision_hash, review: item.review ?? null })).sort((a, b) => a.id.localeCompare(b.id));
+  const beforeOutdatedReview = reviewBindings(await page.evaluate(() => window.lociResearch.getSnapshot()));
   await panel.getByLabel('Workflow sigma', { exact: true }).fill('2');
   await panel.getByText(/Outdated execution/).waitFor();
-  assert.equal(await panel.getByRole('button', { name: 'Mark reviewed', exact: true }).isEnabled(), false);
+  assert.equal(await panel.getByRole('button', { name: 'Mark reviewed', exact: true }).count(), 0, 'Outdated executions expose no review action.');
+  assert.equal(await panel.getByRole('button', { name: 'Export reviewed result', exact: true }).count(), 0, 'Outdated executions expose no export action.');
   await panel.getByLabel('Workflow sigma', { exact: true }).fill('not-a-number');
   assert.equal(await panel.getByRole('button', { name: 'Save revision', exact: true }).isEnabled(), false);
   await panel.getByLabel('Workflow sigma', { exact: true }).press('Escape');
@@ -121,6 +133,7 @@ try {
   assert.equal(await panel.getByLabel('Workflow sigma', { exact: true }).inputValue(), '1');
   await panel.getByLabel('Connect processing input after', { exact: true }).selectOption('measure');
   await panel.getByRole('alert').filter({ hasText: 'Image processing can connect only' }).waitFor();
+  assert.deepEqual(reviewBindings(await page.evaluate(() => window.lociResearch.getSnapshot())), beforeOutdatedReview, 'Outdated and invalid drafts cannot mutate exact result revisions or review records.');
   receipt.checks.push({ name: 'changed-settings-invalid-draft-and-invalid-connection-rejected' });
   // Draft is retained across task switching within the same study.
   await panel.getByLabel('Workflow name', { exact: true }).fill('Retained unsaved workflow draft');

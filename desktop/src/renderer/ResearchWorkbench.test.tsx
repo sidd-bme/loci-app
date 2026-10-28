@@ -19,6 +19,7 @@ import type {
   ResearchBatchTask,
   ResearchDesktopApi,
   ResearchJob,
+  ResearchLabelsImportPreview,
   ResearchSelection,
   ResearchSnapshot,
 } from "../shared/research-contracts";
@@ -186,6 +187,14 @@ function correctionInfo(result = snapshot.results[0]) {
     measurement_channels: [{ index: 0, name: "Raw 1", basis: "raw-source-channel-values" }],
     derived_measurement_arrays: null,
   };
+}
+function labelsPreview(request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]): ResearchLabelsImportPreview {
+  return { ...request, grant_id: "e".repeat(32), geometry: null,
+    file_name: "known-labels.tif", file_sha256: "1".repeat(64), file_size_bytes: 1024,
+    original_dtype: "uint32", shape: [request.selection.height, request.selection.width], axes: "YX", object_count: 2,
+    labels_sha256: "2".repeat(64), format: "TIFF", profile: "scalar-native-yx/v1", estimated_working_bytes: 4096,
+    measurement_channel: { index: request.selection.c, name: "Raw channel 1", basis: "raw-source-channel-values" }, calibration_handling: {},
+    image: "data:image/png;base64,cG5n", preview_width: 64, preview_height: 48 };
 }
 function viewerContractResponse(
   operation: string,
@@ -403,6 +412,33 @@ async function openAdvancedTool(tool: string) {
   fireEvent.click(await screen.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
 }
 describe("ResearchWorkbench", () => {
+  it("keeps one complete channel editor and provides a model prerequisite route without changing scientific settings", async () => {
+    const bridge = api({ importModel: vi.fn() });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await screen.findByLabelText("Image viewer: Specimen");
+    expect(screen.queryByRole("group", { name: "Channel display controls" })).not.toBeInTheDocument();
+    await openTool("Analyze", "Model");
+    expect(await screen.findByRole("heading", { name: "No model packages in this study." })).toBeVisible();
+    expect(screen.queryByLabelText("Model threshold")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import model package…" })).toBeEnabled();
+    fireEvent.click(screen.getByText("Package requirements"));
+    expect(screen.getByText("Model files and reference tensors must be supplied locally.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open Segment & measure" }));
+    expect(await screen.findByLabelText("Segmentation model")).toHaveValue("classical");
+    expect(bridge.importModel).not.toHaveBeenCalled();
+    expect(bridge.execute).not.toHaveBeenCalledWith("run", expect.anything());
+  });
+
+  it("opens correction prerequisites and returns to methods without executing an edit", async () => {
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue({ ...snapshot, results: [] }) });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Annotate", "Correction");
+    expect(await screen.findByText("Select a segmentation result to edit its labels or ROIs.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Undo revision" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Segment & measure" }));
+    expect(await screen.findByLabelText("Segmentation model")).toHaveValue("classical");
+    expect(bridge.execute).not.toHaveBeenCalledWith("correction_apply", expect.anything());
+  });
   function exportDraftFixture(indexed = false, excluded = false) {
     const sourceB = { ...snapshot.sources[0], id: "e".repeat(32), sha256: "f".repeat(64), name: "Second specimen" };
     const resultA = { ...snapshot.results[0], source_sha256: snapshot.sources[0].sha256, review: { disposition: "reviewed" as const } };
@@ -765,7 +801,7 @@ describe("ResearchWorkbench", () => {
     fireEvent.change(editor, { target: { value: csv } });
     fireEvent.click(screen.getByRole("button", { name: "Preview sample sheet" }));
     await screen.findByRole("region", { name: "Sample sheet before and after" });
-    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Apply (?:sample sheet|to \d+ images)$/ })).toBeEnabled();
     const sourceRow = container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${secondSource.id}"]`)!;
     const resultDetails = within(sourceRow).getByText("Results (2)").closest("details")!;
     resultDetails.open = true; fireEvent(resultDetails, new Event("toggle"));
@@ -781,7 +817,7 @@ describe("ResearchWorkbench", () => {
       expect(execute.mock.calls.map(([name]) => name)).not.toContain(operation);
     await openTool("Results", "Study", "samples");
     expect(screen.getByRole("textbox", { name: "Sample sheet CSV" })).toBe(editor); expect(editor).toHaveValue(csv);
-    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Apply (?:sample sheet|to \d+ images)$/ })).toBeEnabled();
     fireEvent.click(within(sourceRow).getByRole("button", { name: "Edit metadata" }));
     expect(await screen.findByText("Select a result to review and export its measurements.")).toBeVisible();
     screen.getByText("Study metadata", { exact: true }).closest("details")!.open = true;
@@ -792,7 +828,7 @@ describe("ResearchWorkbench", () => {
     })));
     await openTool("Results", "Study", "samples");
     expect(editor).toHaveValue(csv);
-    expect(screen.getByRole("button", { name: "Apply sample sheet" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Apply (?:sample sheet|to \d+ images)$/ })).toBeDisabled();
     expect(screen.getByText(/CSV or study metadata changed/)).toBeVisible();
   });
 
@@ -1542,6 +1578,179 @@ describe("ResearchWorkbench", () => {
     },
   );
 
+  it.each(["success", "cancel", "error"] as const)(
+    "coordinates the label picker with pending display saves and refinement (%s)",
+    async (outcome) => {
+      const active = structuredClone(snapshot);
+      active.sources[0].source_kind = "native";
+      active.results = [];
+      let finishWrite!: () => void;
+      let finishPicker!: (value: ResearchLabelsImportPreview | null) => void;
+      let rejectPicker!: (error: Error) => void;
+      let rejectTile!: (error: Error) => void;
+      let blockWrite = false;
+      let blockRefinement = false;
+      let pendingTile = false;
+      let pickerPending = false;
+      let main!: HTMLElement;
+      const labelsImportPreview = vi.fn((_request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) => {
+        expect(main).toHaveAttribute("inert");
+        pickerPending = true;
+        return new Promise<ResearchLabelsImportPreview | null>((resolve, reject) => {
+          finishPicker = (value) => { pickerPending = false; resolve(value); };
+          rejectPicker = (error) => { pickerPending = false; reject(error); };
+        });
+      });
+      const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+      const original = desktop.execute;
+      const duringPicker: string[] = [];
+      const savedViews: Array<Record<string, unknown>> = [];
+      desktop.execute = vi.fn(async (operation, request, options) => {
+        if (pickerPending) {
+          duringPicker.push(operation);
+          throw new Error("Wait for the study to finish opening.");
+        }
+        const state = request.state as { channels?: Array<{ low?: number }> } | undefined;
+        if (operation === "save_source_view" && blockWrite && state?.channels?.[0]?.low === 7) {
+          blockWrite = false;
+          return new Promise((resolve) => { finishWrite = () => {
+            savedViews.push(structuredClone(request));
+            resolve({ source_id: request.source_id,
+              source_sha256: request.source_sha256, revision: Number(request.expected_revision) + 1, state: request.state });
+          }; });
+        }
+        if (operation === "viewer_tile" && !request.overview && blockRefinement) {
+          blockRefinement = false;
+          pendingTile = true;
+          return new Promise((_, reject) => { rejectTile = reject; });
+        }
+        const output = await original(operation, request, options);
+        if (operation === "save_source_view") savedViews.push(structuredClone(request));
+        return output;
+      });
+      render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+      main = await screen.findByRole("main", { name: "Research workspace" });
+      await openTool("View", "Display");
+      const low = await screen.findByLabelText("Channel 1 low");
+      await waitFor(() => expect(low).toHaveValue("0"));
+      blockWrite = true;
+      blockRefinement = true;
+      fireEvent.change(low, { target: { value: "7" } });
+      fireEvent.keyDown(low, { key: "Enter" });
+      await waitFor(() => expect(pendingTile).toBe(true));
+      // The picker must drain the queued or in-flight display write before
+      // acquiring the main-process lock.
+      await openTool("Analyze", "Analyze");
+      fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+      const viewer = screen.getByLabelText("Image viewer: Specimen");
+      const camera = viewer.getAttribute("data-camera");
+      const cacheBytes = Number(viewer.getAttribute("data-cache-bytes"));
+      fireEvent.click(screen.getByRole("button", { name: "Import labels" }));
+      expect(main).toHaveAttribute("inert");
+      expect(labelsImportPreview).not.toHaveBeenCalled();
+      await waitFor(() => expect(finishWrite).toBeTypeOf("function"));
+      await act(async () => { finishWrite(); });
+      await waitFor(() => expect(labelsImportPreview).toHaveBeenCalledOnce());
+      const request = labelsImportPreview.mock.calls[0][0];
+      expect(request).toEqual(expect.objectContaining({ source_id: active.sources[0].id,
+        source_sha256: active.sources[0].sha256,
+        selection: { x: 0, y: 0, width: 64, height: 48, t: 0, c: 0, z: 1, level: 0 } }));
+      await act(async () => { rejectTile(new Error("Wait for the study to finish opening.")); });
+      // Model time spent choosing a file, longer than the 400ms autosave.
+      if (outcome === "success") await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1200)); });
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThanOrEqual(cacheBytes);
+      expect(duringPicker).toEqual([]);
+      await act(async () => {
+        if (outcome === "error") rejectPicker(new Error("Unsupported label dtype"));
+        else finishPicker(outcome === "cancel" ? null : labelsPreview(request));
+      });
+      await waitFor(() => expect(main).not.toHaveAttribute("inert"));
+      if (outcome === "success") {
+        expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toBeVisible();
+        expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
+      } else {
+        expect(screen.queryByRole("button", { name: "Import on this plane" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Import labels" })).toBeEnabled();
+        if (outcome === "error") expect(screen.getByRole("alert")).toHaveTextContent("Unsupported label dtype");
+        else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+      await openTool("View", "Display");
+      expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
+      expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      fireEvent.change(screen.getByLabelText("Channel 1 low"), { target: { value: "8" } });
+      fireEvent.keyDown(screen.getByLabelText("Channel 1 low"), { key: "Enter" });
+      await waitFor(() => expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+        source_id: active.sources[0].id, source_sha256: active.sources[0].sha256,
+        state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
+      })));
+      await waitFor(() => expect(savedViews.at(-1)).toEqual(expect.objectContaining({
+        expected_revision: Number(savedViews.find((request) =>
+          (request.state as { channels: Array<{ low: number }> }).channels[0].low === 7)!.expected_revision) + 1,
+        state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
+      })));
+      expect(duringPicker).toEqual([]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("waits for source display preparation before opening the label picker", async () => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.results = [];
+    let finishDefaults!: () => void;
+    const labelsImportPreview = vi.fn(async (request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) => labelsPreview(request));
+    const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "viewer_defaults") return new Promise((resolve) => {
+        finishDefaults = () => resolve(viewerContractResponse(operation, request, active));
+      });
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+    const choose = screen.getByRole("button", { name: "Import labels" });
+    expect(choose).toBeDisabled();
+    fireEvent.click(choose);
+    expect(labelsImportPreview).not.toHaveBeenCalled();
+    await act(async () => { finishDefaults(); });
+    await waitFor(() => expect(choose).toBeEnabled());
+    fireEvent.click(choose);
+    expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("rejects a label preview after source navigation supersedes its captured intent", async () => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.sources.push({ ...structuredClone(active.sources[0]), id: "f".repeat(32), sha256: "3".repeat(64), name: "Second" });
+    active.results = [];
+    let finishPicker!: (value: ResearchLabelsImportPreview) => void;
+    const labelsImportPreview = vi.fn((_request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) =>
+      new Promise<ResearchLabelsImportPreview>((resolve) => { finishPicker = resolve; }));
+    const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+    const choose = screen.getByRole("button", { name: "Import labels" });
+    await waitFor(() => expect(choose).toBeEnabled());
+    fireEvent.click(choose);
+    await waitFor(() => expect(labelsImportPreview).toHaveBeenCalledOnce());
+    // A programmatic source-selection event can supersede the intent even
+    // while the native picker keeps ordinary pointer interaction inert.
+    fireEvent.click(screen.getByRole("button", { name: /Second/ }));
+    await act(async () => { finishPicker(labelsPreview(labelsImportPreview.mock.calls[0][0])); });
+    await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent("Second"));
+    expect(screen.queryByAltText("Checked label overlay on the selected source plane")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import on this plane" })).not.toBeInTheDocument();
+    expect(desktop.execute).not.toHaveBeenCalledWith("labels_import", expect.anything());
+  });
+
   it("flushes a loaded pending view before closing, restores its exact revision on undo, and saves the study", async () => {
     const first = snapshot.sources[0];
     const second = { ...structuredClone(first), id: "f".repeat(32), sha256: "e".repeat(64), name: "Second" };
@@ -1869,7 +2078,7 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
     const main = await screen.findByRole("main", { name: "Research workspace" });
     await waitFor(() => expect(delayed).toBe(true));
-    fireEvent.click(screen.getByRole("button", { name: "Open images" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add images…" }));
     await waitFor(() => expect(openImages).toHaveBeenCalledOnce());
     expect(main).toHaveAttribute("inert");
     rejectDefaults(new Error("Wait for the study to finish opening."));
@@ -2133,7 +2342,7 @@ describe("ResearchWorkbench", () => {
     } as unknown as ResearchDesktopApi;
     render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Apply colors" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Copy colours to images…" }));
     await screen.findByRole("dialog", { name: "Apply channel colours" });
     fireEvent.change(screen.getByRole("combobox", { name: "Palette preset" }), {
       target: { value: "fluorescence-4" },
@@ -2312,21 +2521,22 @@ describe("ResearchWorkbench", () => {
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Model");
     fireEvent.change(await screen.findByLabelText("Model package"), { target: { value: modelId } });
-    fireEvent.click(await screen.findByRole("button", { name: "Re-import this exact model" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-import model package…" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Selected package differs from this model");
     expect(bridge.importModel).toHaveBeenCalledWith(expect.any(Number), modelId);
-    expect(screen.getByRole("button", { name: "Import managed package" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Import model package…" })).toBeEnabled();
   });
 
   it("chooses the working-memory budget before importing a managed package", async () => {
     const bridge = api({ importModel: vi.fn().mockResolvedValue({}) });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Model");
-    expect(screen.getByLabelText("Model package")).toHaveValue("");
+    expect(screen.getByRole("heading", { name: "No model packages in this study." })).toBeVisible();
+    fireEvent.click(screen.getByText(/Resources ·/));
     fireEvent.change(screen.getByLabelText("Model working memory"), {
       target: { value: String(2 * 1024 ** 3) },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Import managed package" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import model package…" }));
     await waitFor(() =>
       expect(bridge.importModel).toHaveBeenCalledWith(2 * 1024 ** 3, undefined),
     );
@@ -2343,7 +2553,7 @@ describe("ResearchWorkbench", () => {
     const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(null), tryExample: vi.fn().mockResolvedValue(practice) });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     fireEvent.click(await screen.findByRole("button", { name: "Try a synthetic example" }));
-    expect(await screen.findByText("Practice guide · synthetic shapes")).toBeVisible();
+    expect(await screen.findByText("Practice: inspect, measure and export")).toBeVisible();
     expect(bridge.tryExample).toHaveBeenCalledWith();
     expect(bridge.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
     expect(bridge.reviewResult).not.toHaveBeenCalled();
@@ -2552,7 +2762,7 @@ describe("ResearchWorkbench", () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Process");
-    fireEvent.click(screen.getByText("gaussian", { exact: true }));
+    fireEvent.click(screen.getByText("Gaussian blur", { exact: true }));
     const sigma = screen.getByLabelText("Step 1 sigma");
     fireEvent.change(sigma, { target: { value: "" } });
     expect(sigma).toHaveValue("");
@@ -2566,6 +2776,95 @@ describe("ResearchWorkbench", () => {
     fireEvent.click(screen.getByText("Preview selected crop"));
     await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("preview_recipe",
       expect.objectContaining({ recipe: expect.objectContaining({ steps: [{ op: "gaussian", sigma: 1.25 }] }) })));
+  });
+  function markerGateBridge(twoSources = false) {
+    const second = { ...snapshot.sources[0], id: "7".repeat(32), sha256: "8".repeat(64), name: "Second scalar source" };
+    const study = { ...structuredClone(snapshot), sources: twoSources ? [snapshot.sources[0], second] : snapshot.sources };
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(study), execute: vi.fn(async (operation, request) => {
+      const source = study.sources.find((item) => item.id === request.source_id)!;
+      if (operation === "channel_metadata") return { source_id: source.id, source_sha256: source.sha256,
+        original_names: ["DAPI", "Marker"], revision: 0, basis: "explicit declarations",
+        channels: [0, 1].map((index) => ({ index, name: index === 0 ? "DAPI" : "Marker", marker: "", fluorophore: "", declaration: "metadata" })) };
+      return {};
+    }) });
+    return { bridge, study, second };
+  }
+
+  async function openUnfinishedMarkerGate(bridge: ResearchDesktopApi) {
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Quantify");
+    await screen.findByText(/original: DAPI/);
+    fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add explicit gate" }));
+    const input = screen.getByLabelText("Gate 1 threshold");
+    fireEvent.change(input, { target: { value: "-7.25" } });
+    fireEvent.change(input, { target: { value: "-7.25e" } });
+    return input;
+  }
+
+  it("blocks an unfinished marker gate across recipe preview, run, save and batch", async () => {
+    const { bridge } = markerGateBridge();
+    await openUnfinishedMarkerGate(bridge);
+    await openTool("Analyze", "Process");
+    expect(screen.getByText("Preview selected crop")).toBeDisabled();
+    fireEvent.click(screen.getByText("Preview selected crop"));
+    await openTool("Analyze", "Analyze");
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await openTool("Results", "Study");
+    for (const button of [screen.getByText("Save validated recipe"), screen.getByRole("button", { name: "Preview" }), screen.getByText("Run selected sources sequentially")]) {
+      expect(button).toBeDisabled(); fireEvent.click(button);
+    }
+    expect(vi.mocked(bridge.execute).mock.calls.filter(([operation]) => ["preview_recipe", "run_recipe", "recipe"].includes(operation))).toHaveLength(0);
+  });
+
+  it("preserves an unfinished marker gate across assistant handoff and explicit recovery", async () => {
+    const { bridge } = markerGateBridge();
+    const input = await openUnfinishedMarkerGate(bridge);
+    await openAdvancedTool("Connect an assistant");
+    expect(screen.getByText("Validate exact scope and recipe")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    expect(vi.mocked(bridge.execute).mock.calls.filter(([operation]) => ["preview_recipe", "run_recipe", "recipe", "validate_recipe"].includes(operation))).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Review marker gates" }));
+    expect(screen.getByLabelText("Gate 1 threshold")).toBe(input);
+    expect(input).toHaveValue("-7.25e");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("-7.25");
+    fireEvent.change(input, { target: { value: "NaN" } });
+    fireEvent.click(screen.getByText("Restore applied numbers"));
+    expect(screen.getByLabelText("Gate 1 threshold")).toHaveValue("-7.25");
+    await openTool("Analyze", "Analyze");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      recipe: expect.objectContaining({ gates: [expect.objectContaining({ threshold: -7.25 })] }),
+    })));
+  });
+
+  it("discards only the uncommitted marker threshold on A→B→A source switches", async () => {
+    const { bridge, study, second } = markerGateBridge(true);
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Quantify");
+    await screen.findByText(/original: DAPI/);
+    fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add explicit gate" }));
+    fireEvent.change(screen.getByLabelText("Gate 1 threshold"), { target: { value: "-8.125" } });
+    fireEvent.change(screen.getByLabelText("Gate 1 threshold"), { target: { value: "" } });
+    expect(screen.getByLabelText("Gate 1 threshold")).toHaveValue("");
+    expect(screen.getByText("Restore applied numbers")).toBeVisible();
+    for (const id of [second.id, study.sources[0].id]) {
+      fireEvent.click(document.querySelector<HTMLButtonElement>(`button[data-source-id="${id}"]`)!);
+      await screen.findByText(/original: DAPI/);
+      fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+      expect(screen.getByLabelText("Gate 1 threshold")).toHaveValue("-8.125");
+      expect(screen.queryByText("Restore applied numbers")).not.toBeInTheDocument();
+    }
+    await openTool("Analyze", "Analyze");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe", expect.objectContaining({
+      source_id: study.sources[0].id, recipe: expect.objectContaining({ gates: [expect.objectContaining({ threshold: -8.125 })] }),
+    })));
   });
   it("blocks invalid scientific drafts across study handoff until explicitly restored", async () => {
     const bridge = api();
@@ -2592,7 +2891,7 @@ describe("ResearchWorkbench", () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Process");
-    fireEvent.click(screen.getByText("gaussian", { exact: true }));
+    fireEvent.click(screen.getByText("Gaussian blur", { exact: true }));
     fireEvent.change(screen.getByLabelText("Step 1 sigma"), {
       target: { value: "2.5" },
     });
@@ -3181,7 +3480,7 @@ describe("ResearchWorkbench", () => {
         }),
       ),
     );
-    fireEvent.click(await screen.findByText("Adopt exact preview"));
+    fireEvent.click(await screen.findByText("Save preview as result"));
     await waitFor(() =>
       expect(bridge.execute).toHaveBeenCalledWith("model_run", {
         preview_id: "f".repeat(32),
@@ -3220,7 +3519,7 @@ describe("ResearchWorkbench", () => {
       target: { value: model.model_id },
     });
     fireEvent.click(screen.getByText("Preview model overlay"));
-    const pendingPreview = await screen.findByText("Preview ready to adopt.");
+    const pendingPreview = await screen.findByText("Preview ready to save as a result.");
     expect(pendingPreview).toBeVisible();
     expect(pendingPreview).toHaveAttribute("data-model-preview-id", "f".repeat(32));
     expect(pendingPreview).toHaveAttribute("data-model-preview-sha256", "1".repeat(64));
@@ -3228,7 +3527,7 @@ describe("ResearchWorkbench", () => {
       target: { value: "0.7" },
     });
     await waitFor(() =>
-      expect(screen.getByText("Adopt exact preview")).toBeDisabled(),
+      expect(screen.getByText("Save preview as result")).toBeDisabled(),
     );
   });
   it("submits exact folder batch IDs in working order with the selected recipe settings", async () => {
@@ -4039,7 +4338,7 @@ describe("ResearchWorkbench", () => {
       derived_measurement_arrays: null,
     });
     expect(
-      await screen.findByText("Select a segmentation result to edit labels or add an ROI."),
+      await screen.findByText("Select a segmentation result to edit its labels or ROIs."),
     ).toBeVisible();
     expect(screen.queryByText(/Label fingerprint/)).not.toBeInTheDocument();
   });
@@ -4421,7 +4720,7 @@ describe("ResearchWorkbench", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Other" }));
     expect(
-      await screen.findByText("Select a segmentation result to edit labels or add an ROI."),
+      await screen.findByText("Select a segmentation result to edit its labels or ROIs."),
     ).toBeVisible();
   });
   it("persists immutable undo and redo selections with advancing cursor revisions", async () => {
@@ -4671,5 +4970,29 @@ describe("ResearchWorkbench", () => {
     expect(drawRegionBtn).toBeInTheDocument();
     drawRegionBtn.focus();
     expect(drawRegionBtn).toHaveFocus();
+  });
+
+  it("preserves both fitted and manual viewer camera across Focus workflow and Show image", async () => {
+    const desktop = api();
+    const { container } = render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    const viewer = await screen.findByLabelText("Image viewer: Specimen");
+    await openAdvancedTool("Workflow builder");
+    const stage = container.querySelector<HTMLElement>("#research-image-stage")!;
+    expect(stage).not.toHaveAttribute("hidden");
+    const fittedBefore = JSON.parse(viewer.getAttribute("data-camera")!);
+    fireEvent.click(screen.getByRole("button", { name: "Focus workflow" }));
+    expect(stage).toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "Show image" }));
+    expect(stage).not.toHaveAttribute("hidden");
+    expect(JSON.parse(viewer.getAttribute("data-camera")!)).toEqual(fittedBefore);
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    const manualCamera = JSON.parse(viewer.getAttribute("data-camera")!);
+    expect(manualCamera.scale).toBeGreaterThan(fittedBefore.scale);
+    fireEvent.click(screen.getByRole("button", { name: "Focus workflow" }));
+    expect(stage).toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "Show image" }));
+    expect(stage).not.toHaveAttribute("hidden");
+    expect(JSON.parse(viewer.getAttribute("data-camera")!)).toEqual(manualCamera);
   });
 });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResearchWorkflowPanel, type ResearchWorkflowPanelProps } from "./ResearchWorkflowPanel";
 import { workflowFromRecipe, type WorkflowDefinition, type WorkflowRecord } from "./workflow-editor";
@@ -104,7 +104,7 @@ describe("Visual workflow interaction and bindings", () => {
   it("requires exact displayed result for manual review and invalidates previous executions on edit", async () => {
     const { props, rerender, desktopApi } = setup(); await save();
     fireEvent.click(screen.getByRole("button", { name: "Run workflow" }));
-    await screen.findByText("12 objects · waiting review");
+    await screen.findByText("12 objects · review required");
     expect(desktopApi.reviewResult).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Export reviewed result" })).toBeDisabled();
@@ -116,8 +116,9 @@ describe("Visual workflow interaction and bindings", () => {
     await waitFor(() => expect(props.onExport).toHaveBeenCalledWith(result, runId));
     fireEvent.change(screen.getByLabelText("Workflow name"), { target: { value: "Changed chain" } });
     expect(screen.getByText(/Outdated execution/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Export reviewed result" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Mark reviewed" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Export reviewed result" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run workflow" })).toBeDisabled();
   });
   it("ignores a delayed preview after the exact source scope changes", async () => {
     let complete: ((value: unknown) => void) | undefined;
@@ -177,7 +178,7 @@ describe("Visual workflow interaction and bindings", () => {
     const job: ResearchJob = { id: runId, operation: "workflow_run", request: { source_id: source.id, task_request: { source_id: source.id, source_sha256: source.sha256, selection, workflow_id: record.id, workflow_revision: record.revision, definition_sha256: hash }, workflow_context: receipt().data },
       request_key: "loci-batch:" + "d".repeat(32) + ":initial:" + "e".repeat(8), request_hash: hash, state: "succeeded", created_at: "", updated_at: "", progress: 1, cancel_requested: false, result_ids: [result.id], error: null };
     rerender(<ResearchWorkflowPanel {...props} jobs={[job]} />);
-    await screen.findByText("12 objects · waiting review");
+    await screen.findByText("12 objects · review required");
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeDisabled();
   });
   it("accepts fractional calibrated minimum area without integer coercion", async () => {
@@ -235,11 +236,11 @@ describe("Visual workflow interaction and bindings", () => {
     rerender(<ResearchWorkflowPanel {...props} />);
     await save();
     fireEvent.click(screen.getByRole("button", { name: "Check and run batch" }));
-    await screen.findByText("12 objects · waiting review");
+    await screen.findByText("12 objects · review required");
     expect(desktopApi.runBatchJob).toHaveBeenCalledWith(batchId, runId);
     expect(desktopApi.submitBatch).toHaveBeenCalledWith([{ operation: "workflow_run", source: { id: source.id, sha256: source.sha256 }, request: { workflow_id: getRecord()!.id, workflow_revision: 1, definition_sha256: hash, source_id: source.id, source_sha256: source.sha256, selection } }]);
     expect(desktopApi.reviewResult).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "From current recipe" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use current recipe" }));
     expect(screen.queryByRole("button", { name: "Resume batch" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry failed batch" })).not.toBeInTheDocument();
   });
@@ -323,12 +324,98 @@ it("retains exact population counts and keeps the full membership fingerprint in
       filtered_count: 3, total_count: 12, membership_sha256: membership, query_sha256: "e".repeat(64),
     } } } };
   });
-  fireEvent.click(screen.getByText("Save workflow"));
-  await waitFor(() => expect(screen.getByText("Run workflow")).toBeEnabled());
-  fireEvent.click(screen.getByText("Run workflow"));
+  fireEvent.click(screen.getByRole("button", { name: "Save workflow" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Run workflow" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Run workflow" }));
   expect(await screen.findByText("3 of 12 objects match.")).toBeVisible();
   const fingerprint = screen.getByText(membership);
   expect(fingerprint).not.toBeVisible();
   fireEvent.click(screen.getByText("Technical record"));
   expect(fingerprint).toBeVisible();
+});
+
+it("keeps scoped workflow actions outside the body scroller and focuses an invalid field", async () => {
+  const { container, execute } = setup();
+  const footer = screen.getByRole("group", { name: "Workflow actions and status" });
+  expect(container.querySelector(".workflow-body")?.contains(footer)).toBe(false);
+  expect(footer).toContainElement(screen.getByRole("button", { name: "Run workflow" }));
+  expect(screen.queryByText("Analysis chain")).not.toBeInTheDocument();
+  const sourceStep = screen.getByRole("button", { name: "Select Source image" });
+  sourceStep.focus(); fireEvent.keyDown(sourceStep, { key: "ArrowRight" });
+  expect(screen.getByRole("button", { name: "Select gaussian" })).toHaveFocus();
+  fireEvent.change(screen.getByLabelText("Workflow sigma"), { target: { value: "" } });
+  fireEvent.click(sourceStep);
+  fireEvent.click(screen.getByRole("button", { name: "Go to sigma" }));
+  expect(screen.getByLabelText("Workflow sigma")).toHaveFocus();
+  expect(screen.getByLabelText("Workflow sigma")).toHaveValue("");
+  for (const name of ["Save workflow", "Check workflow", "Preview through this step", "Run workflow"])
+    expect(screen.getByRole("button", { name })).toBeDisabled();
+  expect(execute).not.toHaveBeenCalledWith("workflow_run", expect.anything());
+});
+
+it("refuses an invalid current recipe import while preserving independently saved workflow execution", async () => {
+  const { props, rerender, execute } = setup(); await save();
+  rerender(<ResearchWorkflowPanel {...props} configurationValid={false} />);
+  const importRecipe = screen.getByRole("button", { name: "Use current recipe" });
+  expect(importRecipe).toBeDisabled();
+  expect(screen.getByText(/Finish or restore the current recipe/)).toBeVisible();
+  fireEvent.click(importRecipe);
+  expect(screen.getByRole("button", { name: "Run workflow" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Run workflow" }));
+  await waitFor(() => expect(execute).toHaveBeenCalledWith("workflow_run", expect.objectContaining({ workflow_revision: 1 })));
+});
+
+it("refuses an initially invalid recipe-derived draft until explicit valid import", async () => {
+  const { props, rerender, execute } = setup({ configurationValid: false });
+  const assertBlocked = () => {
+    for (const name of ["Save workflow", "Check workflow", "Preview through this step", "Run workflow"]) {
+      const button = screen.getByRole("button", { name }); expect(button).toBeDisabled(); fireEvent.click(button);
+    }
+  };
+  assertBlocked();
+  rerender(<ResearchWorkflowPanel {...props} configurationValid />);
+  assertBlocked();
+  expect(execute.mock.calls.filter(([operation]) => ["workflow_validate", "workflow_save", "workflow_preview", "workflow_run"].includes(operation))).toHaveLength(0);
+  fireEvent.click(screen.getByRole("button", { name: "Use current recipe" }));
+  await save();
+  const saved = execute.mock.calls.find(([operation]) => operation === "workflow_save")![1].definition;
+  expect(saved).toEqual(workflowFromRecipe(recipe));
+});
+
+it("opens and executes an independent saved workflow despite invalid host recipe at first entry", async () => {
+  const independent: WorkflowRecord = { id: "6".repeat(32), revision: 1, data: { definition: workflowFromRecipe(recipe), definition_sha256: hash } };
+  const { execute, setRecord } = setup({ configurationValid: false }, (operation, _request, normal) => operation === "workflow_list" ? { workflows: [independent] } : normal());
+  setRecord(independent);
+  await screen.findByRole("option", { name: independent.data.definition.name + " · v1" });
+  expect(screen.getByRole("button", { name: "Save workflow" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Saved workflow"), { target: { value: independent.id } });
+  expect(screen.getByRole("button", { name: "Open" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Open" }));
+  await screen.findByText("Opened revision 1.");
+  expect(screen.getByRole("button", { name: "Use current recipe" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Run workflow" }));
+  await waitFor(() => expect(execute).toHaveBeenCalledWith("workflow_run", expect.objectContaining({ workflow_id: independent.id, workflow_revision: 1 })));
+});
+
+it("keeps exact-result actions in the footer and switches to rerun controls without adding simultaneous actions", async () => {
+  const { props, rerender, container, desktopApi } = setup(); await save();
+  fireEvent.click(screen.getByRole("button", { name: "Run workflow" }));
+  await screen.findByText("12 objects · review required");
+  const footer = screen.getByRole("group", { name: "Workflow actions and status" });
+  for (const name of ["Inspect exact result", "Mark reviewed", "Export reviewed result"]) {
+    const action = within(footer).getByRole("button", { name });
+    expect(container.querySelector(".workflow-body")?.contains(action)).toBe(false);
+  }
+  expect(within(footer).getAllByRole("button")).toHaveLength(4);
+  expect(within(footer).getByRole("button", { name: "Mark reviewed" })).toBeDisabled();
+  expect(within(footer).getByRole("button", { name: "Export reviewed result" })).toBeDisabled();
+  fireEvent.click(within(footer).getByRole("button", { name: "Rerun / check" }));
+  for (const name of ["Check workflow", "Preview through this step", "Run workflow"])
+    expect(within(footer).getByRole("button", { name })).toBeEnabled();
+  expect(within(footer).getAllByRole("button")).toHaveLength(4);
+  fireEvent.click(within(footer).getByRole("button", { name: "Result actions" }));
+  rerender(<ResearchWorkflowPanel {...props} displayedResult={result} />);
+  fireEvent.click(within(footer).getByRole("button", { name: "Mark reviewed" }));
+  await waitFor(() => expect(desktopApi.reviewResult).toHaveBeenCalledWith(result.id, result.revision_hash, "reviewed"));
+  await waitFor(() => expect(within(footer).getByRole("button", { name: "Export reviewed result" })).toBeEnabled());
 });

@@ -5,6 +5,7 @@ import { checkedWorkflow, connected, finiteDraft, nodeLabel, PROCESS_OPTIONS, re
 import "./ResearchWorkflowPanel.css";
 
 export interface ResearchWorkflowPanelProps {
+  configurationValid?: boolean;
   api: ResearchDesktopApi; source: ResearchSource; sources: ResearchSource[]; selection: ResearchSelection; recipe: ResearchRecipe; busy: boolean;
   selectedSourceIds?: string[]; onSelectedSourceIdsChange?: (ids: string[]) => void;
   active: boolean; jobs: ResearchJob[]; displayedResult: ResearchResult | null; onBusyChange: (busy: boolean) => void;
@@ -19,13 +20,14 @@ interface RunResponse { result: ResearchResult; run: RunRecord }
 // Match the complete durable key accepted by the main-process batch ledger.
 const workflowBatchId = (job: ResearchJob): string | null => /^loci-batch:([a-f0-9]{32}):(initial|resume|retry):([a-f0-9]{5,32})$/u.exec(job.request_key)?.[1] ?? null;
 const icon = (node: WorkflowNode) => node.type === "source" ? Image : node.type === "process" ? SlidersHorizontal : node.type === "segment" ? Scan : node.type === "export" ? Download : node.type === "review" ? Check : GitBranch;
-const port = (node: WorkflowNode) => node.type === "source" || node.type === "process" ? "Image" : node.type === "segment" ? "Labels" : node.type === "measure" || node.type === "population" ? "Objects" : "Result";
+const stepLabel = (node: WorkflowNode) => node.type === "source" ? "Source" : node.type === "segment" ? "Segment" : node.type === "measure" ? "Measure" : node.type === "review" ? "Review" : node.type === "export" ? "Export" : nodeLabel(node);
 const failure = (error: unknown) => error instanceof Error ? error.message : "This workflow operation failed. Retry after checking the study.";
 const definitionJson = (definition: WorkflowDefinition) => exactJson({ ...definition, nodes: definition.nodes.map((node) => node.type === "population" ? { ...node, settings: { filters: [...node.settings.filters as unknown[]].sort((a, b) => exactJson(a).localeCompare(exactJson(b))) } } : node) });
 const exactJson = (value: unknown) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 export function ResearchWorkflowPanel(props: ResearchWorkflowPanelProps) { return <WorkflowEditor {...props} />; }
-function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSourceIdsChange, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh }: ResearchWorkflowPanelProps) {
+function WorkflowEditor({ configurationValid = true, api, source, sources, selectedSourceIds, onSelectedSourceIdsChange, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh }: ResearchWorkflowPanelProps) {
   const [definition, setDefinition] = useState<WorkflowDefinition>(() => workflowFromRecipe(recipe));
+  const [draftReady, setDraftReady] = useState(configurationValid), [showRunControls, setShowRunControls] = useState(false);
   const [selectedId, setSelectedId] = useState("source"), [saved, setSaved] = useState<WorkflowRecord | null>(null);
   const [library, setLibrary] = useState<WorkflowRecord[]>([]), [openId, setOpenId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [invalid, setInvalid] = useState<Record<string, string>>({});
@@ -54,6 +56,7 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
   const outdated = Boolean(run && run.scope !== scope);
   const blocked = !active || (busy && !pending) || Boolean(pending) || Object.keys(invalid).length > 0;
   const unsupported = templateReferences;
+  const draftBlocked = blocked || !draftReady;
   const displayedRef = useRef(displayedResult); displayedRef.current = displayedResult;
   const exactDisplayed = Boolean(run && displayedResult && displayedResult.id === run.response.result.id && displayedResult.revision_hash === run.response.result.revision_hash && displayedResult.source_id === source.id && displayedResult.source_sha256 === source.sha256);
   useEffect(() => { mounted.current = true; let live = true;
@@ -87,7 +90,7 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
     return value;
   };
   const validate = async () => {
-    if (blocked) return;
+    if (draftBlocked) return;
     await perform("Validating", async (current) => {
       const value = await api.execute("workflow_validate", { definition }) as { definition?: WorkflowDefinition; definition_sha256?: string };
       if (!value.definition || definitionJson(value.definition) !== definitionJson(definition) || !/^[a-f0-9]{64}$/.test(value.definition_sha256 ?? "")) throw new Error("Validation did not return this exact workflow.");
@@ -95,7 +98,7 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
     });
   };
   const save = async () => {
-    if (blocked || unsupported) return;
+    if (draftBlocked || unsupported) return;
     await perform("Saving", async (current) => {
       const id = saved?.id ?? crypto.randomUUID().replaceAll("-", "");
       const validated = await api.execute("workflow_validate", { definition }) as { definition: WorkflowDefinition; definition_sha256: string };
@@ -114,11 +117,11 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
       const record = checkedWorkflow(((await api.execute("workflow_get", { workflow_id: openId })) as { workflow: unknown }).workflow);
       if (record.id !== openId) throw new Error("The returned workflow does not match the selected record.");
       if (!current()) return;
-      setSaved(record); setTemplateReferences(false); setDefinition(record.data.definition); setDrafts({}); setInvalid({}); setRun(null); setBatchId(null); setSelectedId(record.data.definition.nodes[0].id); setNotice("Opened revision " + record.revision + ".");
+      setDraftReady(true); setSaved(record); setTemplateReferences(false); setDefinition(record.data.definition); setDrafts({}); setInvalid({}); setRun(null); setBatchId(null); setSelectedId(record.data.definition.nodes[0].id); setNotice("Opened revision " + record.revision + ".");
     });
   };
   const preview = async () => {
-    if (!saved || edited || blocked) return;
+    if (!saved || edited || draftBlocked) return;
     await perform("Previewing", async (current) => {
       const value = await api.execute("workflow_preview", { ...binding(saved), target_node_id: selected.id }) as { image?: string; workflow?: { id: string; revision: number; definition_sha256: string }; target_node_id?: string; object_count?: number };
       if (value.workflow?.id !== saved.id || value.workflow.revision !== saved.revision || value.workflow.definition_sha256 !== saved.data.definition_sha256 || value.target_node_id !== selected.id) throw new Error("The preview does not match this exact workflow prefix.");
@@ -128,11 +131,11 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
     });
   };
   const execute = async () => {
-    if (!saved || edited || blocked) return;
+    if (!saved || edited || draftBlocked) return;
     await perform("Running", async (current) => {
       const value = checkedRun(await api.execute("workflow_run", binding(saved)) as RunResponse, binding(saved));
       await onRefresh(); if (!current()) return;
-      setPreviewScope(null); setRun({ response: value, scope: scopeRef.current }); setRunState("waiting_review"); setNotice("Result saved. Inspect the image and objects before human review."); await onResult(value.result);
+      setPreviewScope(null); setRun({ response: value, scope: scopeRef.current }); setRunState("waiting_review"); setShowRunControls(false); setNotice("Result saved. Inspect the image and objects before human review."); await onResult(value.result);
     });
   };
   const resultAction = async (action: "inspect" | "review" | "export") => {
@@ -168,11 +171,11 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
       const request = taskRequest(job);
       const response = checkedRun(value, request as ReturnType<typeof binding>);
       await onRefresh();
-      if (current() && response.result.source_id === source.id) { setPreviewScope(null); setRun({ response, scope: scopeRef.current }); setRunState("waiting_review"); await onResult(response.result); }
+      if (current() && response.result.source_id === source.id) { setPreviewScope(null); setRun({ response, scope: scopeRef.current }); setRunState("waiting_review"); setShowRunControls(false); await onResult(response.result); }
     }
   };
   const batch = async () => {
-    if (!saved || edited || blocked || !api.submitBatch || !targets.length) return;
+    if (!saved || edited || draftBlocked || !api.submitBatch || !targets.length) return;
     await perform("Running batch", async (current) => {
       const tasks: ResearchBatchTask[] = [];
       for (const id of targets) {
@@ -200,7 +203,7 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
   };
   const numberInput = (key: string, value: number, minimum?: number, integer = false) => {
     const field = selected.id + ":" + key;
-    return <input aria-label={"Workflow " + key.replaceAll("_", " ")} aria-invalid={Boolean(invalid[field])} inputMode={integer ? "numeric" : "decimal"}
+    return <input data-workflow-field={field} aria-label={"Workflow " + key.replaceAll("_", " ")} aria-invalid={Boolean(invalid[field])} inputMode={integer ? "numeric" : "decimal"}
       value={drafts[field] ?? String(value)} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setDrafts((old) => { const next = { ...old }; delete next[field]; return next; }); setInvalid((old) => { const next = { ...old }; delete next[field]; return next; }); } }}
       onChange={(event) => { generation.current++; const text = event.target.value; setDrafts((old) => ({ ...old, [field]: text }));
         try { const parsed = finiteDraft(text, integer, minimum); patch({ [key]: parsed }); setInvalid((old) => { const next = { ...old }; delete next[field]; return next; }); }
@@ -246,43 +249,56 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
       const result = snapshot?.results.find((item) => item.id === status.run?.data.result_id);
       if (!result || status.workflow_outdated || status.run.id !== job.id) throw new Error("The retained execution is unavailable or outdated.");
       const response = checkedRun({ result, run: status.run }, binding(saved));
-      setRun({ response, scope: capturedScope }); setRunState(status.state);
+      setRun({ response, scope: capturedScope }); setRunState(status.state); setShowRunControls(false);
     }).catch((caught) => { if (token === restoreGeneration.current && mounted.current) setError(failure(caught)); });
     return () => { restoreGeneration.current++; };
     // Recovery binds only the exact saved workflow/source/scope; dirty drafts never adopt an old run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, jobs, saved, edited, active, source.id, source.sha256, exactJson(selection), pending]);
 
+  const panelRef = useRef<HTMLElement>(null);
+  const [focusField, setFocusField] = useState<string | null>(null);
+  useEffect(() => { panelRef.current?.querySelector<HTMLButtonElement>(".workflow-node-row > button[aria-pressed=true]")?.scrollIntoView?.({ block: "nearest", inline: "nearest" }); }, [selectedId, definition.nodes.length]);
+  useEffect(() => {
+    if (!focusField) return;
+    const input = [...panelRef.current?.querySelectorAll<HTMLInputElement>("[data-workflow-field]") ?? []].find((item) => item.dataset.workflowField === focusField);
+    if (input) { input.focus(); setFocusField(null); }
+  }, [focusField, selectedId]);
+  const firstInvalid = Object.keys(invalid)[0];
+  const focusInvalid = () => { if (firstInvalid) { setSelectedId(firstInvalid.split(":")[0]); setFocusField(firstInvalid); } };
   const runResult = run?.response.result;
-  return <section className="workflow-panel" aria-label="Visual workflow builder">
+  const currentRun = Boolean(run && !edited && !outdated && runState !== "outdated");
+  const resultStatus = !run ? "No result yet." : outdated || runState === "outdated" ? "Outdated execution · parameters or image scope changed. Run again before review or export." : run.response.result.object_count.toLocaleString() + " objects · " + (runState === "waiting_review" ? "review required" : runState.replaceAll("_", " "));
+  return <section ref={panelRef} className="workflow-panel" aria-label="Visual workflow builder">
+    <div className="workflow-body">
     <header className="workflow-toolbar">
-      <div className="workflow-title"><GitBranch size={21} /><div><h2>Workflow builder</h2><p>From source pixels to a reviewed result</p></div></div>
       <div className="workflow-library"><select aria-label="Saved workflow" value={openId} onChange={(event) => setOpenId(event.target.value)}><option value="">Saved workflows…</option>{library.map((record) => <option key={record.id} value={record.id}>{record.data.definition.name} · v{record.revision}</option>)}</select><button disabled={blocked || !openId} onClick={() => void reopen()}>Open</button></div>
       <label className="workflow-name">Name<input aria-label="Workflow name" value={definition.name} maxLength={120} onChange={(event) => mutate({ ...definition, name: event.target.value })} /></label>
-      <div className="workflow-actions"><button disabled={blocked || unsupported} onClick={() => void save()}><Save size={14} />{saved ? "Save revision" : "Save workflow"}</button><button disabled={blocked} onClick={() => void validate()}>Validate</button><button disabled={blocked} onClick={() => { mutate(workflowFromRecipe(recipe)); setTemplateReferences(Boolean(recipe.references && Object.keys(recipe.references).length)); setSaved(null); setRun(null); setBatchId(null); setDrafts({}); setInvalid({}); setSelectedId("source"); }}>{recipe.segmentation ? "From current recipe" : "Start object workflow"}</button></div>
-      <div className="workflow-save-state" role="status">{pending ? pending + "…" : edited ? "Unsaved draft · save before execution" : "Saved revision " + saved!.revision}</div>
+      <button disabled={blocked || !configurationValid} onClick={() => { if (!configurationValid) return; setDraftReady(true); mutate(workflowFromRecipe(recipe)); setTemplateReferences(Boolean(recipe.references && Object.keys(recipe.references).length)); setSaved(null); setRun(null); setBatchId(null); setDrafts({}); setInvalid({}); setSelectedId("source"); }}>{recipe.segmentation ? "Use current recipe" : "Start object workflow"}</button>
     </header>
+    {!configurationValid && <p className="workflow-help">Finish or restore the current recipe’s numeric fields before importing it.</p>}
+    {!draftReady && <p className="workflow-help">Import a valid current recipe or open a saved workflow before checking, saving or running.</p>}
     <div className="workflow-binding"><Image size={16} /><div><strong title={source.name}>{source.name}</strong><span>X {selection.x} · Y {selection.y} · {selection.width} × {selection.height} · T {selection.t + 1} · Z {selection.z + 1}{selection.z_stop !== undefined ? "–" + selection.z_stop : ""} · C {selection.c + 1} · level {selection.level}</span></div></div>
     <div className="workflow-workspace">
       <section className="workflow-canvas" aria-label="Connected workflow schematic">
-        <div className="workflow-canvas-heading"><strong>Analysis chain</strong><span>Image → labels → objects → review</span></div>
         <div className="workflow-graph-scroll" tabIndex={0} aria-label="Workflow graph canvas">
           <ol className="workflow-graph" aria-label="Connected workflow nodes">{definition.nodes.map((node, index) => { const Icon = icon(node); const selectedNode = selected.id === node.id;
             return <li key={node.id} className={"workflow-node-row " + (selectedNode ? "is-selected" : "")}>
-              {index > 0 && <div className="workflow-wire" aria-hidden="true"><span>{port(definition.nodes[index - 1])}</span></div>}
-              <button aria-label={"Select " + nodeLabel(node)} aria-pressed={selectedNode} disabled={Boolean(pending)} onClick={() => setSelectedId(node.id)}>
-                {index > 0 && <i className="workflow-port workflow-port-in" aria-hidden="true" />}
-                <span className="workflow-node-index">{String(index + 1).padStart(2, "0")}</span><Icon size={22} />
-                <strong>{nodeLabel(node)}</strong>
-                <small>{node.type === "review" ? "Manual approval" : node.type === "export" ? "Reviewed result" : node.type === "measure" ? "Original values" : node.type === "population" ? (node.settings.filters as unknown[] | undefined)?.length + " inclusive ranges" : node.type === "source" ? selection.width + " × " + selection.height : node.type === "process" ? Object.entries(node.settings).filter(([key]) => key !== "op").map(([key, value]) => key + " " + String(value)).join(" · ") : String(node.settings.method ?? "Configure method")}</small>
-                <span className="workflow-node-status">{outdated ? "Changed" : runResult ? node.type === "review" ? runState.replaceAll("_", " ") : node.type === "export" ? runState === "exported" ? "Exported" : "Manual action" : "Executed" : node.type === "review" || node.type === "export" ? "Manual step" : "Configured"}</span>
-                {index < definition.nodes.length - 1 && <i className="workflow-port workflow-port-out" aria-hidden="true" />}
+              {index > 0 && <div className="workflow-wire" aria-hidden="true" />}
+              <button aria-label={"Select " + nodeLabel(node)} aria-pressed={selectedNode} disabled={Boolean(pending)} onClick={() => setSelectedId(node.id)} onKeyDown={(event) => {
+                const next = event.key === "ArrowRight" ? Math.min(index + 1, definition.nodes.length - 1) : event.key === "ArrowLeft" ? Math.max(index - 1, 0) : event.key === "Home" ? 0 : event.key === "End" ? definition.nodes.length - 1 : null;
+                if (next === null) return;
+                event.preventDefault(); setSelectedId(definition.nodes[next].id);
+                event.currentTarget.closest("ol")?.querySelectorAll<HTMLButtonElement>("button")[next]?.focus();
+              }}>
+                <span className="workflow-node-index">{index + 1}</span><Icon size={16} />
+                <strong>{stepLabel(node)}</strong>
+                {runResult && <span className="workflow-node-status">{outdated ? "Outdated" : node.type === "review" ? runState === "waiting_review" ? "Review required" : runState.replaceAll("_", " ") : node.type === "export" ? runState === "exported" ? "Exported" : "Awaiting export" : "Executed"}</span>}
               </button>
             </li>; })}</ol>
         </div>
         <div className="workflow-add"><label>Add processing<select aria-label="Add workflow processing" value="" disabled={blocked || definition.nodes.filter((node) => node.type === "process").length >= 32} onChange={(event) => { if (event.target.value) addProcess(event.target.value); }}><option value="">Choose operation…</option>{PROCESS_OPTIONS.map((op) => <option value={op} key={op}>{op.replaceAll("_", " ")}</option>)}</select></label>
           {!definition.nodes.some((node) => node.type === "population") && <button disabled={blocked} onClick={() => { const nodes = [...definition.nodes]; nodes.splice(nodes.findIndex((node) => node.type === "review"), 0, { id: "population", type: "population", settings: { filters: [] } }); mutate(connected(definition, nodes)); setSelectedId("population"); }}><Plus size={14} />Population filter</button>}</div>
-        <p className="workflow-help">One ordered, compatible chain. Processing changes segmentation; measurements retain the raw source basis.</p>
       </section>
       <section className="workflow-inspector" aria-label="Selected node parameters"><div className="workflow-inspector-heading"><h3>{nodeLabel(selected)}</h3></div>
         {selected.type === "source" && <><p>The active image and exact selected region bind every preview and execution.</p><label>Input interpretation<select aria-label="Workflow input interpretation" value={String(selected.settings.input_transform ?? "native")} onChange={(event) => mutate({ ...definition, nodes: definition.nodes.map((node) => node.id === selected.id ? { ...node, settings: event.target.value === "native" ? {} : { input_transform: "rgb_intensity" } } : node) })}><option value="native">Native selected channel</option><option value="rgb_intensity">RGB intensity</option></select></label><p>RGB components are display samples, not declared biological channels.</p><label>Working memory<select aria-label="Workflow working memory" value={definition.working_bytes} onChange={(event) => mutate({ ...definition, working_bytes: Number(event.target.value) })}>{[512 * 1024 ** 2, 1024 ** 3, 2 * 1024 ** 3, 4 * 1024 ** 3].map((bytes) => <option key={bytes} value={bytes}>{bytes / 1024 ** 2} MiB</option>)}</select></label></>}
@@ -294,27 +310,44 @@ function WorkflowEditor({ api, source, sources, selectedSourceIds, onSelectedSou
         {selected.type === "population" && <PopulationSettings node={selected} metrics={sourceMetrics} drafts={drafts} invalid={invalid} onEdit={() => { generation.current++; }} onDraft={setDrafts} onInvalid={setInvalid} onPatch={patch} onRemove={remove} />}
         {selected.type === "review" && <><p>Inspect the saved result in the image and object explorer. Review records this exact revision.</p><p>Current displayed result: {exactDisplayed ? "matches this execution" : "inspect the exact execution before approval"}.</p></>}
         {selected.type === "export" && <p>Export opens the native destination picker after exact human approval. Population filters retain membership receipts; they do not remove segmentation labels.</p>}
-        <div className="workflow-node-action"><button disabled={blocked || edited || ["review", "export"].includes(selected.type)} onClick={() => void preview()}><Scan size={15} />Preview through this step</button></div>
       </section>
     </div>
     <div className="workflow-feedback" aria-live="polite">
-      {Object.keys(invalid).length > 0 && <p role="alert" className="workflow-error">Correct the numeric draft before saving or running. {Object.values(invalid)[0]}</p>}
       {unsupported && <p role="alert" className="workflow-error">This recipe uses reference images. Workflow compilation does not yet support those bindings; remove them in Processing before creating a workflow.</p>}
       {!recipe.segmentation && !saved && definition.nodes.find((node) => node.type === "segment")?.settings.threshold === "otsu" && <p className="workflow-notice">Object workflow starts with connected components and an Otsu threshold. Configure the segmentation node before running.</p>}
       {previewScope && previewScope !== scope && <p className="workflow-outdated">Previous preview is outdated. Save and preview again to inspect the current parameters and image scope.</p>}
-      {error && <p role="alert" className="workflow-error">{error}</p>}{notice && <p role="status" className="workflow-notice">{notice}</p>}
+      {notice && <p role="status" className="workflow-notice">{notice}</p>}
     </div>
     <section className="workflow-execution" aria-label="Workflow execution result">
-      <div className="workflow-execute"><div><h3>Execution</h3><p>Run the saved chain on the selected image region</p></div><button className="workflow-run" disabled={blocked || edited || unsupported} onClick={() => void execute()}><Play size={15} />Run workflow</button></div>
-      {!run ? <p>No execution in this editor yet. Save the chain, preview a step, then run.</p> : <><p className={outdated ? "workflow-outdated" : ""}>{outdated || runState === "outdated" ? "Outdated execution · parameters or image scope changed. Run again before review or export." : run.response.result.object_count.toLocaleString() + " objects · " + runState.replaceAll("_", " ")}</p>
+      <h3>Result inspection</h3>
+      {!run ? <p>Save the chain, preview a step, then run.</p> : <>
         {run.response.run.data.population && <><p>{run.response.run.data.population.filtered_count.toLocaleString()} of {run.response.run.data.population.total_count.toLocaleString()} objects match.</p>
           <details><summary>Technical record</summary><p>Membership SHA-256 <code>{run.response.run.data.population.membership_sha256}</code></p></details></>}
-        <div className="workflow-actions"><button disabled={blocked || outdated} onClick={() => void resultAction("inspect")}>Inspect exact result</button><button disabled={blocked || outdated || !exactDisplayed || runState === "outdated"} onClick={() => void resultAction("review")}>Mark reviewed</button><button disabled={blocked || outdated || !["reviewed", "exported"].includes(runState)} onClick={() => void resultAction("export")}>Export reviewed result</button></div></>}
+        </>}
       <p className="workflow-help">Select a node to edit or preview its prefix. Jobs reports measured execution status; nodes do not imply individual progress.</p>
     </section>
     {api.submitBatch && <details className="workflow-batch"><summary>Batch sources · {targets.length} selected</summary><p>Use the same exact region and axes on every source. All sources must pass compatibility checks before submission.</p><div className="workflow-batch-sources">{sources.map((target) => <label key={target.id} className="workflow-checkbox"><input type="checkbox" checked={targets.includes(target.id)} disabled={Boolean(pending)} onChange={(event) => setTargets((old) => event.target.checked ? [...old, target.id] : old.filter((id) => id !== target.id))} />{target.name}</label>)}</div><div className="workflow-actions"><button disabled={blocked || edited || !targets.length} onClick={() => void batch()}>Check and run batch</button><button disabled={!durableJobs.some((job) => ["queued", "running"].includes(job.state))} onClick={() => void cancelBatch()}>Cancel batch</button>{latestBatchId && <><button disabled={blocked} onClick={() => void recoverBatch(false)}>Resume batch</button><button disabled={blocked} onClick={() => void recoverBatch(true)}>Retry failed batch</button></>}</div>
       {durableJobs.length > 0 && <ul className="workflow-job-list">{durableJobs.map((job) => <li key={job.id}><span>{sources.find((item) => item.id === job.request.source_id)?.name ?? "Source"} · {job.state}</span>{job.error && <span className="workflow-error">{job.error}</span>}</li>)}</ul>}
     </details>}
+    </div>
+    <footer className="workflow-footer" role="group" aria-label="Workflow actions and status">
+      <div className="workflow-actions">
+        {currentRun && !showRunControls ? <>
+          <button aria-label="Inspect exact result" disabled={blocked} onClick={() => void resultAction("inspect")}>Inspect result</button>
+          <button disabled={blocked || !exactDisplayed} onClick={() => void resultAction("review")}>Mark reviewed</button>
+          <button aria-label="Export reviewed result" disabled={blocked || !["reviewed", "exported"].includes(runState)} onClick={() => void resultAction("export")}>Export</button>
+          <button onClick={() => setShowRunControls(true)}>Rerun / check</button>
+        </> : <>
+          {!currentRun && <button aria-label={saved ? "Save revision" : "Save workflow"} disabled={draftBlocked || unsupported} onClick={() => void save()}><Save size={14} />Save</button>}
+          <button disabled={draftBlocked} onClick={() => void validate()}>Check workflow</button>
+          <button aria-label="Preview through this step" disabled={draftBlocked || edited || ["review", "export"].includes(selected.type)} onClick={() => void preview()}><Scan size={15} />Preview</button>
+          <button aria-label="Run workflow" className="workflow-run" disabled={draftBlocked || edited || unsupported} onClick={() => void execute()}><Play size={15} />Run</button>
+          {currentRun && <button onClick={() => setShowRunControls(false)}>Result actions</button>}
+        </>}
+      </div>
+      <div className="workflow-save-state" role="status">{pending ? pending + "…" : !draftReady ? "Import a valid recipe or open a saved workflow." : firstInvalid ? <>Correct the numeric draft before saving or running. <button className="workflow-focus-error" onClick={focusInvalid}>Go to {firstInvalid.split(":")[1].replaceAll("_", " ")}</button> {invalid[firstInvalid]}</> : run && (outdated || runState === "outdated") ? resultStatus : edited ? "Save changes before previewing or running." : run ? resultStatus : "Saved revision " + saved!.revision}</div>
+      {error && <p role="alert" className="workflow-error">{error}</p>}
+    </footer>
   </section>;
 }
 function PopulationSettings({ node, metrics, drafts, invalid, onDraft, onInvalid, onEdit, onPatch, onRemove }: {
@@ -344,7 +377,7 @@ function PopulationSettings({ node, metrics, drafts, invalid, onDraft, onInvalid
     <p>Exact unit: {descriptor?.unit ?? "save this workflow to resolve source metrics"}</p>
     <button disabled={!descriptor || filters.length >= 8 || filters.some((filter) => filter.metric === metric)} onClick={() => onPatch({ filters: [...filters, { metric, unit: descriptor!.unit, min: 0 }] })}><Plus size={14} />Add range</button>
     {filters.map((filter, index) => <fieldset key={index + ":" + filter.metric}><legend>{metrics.find((item) => item.id === filter.metric)?.label ?? (filter.metric === "measure" ? "Area / volume" : filter.metric === "voxel_count" ? "Pixel / voxel count" : filter.metric === "nearest_centroid_distance" ? "Nearest centroid distance" : "Intensity range")} ({filter.unit})</legend>{(["min", "max"] as const).map((key) => { const field = node.id + ":filter-" + filters[index].metric + "-" + key;
-      return <label key={key}>{key === "min" ? "Minimum (inclusive)" : "Maximum (inclusive)"}<input aria-label={"Workflow population " + (key === "min" ? "minimum" : "maximum") + " " + (index + 1)} aria-invalid={Boolean(invalid[field])} inputMode="decimal" value={drafts[field] ?? (filter[key] === undefined ? "" : String(filter[key]))}
+      return <label key={key}>{key === "min" ? "Minimum (inclusive)" : "Maximum (inclusive)"}<input data-workflow-field={field} aria-label={"Workflow population " + (key === "min" ? "minimum" : "maximum") + " " + (index + 1)} aria-invalid={Boolean(invalid[field])} inputMode="decimal" value={drafts[field] ?? (filter[key] === undefined ? "" : String(filter[key]))}
         onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onDraft((old) => { const next = { ...old }; delete next[field]; return next; }); onInvalid((old) => { const next = { ...old }; delete next[field]; return next; }); } }}
         onChange={(event) => changeBound(index, key, event.target.value)} /></label>; })}<button onClick={() => {
         const prefix = node.id + ":filter-" + filter.metric + "-";

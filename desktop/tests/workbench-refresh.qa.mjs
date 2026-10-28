@@ -338,7 +338,7 @@ async function selectAllSources(sourceIds) {
 }
 
 async function applyCmyPalette(sourceIds, captureName) {
-  await page.getByRole("button", { name: /^Apply colors/ }).click();
+  await page.getByRole("button", { name: /^Copy colours to images…/ }).click();
   const dialog = page.getByRole("dialog", { name: "Apply channel colours" });
   await dialog.waitFor({ state: "visible", timeout: 30_000 });
   assert.match((await dialog.textContent()) ?? "", new RegExp(`${sourceIds.length} selected`));

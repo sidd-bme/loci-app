@@ -318,7 +318,7 @@ async function openResearch(page) {
 
 async function selectModel(page, modelId) {
   await page.getByLabel("Model package").selectOption(modelId);
-  await page.getByLabel("Model input 0 source channel").selectOption("0");
+  await page.getByLabel("Model input 1 source channel").selectOption("0");
   await page.getByLabel("Model scale mode").selectOption("source");
   assert.equal(
     await page.getByLabel("Model working memory").inputValue(),
@@ -332,7 +332,7 @@ async function previewAndAdopt(page, priorIds, label) {
     .click();
   const pending = await visible(
     page,
-    page.getByText("Preview ready to adopt.", { exact: true }),
+    page.getByText("Preview ready to save as a result.", { exact: true }),
     `${label} exact preview`,
     600_000,
   );
@@ -342,7 +342,7 @@ async function previewAndAdopt(page, priorIds, label) {
   assert.match(previewSha256 ?? "", /^[a-f0-9]{64}$/u, `${label} preview fingerprint was not bound`);
   await screenshot(page, `${label}-preview`);
   await page
-    .getByRole("button", { name: "Adopt exact preview", exact: true })
+    .getByRole("button", { name: "Save preview as result", exact: true })
     .click();
   const snapshot = await waitFor(
     page,
@@ -573,7 +573,7 @@ try {
   );
   await page.getByLabel("Model working memory").selectOption(String(TWO_GIB));
   await page
-    .getByRole("button", { name: "Import managed package", exact: true })
+    .getByRole("button", { name: "Import model package…", exact: true })
     .click();
   const usefulModels = await waitFor(
     page,
@@ -746,7 +746,7 @@ try {
 
   await selectWorkbenchTool(page, "Model");
   await page
-    .getByRole("button", { name: "Import managed package", exact: true })
+    .getByRole("button", { name: "Import model package…", exact: true })
     .click();
   const bothModels = await waitFor(
     page,

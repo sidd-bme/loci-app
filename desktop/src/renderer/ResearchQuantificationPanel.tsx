@@ -13,6 +13,7 @@ import "./ResearchQuantificationPanel.css";
 import { ResearchPerinuclearPanel } from "./ResearchPerinuclearPanel";
 import { resultTitle } from "./result-title";
 import { punctaDistanceUnit, UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
+import { ValidatedNumberInput, useNumericValidity } from "./ValidatedNumberInput";
 
 type Report = <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
 type PunctaPreview = {
@@ -292,8 +293,16 @@ export function ResearchQuantificationPanel({
   onPreview,
   onPublished,
   initialMode = "channels",
+  numberKey = `${source.id}:${source.sha256}`,
+  onNumberValidity,
+  entryKey = 0,
+  active = true,
 }: {
   initialMode?: "channels" | "association";
+  active?: boolean;
+  entryKey?: number;
+  numberKey?: string;
+  onNumberValidity?: (valid: boolean) => void;
   api: ResearchDesktopApi;
   snapshot: ResearchSnapshot;
   source: ResearchSource;
@@ -306,9 +315,39 @@ export function ResearchQuantificationPanel({
   onPreview: (image: string, measurements: Array<Record<string, unknown>>) => void;
   onPublished: (result: ResearchResult) => Promise<void>;
 }): React.JSX.Element {
+  const numbers = useNumericValidity(onNumberValidity);
+  const reportValidity = useRef(onNumberValidity);
+  reportValidity.current = onNumberValidity;
+  // The parent keys this panel to its exact source. Switching sources discards
+  // that source's uncommitted drafts, never their last applied recipe values.
+  useEffect(() => () => { reportValidity.current?.(true); }, []);
+  // Gate identities are renderer-only: edits retain a row's draft, while removal
+  // cannot transfer an unfinished threshold to the next gate's array index.
+  const gateIds = useRef(new WeakMap<ResearchRecipe["gates"][number], string>());
+  const nextGateId = useRef(0);
+  const gateId = (gate: ResearchRecipe["gates"][number]) => {
+    let id = gateIds.current.get(gate);
+    if (!id) { id = `gate-${++nextGateId.current}`; gateIds.current.set(gate, id); }
+    return id;
+  };
+  const patchGate = (index: number, patch: Partial<ResearchRecipe["gates"][number]>) => {
+    setRecipe((old) => ({ ...old, gates: old.gates.map((gate, i) => {
+      if (i !== index) return gate;
+      const next = { ...gate, ...patch };
+      gateIds.current.set(next, gateId(gate));
+      return next;
+    }) }));
+  };
   const isRgb = source.metadata.sample_semantics === "RGB";
   const distanceUnit = punctaDistanceUnit(source, selection);
   const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "perinuclear" | "field-assay">(initialMode);
+  useEffect(() => { setMode(initialMode); }, [entryKey, initialMode]);
+  const liveView = useRef({ active, sourceId: source.id, sourceSha256: source.sha256, mode });
+  liveView.current = { active, sourceId: source.id, sourceSha256: source.sha256, mode };
+  const currentSourceView = () => liveView.current.active && liveView.current.sourceId === source.id &&
+    liveView.current.sourceSha256 === source.sha256;
+  const currentPreviewView = (expectedMode: typeof mode) => currentSourceView() && liveView.current.mode === expectedMode;
+
   const [sourceAnnotations, setSourceAnnotations] = useState<SourceAnnotation[]>([]);
   const [sourceAnnotationRevision, setSourceAnnotationRevision] = useState<number | null>(null);
   const [fieldAssayAnnotationError, setFieldAssayAnnotationError] = useState<string | null>(null);
@@ -347,6 +386,7 @@ export function ResearchQuantificationPanel({
     focus_mask_pixels: number;
   } | null>(null);
   const [metadata, setMetadata] = useState<ResearchChannelMetadata | null>(null);
+  const [metadataReady, setMetadataReady] = useState(false);
   const [channelDraft, setChannelDraft] = useState<ResearchChannelDeclaration[]>([]);
   const [channelError, setChannelError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -372,6 +412,25 @@ export function ResearchQuantificationPanel({
   const [punctaBorder, setPunctaBorder] = useState(true);
   const [punctaControl, setPunctaControl] = useState("");
   const [punctaPreview, setPunctaPreview] = useState<PunctaPreview | null>(null);
+  // Hidden tools retain numeric drafts, but display-only work belongs to one
+  // activation and mode. Invalidate it without dropping durable publications.
+  useEffect(() => {
+    liveView.current.active = active;
+    previewToken.current += 1;
+    fieldAssayPreviewToken.current += 1;
+    setPunctaPreview(null);
+    setFieldAssayPreview(null);
+    setFieldAssayPreviewFingerprint(null);
+    return () => {
+      liveView.current.active = false;
+      previewToken.current += 1;
+      fieldAssayPreviewToken.current += 1;
+    };
+  }, [active, source.id, source.sha256]);
+  useEffect(() => {
+    previewToken.current += 1;
+    fieldAssayPreviewToken.current += 1;
+  }, [mode]);
 
   const [firstChannel, setFirstChannel] = useState("0");
   const [secondChannel, setSecondChannel] = useState("1");
@@ -410,22 +469,30 @@ export function ResearchQuantificationPanel({
 
   useEffect(() => {
     const token = ++metadataToken.current;
-    setMetadata(null);
-    setChannelDraft([]);
+    setMetadataReady(false);
     setChannelError(null);
     setPunctaPreview(null);
     setMetrics(null);
+    if (!active) return;
+    // Retain same-source declarations while refreshing: a visibility change
+    // must not invalidate the captured inputs of an already-running publication.
+    if (metadata?.source_id !== source.id || metadata.source_sha256 !== source.sha256) {
+      setMetadata(null);
+      setChannelDraft([]);
+    }
     void api.execute("channel_metadata", { source_id: source.id }).then((value) => {
-      if (token !== metadataToken.current) return;
+      if (token !== metadataToken.current || !currentSourceView()) return;
       const next = validateMetadata(value, source);
       setMetadata(next);
+      setMetadataReady(true);
       setChannelDraft(next.channels.map((item) => ({ ...item })));
     }).catch((error) => {
-      if (token === metadataToken.current)
+      if (token === metadataToken.current && currentSourceView()) {
         setChannelError(error instanceof Error ? error.message : "Could not load channel declarations.");
+      }
     });
     return () => { metadataToken.current += 1; };
-  }, [api, source.id, source.sha256]);
+  }, [api, source.id, source.sha256, active]);
 
   useEffect(() => {
     const token = ++annotationToken.current;
@@ -438,8 +505,9 @@ export function ResearchQuantificationPanel({
     setFieldAssayFocusAnnotationId("");
     setFieldAssayBackgroundAnnotationId("");
     setFieldAssayManualPointsAnnotationId("");
+    if (!active) return;
     void api.execute("source_annotations", { source_id: source.id }).then((value) => {
-      if (token !== annotationToken.current) return;
+      if (token !== annotationToken.current || !currentSourceView()) return;
       const receipt = value as {
         source_id?: unknown;
         source_sha256?: unknown;
@@ -462,7 +530,7 @@ export function ResearchQuantificationPanel({
       setSourceAnnotations(receipt.annotations as SourceAnnotation[]);
       setSourceAnnotationRevision(receipt.revision as number);
     }).catch((error) => {
-      if (token !== annotationToken.current) return;
+      if (token !== annotationToken.current || !currentSourceView()) return;
       setSourceAnnotations([]);
       setSourceAnnotationRevision(null);
       setFieldAssayAnnotationError(
@@ -472,7 +540,7 @@ export function ResearchQuantificationPanel({
       );
     });
     return () => { annotationToken.current += 1; fieldAssayPreviewToken.current += 1; };
-  }, [api, source.id, source.sha256]);
+  }, [api, source.id, source.sha256, active]);
 
   const planeAnnotations = sourceAnnotations.filter(
     (annotation) => annotation.z === selection.z && annotation.t === selection.t,
@@ -523,8 +591,9 @@ export function ResearchQuantificationPanel({
     setPunctaPreview((current) => current?.fingerprint === punctaFingerprint ? current : null);
   }, [punctaFingerprint]);
 
-  const locked = busy || localBusy;
+  const locked = busy || localBusy || !active || !metadataReady;
   const run = async <T,>(fallback: string, work: () => Promise<T>): Promise<T | undefined> => {
+    if (!currentSourceView() || !metadataReady) return undefined;
     setLocalBusy(true);
     onBusyChange(true);
     setActionError(null);
@@ -548,7 +617,7 @@ export function ResearchQuantificationPanel({
         channels: channelDraft,
         expected_revision: revision,
       }), source));
-    if (output) {
+    if (output && currentSourceView()) {
       setMetadata(output);
       setChannelDraft(output.channels.map((item) => ({ ...item })));
     }
@@ -603,6 +672,7 @@ export function ResearchQuantificationPanel({
   });
 
   const previewPuncta = async () => {
+    if (!currentPreviewView("puncta")) return;
     const token = ++previewToken.current;
     const fingerprint = punctaFingerprint;
     const preview = await run("Could not preview puncta candidates.", async () => {
@@ -618,14 +688,14 @@ export function ResearchQuantificationPanel({
         totalPeaks: Number(output.total_peaks ?? 0), peaks: output.peaks ?? [], measurements: output.measurements ?? [],
       };
     });
-    if (!preview || token !== previewToken.current || fingerprint !== punctaFingerprint) return;
+    if (!preview || !currentPreviewView("puncta") || token !== previewToken.current || fingerprint !== punctaFingerprint) return;
     setPunctaPreview(preview);
     onPreview(preview.overlay, preview.measurements);
   };
 
   const adoptPuncta = async () => {
     const pending = punctaPreview;
-    if (!pending || pending.fingerprint !== punctaFingerprint) return;
+    if (!currentPreviewView("puncta") || !pending || pending.fingerprint !== punctaFingerprint) return;
     const result = await run("Could not adopt puncta quantification.", async () => {
       const output = (await api.execute("puncta_run", pending.request)) as {
         adopted?: boolean; result?: unknown; measurements?: Array<Record<string, unknown>>;
@@ -655,7 +725,7 @@ export function ResearchQuantificationPanel({
       await onPublished(result);
       return { metrics: value.metrics ?? null };
     });
-    if (output) setMetrics(output.metrics);
+    if (output && currentSourceView()) setMetrics(output.metrics);
   };
 
   const runAssociation = async () => {
@@ -708,7 +778,7 @@ export function ResearchQuantificationPanel({
       await onPublished(result);
       return { ...value, measured, token };
     });
-    if (!output || output.token !== associationToken.current) return;
+    if (!output || !currentSourceView() || output.token !== associationToken.current) return;
     setAssociations(output.associations ?? []);
     setAssociationCounts(output.association_summary ?? null);
     setAssociationTotal(Number(output.total_associations));
@@ -745,6 +815,7 @@ export function ResearchQuantificationPanel({
   const isAssayConfigStale = Boolean(fieldAssayPreview && fieldAssayPreviewFingerprint !== currentAssayConfigFingerprint);
 
   const previewFieldAssay = async () => {
+    if (!currentPreviewView("field-assay")) return;
     const token = ++fieldAssayPreviewToken.current;
     const fingerprint = currentAssayConfigFingerprint;
     const output = await run("Could not preview field assay.", async () => {
@@ -830,7 +901,7 @@ export function ResearchQuantificationPanel({
       };
     });
     if (
-      output &&
+      output && currentPreviewView("field-assay") &&
       token === fieldAssayPreviewToken.current &&
       fingerprint === fieldAssayConfigRef.current
     ) {
@@ -842,6 +913,7 @@ export function ResearchQuantificationPanel({
   };
 
   const adoptFieldAssay = async (isReviewed: boolean) => {
+    if (!currentPreviewView("field-assay") || !fieldAssayPreview || isAssayConfigStale) return;
     await run("Could not adopt field assay.", async () => {
       const nuclei = finite(fieldAssayNucleiChannel, "Nuclei channel");
       const signal = finite(fieldAssaySignalChannel, "Signal channel");
@@ -969,7 +1041,7 @@ export function ResearchQuantificationPanel({
     ? isAssayConfigStale ? "stale; preview again" : "current display-only preview"
     : "not run";
   const fieldAssayInputsReady = Boolean(
-    metadata &&
+    metadataReady && metadata &&
     !fieldAssayUnsupported &&
     selectedNucleiChannel &&
     selectedSignalChannel &&
@@ -994,12 +1066,12 @@ export function ResearchQuantificationPanel({
         {isRgb ? <p role="alert">RGB samples are colour components and cannot be declared as independent biological channels.</p> : channelError ? <p role="alert">{channelError}</p> : !metadata ? <p role="status">Loading exact channel metadata…</p> : <>
           {channelDraft.map((channel, index) => <fieldset key={channel.index}>
             <legend>Acquisition channel {index + 1} · original: {metadata.original_names[index]}</legend>
-            {(["name", "marker", "fluorophore", "declaration"] as const).map((field) => <label key={field}>{field}
+            {(["name", "marker", "fluorophore", "declaration"] as const).map((field) => <label key={field}>{{ name: "Channel name", marker: "Marker", fluorophore: "Fluorophore", declaration: "Identity basis" }[field]}
               <input aria-label={`Channel ${index + 1} ${field}`} value={channel[field]} onChange={(event) => setChannelDraft((old) => old.map((item) => item.index === channel.index ? { ...item, [field]: event.target.value } : item))} />
             </label>)}
           </fieldset>)}
-          <button className="research-primary" disabled={locked} onClick={() => void saveChannels()}>Save declarations at revision {metadata.revision}</button>
-          <details><summary>Acquisition metadata</summary><p>{metadata.basis}</p></details>
+          <button className="research-primary" disabled={locked} onClick={() => void saveChannels()}>Save channel identities</button>
+          <details><summary>Acquisition metadata</summary><p>{metadata.basis}</p><p>Saved revision {metadata.revision}</p></details>
         </>}
       </>}
 
@@ -1026,17 +1098,22 @@ export function ResearchQuantificationPanel({
           }} />}
         </fieldset>
         <fieldset><legend>Raw measurement channels</legend>{channelOptions.map((channel) => <label className="research-check" key={channel.index}><input type="checkbox" checked={recipe.measurement_channels.includes(channel.index)} onChange={(event) => setRecipe((old) => ({ ...old, measurement_channels: event.target.checked ? [...old.measurement_channels, channel.index].sort((a, b) => a - b) : old.measurement_channels.filter((item) => item !== channel.index) }))} /> {channel.index + 1}: {channel.name}</label>)}</fieldset>
-        <fieldset><legend>Marker gates</legend><button onClick={addGate} disabled={!channelOptions.length}>Add explicit gate</button>
-          {recipe.gates.map((gate, index) => <div className="research-gate" key={index}>
-            <label>Gate name<input aria-label={`Gate ${index + 1} name`} value={gate.name} onChange={(event) => setRecipe((old) => ({ ...old, gates: old.gates.map((item, i) => i === index ? { ...item, name: event.target.value } : item) }))} /></label>
-            <label>Raw channel<select aria-label={`Gate ${index + 1} channel`} value={gate.channel} onChange={(event) => setRecipe((old) => ({ ...old, gates: old.gates.map((item, i) => i === index ? { ...item, channel: event.target.value } : item) }))}>{channelOptions.filter((item) => recipe.measurement_channels.includes(item.index)).map((item) => <option key={item.index}>{item.index + 1}: {item.name}</option>)}</select></label>
-            <label>Statistic<select aria-label={`Gate ${index + 1} statistic`} value={gate.statistic} onChange={(event) => setRecipe((old) => ({ ...old, gates: old.gates.map((item, i) => i === index ? { ...item, statistic: event.target.value as "mean" | "sum" | "max" } : item) }))}><option>mean</option><option>sum</option><option>max</option></select></label>
-            <label>Threshold<input aria-label={`Gate ${index + 1} threshold`} type="number" step="any" value={gate.threshold} onChange={(event) => setRecipe((old) => ({ ...old, gates: old.gates.map((item, i) => i === index ? { ...item, threshold: Number(event.target.value) } : item) }))} /></label>
-            <label>Control / assumption<textarea aria-label={`Gate ${index + 1} control`} value={gate.control} onChange={(event) => setRecipe((old) => ({ ...old, gates: old.gates.map((item, i) => i === index ? { ...item, control: event.target.value } : item) }))} /></label>
-            <button onClick={() => setRecipe((old) => ({ ...old, gates: old.gates.filter((_, i) => i !== index) }))}>Remove gate</button>
-          </div>)}
-        </fieldset>
       </>}
+
+      {/* Keep gate drafts mounted when visiting another quantification mode. */}
+      <fieldset hidden={mode !== "recipe"}><legend>Marker gates</legend><button onClick={addGate} disabled={!channelOptions.length}>Add explicit gate</button>
+        {recipe.gates.map((gate, index) => <div className="research-gate" key={gateId(gate)}>
+          <label>Gate name<input aria-label={`Gate ${index + 1} name`} value={gate.name} onChange={(event) => patchGate(index, { name: event.target.value })} /></label>
+          <label>Raw channel<select aria-label={`Gate ${index + 1} channel`} value={gate.channel} onChange={(event) => patchGate(index, { channel: event.target.value })}>{channelOptions.filter((item) => recipe.measurement_channels.includes(item.index)).map((item) => <option key={item.index}>{item.index + 1}: {item.name}</option>)}</select></label>
+          <label>Statistic<select aria-label={`Gate ${index + 1} statistic`} value={gate.statistic} onChange={(event) => patchGate(index, { statistic: event.target.value as "mean" | "sum" | "max" })}><option>mean</option><option>sum</option><option>max</option></select></label>
+          <label>Threshold<ValidatedNumberInput key={`${numberKey}:${gateId(gate)}`}
+            label={`Gate ${index + 1} threshold`} value={gate.threshold} commitOnChange
+            onValidity={(valid) => numbers.setValidity(gateId(gate), valid)}
+            onValue={(threshold) => { patchGate(index, { threshold }); return true; }} /></label>
+          <label>Control / assumption<textarea aria-label={`Gate ${index + 1} control`} value={gate.control} onChange={(event) => patchGate(index, { control: event.target.value })} /></label>
+          <button onClick={() => setRecipe((old) => ({ ...old, gates: old.gates.filter((_, i) => i !== index) }))}>Remove gate</button>
+        </div>)}
+      </fieldset>
 
       {mode === "puncta" && <>
         <h2>Puncta candidates</h2><p>Preview candidates before adoption.</p>

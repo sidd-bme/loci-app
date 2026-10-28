@@ -235,7 +235,7 @@ try {
   await number("RGB gamma", 2);
   const adjusted = [0, Math.round(Math.sqrt(reference.centre_codes[2] / 65535) * 65535 / 257), 0];
   const gammaCanvas = await canvas(synthetic, adjusted);
-  await panel().getByRole("button", { name: "Reset", exact: true }).click();
+  await panel().getByRole("button", { name: "Reset display", exact: true }).click();
   await poll(async () => Number(await panel().getByLabel("RGB gamma", { exact: true }).inputValue()) === 1,
     "neutral gamma restored");
   await canvas(synthetic, [0, reference.centre_canvas_codes[2], 0]);

@@ -559,9 +559,9 @@
 }
 .research-primary {
   margin-top: 10px;
-  background: var(--mineral) !important;
-  color: #10201c !important;
-  border-color: var(--mineral) !important;
+  background: var(--action-background) !important;
+  color: var(--action-foreground) !important;
+  border-color: var(--action-background) !important;
   font-weight: 650;
 }
 .research-preview {
@@ -1134,14 +1134,15 @@
   border-color: transparent;
 }
 .research-workbench .btn-primary {
-  background: var(--mineral-deep);
-  border-color: var(--mineral);
-  color: var(--ink);
+  background: var(--action-background);
+  border-color: var(--action-background);
+  color: var(--action-foreground);
   font-weight: 610;
 }
 .research-workbench .btn-primary:hover:not(:disabled) {
-  background: var(--mineral);
-  border-color: var(--mineral-bright);
+  background: var(--action-hover);
+  border-color: var(--action-hover);
+  color: var(--action-foreground);
 }
 .task-tool-row { display: flex; padding: 4px 10px 10px; gap: 5px; min-width: 0; }
 .task-tool-row select, .task-tool-row input { width: 100%; min-width: 0; font-size: var(--type-md); }
@@ -1913,7 +1914,9 @@
   flex: 1;
   min-height: 0;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 .workflow-workspace-host[hidden] {
   display: none;
@@ -2270,3 +2273,19 @@
 .research-inspector :is(input, select, textarea, button, summary, [tabindex]) {
   scroll-margin-block: 8px;
 }
+
+/* Keep the image usable at the supported minimum; wide tools have explicit focus. */
+@media (min-width: 861px) and (max-width: 1279px) {
+  .image-first-workbench:is(.is-workflow-workspace, .is-statistics-workspace, .is-study-workspace):not(.is-panel-focused):not(.is-statistics-focused):not(.is-study-focused) {
+    grid-template-columns: 180px minmax(400px, 1fr) minmax(0, 420px);
+  }
+}
+.research-panel-layout-tools { align-items: center; justify-content: space-between; gap: 8px; }
+.research-panel-layout-tools > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-secondary); }
+.research-panel-layout-tools button { flex-shrink: 0; }
+.research-prerequisite { padding: 16px; }
+.research-prerequisite p { line-height: 1.5; }
+.research-model-resources { margin-block: 16px; }
+.research-model-resources > summary { cursor: pointer; min-height: 32px; color: var(--ink-secondary); }
+
+.research-primary:hover:not(:disabled) { background: var(--action-hover) !important; border-color: var(--action-hover) !important; }

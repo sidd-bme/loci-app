@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import type {
   ResearchDesktopApi,
   ResearchRecipe,
@@ -91,16 +92,215 @@ function renderPanel(execute: ResearchDesktopApi["execute"], custom = snapshot) 
   const onPreview = vi.fn();
   const panelApi = api(execute);
   const setRecipe = vi.fn();
+  const onBusyChange = vi.fn();
+  let active = true;
+  let current = custom;
   const element = (next: ResearchSnapshot) => <ResearchQuantificationPanel
-    api={panelApi} snapshot={next} source={next.sources[0]} selection={selection}
+    active={active} api={panelApi} snapshot={next} source={next.sources[0]} selection={selection}
     recipe={recipe} setRecipe={setRecipe} report={async (work) => work()} busy={false}
-    onBusyChange={vi.fn()} onPreview={onPreview} onPublished={onPublished}
+    onBusyChange={onBusyChange} onPreview={onPreview} onPublished={onPublished}
   />;
   const view = render(element(custom));
-  return { onPublished, onPreview, setRecipe, updateSnapshot: (next: ResearchSnapshot) => view.rerender(element(next)) };
+  return { onPublished, onPreview, setRecipe, onBusyChange,
+    setActive: (next: boolean) => { active = next; view.rerender(element(current)); },
+    updateSnapshot: (next: ResearchSnapshot) => { current = next; view.rerender(element(next)); },
+  };
 }
 
+function renderGateEditor() {
+  const changed = vi.fn();
+  const validity = vi.fn();
+  const panelApi = api(vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {}));
+  function Editor({ active }: { active: boolean }) {
+    const [current, setCurrent] = useState<ResearchRecipe>({ ...recipe, gates: [
+      { name: "first", channel: "1: DNA", statistic: "mean", threshold: 7.25, control: "control" },
+      { name: "second", channel: "1: DNA", statistic: "mean", threshold: -3, control: "control" },
+    ] });
+    return <ResearchQuantificationPanel active={active} api={panelApi} snapshot={snapshot} source={snapshot.sources[0]} selection={selection}
+      recipe={current} setRecipe={(update) => setCurrent((old) => {
+        const next = typeof update === "function" ? update(old) : update;
+        changed(next); return next;
+      })} report={async (work) => work()} busy={false} onBusyChange={vi.fn()} onPreview={vi.fn()}
+      onPublished={vi.fn()} onNumberValidity={validity} />;
+  }
+  const view = render(<Editor active />);
+  return { changed, validity, setActive: (active: boolean) => view.rerender(<Editor active={active} />) };
+}
+
+const annotationReceipt = (revision: number, suffix: string) => ({
+  source_id: sourceId, source_sha256: sourceSha, revision,
+  annotations: suffix ? [
+    { id: `focus-${suffix}`, label: "focus", kind: "polygon", z: 0, t: 0 },
+    { id: `background-${suffix}`, label: "background", kind: "polygon", z: 0, t: 0 },
+  ] : [],
+});
+
 describe("ResearchQuantificationPanel", () => {
+  it("refreshes added/deleted ROIs and channel metadata on reentry and discards the old field preview", async () => {
+    let annotations = annotationReceipt(1, "old");
+    let channels = metadata;
+    let deferChannels = false;
+    let finishChannels!: (value: unknown) => void;
+    const execute = vi.fn(async (operation: string) => {
+      if (operation === "channel_metadata") return deferChannels ? new Promise((resolve) => { finishChannels = resolve; }) : channels;
+      if (operation === "source_annotations") return annotations;
+      return { preview: true, qc_overlay: "old-qc", overlay: "old-overlay", measurements: [] };
+    });
+    const { setActive } = renderPanel(execute);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByRole("button", { name: "Field assay" }));
+    expect(screen.getByLabelText("Focus region selection")).toHaveValue("focus-old");
+    expect(screen.getByLabelText("Background annotation selection")).toHaveValue("background-old");
+    fireEvent.click(screen.getByRole("button", { name: "Preview field assay" }));
+    await screen.findByRole("img", { name: /Field assay QC overlay/ });
+    setActive(false);
+    annotations = annotationReceipt(2, "added");
+    channels = { ...metadata, revision: 4, channels: metadata.channels.map((channel) => ({ ...channel, name: `Fresh ${channel.name}` })) };
+    deferChannels = true;
+    setActive(true);
+    await waitFor(() => expect(screen.getByLabelText("Focus region selection")).toHaveValue("focus-added"));
+    expect(screen.getByRole("button", { name: "Preview field assay" })).toBeDisabled();
+    await act(async () => finishChannels(channels));
+    deferChannels = false;
+    expect(screen.getByLabelText("Background annotation selection")).toHaveValue("background-added");
+    expect(screen.getByLabelText("Focus region selection").querySelector('[value="focus-old"]')).toBeNull();
+    expect(screen.getByLabelText("Background annotation selection").querySelector('[value="background-old"]')).toBeNull();
+    expect(screen.queryByRole("img", { name: /Field assay QC overlay/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save exploratory" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Nuclear channel")).toHaveTextContent("Fresh DNA");
+    setActive(false);
+    annotations = annotationReceipt(3, "");
+    setActive(true);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview field assay" })).toBeDisabled());
+    expect(screen.getByLabelText("Focus region selection")).toHaveValue("");
+    expect(screen.getByLabelText("Background annotation selection")).toHaveValue("");
+    expect(screen.getByLabelText("Focus region selection").querySelector('[value="focus-added"]')).toBeNull();
+    expect(execute.mock.calls.filter(([operation]) => operation === "source_annotations")).toHaveLength(3);
+    expect(execute.mock.calls.filter(([operation]) => operation === "channel_metadata")).toHaveLength(3);
+    expect(execute).not.toHaveBeenCalledWith("field_assay_run", expect.anything());
+  });
+
+  it.each([
+    { kind: "Puncta", leave: "tool" }, { kind: "Field assay", leave: "tool" },
+    { kind: "Puncta", leave: "mode" }, { kind: "Field assay", leave: "mode" },
+  ])("discards a late $kind display preview after leaving its $leave", async ({ kind, leave }) => {
+    let finish!: (value: unknown) => void;
+    const execute = vi.fn((operation: string) => {
+      if (operation === "channel_metadata") return Promise.resolve(metadata);
+      if (operation === "source_annotations") return Promise.resolve(annotationReceipt(1, "current"));
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const { setActive, onPreview } = renderPanel(execute);
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByRole("button", { name: kind }));
+    if (kind === "Puncta") fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "declared control" } });
+    fireEvent.click(screen.getByRole("button", { name: kind === "Puncta" ? "Preview puncta candidates" : "Preview field assay" }));
+    expect(finish).toBeDefined();
+    if (leave === "tool") setActive(false);
+    else fireEvent.click(screen.getByRole("button", { name: "Channels" }));
+    await act(async () => finish({ preview: true, adopted: false, qc_overlay: "late-qc", overlay: "late-overlay", measurements: [], total_peaks: 2, peaks: [] }));
+    expect(onPreview).not.toHaveBeenCalled();
+    if (leave === "tool") setActive(true);
+    else fireEvent.click(screen.getByRole("button", { name: kind }));
+    if (kind === "Puncta") expect(screen.getByRole("button", { name: "Adopt unchanged puncta request" })).toBeDisabled();
+    else {
+      expect(screen.queryByRole("img", { name: /Field assay QC overlay/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Save exploratory" })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each(["puncta", "compartments"])("keeps an already-started %s publication and busy state across reactivation", async (kind) => {
+    let finish!: (value: unknown) => void;
+    const execute = vi.fn((operation: string) => {
+      if (operation === "channel_metadata") return Promise.resolve(metadata);
+      if (operation === "source_annotations") return Promise.resolve(annotationReceipt(1, "current"));
+      if (operation === "puncta_preview") return Promise.resolve({ preview: true, adopted: false, overlay: "preview", total_peaks: 0, peaks: [] });
+      return new Promise((resolve) => { finish = resolve; });
+    });
+    const { setActive, onPublished, onBusyChange } = renderPanel(execute);
+    if (kind === "compartments") {
+      await selectCompartments();
+      fireEvent.click(screen.getByRole("button", { name: "Measure compartments" }));
+    } else {
+      await screen.findByText(/original: Original A/);
+      fireEvent.click(screen.getByRole("button", { name: "Puncta" }));
+      fireEvent.change(screen.getByLabelText("Puncta control and assumptions"), { target: { value: "declared control" } });
+      fireEvent.click(screen.getByRole("button", { name: "Preview puncta candidates" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "Adopt unchanged puncta request" })).toBeEnabled());
+      fireEvent.click(screen.getByRole("button", { name: "Adopt unchanged puncta request" }));
+    }
+    setActive(false);
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    setActive(true);
+    await waitFor(() => expect(execute.mock.calls.filter(([operation]) => operation === "channel_metadata")).toHaveLength(2));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    const output = kind === "compartments" ? compartmentResponse() : { adopted: true, result: results[0] };
+    await act(async () => finish(output));
+    expect(onPublished).toHaveBeenCalledExactlyOnceWith(output.result);
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("preserves unfinished gate drafts, restores with Escape, and applies exact finite thresholds", async () => {
+    const { changed, validity, setActive } = renderGateEditor();
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+    const input = screen.getByLabelText("Gate 1 threshold");
+    for (const draft of ["", ".", "-", "-1.2e", "1e-", "NaN", "Infinity", "1e309"]) {
+      fireEvent.change(input, { target: { value: draft } });
+      fireEvent.blur(input);
+      expect(input).toHaveValue(draft);
+      expect(input).toHaveAttribute("aria-invalid", "true");
+      expect(changed).not.toHaveBeenCalled();
+      expect(validity).toHaveBeenLastCalledWith(false);
+    }
+    setActive(false);
+    expect(validity).toHaveBeenLastCalledWith(false);
+    setActive(true);
+    expect(screen.getByLabelText("Gate 1 threshold")).toBe(input);
+    expect(input).toHaveValue("1e309");
+    fireEvent.click(screen.getByRole("button", { name: "Channels" }));
+    expect(input).not.toBeVisible();
+    expect(validity).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+    expect(screen.getByLabelText("Gate 1 threshold")).toBe(input);
+    expect(input).toHaveValue("1e309");
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(input).toHaveValue("7.25");
+    expect(validity).toHaveBeenLastCalledWith(true);
+    expect(changed).not.toHaveBeenCalled();
+    for (const [draft, threshold] of [["0", 0], ["-0.12345678912345", -0.12345678912345], ["1.", 1], ["1.25e-3", 0.00125]] as const) {
+      fireEvent.change(input, { target: { value: draft } });
+      expect(input).toHaveValue(draft);
+      expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ gates: [
+        expect.objectContaining({ name: "first", threshold }), expect.objectContaining({ name: "second", threshold: -3 }),
+      ] }));
+      expect(validity).toHaveBeenLastCalledWith(true);
+    }
+  });
+
+  it("keeps a gate draft bound to its row when gates are edited, added, or removed", async () => {
+    const { changed, validity } = renderGateEditor();
+    await screen.findByText(/original: Original A/);
+    fireEvent.click(screen.getByRole("button", { name: "Recipe" }));
+    const second = screen.getByLabelText("Gate 2 threshold");
+    fireEvent.change(second, { target: { value: "-3e" } });
+    fireEvent.change(screen.getByLabelText("Gate 2 name"), { target: { value: "renamed" } });
+    expect(screen.getByLabelText("Gate 2 threshold")).toBe(second);
+    expect(second).toHaveValue("-3e");
+    fireEvent.click(screen.getByRole("button", { name: "Add explicit gate" }));
+    expect(screen.getByLabelText("Gate 3 threshold")).toHaveValue("0");
+    expect(validity).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove gate" })[0]);
+    expect(screen.getByLabelText("Gate 1 threshold")).toBe(second);
+    expect(second).toHaveValue("-3e");
+    expect(screen.getByLabelText("Gate 2 threshold")).toHaveValue("0");
+    expect(validity).toHaveBeenLastCalledWith(false);
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove gate" })[0]);
+    expect(screen.getByLabelText("Gate 1 threshold")).toHaveValue("0");
+    expect(validity).toHaveBeenLastCalledWith(true);
+    expect(changed).toHaveBeenLastCalledWith(expect.objectContaining({ gates: [expect.objectContaining({ threshold: 0 })] }));
+  });
+
   it("exposes perinuclear enrichment through the ordinary fluorescence tool with declared raw channels", async () => {
     const execute = vi.fn(async (operation: string) => operation === "channel_metadata" ? metadata : {});
     renderPanel(execute, { ...snapshot, operations: { perinuclear_run: { mutates: true, summary: "Measure perinuclear enrichment" } } });
@@ -227,7 +427,7 @@ describe("ResearchQuantificationPanel", () => {
     renderPanel(execute);
     expect(await screen.findByText(/original: Original A/)).toBeVisible();
     fireEvent.change(screen.getByLabelText("Channel 1 marker"), { target: { value: "Hoechst" } });
-    fireEvent.click(screen.getByText("Save declarations at revision 3"));
+    fireEvent.click(screen.getByText("Save channel identities"));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("channels", expect.objectContaining({
       source_id: sourceId,
       expected_revision: 3,

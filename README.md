@@ -3,8 +3,8 @@
 </p>
 
 <h1 align="center">Loci</h1>
-<p align="center"><strong>Bring your next image.</strong></p>
-<p align="center">A local workspace for microscopy, image analysis and the questions in between.</p>
+<p align="center"><strong>An open imaging workbench for life-science research.</strong></p>
+<p align="center">Explore images, develop repeatable analyses, and work with an authorized AI assistant while keeping each result connected to its source.</p>
 
 <p align="center">
   <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for macOS</a> ·
@@ -13,13 +13,22 @@
   <a href="https://ko-fi.com/lociimaging">Support on Ko-fi</a>
 </p>
 
+The current download is **v0.2.0-beta.2 for Apple Silicon Macs**. Newer shared
+agent workflows, scientific data packages and researcher-interface refinements
+are available in the source tree; they are not all included in that download.
+Staged development apps remain unreleased candidates. See the
+[release record](docs/RELEASE_STATUS.md) and [capability guide](docs/CAPABILITY_MATRIX.md)
+for the difference.
+
 ## See Loci in action
 
 https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3
 
 Loci brings your images, measurements and analysis tools into one desktop workspace. Move from a tissue overview to individual cells, explore a volume, refine a segmentation, and keep the results connected to the image they came from.
 
-Your original data stays intact. Core viewing and analysis run on your computer, with no account or cloud service required.
+Your original data stays intact. Core viewing and analysis run on your computer, with no account or cloud service required. Model checkpoints are supplied separately, with explicit runtime/profile requirements; you choose whether to connect an external assistant or configured remote computer.
+
+The existing film and captures show recorded development-app views, not a version-specific feature guarantee for the download. [Media credits and capture provenance](docs/media/README.md) describe their sources and limits.
 
 ## See the whole picture
 
@@ -44,7 +53,7 @@ Bring your own model and keep the rest of your workflow in one place. Use a [com
 
 ![Cellpose segmentation labels overlaid on a complex image, alongside full-population statistics](docs/media/cellpose-population-current.png)
 
-*4,837 imported Cellpose objects, with measurements and distributions linked to the source image.*
+*4,837 imported Cellpose objects, with measurements and distributions linked to the source image. This view shows retained imported labels, not a new inference run or an accuracy benchmark.*
 
 - **Measure in context.** Draw regions and annotations, inspect object measurements, and keep calibration and units alongside the results.
 - **Review and refine.** Edit labels, compare correction effects, and choose the results you want to export.
@@ -58,7 +67,7 @@ that retain image and declared replicate grouping. The study workspace separates
 samples, intensity, batches and correction comparisons; result review and export
 have their own sections. Inspect exact result identities, object labels and stored
 values when you need them. These additions are available when building from source;
-the published download remains **v0.2.0-beta.2**.
+see the [release record](docs/RELEASE_STATUS.md) for downloadable availability.
 
 ## Work your way
 
@@ -66,11 +75,15 @@ Use the desktop for exploration and the command line for repeatable work. Discov
 
 ![Loci command-line workflow, replayed from recorded terminal output](docs/media/cli-workflow.gif)
 
-### Connect your agent
+### Connect an assistant
 
-Give a local agent access to the images and operations you choose. Through MCP, it can inspect sources, prepare and run approved recipes, follow jobs, and read results. You stay in charge of access and review.
+Through a local MCP connection, an authorized assistant can inspect granted sources, prepare supported recipes, follow permitted tasks and inspect results. The current source adds named workflow, exploration, population and study actions, retained image previews and comparisons, exact activity links, expiring approvals and explicit Follow controls. Availability depends on the granted operations and each action’s documented source and method limits.
+
+You choose the sources, operations and response categories it may access. A cloud-hosted assistant can receive the data its client is permitted to read; local execution does not make that external client private by itself. A prepared access bundle or SDK check does not establish a completed journey in a particular agent host. You remain in control of permissions, and review history distinguishes researcher decisions from explicitly delegated agent decisions.
 
 ![MCP capabilities: source inspection, recipe preparation, execution, results and reviewed export](docs/media/mcp-overview.svg)
+
+*Capability illustration, not a connected-host recording.*
 
 [Set up agent access](docs/AGENT_ACCESS.md) · [Explore the CLI](docs/CLI.md)
 
@@ -89,12 +102,20 @@ This beta is unnotarized, so macOS requires an explicit first-launch approval. M
 
 ## Looking ahead
 
-- More ways to bring your own segmentation models.
-- Broader 3D segmentation capabilities.
-- Local model training and comparison.
-- Windows support and easier installation.
+Current source refinements focus on first-study guidance, clearer analysis scope,
+unfinished numeric drafts and reachable actions in longer forms. They preserve
+the existing methods, source data and review boundaries; their availability is
+separate from the published beta.
 
-These are directions for future work.
+Next development directions are:
+
+- A complete journey with one named, supported assistant client.
+- Clearer complex-data inspection and explicit preparation routes.
+- Bounded method extensions that keep the Apache-2.0 local core independent.
+- Complete quantitative 3D workflows, from declared scope to reviewed export.
+
+Model training, additional platforms and easier distribution remain later
+directions. These are development priorities, not promises for the current download.
 
 ## Made for everyday research
 

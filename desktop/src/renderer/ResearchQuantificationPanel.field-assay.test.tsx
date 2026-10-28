@@ -275,8 +275,9 @@ describe("ResearchQuantificationPanel - Field Assay Tab", () => {
     expect(screen.getByRole("button", { name: "Approve & save" })).toBeEnabled();
     fireEvent.click(screen.getByText("Channels", { exact: true }));
     fireEvent.change(screen.getByLabelText("Channel 2 marker"), { target: { value: "corrected receptor identity" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save declarations at revision 1" }));
-    await screen.findByRole("button", { name: "Save declarations at revision 2" });
+    expect(screen.getByText("Saved revision 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save channel identities" }));
+    await screen.findByText("Saved revision 2");
     fireEvent.click(screen.getByText("Field assay"));
     expect(screen.getByText("Settings changed. Preview again before saving.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Approve & save" })).toBeDisabled();

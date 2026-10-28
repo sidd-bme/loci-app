@@ -81,6 +81,31 @@ function renderPanel(
 }
 
 describe("ResearchAgentPanel", () => {
+  it("refuses automatic/manual validation and access creation while numeric configuration is unfinished", async () => {
+    const execute = vi.fn().mockResolvedValue(validation);
+    const createAgentAccess = vi.fn();
+    const props = { api: bridge(execute, createAgentAccess), source, selection, recipe,
+      report: async <T,>(work: () => Promise<T>) => work(), busy: false, onBusyChange: vi.fn() };
+    const { rerender } = render(<ResearchAgentPanel {...props} configurationValid={false} />);
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
+    fireEvent.click(screen.getByText("Customize permissions"));
+    const validate = screen.getByText("Validate exact scope and recipe");
+    expect(validate).toBeDisabled();
+    fireEvent.click(validate);
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(createAgentAccess).not.toHaveBeenCalled();
+    rerender(<ResearchAgentPanel {...props} configurationValid />);
+    await waitFor(() => expect(execute).toHaveBeenCalledExactlyOnceWith("validate_recipe", expect.objectContaining({ recipe })));
+    expect(screen.getByLabelText("Assistant access level")).toHaveValue("inspect");
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    rerender(<ResearchAgentPanel {...props} configurationValid={false} />);
+    expect(screen.getByText("Validate exact scope and recipe")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("grants the full explicit study snapshot and invalidates the receipt when it changes", async () => {
     const second = { ...source, id: "2".repeat(32), sha256: "3".repeat(64), name: "Second source" };
     const operations: ResearchSnapshot["operations"] = {
@@ -117,6 +142,10 @@ describe("ResearchAgentPanel", () => {
       delegation: { client_id: "codex", expires_at: null, result_scope: "granted-sources", allow_review: true },
       source_scope: { mode: "study-sources", sources: [source, second].map(({ id, sha256 }) => ({ id, sha256 })) },
     }));
+    rerender(<ResearchAgentPanel {...props} configurationValid={false} />);
+    expect(screen.getByLabelText("Created agent access receipt")).toBeVisible();
+    expect(screen.getByLabelText("Assistant access level")).toHaveValue("full");
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
     rerender(<ResearchAgentPanel {...props} studySources={[source, second, { ...second, id: "4".repeat(32) }]} />);
     await waitFor(() => expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument());
     expect(createAgentAccess).toHaveBeenCalledTimes(1);

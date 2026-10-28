@@ -2,13 +2,18 @@
 
 Choose **Try an example** on Loci's opening screen. This optional offline workflow creates a normal managed study and one small scalar OME-TIFF. It creates no analysis result or review decision. You can open your own data instead at any time.
 
+These instructions describe current source. The published beta may use earlier
+control labels; see [release status](../RELEASE_STATUS.md). The optional inspector
+guide is named **Practice: inspect, measure and export** and links to the same
+tools without configuring or running analysis for you.
+
 The exact example starts with display contrast 0–200 so its three authored values are visible. This changes only the display; native pixels and measurements remain unchanged. Saved display adjustments take precedence when you reopen the study.
 
 The source contains three authored rectangles, not cells. Its 0.5 µm X/Y pixel spacing is a declared mathematical calibration, not a microscope measurement. This example checks software workflow and arithmetic; it does not establish biological accuracy or researcher usability.
 
 ## Declare and run
 
-1. Open **View → Image & channels**. In **Analysis region**, verify the scope: X = 0, Y = 0, Width = 256, Height = 256; C, Z and T = 0, native level 0. The camera and display settings do not define analysis scope.
+1. Open **View → Image & channels**. In **Analysis region**, verify X = 0, Y = 0, Width = 256 and Height = 256, the first scalar channel, first Z/time plane and native level 0. Researcher-facing summaries call these Channel 1, Z 1 and T 1; the corresponding recorded API C/Z/T indices are 0. X/Y remain zero-based pixel offsets. The camera and display settings do not define analysis scope.
 2. Open **Analyze → Segment & measure**. Choose **Whole image**, then **Classical methods**, **Components**, **Threshold** 50, **Above threshold**, and **Minimum object area** 1. Leave preprocessing empty and **Exclude border objects** unchecked. Set both **Segmentation input** and **Raw measurement channel** to **1: Synthetic scalar intensity**. The adjacent segmentation scope shows T 1 and Z 1; these are the same zero-based T/Z = 0 inputs.
 3. Choose **Run recipe**. Expect three objects. The threshold operates on raw uint16 values; display brightness does not change their measurements.
 

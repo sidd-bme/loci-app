@@ -351,7 +351,7 @@ export function ResearchVendorPanel({
   const artifact = record(conversion?.artifact);
   return (
     <div className="research-panel research-vendor">
-      <h2>Vendor image conversion</h2>
+      <h2>Convert vendor images</h2>
       <p>Convert a CZI, LIF or ND2 plane to a derived OME-TIFF in <strong>{snapshot.project.title}</strong>.</p>
       <button
         className="research-primary"

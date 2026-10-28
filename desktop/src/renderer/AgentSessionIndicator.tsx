@@ -537,7 +537,7 @@ export function AgentSessionIndicator({
               <details>
                 <summary>
                   MCP capability coverage ({agentSessions.capability_map.counts.supported_via_mcp +
-                    agentSessions.capability_map.counts.supported_with_grant} supported · {agentSessions.capability_map.counts.gui_only_gap} GUI-only)
+                    agentSessions.capability_map.counts.supported_with_grant} supported · {agentSessions.capability_map.counts.gui_only_gap} unavailable through MCP)
                 </summary>
                 <ul className="agent-capabilities-list">
                   {agentSessions.capability_map.entries.map((entry) => (

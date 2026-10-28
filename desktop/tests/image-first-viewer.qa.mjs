@@ -470,7 +470,7 @@ try {
   await page.getByText("1 saved", { exact: true }).waitFor();
   captures.annotation = await capture("03-annotation-redo", pyramidViewer);
 
-  await page.getByText("Import & export annotations", { exact: true }).click();
+  await page.getByText("Source drawings", { exact: true }).click();
   await page.getByRole("button", { name: "Export annotations", exact: true }).click();
   await waitForFile(annotationPath, "Export source annotations");
   await page.getByText(`Exported 1 annotations to ${path.basename(annotationPath)}.`).waitFor();

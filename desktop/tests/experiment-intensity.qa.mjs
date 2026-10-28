@@ -190,12 +190,16 @@ async function closeApp() {
   } }).catch(() => {});
   await app.close(); app = undefined;
 }
+async function samplePaste() {
+  const summary = samples().locator("details > summary").filter({ hasText: /^Paste CSV$/u });
+  if (!(await summary.locator("..").evaluate(element => element.open))) await summary.click();
+}
 async function samplePreview() {
   await samples().getByRole("button", { name: "Preview sample sheet", exact: true }).click();
   await samples().getByRole("region", { name: "Sample sheet before and after", exact: true }).waitFor();
 }
 async function sampleApply(expectedRows) {
-  await samples().getByRole("button", { name: "Apply sample sheet", exact: true }).click();
+  await samples().getByRole("button", { name: `Apply to ${expectedRows} images`, exact: true }).click();
   await samples().getByText(`Applied sample metadata for ${expectedRows} images.`, { exact: true }).waitFor({ timeout: 120_000 });
 }
 async function details(name) {
@@ -384,7 +388,8 @@ try {
   assert.equal(fixture.schema, "loci.intensity-qa-fixture/v1");
   await launch(setup.study_path);
   observations.initial_result_bindings = (await snapshot()).results.map(row => [row.id, row.revision_hash]);
-  await samples().getByRole("button", { name: "Load sample sheet template", exact: true }).click();
+  await samplePaste();
+  await samples().getByRole("button", { name: "Use template text", exact: true }).click();
   const csvBox = samples().getByLabel("Sample sheet CSV", { exact: true });
   await wait(() => csvBox.inputValue(), text => text.includes(fixture.records.A100.source_id), "stable-ID CSV template");
   const initialCsvDraft = await csvBox.inputValue();
@@ -441,7 +446,7 @@ try {
   ].join("\n");
   await run(python, ["-B", "-c", mutation, path.join(root, "engine/src"), setup.study_path, fixture.records.Pending.source_id], { cwd: root, timeout: 60_000 });
   const raceState = (await snapshot()).samples;
-  await samples().getByRole("button", { name: "Apply sample sheet", exact: true }).click();
+  await samples().getByRole("button", { name: "Apply to 8 images", exact: true }).click();
   const staleError = await expectedAlert(samples(), /stale|preview again/iu, "stale sample preview");
   assert.deepEqual((await snapshot()).samples, raceState, "Stale apply must not partially update sample metadata");
   await shot("03-csv-stale-apply-rejected", staleError, [/stale|preview again/iu]);
@@ -561,6 +566,7 @@ try {
   const changedLine = lines.find(line => line.startsWith(fixture.records.Unassigned.source_id + ",")).split(",");
   changedLine[4] = "R3";
   await selectStudySection(page, "Samples");
+  await samplePaste();
   await samples().getByLabel("Sample sheet CSV", { exact: true }).fill(lines[0] + "\n" + changedLine.join(",") + "\n");
   await samplePreview(); await sampleApply(1);
   await openReport(reportIds.object);

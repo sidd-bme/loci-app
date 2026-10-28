@@ -373,9 +373,9 @@ try {
   await page.keyboard.press("Enter");
   assert.equal(await activeId(), duplicates[0].id, "Enter explicitly activates the focused exact ID");
   assert.equal(await page.getByLabel("Current image path", { exact: true }).textContent(), displayPaths.get(duplicates[0].id));
-  await page.getByRole("group", { name: "Channel display controls", exact: true }).waitFor();
+  await page.locator(".source-display").getByRole("button", { name: "Reset display", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Current image path", { exact: true }).isVisible(), true,
-    "Folder breadcrumbs remain visible beside compact channel controls");
+    "Folder breadcrumbs remain visible beside the display inspector");
   const parent = await leaf(duplicates[0].id).getAttribute("aria-level"); assert.ok(Number(parent) > 1);
   await page.keyboard.press("ArrowLeft");
   const folder = tree().locator('[role="treeitem"]:focus');

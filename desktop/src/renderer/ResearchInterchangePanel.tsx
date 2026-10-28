@@ -53,8 +53,13 @@ export function ResearchInterchangePanel({
   busy,
   onBusyChange,
   onResult,
+  availableResults = [], onOpenMethods, onOpenDrawings, onChooseResult,
 }: {
   api: ResearchDesktopApi;
+  availableResults?: ResearchResult[];
+  onOpenMethods?: () => void;
+  onOpenDrawings?: () => void;
+  onChooseResult?: (result: ResearchResult) => void;
   result: ResearchResult | null;
   report: Report;
   busy: boolean;
@@ -155,14 +160,22 @@ export function ResearchInterchangePanel({
   if (!result)
     return (
       <div className="research-panel research-interchange">
-        <h2>Annotation import</h2>
-        <p>Select an exact result before importing annotations.</p>
+        <h2>Import ROIs into result</h2>
+        <p>Select the result that should receive these ROIs.</p>
+        {availableResults.length > 0 && onChooseResult && <label>Select a result<select aria-label="ROI import target result" value="" onChange={(event) => {
+          const target = availableResults.find((item) => item.id === event.target.value); if (target) onChooseResult(target);
+        }}><option value="">Choose a result…</option>{availableResults.map((item) => <option key={item.id} value={item.id}>{item.kind} · {item.object_count} objects · revision {item.revision_hash.slice(0, 8)}</option>)}</select></label>}
+        <div className="research-actions">
+          {onOpenMethods && <button onClick={onOpenMethods}>Open Segment &amp; measure</button>}
+          {onOpenDrawings && <button onClick={onOpenDrawings}>Open source drawings</button>}
+        </div>
       </div>
     );
 
   return (
     <div className="research-panel research-interchange">
-      <h2>Annotation import</h2>
+      <h2>Import ROIs into result</h2>
+      <p>Target: {result.kind} · revision {result.revision_hash.slice(0, 8)}</p>
       <p>
         Import a Loci polygon GeoJSON file or Loci-authored ImageJ ROI. The file
         must match this source, result revision, image shape, and voxel-to-world

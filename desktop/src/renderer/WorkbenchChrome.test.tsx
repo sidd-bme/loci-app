@@ -365,20 +365,20 @@ describe("workbench tool selector", () => {
     expect(screen.getByRole("option", { name: /Workflow builder/ })).toBeEnabled();
   });
 
-  it("keeps scalar-channel and correction requirements visible in selectors", () => {
+  it("opens prerequisite routes for scalar fluorescence and correction", () => {
     const onTab = vi.fn();
     const source = { id: "source-1", metadata: { dimensions: { t: 1 }, sample_semantics: "RGB" } } as unknown as ResearchSource;
     const view = render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult={false} />);
     fireEvent.click(screen.getByRole("combobox", { name: "Analyze tool" }));
     const fluorescence = screen.getByRole("option", { name: /Fluorescence & field assay/ });
-    expect(fluorescence).toBeDisabled();
-    expect(fluorescence).toHaveTextContent("These methods need declared scalar channels");
+    expect(fluorescence).toBeEnabled();
     fireEvent.click(fluorescence);
-    expect(onTab).not.toHaveBeenCalled();
+    expect(onTab).toHaveBeenLastCalledWith("Quantify");
     view.rerender(<WorkbenchTools tab="Annotate" onTab={onTab} source={source} hasResult={false} />);
     fireEvent.click(screen.getByRole("combobox", { name: "Annotate tool" }));
     const correction = screen.getByRole("option", { name: /Edit labels & ROIs/ });
-    expect(correction).toBeDisabled();
-    expect(correction).toHaveTextContent("Select a segmentation result to edit labels");
+    expect(correction).toBeEnabled();
+    fireEvent.click(correction);
+    expect(onTab).toHaveBeenLastCalledWith("Correction");
   });
 });

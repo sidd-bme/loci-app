@@ -213,8 +213,10 @@ try {
     await page.getByLabel(`Channel ${index} name`, { exact: true }).fill(name);
     await page.getByLabel(`Channel ${index} declaration`, { exact: true }).fill("Explicit synthetic fixture declaration; no acquired biological marker or fluorophore");
   }
-  await page.getByRole("button", { name: "Save declarations at revision 0", exact: true }).click();
-  await page.getByRole("button", { name: "Save declarations at revision 1", exact: true }).waitFor();
+  await page.locator('details > summary').filter({ hasText: /^Acquisition metadata$/u }).click();
+  await page.getByText("Saved revision 0", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Save channel identities", exact: true }).click();
+  await page.getByText("Saved revision 1", { exact: true }).waitFor();
   records.channels = await page.evaluate(source_id => window.lociResearch.execute("channel_metadata", { source_id }), source.id);
   await selectWorkbenchTool(page, "Display");
   for (const [label, value] of [["X", 0], ["Y", 0], ["Width", 128], ["Height", 128], ["C", 0]]) await setSelectionField(page, label, value);

@@ -80,9 +80,7 @@ export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults 
   const reason = (target: WorkbenchTab) => {
     if (target === "Vendor import" || target === "Portability" || target === "Remote") return null;
     if (!source) return "Open an image first";
-    if (target === "Correction" && !hasResult) return "Select a segmentation result to edit labels";
     if (target === "Temporal" && !hasStudyResults && (source.metadata.dimensions?.t ?? 1) < 2) return "Tracking needs a time series or timed result set";
-    if (target === "Quantify" && ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "")) return "These methods need declared scalar channels";
     return null;
   };
   const visible = TOOLS.filter((tool) => `${tool.label} ${tool.tab} ${tool.keywords ?? ""}`.toLowerCase().includes((search ?? "").trim().toLowerCase()));

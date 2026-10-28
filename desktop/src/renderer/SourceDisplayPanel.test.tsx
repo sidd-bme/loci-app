@@ -424,8 +424,8 @@ describe("batch channel colors (Milestone 5A)", () => {
       onBatchApplied,
     });
 
-    // "Apply colors" button is visible in channel heading without trailing ellipsis
-    const applyColorsBtn = screen.getByRole("button", { name: "Apply colors (2)" });
+    // "Copy colours to images…" button is visible in channel heading without trailing ellipsis
+    const applyColorsBtn = screen.getByRole("button", { name: "Copy colours to images… (2)" });
     expect(applyColorsBtn).toBeTruthy();
 
     // Open dialog
@@ -450,7 +450,7 @@ describe("batch channel colors (Milestone 5A)", () => {
     expect(screen.getByText("SKIPPED")).toBeTruthy();
     expect(screen.getByText("Channel count mismatch")).toBeTruthy();
 
-    // Click "Apply colors"
+    // Click "Copy colours to images…"
     const applyBtn = screen.getByRole("button", { name: /Apply colour to all 2 images/ });
     fireEvent.click(applyBtn);
 

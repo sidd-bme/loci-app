@@ -846,7 +846,7 @@ try {
   await waitForViewer(ownerName, 4);
   captures.owner_channels_changed = await capture("06-owner-channels-changed", ownerViewer);
   assert.notEqual(captures.owner_channels_changed.sha256, captures.owner_fit.sha256);
-  await displayPanel.locator(".source-channel-heading").getByRole("button", { name: "Reset", exact: true }).click();
+  await displayPanel.locator(".source-channel-heading").getByRole("button", { name: "Reset display", exact: true }).click();
   await waitForViewer(ownerName, 4);
   assert.equal(await page.getByLabel("Channel 1 low", { exact: true }).inputValue(), "0");
   assert.equal(await page.getByLabel("Channel 2 visible", { exact: true }).isChecked(), true);
