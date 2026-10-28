@@ -312,13 +312,13 @@ try {
   await app.evaluate(({ dialog }, file) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
   }, corruptFixture);
-  await page.getByRole("button", { name: "Add images…", exact: true }).click();
+  await page.getByRole("button", { name: "Open images", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "visible" });
   await screenshot(page, "invalid-image-error");
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await page.getByRole("alert").waitFor({ state: "hidden" });
   await installDialogs(app);
-  await page.getByRole("button", { name: "Add images…", exact: true }).click();
+  await page.getByRole("button", { name: "Open images", exact: true }).click();
   await visible(
     page,
     page.getByRole("main", { name: "Research workspace" }),
