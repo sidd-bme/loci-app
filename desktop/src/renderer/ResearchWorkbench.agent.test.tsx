@@ -123,7 +123,7 @@ function userClick(element: Element) {
 }
 async function startFollowing(state: ReturnType<typeof harness>) {
   render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
-  await screen.findByRole("group", { name: "Channel display controls" });
+  await screen.findByRole("checkbox", { name: "Channel 1 visible" });
   await waitFor(() => expect(screen.getByLabelText("Z plane")).toHaveValue("2"));
   userClick(screen.getByRole("button", { name: "Agent session status" }));
   userClick(screen.getByRole("checkbox", { name: "Follow agent" }));
@@ -141,8 +141,8 @@ describe("Agent navigation integration", () => {
     state.publishSource(); await poll();
     await screen.findByLabelText("Image viewer: Source B");
     await waitFor(() => expect(JSON.parse(viewer().getAttribute("data-camera")!)).toEqual({ x: 60, y: 80, scale: 3.84 }));
-    expect(screen.getByRole("checkbox", { name: "Raw visible" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Ramp visible" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Channel 1 visible" })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Channel 2 visible" })).toBeChecked();
     expect(screen.getByLabelText("Z plane")).toHaveValue("4");
     await waitFor(() => expect(state.execute).toHaveBeenCalledWith("viewer_tile", expect.objectContaining({
       source_id: ID_B, channels: [

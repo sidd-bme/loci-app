@@ -268,7 +268,7 @@ describe("SourceAnnotationPanel interchange", () => {
     render(panel(api, sources[0], handlers));
 
     expect(await screen.findByText("0 saved")).toBeVisible();
-    fireEvent.click(screen.getByText("Import & export annotations"));
+    fireEvent.click(screen.getByText("Source drawings"));
     const exportButton = screen.getByRole("button", { name: "Export annotations" });
     fireEvent.click(exportButton);
     await waitFor(() => expect(exportSourceAnnotations).toHaveBeenCalledWith({
@@ -303,7 +303,7 @@ describe("SourceAnnotationPanel interchange", () => {
     const view = render(panel(api, sources[0], handlers));
 
     expect(await screen.findByText("0 saved")).toBeVisible();
-    fireEvent.click(screen.getByText("Import & export annotations"));
+    fireEvent.click(screen.getByText("Source drawings"));
     fireEvent.click(screen.getByRole("button", { name: "Export annotations" }));
     await waitFor(() => expect(exportSourceAnnotations).toHaveBeenCalledOnce());
     view.rerender(panel(api, sources[1], handlers));
@@ -330,7 +330,7 @@ describe("SourceAnnotationPanel interchange", () => {
     const view = render(panel(api, sources[0], handlers));
 
     expect(await screen.findByText("0 saved")).toBeVisible();
-    fireEvent.click(screen.getByText("Import & export annotations"));
+    fireEvent.click(screen.getByText("Source drawings"));
     fireEvent.click(screen.getByRole("button", { name: "Import annotations" }));
     await waitFor(() => expect(importSourceAnnotations).toHaveBeenCalledOnce());
     view.rerender(panel(api, sources[1], handlers));
