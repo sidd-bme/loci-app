@@ -171,14 +171,19 @@ try {
     await selectWorkbenchTool(page, 'Analyze'); const compact = page.locator('details.compact-channel-controls');
     const imageWidth = (await page.locator('[data-viewer-source]').first().boundingBox()).width;
     if (width === 1024) { assert.ok(imageWidth >= 395 && imageWidth < 640, `Minimum native window usable image width ${imageWidth}`); await wait(() => compact.evaluate(element => element.open), open => !open, 'narrow compact controls collapsed'); }
-    await selectWorkbenchTool(page, 'Workflow'); await footerVisible();
+    await selectWorkbenchTool(page, 'Workflow'); await wait(() => compact.evaluate(element => element.open), open => !open, 'workflow compact controls collapsed'); await frame(); await footerVisible();
     const before = await imageState(); await page.getByRole('button', { name: 'Focus workflow', exact: true }).click(); await frame();
     assert.equal(await page.locator('#research-image-stage').isVisible(), false); await footerVisible();
     await page.getByRole('button', { name: 'Show image', exact: true }).click(); await frame(); assert.deepEqual(await imageState(), before);
+    await page.getByRole('button', { name: 'Zoom in', exact: true }).click(); await frame();
+    const manual = await imageState(); assert.ok(manual.camera.scale > before.camera.scale, 'manual zoom increases scale');
+    await page.getByRole('button', { name: 'Focus workflow', exact: true }).click(); await frame();
+    await page.getByRole('button', { name: 'Show image', exact: true }).click(); await frame(); assert.deepEqual(await imageState(), manual);
+    await page.getByRole('button', { name: 'Fit image', exact: true }).click(); await frame(); assert.deepEqual(await imageState(), before);
     await workflow().locator('.workflow-body').hover(); await page.mouse.wheel(0, 10000); await frame();
     const geometry = await footerVisible(); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'No app horizontal overflow');
     const actual = await app.evaluate(({ BrowserWindow }) => ({ outer: BrowserWindow.getAllWindows()[0].getBounds(), content: BrowserWindow.getAllWindows()[0].getContentBounds() }));
-    receipt.checks.push({ name: 'native-layout', requested: { width, height, theme, large }, actual, image_width: imageWidth, footer: geometry, focus_preserved: before });
+    receipt.checks.push({ name: 'native-layout', requested: { width, height, theme, large }, actual, image_width: imageWidth, footer: geometry, focus_preserved: before, manual_focus_preserved: manual });
     await shot(`layout-${width}-${height}-${theme}-${large ? 'large' : 'standard'}`);
   }
   await appearance('graphite'); await fullscreen(true);

@@ -4789,4 +4789,28 @@ describe("ResearchWorkbench", () => {
     drawRegionBtn.focus();
     expect(drawRegionBtn).toHaveFocus();
   });
+
+  it("preserves both fitted and manual viewer camera across Focus workflow and Show image", async () => {
+    const desktop = api();
+    const { container } = render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    const viewer = await screen.findByLabelText("Image viewer: Specimen");
+    await openAdvancedTool("Workflow builder");
+    const stage = container.querySelector<HTMLElement>("#research-image-stage")!;
+    expect(stage).not.toHaveAttribute("hidden");
+    const fittedBefore = JSON.parse(viewer.getAttribute("data-camera")!);
+    fireEvent.click(screen.getByRole("button", { name: "Focus workflow" }));
+    expect(stage).toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "Show image" }));
+    expect(stage).not.toHaveAttribute("hidden");
+    expect(JSON.parse(viewer.getAttribute("data-camera")!)).toEqual(fittedBefore);
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    const manualCamera = JSON.parse(viewer.getAttribute("data-camera")!);
+    expect(manualCamera.scale).toBeGreaterThan(fittedBefore.scale);
+    fireEvent.click(screen.getByRole("button", { name: "Focus workflow" }));
+    expect(stage).toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "Show image" }));
+    expect(stage).not.toHaveAttribute("hidden");
+    expect(JSON.parse(viewer.getAttribute("data-camera")!)).toEqual(manualCamera);
+  });
 });

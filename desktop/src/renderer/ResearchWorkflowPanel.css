@@ -107,7 +107,8 @@
 .workflow-execute { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .workflow-execute > div p { font-size: var(--type-sm); margin-top: 4px; }
 .workflow-panel button.workflow-run { color: var(--action-foreground); background: var(--action-background); border-color: var(--action-background); white-space: nowrap; font-weight: 600; }
-.workflow-panel button.workflow-run:hover:not(:disabled) { background: var(--action-hover); }
+.research-workbench .workflow-panel button.workflow-run:hover:not(:disabled),
+.workflow-panel button.workflow-run:hover:not(:disabled) { color: var(--action-foreground); background: var(--action-hover); border-color: var(--action-hover); }
 .workflow-outdated { color: var(--warning) !important; background: var(--warning-wash); border-left: 1px solid var(--warning); padding: 10px 12px; }
 .workflow-batch { border-top: 1px solid var(--line-strong); padding-top: 16px; }
 .workflow-batch summary { cursor: pointer; color: var(--ink-secondary); padding: 4px 0; }
