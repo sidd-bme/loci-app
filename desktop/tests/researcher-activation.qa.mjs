@@ -108,7 +108,7 @@ try {
   assert.match(build.sourceTree, /^[a-f0-9]{40}$/u); receipt.source_tree = build.sourceTree;
   receipt.harness_git_head = (await exec('git', ['rev-parse', 'HEAD'], { cwd: repo })).stdout.trim();
   receipt.fixture = JSON.parse((await exec(python, [helper, 'fixture', output, '--size', '64'], { timeout: 30000 })).stdout);
-  await cli('create', '--project', study, '--title', 'Researcher activation QA');
+  await cli('create', '--project', study, '--title', 'Activation QA');
   const imported = await cli('import', '--project', study, receipt.fixture.sources[0].path);
   const source = imported.sources.find(item => item.sha256 === receipt.fixture.sources[0].sha256); assert.ok(source);
   await operation('sample', { id: source.id, expected_revision: 0, data: { study: 'Activation QA', sample: 'Authored grid', condition: 'Technical', biological_replicate: 'Authored-1', plate: null, well: null } });
