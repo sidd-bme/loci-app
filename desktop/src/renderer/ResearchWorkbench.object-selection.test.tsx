@@ -144,6 +144,14 @@ describe("Exact object selection and predictable navigation (WP A)", () => {
             state: null,
           };
         }
+        if (op === "save_source_view") {
+          return {
+            source_id: sampleSource.id,
+            source_sha256: sampleSource.sha256,
+            revision: Number(args.expected_revision) + 1,
+            state: args.state,
+          };
+        }
         if (op === "source_annotations") {
           return {
             source_id: sampleSource.id,

@@ -19,6 +19,7 @@ import type {
   ResearchBatchTask,
   ResearchDesktopApi,
   ResearchJob,
+  ResearchLabelsImportPreview,
   ResearchSelection,
   ResearchSnapshot,
 } from "../shared/research-contracts";
@@ -186,6 +187,14 @@ function correctionInfo(result = snapshot.results[0]) {
     measurement_channels: [{ index: 0, name: "Raw 1", basis: "raw-source-channel-values" }],
     derived_measurement_arrays: null,
   };
+}
+function labelsPreview(request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]): ResearchLabelsImportPreview {
+  return { ...request, grant_id: "e".repeat(32), geometry: null,
+    file_name: "known-labels.tif", file_sha256: "1".repeat(64), file_size_bytes: 1024,
+    original_dtype: "uint32", shape: [request.selection.height, request.selection.width], axes: "YX", object_count: 2,
+    labels_sha256: "2".repeat(64), format: "TIFF", profile: "scalar-native-yx/v1", estimated_working_bytes: 4096,
+    measurement_channel: { index: request.selection.c, name: "Raw channel 1", basis: "raw-source-channel-values" }, calibration_handling: {},
+    image: "data:image/png;base64,cG5n", preview_width: 64, preview_height: 48 };
 }
 function viewerContractResponse(
   operation: string,
@@ -1568,6 +1577,179 @@ describe("ResearchWorkbench", () => {
       expect(desktop.execute).not.toHaveBeenCalledWith("run_recipe", expect.anything());
     },
   );
+
+  it.each(["success", "cancel", "error"] as const)(
+    "coordinates the label picker with pending display saves and refinement (%s)",
+    async (outcome) => {
+      const active = structuredClone(snapshot);
+      active.sources[0].source_kind = "native";
+      active.results = [];
+      let finishWrite!: () => void;
+      let finishPicker!: (value: ResearchLabelsImportPreview | null) => void;
+      let rejectPicker!: (error: Error) => void;
+      let rejectTile!: (error: Error) => void;
+      let blockWrite = false;
+      let blockRefinement = false;
+      let pendingTile = false;
+      let pickerPending = false;
+      let main!: HTMLElement;
+      const labelsImportPreview = vi.fn((_request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) => {
+        expect(main).toHaveAttribute("inert");
+        pickerPending = true;
+        return new Promise<ResearchLabelsImportPreview | null>((resolve, reject) => {
+          finishPicker = (value) => { pickerPending = false; resolve(value); };
+          rejectPicker = (error) => { pickerPending = false; reject(error); };
+        });
+      });
+      const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+      const original = desktop.execute;
+      const duringPicker: string[] = [];
+      const savedViews: Array<Record<string, unknown>> = [];
+      desktop.execute = vi.fn(async (operation, request, options) => {
+        if (pickerPending) {
+          duringPicker.push(operation);
+          throw new Error("Wait for the study to finish opening.");
+        }
+        const state = request.state as { channels?: Array<{ low?: number }> } | undefined;
+        if (operation === "save_source_view" && blockWrite && state?.channels?.[0]?.low === 7) {
+          blockWrite = false;
+          return new Promise((resolve) => { finishWrite = () => {
+            savedViews.push(structuredClone(request));
+            resolve({ source_id: request.source_id,
+              source_sha256: request.source_sha256, revision: Number(request.expected_revision) + 1, state: request.state });
+          }; });
+        }
+        if (operation === "viewer_tile" && !request.overview && blockRefinement) {
+          blockRefinement = false;
+          pendingTile = true;
+          return new Promise((_, reject) => { rejectTile = reject; });
+        }
+        const output = await original(operation, request, options);
+        if (operation === "save_source_view") savedViews.push(structuredClone(request));
+        return output;
+      });
+      render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+      main = await screen.findByRole("main", { name: "Research workspace" });
+      await openTool("View", "Display");
+      const low = await screen.findByLabelText("Channel 1 low");
+      await waitFor(() => expect(low).toHaveValue("0"));
+      blockWrite = true;
+      blockRefinement = true;
+      fireEvent.change(low, { target: { value: "7" } });
+      fireEvent.keyDown(low, { key: "Enter" });
+      await waitFor(() => expect(pendingTile).toBe(true));
+      // The picker must drain the queued or in-flight display write before
+      // acquiring the main-process lock.
+      await openTool("Analyze", "Analyze");
+      fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+      const viewer = screen.getByLabelText("Image viewer: Specimen");
+      const camera = viewer.getAttribute("data-camera");
+      const cacheBytes = Number(viewer.getAttribute("data-cache-bytes"));
+      fireEvent.click(screen.getByRole("button", { name: "Import labels" }));
+      expect(main).toHaveAttribute("inert");
+      expect(labelsImportPreview).not.toHaveBeenCalled();
+      await waitFor(() => expect(finishWrite).toBeTypeOf("function"));
+      await act(async () => { finishWrite(); });
+      await waitFor(() => expect(labelsImportPreview).toHaveBeenCalledOnce());
+      const request = labelsImportPreview.mock.calls[0][0];
+      expect(request).toEqual(expect.objectContaining({ source_id: active.sources[0].id,
+        source_sha256: active.sources[0].sha256,
+        selection: { x: 0, y: 0, width: 64, height: 48, t: 0, c: 0, z: 1, level: 0 } }));
+      await act(async () => { rejectTile(new Error("Wait for the study to finish opening.")); });
+      // Model time spent choosing a file, longer than the 400ms autosave.
+      if (outcome === "success") await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1200)); });
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThanOrEqual(cacheBytes);
+      expect(duringPicker).toEqual([]);
+      await act(async () => {
+        if (outcome === "error") rejectPicker(new Error("Unsupported label dtype"));
+        else finishPicker(outcome === "cancel" ? null : labelsPreview(request));
+      });
+      await waitFor(() => expect(main).not.toHaveAttribute("inert"));
+      if (outcome === "success") {
+        expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toBeVisible();
+        expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
+      } else {
+        expect(screen.queryByRole("button", { name: "Import on this plane" })).not.toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Import labels" })).toBeEnabled();
+        if (outcome === "error") expect(screen.getByRole("alert")).toHaveTextContent("Unsupported label dtype");
+        else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      }
+      await openTool("View", "Display");
+      expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
+      expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
+      expect(viewer).toHaveAttribute("data-camera", camera);
+      fireEvent.change(screen.getByLabelText("Channel 1 low"), { target: { value: "8" } });
+      fireEvent.keyDown(screen.getByLabelText("Channel 1 low"), { key: "Enter" });
+      await waitFor(() => expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+        source_id: active.sources[0].id, source_sha256: active.sources[0].sha256,
+        state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
+      })));
+      await waitFor(() => expect(savedViews.at(-1)).toEqual(expect.objectContaining({
+        expected_revision: Number(savedViews.find((request) =>
+          (request.state as { channels: Array<{ low: number }> }).channels[0].low === 7)!.expected_revision) + 1,
+        state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
+      })));
+      expect(duringPicker).toEqual([]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    },
+  );
+
+  it("waits for source display preparation before opening the label picker", async () => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.results = [];
+    let finishDefaults!: () => void;
+    const labelsImportPreview = vi.fn(async (request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) => labelsPreview(request));
+    const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+    const original = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "viewer_defaults") return new Promise((resolve) => {
+        finishDefaults = () => resolve(viewerContractResponse(operation, request, active));
+      });
+      return original(operation, request, options);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+    const choose = screen.getByRole("button", { name: "Import labels" });
+    expect(choose).toBeDisabled();
+    fireEvent.click(choose);
+    expect(labelsImportPreview).not.toHaveBeenCalled();
+    await act(async () => { finishDefaults(); });
+    await waitFor(() => expect(choose).toBeEnabled());
+    fireEvent.click(choose);
+    expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("rejects a label preview after source navigation supersedes its captured intent", async () => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    active.sources.push({ ...structuredClone(active.sources[0]), id: "f".repeat(32), sha256: "3".repeat(64), name: "Second" });
+    active.results = [];
+    let finishPicker!: (value: ResearchLabelsImportPreview) => void;
+    const labelsImportPreview = vi.fn((_request: Parameters<NonNullable<ResearchDesktopApi["labelsImportPreview"]>>[0]) =>
+      new Promise<ResearchLabelsImportPreview>((resolve) => { finishPicker = resolve; }));
+    const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), labelsImportPreview });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
+    const choose = screen.getByRole("button", { name: "Import labels" });
+    await waitFor(() => expect(choose).toBeEnabled());
+    fireEvent.click(choose);
+    await waitFor(() => expect(labelsImportPreview).toHaveBeenCalledOnce());
+    // A programmatic source-selection event can supersede the intent even
+    // while the native picker keeps ordinary pointer interaction inert.
+    fireEvent.click(screen.getByRole("button", { name: /Second/ }));
+    await act(async () => { finishPicker(labelsPreview(labelsImportPreview.mock.calls[0][0])); });
+    await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent("Second"));
+    expect(screen.queryByAltText("Checked label overlay on the selected source plane")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Import on this plane" })).not.toBeInTheDocument();
+    expect(desktop.execute).not.toHaveBeenCalledWith("labels_import", expect.anything());
+  });
 
   it("flushes a loaded pending view before closing, restores its exact revision on undo, and saves the study", async () => {
     const first = snapshot.sources[0];

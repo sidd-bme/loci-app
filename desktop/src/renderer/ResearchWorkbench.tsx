@@ -1023,10 +1023,13 @@ export default function ResearchWorkbench({
   const initialStudyRestore = useRef<Promise<unknown>>(Promise.resolve());
   const nativeCommandPending = useRef(false);
   const documentSwitch = useRef(false);
-  const switchDocument = useCallback(async <T,>(action: () => Promise<T>, resetDisplay = true): Promise<T> => {
+  const switchDocument = useCallback(async <T,>(action: () => Promise<T>, resetDisplay = true,
+    { preserveNavigationIntent = false }: { preserveNavigationIntent?: boolean } = {}): Promise<T> => {
     if (documentSwitch.current) throw new Error("Wait for the study to finish opening.");
-    largeNavigationIntent.current++;
-    largeSelectionIntent.current++;
+    if (!preserveNavigationIntent) {
+      largeNavigationIntent.current++;
+      largeSelectionIntent.current++;
+    }
     documentSwitch.current = true;
     // Native dialogs may defer rendering while the window is inactive. Commit
     // the viewport pause before entering the main-process document lock.
@@ -1087,6 +1090,10 @@ export default function ResearchWorkbench({
     ...(desktopApi.recoveryKeep ? { recoveryKeep: (id: string) => switchDocument(() => desktopApi.recoveryKeep!(id)) } : {}),
     ...(desktopApi.tryExample ? { tryExample: () => switchDocument(() => desktopApi.tryExample!()) } : {}),
     ...(desktopApi.relinkSource ? { relinkSource: (id, kind) => switchDocument(() => desktopApi.relinkSource!(id, kind), false) } : {}),
+    // This same-study picker takes the main-process document lock, but its
+    // caller has already captured the source/plane and navigation intent.
+    ...(desktopApi.labelsImportPreview ? { labelsImportPreview: (request) =>
+      switchDocument(() => desktopApi.labelsImportPreview!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.newSession ? { newSession: () => switchDocument(() => desktopApi.newSession!()) } : {}),
     // Working-list changes take the same main-process lock, but retain this
     // document's camera and the close/clear action's local undo receipt.
@@ -3847,7 +3854,7 @@ export default function ResearchWorkbench({
           <details className="external-labels-disclosure"><summary>Import existing labels</summary>
           <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
             navigationIntent={() => largeNavigationIntent.current}
-            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={(message, owner) => {
+            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging || !viewSettingsReady} onBusy={(message, owner) => {
               if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
               else if (labelImportBusyOwner.current?.owner === owner) {
                 const ownMessage = labelImportBusyOwner.current.message;
