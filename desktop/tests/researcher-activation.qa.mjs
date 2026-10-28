@@ -136,7 +136,11 @@ try {
   await waitForSnapshot(page, value => value?.sources.some(item => item.id === source.id), 'isolated authored source');
   await page.locator(`button[data-source-id="${source.id}"]`).click();
   await selectWorkbenchTool(page, 'Display');
-  for (const [label, key] of [['X', 'x'], ['Y', 'y'], ['Width', 'width'], ['Height', 'height'], ['C', 'c']]) await setSelectionField(page, label, receipt.fixture.selection[key]);
+  // Shrink the crop before moving it: offsets outside the current full-image bounds are correctly refused.
+  for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['C', 'c']]) {
+    await setSelectionField(page, label, receipt.fixture.selection[key]);
+    assert.equal(Number(await page.getByLabel(label, { exact: true }).inputValue()), receipt.fixture.selection[key], `Accepted ${label} fixture scope`);
+  }
   await selectWorkbenchTool(page, 'Analyze');
   await page.getByLabel('Segmentation model', { exact: true }).selectOption('classical');
   await page.getByLabel('Segmentation method', { exact: true }).selectOption('components');
