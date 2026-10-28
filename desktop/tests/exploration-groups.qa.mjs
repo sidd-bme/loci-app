@@ -135,6 +135,8 @@ try {
   records.groups=(await groups()).groups;
   assertions.rectangle_polygon_complete_memberships_and_complement=true;
   // Display edits remain in Results and are preserved through Annotate.
+  const compactChannels=page.locator("details.compact-channel-controls");
+  if (!(await compactChannels.evaluate(element=>element.open))) await compactChannels.locator(":scope > summary").click();
   const channelControls=page.getByRole("group",{name:"Channel display controls",exact:true});
   await channelControls.getByLabel("Signal B visible",{exact:true}).check();
   await channelControls.getByRole("button",{name:"Solo",exact:true}).click();

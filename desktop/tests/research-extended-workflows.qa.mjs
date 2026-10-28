@@ -181,7 +181,7 @@ export async function qualifyExtendedWorkflows({
   await page.getByLabel("Channel 1 name", { exact: true }).fill("Declared nuclei");
   await page.getByLabel("Channel 1 declaration", { exact: true }).fill("Synthetic QA channel declaration");
   await page.getByLabel("Channel 2 name", { exact: true }).fill("Declared reporter");
-  await page.getByRole("button", { name: /^Save declarations at revision/ }).click();
+  await page.getByRole("button", { name: "Save channel identities", exact: true }).click();
   await wait(snapshot, (state) => state.channels.some((item) =>
     item.data?.channels?.[0]?.name === "Declared nuclei"), "channel metadata save");
 

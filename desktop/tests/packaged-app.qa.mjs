@@ -316,7 +316,7 @@ np.testing.assert_array_equal(a,np.repeat((raw.astype(np.uint16)*257)[...,None],
 expected_adjusted=np.rint(np.sqrt(raw.astype(np.float64)/255.0)*65535.0).astype(np.uint16)
 np.testing.assert_array_equal(b,np.repeat(expected_adjusted[...,None],3,axis=2)); assert np.any(a!=b)
 print(json.dumps({'shape':list(a.shape),'dtype':str(a.dtype),'neutral_equals_source_codes_x257':True,'adjusted_equals_sqrt_oracle':True,'embedded_display_mappings_verified':True,'source_sha256':source_sha256,'adjustment_changes_display':True}))`, source, neutralTiff, picker.rendered])).stdout);
-  await displayPanel.locator('.source-channel-heading').getByRole("button", { name: "Reset", exact: true }).click();
+  await displayPanel.locator('.source-channel-heading').getByRole("button", { name: "Reset display", exact: true }).click();
   await fileMenuAction(page, "Save as study…");
   await until(() => fs.stat(project).catch(() => null), (s) => s?.isDirectory(), "save managed source as study");
   await until(() => page.locator('.session-save-state').textContent(), (text) => text === 'Saved locally', 'completed Save as');

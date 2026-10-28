@@ -318,7 +318,7 @@ async function openResearch(page) {
 
 async function selectModel(page, modelId) {
   await page.getByLabel("Model package").selectOption(modelId);
-  await page.getByLabel("Model input 0 source channel").selectOption("0");
+  await page.getByLabel("Model input 1 source channel").selectOption("0");
   await page.getByLabel("Model scale mode").selectOption("source");
   assert.equal(
     await page.getByLabel("Model working memory").inputValue(),
@@ -332,7 +332,7 @@ async function previewAndAdopt(page, priorIds, label) {
     .click();
   const pending = await visible(
     page,
-    page.getByText("Preview ready to adopt.", { exact: true }),
+    page.getByText("Preview ready to save as a result.", { exact: true }),
     `${label} exact preview`,
     600_000,
   );

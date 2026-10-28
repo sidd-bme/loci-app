@@ -159,9 +159,10 @@ try {
   assert.equal(created.project.first_study.source_sha256, source.sha256);
   await viewerReady();
   report.checks.initial_display_pixels_rgba = await renderedExample();
-  await page.locator(".first-study-guide summary").click();
+  const practiceGuide = page.locator(".first-study-guide");
+  if (!(await practiceGuide.evaluate(element => element.open))) await practiceGuide.locator(":scope > summary").click();
   await shot("02-practice-guide");
-  await page.locator(".first-study-guide summary").click();
+  await practiceGuide.locator(":scope > summary").click();
   const directories = (await fs.readdir(path.join(userData, "sessions"))).filter((name) => name.endsWith(".loci-study.source"));
   assert.equal(directories.length, 1);
   const sourcePath = path.join(userData, "sessions", directories[0], source.name);
