@@ -1,6 +1,8 @@
 import { StudyWorkspace, type StudySection } from "./StudyWorkspace";
 import { ResearchWorkflowGraphPanel } from "./ResearchWorkflowGraphPanel";
 import { SpatialDensityPanel } from "./SpatialDensityPanel";
+import { WoundClosureTool } from "./WoundClosureTool";
+import { ResearchMorphometricsPanel } from "./ResearchMorphometricsPanel";
 import { ExperimentIntensityPanel } from "./ExperimentIntensityPanel";
 import { SampleSheetPanel } from "./SampleSheetPanel";
 import { resolveStudyResult, resolveStudySource } from "./study-sample-navigation";
@@ -829,6 +831,8 @@ export default function ResearchWorkbench({
   const [graphOpened, setGraphOpened] = useState(false);
   const [quantificationOpened, setQuantificationOpened] = useState(false);
   const [densityOpened, setDensityOpened] = useState(false);
+  const [woundOpened, setWoundOpened] = useState(false);
+  const [morphologyOpened, setMorphologyOpened] = useState(false);
   const [quantificationEntryKey, setQuantificationEntryKey] = useState(0);
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
   const [populationOpened, setPopulationOpened] = useState(false);
@@ -2864,6 +2868,8 @@ export default function ResearchWorkbench({
     }
     if (next === "Quantify") setQuantificationOpened(true);
     if (next === "Density") setDensityOpened(true);
+    if (next === "Wound") setWoundOpened(true);
+    if (next === "Morphology") setMorphologyOpened(true);
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
@@ -2967,7 +2973,7 @@ export default function ResearchWorkbench({
   const segmentationChannelNames = Array.from({ length: dimensions?.c ?? 0 }, (_, index) =>
     declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
-  const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent", "Density"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
+  const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent", "Density", "Wound", "Morphology"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
   const panelFocused = canFocusPanel && focusedPanel === tab;
   return (
     <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
@@ -4113,6 +4119,25 @@ export default function ResearchWorkbench({
           <SpatialDensityPanel key={`density:${exportDraftStudy}`} api={api} snapshot={snapshot} active={tab === "Density"}
             busy={busy !== null || documentSwitching} onSnapshot={adopt}
             onInspect={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
+        </div>}
+        {woundOpened && <div hidden={tab !== "Wound"}>
+          <WoundClosureTool key={`wound:${exportDraftStudy}`} api={api} snapshot={snapshot} active={tab === "Wound"}
+            busy={busy !== null || documentSwitching} onRefresh={adopt}
+            onInspect={(target) => { void report(async () => {
+              const exact = snapshot.results.find((r) => r.id === target.result_id && r.revision_hash === target.revision_hash &&
+                r.source_id === target.source_id && r.source_sha256 === target.source_sha256);
+              if (!exact) throw new Error("The exact wound input revision is unavailable. Restore it before inspection.");
+              await navigateExactResult(exact); openWorkbenchTab("Info");
+            }, "Could not inspect this wound input."); }} />
+        </div>}
+        {morphologyOpened && source && <div hidden={tab !== "Morphology"}>
+          <ResearchMorphometricsPanel key={`morphology:${exportDraftStudy}:${source.id}`} api={api} snapshot={snapshot} source={source}
+            selectedResult={selectedResult} active={tab === "Morphology"} busy={busy !== null || documentSwitching}
+            workingBytes={recipe.working_bytes ?? 512 * 1024 ** 2}
+            onBusyChange={(value) => setBusy((current) => value ? (current ?? "morphometrics") : current === "morphometrics" ? null : current)}
+            onPublished={publishGeneratedResult}
+            onExplore={(target) => { void navigateExactResult(target); openWorkbenchTab("Population"); }}
+            onReview={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
         </div>}
         <StudyWorkspace active={tab === "Study"} section={studySection} onSection={setStudySection}
           focused={studyFocused} onToggleFocus={() => setStudyFocused((value) => !value)} sourceName={source?.name}

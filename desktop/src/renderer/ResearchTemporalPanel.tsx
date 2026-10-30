@@ -6,6 +6,7 @@ import type {
 } from "../shared/research-contracts";
 
 import { resultTitle } from "./result-title";
+import { TrajectoryMetrics } from "./TrajectoryMetrics";
 import "./ResearchTemporalPanel.css";
 
 type Report = <T>(
@@ -70,6 +71,7 @@ type TrackingRecord = {
   inputs?: Array<Record<string, unknown>>;
   settings?: Record<string, unknown>;
   units?: { position?: string; time?: string; speed?: string };
+  trajectory_metrics?: unknown;
 };
 
 const WORKING_BYTES = 512 * 1024 ** 2;
@@ -664,6 +666,14 @@ export function ResearchTemporalPanel({
             Positions in{" "}
             {record.units?.position ?? "unit unavailable"}; time in seconds.
           </p>
+          {record.trajectory_metrics && <TrajectoryMetrics api={api} result={record.result}
+            summary={record.trajectory_metrics} graph={record.tracking} busy={busy}
+            onOpenFrame={(frameId) => { void report(async () => {
+              const input = record.inputs?.find((item) => item.result_id === frameId);
+              const exact = input && snapshot.results.find((item) => item.id === input.result_id && item.revision_hash === input.revision_hash);
+              if (!exact) throw new Error("The exact observed frame is unavailable. Restore the bound input revision before opening it.");
+              await onOpenResult(exact);
+            }, "Could not open the exact observed frame."); }} />}
           <h3>Observed associations</h3>
           <table className="research-result-table">
             <thead>

@@ -29,7 +29,9 @@ def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -
             (
                 doc["data"]
                 for doc in project.documents(
-                    "spatial_density_export_grant"
+                    "wound_closure_export_grant"
+                    if job["operation"] == "wound_closure_export"
+                    else "spatial_density_export_grant"
                     if job["operation"] == "spatial_density_export"
                     else "intensity_export_grant"
                     if job["operation"] == "intensity_export"
@@ -43,7 +45,7 @@ def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -
         )
     except (OSError, ValueError, KeyError, TypeError):
         return "Export publication status is unknown; inspect the destination before retrying."
-    if job["operation"] in {"intensity_export", "spatial_density_export"}:
+    if job["operation"] in {"intensity_export", "spatial_density_export", "wound_closure_export"}:
         if not grant or grant.get("plan", {}).get("plan_hash") != request.get("plan_hash"):
             return "Export publication status is unknown; inspect the destination before retrying."
     elif not grant or (
@@ -84,6 +86,7 @@ def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
                     "scientific_data_export",
                     "intensity_export",
                     "spatial_density_export",
+                    "wound_closure_export",
                 }:
                     error = "Execution stopped. " + _export_interruption_detail(project, job)
                 project.update_job(
@@ -146,6 +149,7 @@ def submit_job(
             "correct_result",
             "perinuclear_run",
             "spatial_distance_run",
+            "morphometrics_run",
             "roi_add",
             "roi_import",
             "correct_tracks",
@@ -200,6 +204,14 @@ def submit_job(
             from .research_intensity_export import task_source
 
             source_id = task_source(workbench.project, request)
+        elif operation == "wound_closure_export":
+            from .research_wound_closure import task_source
+
+            source_id = task_source(workbench.project, request)
+        elif operation == "wound_closure_save":
+            from .research_wound_closure import save_task_source
+
+            source_id = save_task_source(workbench.project, request)
         elif operation == "spatial_density_export":
             from .research_spatial_density import task_source
 
@@ -361,6 +373,7 @@ def run_job(
                 "scientific_data_export",
                 "intensity_export",
                 "spatial_density_export",
+                "wound_closure_export",
             }:
                 err_msg = f"{type(exc).__name__}: " + _export_interruption_detail(project, job)
             project.update_job(

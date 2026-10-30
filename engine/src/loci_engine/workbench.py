@@ -327,6 +327,7 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         "perinuclear_nuclei_eligible": nucleus_result_eligible(result),
         **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
         **({"spatial": provenance["spatial"]} if "spatial" in provenance else {}),
+        **({"morphometrics": provenance["morphometrics"]} if "morphometrics" in provenance else {}),
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
@@ -1534,6 +1535,16 @@ class Workbench:
             from .research_spatial_density import execute
 
             return execute(self.project, operation, request, check=publication_guard, job_id=job_id)
+        if operation == "wound_closure_export":
+            from .research_wound_closure import execute_export
+
+            return execute_export(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation.startswith("wound_closure_"):
+            from .research_wound_closure import execute
+
+            if operation == "wound_closure_save" and job_id is None:
+                raise ValueError("Save wound reports through a durable native job")
+            return execute(self.project, operation, request, check=publication_guard, job_id=job_id)
         if operation == "workflow_graph_runs":
             from .research_interchange import _reject_absolute_strings
             from .research_workflow_graph import RUN_SCHEMA, _run
@@ -1688,6 +1699,12 @@ class Workbench:
             from .research_spatial import execute_spatial
 
             return execute_spatial(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "morphometrics_run":
+            from .research_morphometrics import execute_morphometrics
+
+            return execute_morphometrics(
                 self, request, job_id=job_id, publication_guard=publication_guard
             )
         if operation == "perinuclear_run":

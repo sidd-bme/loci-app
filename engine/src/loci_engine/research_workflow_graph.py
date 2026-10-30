@@ -256,7 +256,7 @@ def _job_request(workbench, operation, request):
         return request
     if operation == "associate_results":
         source_id = workbench.project.result(request["cells"]["result_id"])["source_id"]
-    elif operation == "spatial_distance_run":
+    elif operation in {"spatial_distance_run", "morphometrics_run"}:
         source_id = workbench.project.result(request["result_id"])["source_id"]
     else:
         source_id = request["source_id"]
@@ -301,6 +301,17 @@ def _check_output(workbench, plan, node_id, intent, job):
         accepted = provenance.get("accepted_request", {})
         if any(accepted.get(key) != value for key, value in request.items()):
             raise ValueError("Graph classical result request provenance is mismatched")
+    elif operation == "morphometrics_run":
+        from .research_morphometrics import validate_parents
+
+        if provenance.get("accepted_request") != request or provenance.get(
+            "morphometrics", {}
+        ).get("software") != plan.get("method_identities", {}).get(operation):
+            raise ValueError("Graph morphology request or method identity is mismatched")
+        validate_parents(result, {
+            binding["result_id"]: workbench.project.result(binding["result_id"])
+            for binding in provenance["morphometrics"]["parent_chain"]
+        })
     elif operation == "spatial_distance_run":
         if provenance.get("accepted_request") != request:
             raise ValueError("Graph spatial result request provenance is mismatched")
@@ -792,6 +803,11 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
     data = _copy(doc["data"])
     _validate_owner(data["owner"])
     plan = data["plan"]
+    if not isinstance(plan, dict):
+        raise ValueError("Portable graph plan must be an object")
+    validated = validate_definition(plan.get("definition"))
+    has_morphology = any(node["operation"] == "morphometrics_run"
+                         for node in validated["definition"]["nodes"])
     _exact(
         plan,
         {
@@ -805,7 +821,7 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
             "node_scopes",
             "runtime",
             "plan_sha256",
-        },
+        } | ({"method_identities"} if has_morphology else set()),
         "portable graph plan",
     )
     if (
@@ -814,7 +830,14 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
         != plan["plan_sha256"]
     ):
         raise ValueError("Graph snapshot plan integrity failed")
-    validated = validate_definition(plan["definition"])
+    if "method_identities" in plan:
+        _exact(plan["method_identities"], {"morphometrics_run"}, "portable graph methods")
+        method = plan["method_identities"]["morphometrics_run"]
+        _exact(method, {"engine", "kernel_sha256", "dispatcher_sha256"},
+               "portable morphology method")
+        checked_text(method["engine"], "Morphology engine identity", 64)
+        for key in ("kernel_sha256", "dispatcher_sha256"):
+            _sha(method[key], "Morphology method")
     bindings = validate_bindings(workbench, validated["definition"], plan["bindings"])
     if (
         validated["definition"] != plan["definition"]

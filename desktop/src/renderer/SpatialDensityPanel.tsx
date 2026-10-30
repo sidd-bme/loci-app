@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ResearchDesktopApi, ResearchResult, ResearchSnapshot } from "../shared/research-contracts";
 import { checkedSpatialDensityGroups, checkedSpatialDensityPage, checkedSpatialDensityPreview, checkedSpatialDensitySaved, checkedSpatialDensityStatus, spatialDensityRequestHash,
-  type SpatialDensityGroup, type SpatialDensityInput, type SpatialDensityPage, type SpatialDensityRequest, type SpatialDensityStatus, type SpatialDensitySummary,
+  type SpatialDensityAggregation, type SpatialDensityGroup, type SpatialDensityInput, type SpatialDensityPage, type SpatialDensityRequest, type SpatialDensityStatus, type SpatialDensitySummary,
   type SpatialDensityTable, type SpatialDensityTables, type SpatialDensityTarget, type SpatialDensityViewSummary } from "../shared/spatial-density-contracts";
 import { populationDisplayUnit } from "./PopulationChart";
 import { ScientificNumber } from "./ScientificNumber";
+import { SpatialDensityPlot } from "./SpatialDensityPlot";
+import { readDensityPlot } from "./spatial-density-plot";
 import "./SpatialDensityPanel.css";
 
 const exactKey = (r: Pick<ResearchResult, "id" | "revision_hash">) => r.id + ":" + r.revision_hash;
@@ -86,6 +88,35 @@ function PagedTable<T extends SpatialDensityTable>({ api, target, summary, table
     </div>
   </>;
 }
+function ReportPlot({ api, view, snapshot, onInspect, disabled, active }: {
+  api: ResearchDesktopApi; view: View; snapshot: ResearchSnapshot; onInspect: (result: ResearchResult) => void; disabled: boolean; active: boolean;
+}) {
+  const [aggregation, setAggregation] = useState<SpatialDensityAggregation | null>(null);
+  const [error, setError] = useState(""), [retry, setRetry] = useState(0);
+  const targetKey = JSON.stringify(viewTarget(view));
+  useEffect(() => {
+    if (!active || aggregation) return;
+    let current = true; setError("");
+    void readDensityPlot(api, viewTarget(view), view.summary, () => current).then((next) => {
+      if (current && next) setAggregation(next);
+    }).catch((caught) => { if (current) setError(message(caught)); });
+    return () => { current = false; };
+    // The parent is keyed to an immutable report identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, targetKey, active, aggregation, retry]);
+  const inspect = (field: SpatialDensityInput) => {
+    const bound = field.result;
+    const exact = snapshot.results.find((r) => r.id === bound.id && r.revision_hash === bound.revision_hash &&
+      r.source_id === bound.source_id && r.source_sha256 === bound.source_sha256);
+    if (!exact) { setError("This exact field revision is unavailable in the study. Restore it before inspecting the plotted donor."); return; }
+    setError(""); onInspect(exact);
+  };
+  return <>
+    {!aggregation && !error && <p role="status">Reading complete donor endpoints and exact field bindings…</p>}
+    {error && <p role="alert">{error}{!aggregation && <button type="button" disabled={disabled || !active} onClick={() => setRetry((n) => n + 1)}>Retry donor plot</button>}</p>}
+    {aggregation && <SpatialDensityPlot aggregation={aggregation} reportHash={view.summary.report_hash} onInspect={inspect} disabled={disabled || !active} />}
+  </>;
+}
 function ReportTables({ api, view, snapshot, onInspect, disabled, active }: {
   api: ResearchDesktopApi; view: View; snapshot: ResearchSnapshot; onInspect: (result: ResearchResult) => void; disabled: boolean; active: boolean;
 }) {
@@ -118,6 +149,7 @@ function ReportTables({ api, view, snapshot, onInspect, disabled, active }: {
     <p>{a.phenotype_name ?? "All eligible objects"} · Time {a.stratum.t + 1}, plane {a.stratum.z + 1}</p>
     <p>{summary.totals.selected_fields} selected fields · {summary.totals.excluded_fields} excluded from donor pools.</p>
     <p>Counts and sampled band areas are pooled within each declared donor. Condition summaries weight donors equally; SD requires at least two defined donor densities.</p>
+    <Details title="Plot donor comparisons"><ReportPlot api={api} view={view} snapshot={snapshot} onInspect={onInspect} disabled={disabled} active={active} /></Details>
     {inputError && <p role="alert">{inputError} <button type="button" disabled={disabled} onClick={() => setInputRetry((n) => n + 1)}>Retry exact field bindings</button></p>}
     <PagedTable {...shared} table="condition_rows" name="Condition density summaries"
       headings={["Study / condition", "Band", "Defined / total donors", "Mean (" + densityUnit + ")", "SD", "Median", "Zero-area donors"]}

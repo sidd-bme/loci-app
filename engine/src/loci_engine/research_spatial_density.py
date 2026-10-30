@@ -871,6 +871,17 @@ def _contents(report, status):
         "bound by result_record_sha256 and array hashes; they are not embedded here. "
         "Verify every manifest checksum before reuse.\n"
     )
+    from .spatial_density_figures import contents as figure_contents
+
+    contents.update(figure_contents(report))
+    contents["readme.md"] += (
+        "\nEditable donor-density.svg and, when pairing was declared, "
+        "paired-density-change.svg plot exact saved donor values and equal-donor means. "
+        "Each study and band is separate. Undefined zero-area values are omitted and counted; "
+        "only defined declared pairs are connected. density-figure-data.json retains exact "
+        "table row addresses, result references and display transforms. CSV tables remain "
+        "authoritative; rounded tick labels and horizontal point offsets are display only.\n"
+    )
     return contents
 
 

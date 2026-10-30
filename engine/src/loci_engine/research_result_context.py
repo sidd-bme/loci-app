@@ -139,6 +139,7 @@ _KIND_LABELS = {
     "nucleus-cell-association": "Nucleus-cell association",
     "perinuclear-enrichment": "Perinuclear enrichment",
     "spatial-distance-bands": "Tissue distance bands",
+    "morphometrics": "Digital morphometrics",
     "field-assay": "Fluorescence field assay",
     "tracking": "Object tracking",
     "temporal-tracking": "Object tracking",
@@ -377,6 +378,17 @@ def _replay(workbench: Workbench, result: dict[str, Any]) -> dict[str, Any]:
         "reason": "The complete original execution request is unavailable.",
     }
     provenance = result["provenance"]
+    if result["kind"] == "morphometrics":
+        from .research_morphometrics import _software, validate_request
+        from .workbench import runtime_record
+
+        if (provenance["morphometrics"]["software"] != _software()
+                or provenance.get("runtime") != runtime_record()):
+            return {**unsupported, "reason": "The exact morphology method/runtime is unavailable."}
+        request = provenance["accepted_request"]
+        validate_request(workbench, request)
+        return {"status": "available", "operation": "morphometrics_run",
+                "request": request, "reason": None}
     if result.get("parent_id") or provenance.get("workflow"):
         return {
             **unsupported,
@@ -499,6 +511,11 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
             ):
                 raise ValueError("Association parent revision binding is missing or mismatched")
             bound = True
+        elif current["kind"] == "morphometrics":
+            from .research_morphometrics import project_parents
+
+            project_parents(workbench.project, current)
+            bound = True
         elif current["kind"] == "perinuclear-enrichment":
             from .research_perinuclear import validate_parent
 
@@ -557,6 +574,18 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
             settings,
         )
     _fields(provenance.get("settings"), _SETTINGS, "provenance.settings", settings)
+    morphology = provenance.get("morphometrics")
+    _fields(morphology, ("schema", "kernel_schema", "calibration_status"),
+            "provenance.morphometrics", settings)
+    if morphology is not None:
+        # The project loader verifies this code-owned contract. Preserve its
+        # exact formula text, including division, without allowing generic paths.
+        for section in ("rules", "units", "input", "software"):
+            for key, value in morphology[section].items():
+                settings.append({"name": key, "value": value,
+                                 "source": f"provenance.morphometrics.{section}.{key}"})
+        if len(settings) > MAX_FIELDS:
+            raise ValueError("Result context exceeds the bounded settings field limit")
     _fields(
         provenance.get("perinuclear"),
         (

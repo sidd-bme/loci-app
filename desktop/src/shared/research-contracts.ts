@@ -86,6 +86,7 @@ export interface ResearchResult {
   label_import?: ResearchLabelImportIdentity;
   perinuclear?: ResearchPerinuclearRecord;
   spatial?: unknown;
+  morphometrics?: unknown;
   /** Parent-label eligibility only; full source/grid/revision checks still apply. */
   perinuclear_nuclei_eligible?: boolean;
 }
@@ -894,6 +895,8 @@ export interface ResearchDesktopApi {
   exportIntensityReport?(reportId: string, planHash: string, requestKey: string): Promise<import("./intensity-contracts").IntensityExportReceipt | null>;
   planSpatialDensityExport?(reportId: string, requestKey: string): Promise<import("./spatial-density-contracts").SpatialDensityExportPlan>;
   exportSpatialDensityReport?(reportId: string, planHash: string, requestKey: string): Promise<import("./spatial-density-contracts").SpatialDensityExportReceipt | null>;
+  planWoundClosureExport?(reportId: string, requestKey: string): Promise<import("./wound-closure-contracts").WoundClosureExportPlan>;
+  exportWoundClosureReport?(reportId: string, planHash: string, requestKey: string): Promise<import("./wound-closure-contracts").WoundClosureExportReceipt | null>;
   exportDataPackage?(planJson: string, requestKey: string): Promise<ScientificExportReceipt | null>;
   /** True acknowledges a cancellation request; consult the durable job/destination for publication status. */
   cancelDataExport?(requestKey: string): Promise<{ cancelled: boolean }>;

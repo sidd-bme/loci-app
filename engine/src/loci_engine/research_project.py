@@ -130,6 +130,11 @@ class ResearchProject:
         for document in self.documents("spatial_density_report"):
             load_spatial_density(self, document["id"], verify_arrays=False)
 
+        from .research_wound_closure import load as load_wound_closure
+
+        for document in self.documents("wound_closure_report"):
+            load_wound_closure(self, document["id"], verify_arrays=False)
+
     @classmethod
     def _policy_project_id(cls, directory: str | Path) -> str:
         """Check identity for repeated authority guards without reading reports.
@@ -620,6 +625,8 @@ class ResearchProject:
             "intensity_export_grant",
             "spatial_density_report",
             "spatial_density_export_grant",
+            "wound_closure_report",
+            "wound_closure_export_grant",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
@@ -635,6 +642,12 @@ class ResearchProject:
             validate_report(record)
             if expected_revision != 0 or document_id != record["report_hash"][:32]:
                 raise ValueError("Spatial density reports are immutable; create a new report")
+        if kind == "wound_closure_report":
+            from .research_wound_closure import validate_report
+
+            validate_report(record)
+            if expected_revision != 0 or document_id != record["report_hash"][:32]:
+                raise ValueError("Wound reports are immutable; create a new report")
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)
@@ -862,6 +875,15 @@ class ResearchProject:
             "arrays": artifacts,
             "provenance": provenance,
         }
+        if kind in {"temporal-tracking", "tracking"} or "tracking" in provenance:
+            from .research_temporal import project_inputs
+
+            project_inputs(self, record)
+        if kind == "morphometrics" or "morphometrics" in provenance:
+            from .research_morphometrics import project_parents, validate_source
+
+            project_parents(self, record)
+            validate_source(record, source)
         if kind == "perinuclear-enrichment" or "perinuclear" in provenance:
             from .research_perinuclear import validate_record, validate_source
 
@@ -1128,6 +1150,19 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
+            if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in record.get(
+                "provenance", {}
+            ):
+                from .research_temporal import project_inputs
+
+                project_inputs(self, record, check=check)
+            if record.get("kind") == "morphometrics" or "morphometrics" in record.get(
+                "provenance", {}
+            ):
+                from .research_morphometrics import project_parents, validate_source
+
+                project_parents(self, record, check=check)
+                validate_source(record, self.source(record["source_id"]))
             if record.get("kind") == "spatial-distance-bands" or "spatial" in record.get(
                 "provenance", {}
             ):

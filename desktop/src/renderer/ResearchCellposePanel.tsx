@@ -4,6 +4,8 @@ import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSou
 import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
 import type { RemoteAnalysisTarget } from "./ResearchCompute";
 
+type ModelSetupOperation = { epoch: number; profileId: CellposeProfileId; download: boolean; cancelPending: boolean };
+
 export interface ResearchCellposeBatchConfiguration {
   configuredSourceId: string;
   profileId: CellposeProfileId;
@@ -63,6 +65,11 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   const [downloading, setDownloading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState("");
   const setupEpoch = useRef(0);
+  const setupOperation = useRef<ModelSetupOperation | null>(null);
+  const currentProfile = useRef(profileId); currentProfile.current = profileId;
+  const [cancelPending, setCancelPending] = useState(false);
+  const isCurrentSetup = (operation: ModelSetupOperation) => setupOperation.current === operation &&
+    operation.epoch === setupEpoch.current && operation.profileId === currentProfile.current;
   const [invalidSettings, setInvalidSettings] = useState<Record<string, boolean>>({});
   const [settingsEpoch, setSettingsEpoch] = useState(0);
   const [internalWorkingBytes, setInternalWorkingBytes] = useState(512 * 1024 ** 2);
@@ -77,9 +84,9 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const channels = source.metadata.dimensions?.c ?? 1;
   useEffect(() => {
-    setupEpoch.current += 1;
+    setupEpoch.current += 1; setupOperation.current = null;
     let active = true; setProfile(null); setStatus(null); setSettings(null); setInvalidSettings({});
-    setImporting(false); setDownloading(false); setDownloadStatus("");
+    setImporting(false); setDownloading(false); setCancelPending(false); setDownloadStatus("");
     if (!native) return;
     void Promise.all([native.listProfiles(), native.getCellposeStatus(profileId)]).then(([profiles, state]) => {
       if (!active) return;
@@ -87,7 +94,7 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
       if (!selected) throw new Error("The selected Cellpose profile is unavailable in this build.");
       setProfile(selected); setSettings(selected.recommendedSettings as CellposeSettings); setStatus(state);
     }).catch((error) => { if (active) onError(error.message); });
-    return () => { active = false; setupEpoch.current += 1; };
+    return () => { active = false; setupEpoch.current += 1; setupOperation.current = null; };
   }, [native, profileId, onError]);
   useEffect(() => { setMeasurement(selection.c); }, [source.id, selection.c]);
   useEffect(() => {
@@ -123,19 +130,24 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
     finally { onBusy(null); }
   };
   const setupModel = async (download: boolean) => {
-    if (!native || importing || downloading || busy) return;
-    const epoch = setupEpoch.current;
-    setImporting(!download); setDownloading(download); setDownloadStatus("");
+    if (!native || setupOperation.current || importing || downloading || busy) return;
+    const operation = { epoch: ++setupEpoch.current, profileId, download, cancelPending: false };
+    setupOperation.current = operation;
+    setImporting(!download); setDownloading(download); setCancelPending(false); setDownloadStatus("");
     try {
       const next = await (download ? native.downloadCellposeModel(profileId) : native.importCellposeModel(profileId));
-      if (epoch !== setupEpoch.current || !next) return;
+      if (!isCurrentSetup(operation) || !next) return;
       if (next.profileId !== profileId || next.model.artifactId !== (profileId === "cellpose-sam" ? "cpsam" : "cpsam_v2"))
         throw new Error("The installed checkpoint does not match the selected model. Check model setup again.");
       setStatus(next);
     } catch (error) {
-      if (epoch === setupEpoch.current) onError(error instanceof Error ? error.message : "Model setup failed.");
+      if (isCurrentSetup(operation)) onError(error instanceof Error ? error.message : "Model setup failed.");
     } finally {
-      if (epoch === setupEpoch.current) { setImporting(false); setDownloading(false); }
+      if (isCurrentSetup(operation)) {
+        // Settling the setup ends cancellation feedback even if its RPC replies later.
+        setupOperation.current = null;
+        setImporting(false); setDownloading(false); setCancelPending(false); setDownloadStatus("");
+      }
     }
   };
   return <div className="research-panel cellpose-panel">
@@ -145,11 +157,17 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
         <p>Download the official {profileId === "cellpose-sam" ? "Cellpose-SAM" : "Cellpose-SAM v2"} checkpoint from Hugging Face · {(status.model.expectedSizeBytes / 1e9).toFixed(2)} GB.</p>
         <button disabled={importing || downloading || busy} onClick={() => void setupModel(true)}>{downloading ? "Downloading and verifying…" : "Download verified checkpoint"}</button>
       </>}
-      {downloading ? <button onClick={() => {
-        const epoch = setupEpoch.current;
-        void native?.cancelCellposeDownload(profileId).then((cancelled) => {
-          if (epoch === setupEpoch.current) setDownloadStatus(cancelled ? "Cancelling download…" : "Verification is finishing.");
-        }).catch((error) => { if (epoch === setupEpoch.current) onError(error.message); });
+      {downloading ? <button disabled={cancelPending} onClick={() => {
+        const operation = setupOperation.current;
+        if (!native || !operation || !operation.download || operation.cancelPending || !isCurrentSetup(operation)) return;
+        operation.cancelPending = true; setCancelPending(true); setDownloadStatus("Requesting cancellation…");
+        void native.cancelCellposeDownload(operation.profileId).then((cancelled) => {
+          if (isCurrentSetup(operation)) setDownloadStatus(cancelled ? "Cancelling download…" : "Verification is finishing.");
+        }).catch((error) => {
+          if (!isCurrentSetup(operation)) return;
+          operation.cancelPending = false; setCancelPending(false); setDownloadStatus("");
+          onError(error instanceof Error ? error.message : "Download cancellation could not be requested.");
+        });
       }}>Cancel download</button> : <button disabled={importing || busy} onClick={() => void setupModel(false)}>{importing ? "Verifying model…" : "Import checkpoint…"}</button>}
       {downloadStatus && <p role="status">{downloadStatus}</p>}
     </div> : <p className="model-ready">Ready locally</p>}

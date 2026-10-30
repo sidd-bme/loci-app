@@ -2064,15 +2064,65 @@ describe("native research bridge", () => {
     await expect(call("data-export-plan", {}, "not a key")).rejects.toThrow(/unique/);
   });
 
-  it("routes a retained density preview token through its exact durable job", async () => {
+  it.each(["spatial_density_save", "wound_closure_save"])("routes %s retained token through its exact durable job", async (operation) => {
     const project = path.join(root, "Density.loci-study");
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
     await call("create"); mocks.request.mockClear();
     const token = { preview_id: "a".repeat(32), preview_hash: "a".repeat(64) }, jobId = "d".repeat(32);
     mocks.request.mockResolvedValueOnce({ id: jobId }).mockResolvedValueOnce({ report_id: "a".repeat(32) });
-    await call("execute", "spatial_density_save", token);
-    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ project, operation: "spatial_density_save", request: token }));
+    await call("execute", operation, token);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ project, operation, request: token }));
     expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: jobId }, 0);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+  });
+
+  it("routes exact-parent morphometrics through its own durable job", async () => {
+    const project = path.join(root, "Morphology.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const request = { result_id: "a".repeat(32), revision_hash: "a".repeat(64), working_bytes: 16 * 1024 ** 2 };
+    mocks.request.mockResolvedValueOnce({ id: "d".repeat(32) }).mockResolvedValueOnce({ result: { id: "b".repeat(32) } });
+    await call("execute", "morphometrics_run", request);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ project, operation: "morphometrics_run", request }));
+    expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+  });
+
+  it("minimizes wound export plans and validates source-based status identities", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Wound.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const reportHash = "a".repeat(64), key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const plan = { schema: "loci.wound-closure-export-plan/v1", report_id: reportHash.slice(0, 32), report_hash: reportHash,
+      plan_hash: sha, status: { current: false, changes: [{ source_id: "b".repeat(32), reason: "sample_metadata_changed" }] } };
+    mocks.request.mockResolvedValueOnce({ ...plan, mask_files: [{ private_path: "/private/secret" }], export_software: { engine: "test" } });
+    expect(await call("wound-closure-export-plan", plan.report_id, key)).toEqual(plan);
+    expect(mocks.request).toHaveBeenCalledWith("research_wound_closure_export_plan", expect.objectContaining({ report_id: plan.report_id }), 0);
+    for (const status of [
+      { current: false, changes: [{ result_id: "b".repeat(32), reason: "wrong_identity_kind" }] },
+      { current: true, changes: plan.status.changes },
+      { current: false, changes: [] },
+    ]) {
+      mocks.request.mockResolvedValueOnce({ ...plan, status });
+      await expect(call("wound-closure-export-plan", plan.report_id, key)).rejects.toThrow(/invalid wound closure export preview/);
+    }
+  });
+
+  it("requires a native wound export grant and preserves picker cancellation", async () => {
+    const project = path.join(root, "Wound.loci-study"), destination = path.join(root, "Wound report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111", reportHash = "a".repeat(64), reportId = reportHash.slice(0, 32);
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("wound-closure-export-package", reportId, sha, key)).toBeNull();
+    expect(mocks.request).not.toHaveBeenCalled();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const grant = { grant_id: "b".repeat(32), plan_hash: sha, basename: "Wound report" };
+    const receipt = { schema: "loci.wound-closure-export-receipt/v1", basename: grant.basename, report_hash: reportHash, manifest_sha256: sha };
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) }).mockResolvedValueOnce({ ...receipt, private_path: destination });
+    expect(await call("wound-closure-export-package", reportId, sha, key)).toEqual(receipt);
+    expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Export wound closure report" }));
+    expect(mocks.request).toHaveBeenCalledWith("research_wound_closure_export_grant", { project, report_id: reportId, plan_hash: sha, destination }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", { project, operation: "wound_closure_export", request: { grant_id: grant.grant_id, plan_hash: sha }, request_key: key });
     expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
   });
 

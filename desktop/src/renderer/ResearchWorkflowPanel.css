@@ -125,3 +125,27 @@
 .workflow-footer .workflow-save-state { grid-column: 1; align-self: start; line-height: 1.4; }
 .workflow-footer .workflow-result-status, .workflow-footer .workflow-outdated { font-size: var(--type-sm); line-height: 1.4; padding: 0; border: 0; background: none; }
 .workflow-panel button.workflow-focus-error { display: inline; min-height: 24px; padding: 0 2px; border: 0; background: none; color: var(--error); text-decoration: underline; text-underline-offset: 3px; }
+
+/* An open composed workflow uses the enclosing host as its one vertical
+   scroller. Keep the classic editor in document flow so its toolbar and action
+   footer leave the viewport with it, rather than consuming a fixed upper pane.
+   The standalone/closed-composed editor retains its body scroller and footer. */
+.workflow-workspace-host:has(> .composed-workflows[open]) {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.workflow-workspace-host:has(> .composed-workflows[open]) > .workflow-panel {
+  flex: 0 0 auto;
+  height: auto;
+  overflow: visible;
+}
+.workflow-workspace-host:has(> .composed-workflows[open]) > .workflow-panel > .workflow-body {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.workflow-workspace-host:has(> .composed-workflows[open]) > .composed-workflows {
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+}

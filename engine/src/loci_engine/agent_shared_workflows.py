@@ -32,6 +32,11 @@ SHARED_ACTIONS = frozenset(
         "intensity_preview",
         "intensity_get",
         "intensity_list",
+        "wound_closure_preview",
+        "wound_closure_save",
+        "wound_closure_get",
+        "wound_closure_list",
+        "wound_closure_query",
         "spatial_density_preview",
         "spatial_density_save",
         "spatial_density_get",
@@ -55,7 +60,7 @@ def _documents(agent, workbench, kind, *, identity=None, filters=()):
             "(SELECT value FROM json_each(?)))"
         )
         values.append(canonical_json(sorted(agent.policy.sources)))
-    if kind == "spatial_density_report":
+    if kind in {"spatial_density_report", "wound_closure_report"}:
         # Source filtering is performed in SQL before bounded materialization.
         # The code-owned predicate then checks complete selection/channel/runtime
         # authority before a report can enter enumeration or its byte/count budget.
@@ -68,7 +73,9 @@ def _documents(agent, workbench, kind, *, identity=None, filters=()):
         )
         values.append(canonical_json(sorted(agent.policy.sources)))
         if identity is None:
-            query += " AND loci_density_scope(record)=1"
+            function = ("loci_density_scope" if kind == "spatial_density_report"
+                        else "loci_wound_scope")
+            query += f" AND {function}(record)=1"
     if identity is not None:
         query += " AND id=?"
         values.append(checked_id(identity))
@@ -78,17 +85,19 @@ def _documents(agent, workbench, kind, *, identity=None, filters=()):
     query += " ORDER BY rowid"
     documents, used = [], 0
     with workbench.project.connection() as connection:
-        if kind == "spatial_density_report" and identity is None:
+        if kind in {"spatial_density_report", "wound_closure_report"} and identity is None:
 
             def allowed(encoded):
                 agent.policy.recheck()
                 try:
-                    _density_report_scope(agent, workbench, parse_json(encoded)["data"])
+                    scope = (_density_report_scope if kind == "spatial_density_report"
+                             else _wound_report_scope)
+                    scope(agent, workbench, parse_json(encoded)["data"])
                 except (PermissionError, ValueError, KeyError, TypeError):
                     return 0
                 return 1
 
-            connection.create_function("loci_density_scope", 1, allowed)
+            connection.create_function(function, 1, allowed)
         for row in connection.execute(query, values):
             agent.policy.recheck()
             used += len(row[0].encode())
@@ -318,6 +327,55 @@ def _density_view(agent, workbench, reports=(), fields=None):
     return _ProjectView(workbench.project, documents, source_ids)
 
 
+def _wound_request_scope(agent, workbench, request, *, _seen=None):
+    from .research_wound_closure import request_result_bindings
+
+    if request.get("working_bytes", 0) > agent.policy.memory_bytes:
+        raise PermissionError("Wound working memory exceeds the delegated budget")
+    seen = {} if _seen is None else _seen
+    for binding in request_result_bindings(request):
+        _result(agent, workbench, binding["result_id"], binding["revision_hash"], _seen=seen)
+
+
+def _wound_report_scope(agent, workbench, report):
+    from .research_wound_closure import validate_report
+
+    bindings = report.get("result_bindings")
+    if not isinstance(bindings, list) or not 1 <= len(bindings) <= 1024:
+        raise ValueError("Wound report requires bounded retained result bindings")
+    if len(canonical_json(report).encode()) > min(8 * 1024**2, agent.policy.memory_bytes // 8):
+        raise PermissionError("Wound report metadata exceeds the delegated budget")
+    seen = {}
+    for binding in bindings:
+        _result(agent, workbench, binding["id"], binding["revision_hash"], _seen=seen)
+    _wound_request_scope(agent, workbench, report["request"], _seen=seen)
+    for snapshot in report["source_snapshots"]:
+        grant = agent.policy.source_grant(workbench.project, snapshot["id"])
+        if snapshot["sha256"] != grant.sha256:
+            raise PermissionError("Wound source snapshot exceeds the delegated scope")
+    validate_report(report)
+    agent.policy.require_runtime(report["software"]["runtime"])
+
+
+def _wound_view(agent, workbench, reports=(), request=None):
+    documents = {"wound_closure_report": list(reports), "sample": []}
+    if request is not None:
+        from .research_wound_closure import request_result_bindings
+
+        _wound_request_scope(agent, workbench, request)
+        source_ids = {workbench.project.result(binding["result_id"])["source_id"]
+                      for binding in request_result_bindings(request)}
+    else:
+        source_ids = set()
+        for document in reports:
+            report = document["data"]
+            _wound_report_scope(agent, workbench, report)
+            source_ids.update(snapshot["id"] for snapshot in report["source_snapshots"])
+    documents["sample"] = [doc for identity in sorted(source_ids)
+                           for doc in _documents(agent, workbench, "sample", identity=identity)]
+    return _ProjectView(workbench.project, documents, source_ids)
+
+
 def _exploration_scope(agent, workbench, document):
     from .agent_actions import recipe_scope, source_scope
     from .research_exploration import validate_exploration_document
@@ -425,6 +483,24 @@ def authorize_shared_action(agent, workbench, operation, request):
             if len(documents) != 1:
                 raise ValueError("Saved comparison is unavailable in this source")
             _exploration_scope(agent, workbench, documents[0])
+    elif operation == "wound_closure_preview":
+        _wound_request_scope(agent, workbench, request)
+    elif operation in {"wound_closure_save", "wound_closure_get", "wound_closure_query"}:
+        from .research_wound_closure import peek_preview
+
+        if "report_id" in request:
+            if "preview_id" in request or "preview_hash" in request:
+                raise ValueError("Choose one exact wound query identity")
+            documents = _documents(agent, workbench, "wound_closure_report",
+                                   identity=request["report_id"])
+            if len(documents) != 1:
+                raise PermissionError("Wound report is unavailable in the delegated scope")
+            report = documents[0]["data"]
+        else:
+            report = peek_preview(workbench.project,
+                                  {k: request[k] for k in ("preview_id", "preview_hash")
+                                   if k in request})
+        _wound_report_scope(agent, workbench, report)
     elif operation == "spatial_density_preview":
         _density_selection_scope(agent, workbench, request["fields"])
     elif operation == "spatial_density_save":
@@ -540,6 +616,25 @@ def inspect_shared_action(agent, workbench, operation, request):
         # Every dependency is bound by the native reproducer to this same exact
         # result revision; the view cannot enumerate another result's groups.
         return dispatch_group(_view(workbench, {"population_group": documents}), operation, request)
+    if operation in {"wound_closure_preview", "wound_closure_get",
+                     "wound_closure_list", "wound_closure_query"}:
+        from .research_wound_closure import execute, peek_preview
+
+        if operation == "wound_closure_preview":
+            project = _wound_view(agent, workbench, request=request)
+        elif operation == "wound_closure_query" and "preview_id" in request:
+            report = peek_preview(workbench.project,
+                                  {k: request[k] for k in ("preview_id", "preview_hash")})
+            project = _wound_view(agent, workbench, reports=[{"data": report}])
+        else:
+            documents = _documents(agent, workbench, "wound_closure_report",
+                                   identity=request.get("report_id"))
+            project = _wound_view(agent, workbench, reports=documents)
+        output = execute(project, operation, request, check=agent.policy.recheck)
+        if operation == "wound_closure_get":
+            report = output.pop("report")
+            output["time_declaration"] = report["request"]["time_declaration"]
+        return output
     if operation in {
         "spatial_density_preview",
         "spatial_density_get",

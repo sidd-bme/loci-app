@@ -7,6 +7,7 @@ remain the measurements of each original result; absent frames are explicit.
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 from collections.abc import Callable
 from dataclasses import asdict
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .quantitative import exact_keys, finite_number, integer
-from .research_project import canonical_json, checked_id, checked_text
+from .research_project import canonical_json, checked_id, checked_text, parse_json
 from .temporal import (
     Detection,
     TimeFrame,
@@ -28,9 +29,14 @@ from .temporal import (
     trajectories,
     validate_track_graph,
 )
+from .temporal_metrics import MAX_OBSERVATIONS, MAX_RECORD_BYTES, measure_trajectories
 
 if TYPE_CHECKING:
     from .workbench import Workbench
+
+PAGE_BYTES = 64 * 1024
+MAX_INPUT_RECORDS = 2048
+MAX_CORRECTION_DEPTH = 64
 
 
 def _graph_record(graph: TrackingGraph) -> dict[str, Any]:
@@ -42,6 +48,30 @@ def _graph_record(graph: TrackingGraph) -> dict[str, Any]:
 
 
 def _graph_from_record(record: dict[str, Any]) -> TrackingGraph:
+    if not isinstance(record, dict) or set(record) != {
+        "frames",
+        "edges",
+        "hypotheses",
+        "trajectories",
+    }:
+        raise ValueError("Stored tracking graph fields are invalid")
+    if (
+        not isinstance(record["frames"], (list, tuple))
+        or not 1 <= len(record["frames"]) <= 1000
+        or any(not isinstance(frame, dict) for frame in record["frames"])
+    ):
+        raise ValueError("Stored tracking graph requires bounded explicit frames")
+    if (
+        any(not isinstance(frame.get("detections"), (list, tuple)) for frame in record["frames"])
+        or sum(len(frame.get("detections", ())) for frame in record["frames"]) > MAX_OBSERVATIONS
+        or any(
+            not isinstance(record[key], (list, tuple))
+            for key in ("edges", "hypotheses", "trajectories")
+        )
+        or len(record["edges"]) > MAX_OBSERVATIONS
+        or len(canonical_json(record).encode()) > MAX_RECORD_BYTES
+    ):
+        raise ValueError("Stored tracking graph exceeds its bounded observation size")
     frames = tuple(
         TimeFrame(
             frame["frame_id"],
@@ -62,6 +92,256 @@ def _graph_from_record(record: dict[str, Any]) -> TrackingGraph:
     if canonical_json(_graph_record(graph)) != canonical_json(record):
         raise ValueError("Stored trajectories do not match their exact observation graph")
     return graph
+
+
+def validate_record(result: dict[str, Any]) -> dict[str, Any]:
+    """Recompute exact graph-derived endpoints; absent legacy metrics stay absent."""
+    from .workbench import geometry_from_dict
+
+    provenance = result["provenance"]
+    graph = _graph_from_record(provenance["tracking"])
+    unit = geometry_from_dict(provenance["geometry"]).unit
+    if provenance.get("trajectory_units") != {"position": unit, "time": "s", "speed": unit + "/s"}:
+        raise ValueError("Stored tracking position/time units disagree with exact geometry")
+    expected = measure_trajectories(graph, unit)
+    if "trajectory_metrics" in provenance and canonical_json(
+        provenance["trajectory_metrics"]
+    ) != canonical_json(expected):
+        raise ValueError("Stored trajectory metrics disagree with the exact observation graph")
+    return expected
+
+
+def metrics_summary(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    """Small disclosure with no duplicate interval or track populations."""
+    return {
+        "schema": "loci.trajectory-summary/v1",
+        "metrics_schema": metrics["schema"],
+        "graph_sha256": metrics["graph_sha256"],
+        "units": metrics["units"],
+        "rules": metrics["rules"],
+        "observation_count": metrics["observation_count"],
+        "track_count": len(metrics["tracks"]),
+        "interval_count": len(metrics["intervals"]),
+        "storage": "persisted"
+        if "trajectory_metrics" in result["provenance"]
+        else "derived-from-legacy-graph",
+        "numerical_policy": metrics["numerical_policy"],
+    }
+
+
+def validate_inputs(result: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:
+    """Pure checks against original observations and an exact correction parent."""
+    from .workbench import geometry_from_dict
+
+    validate_record(result)
+    p = result["provenance"]
+    graph = _graph_from_record(p["tracking"])
+    inputs = p.get("temporal_inputs")
+    if not isinstance(inputs, list) or len(inputs) != len(graph.frames):
+        raise ValueError("Tracking inputs differ from the exact scheduled frames")
+    geometry = geometry_from_dict(p["geometry"])
+    first = None
+    acquisitions = set()
+    for binding, frame in zip(inputs, graph.frames, strict=True):
+        if not isinstance(binding, dict) or binding.get("time_s") != frame.time_s:
+            raise ValueError("Tracking input elapsed seconds changed")
+        if "missing_reason" in binding:
+            checked_text(binding["missing_reason"], "Missing observation reason", 512)
+            if binding.get("frame_id") != frame.frame_id or frame.detections:
+                raise ValueError("Missing tracking slots cannot contain invented observations")
+            continue
+        original = results.get(binding.get("result_id"))
+        if (
+            original is None
+            or original["id"] != frame.frame_id
+            or any(
+                binding.get(key) != original[key]
+                for key in ("revision_hash", "source_id", "source_sha256")
+            )
+        ):
+            raise ValueError("Tracking original result revision or source binding changed")
+        raw = original["provenance"]
+        if "tracking" in raw or "labels" not in original["arrays"]:
+            raise ValueError("Tracking observations require underlying label measurements")
+        if canonical_json(binding.get("raw_object_measurements")) != canonical_json(
+            raw.get("measurements")
+        ) or canonical_json(binding.get("selection")) != canonical_json(raw.get("selection")):
+            raise ValueError("Tracking changed original raw measurements or source selection")
+        if canonical_json(raw.get("geometry")) != canonical_json(p["geometry"]):
+            raise ValueError("Tracking observations must retain the same exact physical grid")
+        acquisition = (
+            original["source_id"],
+            canonical_json({key: value for key, value in raw["selection"].items() if key != "c"}),
+        )
+        if acquisition in acquisitions:
+            raise ValueError("One acquisition cannot represent two tracking observations")
+        acquisitions.add(acquisition)
+        first = original if first is None else first
+        registration = binding.get("registration")
+        shift = np.zeros(3)
+        if registration is not None:
+            shift = np.asarray(registration.get("moving_to_reference_shift_world"), dtype=float)
+            index = np.asarray(registration.get("moving_to_reference_shift_index"), dtype=float)
+            if (
+                shift.shape != (3,)
+                or index.shape != (len(geometry.axes),)
+                or not np.isfinite(shift).all()
+                or not np.isfinite(index).all()
+            ):
+                raise ValueError("Tracking registration requires a finite declared XYZ shift")
+            expected_shift = np.asarray(geometry.affine)[:3, : len(index)] @ index[::-1]
+            if not np.allclose(shift, expected_shift, rtol=1e-12, atol=1e-12):
+                raise ValueError("Tracking registration index/world shifts disagree")
+        expected = tuple(
+            Detection(
+                str(row["label"]),
+                tuple(np.asarray(row["centroid_world_xyz"]) + shift),
+                row["measure"],
+            )
+            for row in raw["measurements"]
+        )
+        if canonical_json([asdict(d) for d in expected]) != canonical_json(
+            [asdict(d) for d in frame.detections]
+        ):
+            raise ValueError("Tracking coordinates or measures differ from original observations")
+    if first is None or len(acquisitions) < 2:
+        raise ValueError("Retained tracking requires at least two actual observations")
+    if (
+        any(result[key] != first[key] for key in ("source_id", "source_sha256"))
+        or any(result["arrays"].get(key) != first["arrays"].get(key) for key in ("image", "labels"))
+        or set(result["arrays"]) != {"image", "labels"}
+        or canonical_json(p.get("selection")) != canonical_json(first["provenance"]["selection"])
+    ):
+        raise ValueError("Tracking retained arrays or primary source changed")
+    correction = p.get("track_correction")
+    if correction is None:
+        if result.get("parent_id") != first["id"]:
+            raise ValueError("Tracking lost its exact first observation parent")
+        return
+    if (
+        not isinstance(correction, dict)
+        or set(correction)
+        != {"parent_revision_hash", "changes", "automatic_hypotheses_retained_as_history"}
+        or correction["automatic_hypotheses_retained_as_history"] is not True
+    ):
+        raise ValueError("Tracking correction history must retain its automatic hypotheses")
+    parent = results.get(result.get("parent_id"))
+    if parent is None or parent["revision_hash"] != correction.get("parent_revision_hash"):
+        raise ValueError("Tracking correction parent is missing or stale")
+    if any(
+        canonical_json(p[key]) != canonical_json(parent["provenance"][key])
+        for key in ("temporal_inputs", "trajectory_units", "geometry", "tracking_settings")
+    ):
+        raise ValueError("Tracking correction changed original observation or method context")
+    edits = correction.get("changes")
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 64:
+        raise ValueError("Tracking correction requires a bounded exact edit ledger")
+    editor = TrackingEditor(_graph_from_record(parent["provenance"]["tracking"]))
+    for edit in edits:
+        if not isinstance(edit, dict) or set(edit) != {"action", "edge"}:
+            raise ValueError("Tracking correction ledger fields are invalid")
+        edge = TrackEdge(**edit["edge"])
+        if edit["action"] == "add":
+            editor.add_edge(edge)
+        elif edit["action"] == "remove":
+            editor.remove_edge(
+                edge.source_frame_id, edge.source_label, edge.target_frame_id, edge.target_label
+            )
+        else:
+            raise ValueError("Unknown retained tracking correction")
+    if canonical_json(_graph_record(editor.graph)) != canonical_json(p["tracking"]) or (
+        canonical_json([asdict(change) for change in editor.corrections]) != canonical_json(edits)
+    ):
+        raise ValueError("Tracking corrected graph differs from its exact parent/edit ledger")
+
+
+def project_inputs(project, result, *, check=None) -> None:
+    """Bound/hash-check original snapshots without recursive forged graph reads."""
+    records = {result["id"]: result}
+    pending = [(result, 0)]
+    tracks = []
+    used = 0
+
+    def load(identity):
+        nonlocal used
+        checked_id(identity)
+        if identity in records:
+            return records[identity]
+        if check:
+            check()
+        with project.connection() as connection:
+            row = connection.execute(
+                "SELECT record FROM results WHERE id=?", (identity,)
+            ).fetchone()
+        if row is None:
+            raise ValueError("Tracking original result is missing")
+        used += len(row[0].encode())
+        if used > MAX_RECORD_BYTES or len(records) >= MAX_INPUT_RECORDS:
+            raise ValueError("Tracking retained inputs exceed the bounded metadata budget")
+        original = parse_json(row[0])
+        if (
+            original.get("id") != identity
+            or original.get("revision_hash")
+            != hashlib.sha256(
+                canonical_json({k: v for k, v in original.items() if k != "revision_hash"}).encode()
+            ).hexdigest()
+        ):
+            raise ValueError("Tracking original result failed revision integrity")
+        if project.source(original["source_id"])["sha256"] != original["source_sha256"]:
+            raise ValueError("Tracking original source fingerprint changed")
+        records[identity] = original
+        return original
+
+    visited = set()
+    while pending:
+        current, depth = pending.pop()
+        if current["id"] in visited or depth >= MAX_CORRECTION_DEPTH:
+            raise ValueError("Tracking correction ancestry is cyclic or exceeds its bound")
+        visited.add(current["id"])
+        validate_record(current)
+        tracks.append(current)
+        for binding in current["provenance"]["temporal_inputs"]:
+            if not binding.get("missing_reason"):
+                original = load(binding["result_id"])
+                if "tracking" in original["provenance"]:
+                    raise ValueError("Tracking observations cannot be another tracking result")
+        if "track_correction" in current["provenance"]:
+            parent = load(current["parent_id"])
+            pending.append((parent, depth + 1))
+    for current in tracks:
+        validate_inputs(current, records)
+
+
+def _metrics_page(result, metrics, request):
+    table = request.get("table")
+    if table not in {"tracks", "intervals"}:
+        raise ValueError("Choose the trajectory tracks or intervals table")
+    offset = integer(request.get("offset", 0), "trajectory offset", 0, 2**63 - 1)
+    limit = integer(request.get("limit", 50), "trajectory page rows", 1, 100)
+    rows = metrics[table]
+    output = {
+        "schema": "loci.trajectory-page/v1",
+        "result_id": result["id"],
+        "revision_hash": result["revision_hash"],
+        "summary": metrics_summary(result, metrics),
+        "table": table,
+        "offset": offset,
+        "limit": limit,
+        "total": len(rows),
+        "rows": [],
+        "next_offset": None,
+    }
+    for row in rows[offset : offset + limit]:
+        output["rows"].append(row)
+        end = offset + len(output["rows"])
+        output["next_offset"] = end if end < len(rows) else None
+        if len(canonical_json(output).encode()) > PAGE_BYTES:
+            output["rows"].pop()
+            if not output["rows"]:
+                raise ValueError("Trajectory row exceeds the bounded response size")
+            output["next_offset"] = offset + len(output["rows"])
+            break
+    return output
 
 
 def _tracking_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
@@ -96,17 +376,27 @@ def execute_temporal(
     if operation in {"tracking_result", "correct_tracks"}:
         exact_keys(
             request,
-            {"result_id", "revision_hash"}
+            {"result_id", "revision_hash", "table", "offset", "limit"}
             if operation == "tracking_result"
             else {"result_id", "revision_hash", "changes"},
             operation,
         )
         parent = _tracking_result(workbench, request)
-        provenance = copy.deepcopy(parent["provenance"])
+        provenance = (
+            parent["provenance"]
+            if operation == "tracking_result"
+            else copy.deepcopy(parent["provenance"])
+        )
         graph = _graph_from_record(provenance["tracking"])
         _input_guard(workbench, provenance["temporal_inputs"])
+        metrics = validate_record(parent)
         if operation == "tracking_result":
+            if "table" in request:
+                return _metrics_page(parent, metrics, request)
+            if "offset" in request or "limit" in request:
+                raise ValueError("Trajectory pagination requires an explicit table")
             return {
+                "trajectory_metrics": metrics_summary(parent, metrics),
                 "result": result_summary(parent, workbench.project.review_state(parent["id"])),
                 "tracking": provenance["tracking"],
                 "inputs": provenance["temporal_inputs"],
@@ -346,10 +636,22 @@ def execute_temporal(
         }
         parent_id = first["id"]
 
+    provenance["trajectory_metrics"] = measure_trajectories(
+        _graph_from_record(provenance["tracking"]), geometry_from_dict(provenance["geometry"]).unit
+    )
+    provenance.pop("job_id", None)
+    if job_id is not None:
+        provenance["job_id"] = job_id
+
     def guard() -> None:
         if publication_guard is not None:
             publication_guard()
         _input_guard(workbench, provenance["temporal_inputs"])
+        if (
+            operation == "correct_tracks"
+            and workbench.project.result(parent["id"])["revision_hash"] != parent["revision_hash"]
+        ):
+            raise ValueError("Tracking correction parent changed before publication")
 
     result = workbench.project.save_result(
         source_id=first["source_id"],
@@ -362,6 +664,7 @@ def execute_temporal(
     )
     return {
         "result": result_summary(result),
+        "trajectory_metrics": metrics_summary(result, provenance["trajectory_metrics"]),
         "tracking": provenance["tracking"],
         "inputs": provenance["temporal_inputs"],
         "units": provenance["trajectory_units"],

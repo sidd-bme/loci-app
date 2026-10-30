@@ -1,0 +1,48 @@
+.wound-closure { min-width: 0; }
+.wound-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.wound-closure h2, .wound-closure h3, .wound-closure h4 { margin-block: 0 8px; }
+.wound-closure h3 { margin-top: 20px; }
+.wound-closure p { margin-block: 8px 12px; line-height: 1.5; max-width: 72ch; }
+.wound-heading p, .wound-help, .wound-closure small, .wound-stale { color: var(--ink-secondary); }
+.wound-author { min-width: 0; margin: 16px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.wound-author > label, .wound-fields label, .wound-frame > label, .wound-details label { display: flex; flex-direction: column; gap: 6px; margin-block: 10px; min-width: 0; }
+.wound-closure :is(input:not([type="checkbox"]), select, textarea) { box-sizing: border-box; width: 100%; min-width: 0; min-height: 32px; }
+.wound-closure textarea { min-height: 64px; resize: vertical; font: inherit; line-height: 1.5; }
+.wound-closure :is(input, select, textarea):focus-visible, .wound-closure button:focus-visible, .wound-closure summary:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.wound-closure button { min-height: 32px; }
+.wound-closure button:disabled { cursor: default; }
+.wound-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 8px; }
+.wound-frame { min-width: 0; padding: 8px 12px 12px; margin-block: 12px; border: 1px solid var(--line); border-radius: 6px; }
+.wound-frame legend { padding-inline: 4px; }
+.wound-closure .wound-check { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; line-height: 1.5; }
+.wound-check input { flex: 0 0 auto; margin-top: 3px; }
+.wound-actions, .wound-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 12px; }
+.wound-pages span { font-variant-numeric: tabular-nums; }
+.wound-report { margin-top: 20px; }
+.wound-table { max-width: 100%; max-height: 420px; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--line); border-radius: 6px; margin-block: 16px 8px; }
+.wound-table:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.wound-table table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.wound-table caption { text-align: left; padding: 8px; color: var(--ink-secondary); }
+.wound-table :is(th, td) { padding: 8px; text-align: right; vertical-align: top; border-bottom: 1px solid var(--line); max-width: 240px; overflow-wrap: anywhere; }
+.wound-table :is(th, td):first-child { text-align: left; min-width: 120px; }
+.wound-table thead th { position: sticky; top: 0; z-index: 1; color: var(--ink-secondary); background: var(--graphite-850); font-weight: 600; }
+.wound-table tbody th { font-weight: 400; }
+.wound-table td button { margin-top: 8px; }
+.wound-details { margin-block: 12px; }
+.wound-details > summary { min-height: 32px; align-content: center; cursor: pointer; }
+.wound-closure code { overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--type-sm); }
+.wound-details pre { max-height: 280px; max-width: 100%; overflow: auto; font-size: var(--type-sm); }
+.wound-details h4 { margin-top: 16px; }
+.wound-details dl { margin-block: 12px; }
+.wound-details dt { font-weight: 600; margin-top: 12px; }
+.wound-details dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.wound-saved-list { list-style: none; padding: 0 !important; }
+.wound-saved-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+.wound-saved-list li > span { flex: 1 1 180px; }
+.wound-saved-list small { display: block; margin-top: 4px; }
+.wound-plot { margin: 20px 0; }
+.wound-plot svg { width: 100%; height: auto; max-height: 300px; color: var(--ink-secondary); overflow: visible; font-variant-numeric: tabular-nums; }
+.wound-plot text { fill: currentColor; font-size: 12px; }
+.wound-plot-line { stroke: var(--mineral); stroke-width: 2; }
+.wound-plot-point { fill: var(--mineral); }
+.wound-plot figcaption { color: var(--ink-secondary); font-size: var(--type-sm); line-height: 1.5; max-width: 72ch; }

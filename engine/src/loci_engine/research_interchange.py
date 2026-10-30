@@ -75,6 +75,7 @@ _RECORD_KINDS = frozenset(
         "exploration",
         "intensity_report",
         "spatial_density_report",
+        "wound_closure_report",
     }
 )
 _MEMBER_PATTERN = re.compile(
@@ -564,6 +565,7 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             "data_export_grant",
             "intensity_export_grant",
             "spatial_density_export_grant",
+            "wound_closure_export_grant",
             "labels_import_grant",
         ):
             continue
@@ -583,6 +585,10 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             references(project, envelope["data"])
         if envelope["kind"] == "spatial_density_report":
             from .research_spatial_density import references
+
+            references(project, envelope["data"])
+        if envelope["kind"] == "wound_closure_report":
+            from .research_wound_closure import references
 
             references(project, envelope["data"])
         if envelope["data"].get("schema") in {"loci.saved-workflow/v2", "loci.workflow-run/v2"}:
@@ -660,6 +666,11 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
     perinuclear_parents = {}
     for result in snapshot["results"]:
         project.result(result["id"])
+        if "morphometrics" in result["provenance"]:
+            from .research_morphometrics import project_parents, validate_source
+
+            project_parents(project, result)
+            validate_source(result, project.source(result["source_id"]))
         if "perinuclear" in result["provenance"]:
             from .research_perinuclear import validate_parent, validate_source
 
@@ -670,6 +681,13 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
     # Every persisted scientific scope/budget is preflighted before decoding
     # even a parent artifact from another result in this portable study.
     for result in snapshot["results"]:
+        if "morphometrics" in result["provenance"]:
+            from .research_morphometrics import validate_arrays
+
+            validate_arrays(
+                result,
+                {name: project.load_array(item) for name, item in result["arrays"].items()},
+            )
         if "spatial" in result["provenance"]:
             from .research_spatial import validate_arrays
 
@@ -921,6 +939,12 @@ def _validate_document(record: Any, kind: str, expected_id: str) -> dict[str, An
         report = validate_report(record["data"])
         if record["revision"] != 1 or expected_id != report["report_hash"][:32]:
             raise ValueError("Spatial density report document identity is invalid")
+    if kind == "wound_closure_report":
+        from .research_wound_closure import validate_report
+
+        report = validate_report(record["data"])
+        if record["revision"] != 1 or expected_id != report["report_hash"][:32]:
+            raise ValueError("Wound report document identity is invalid")
     if kind == "model" and record["data"].get("interchange_state") != "model-package-not-included":
         raise ValueError("Interchanged managed model must declare its unavailable package")
     if kind == "policy" and record["data"].get("interchange_state") != (
@@ -955,6 +979,16 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
+    if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in record[
+        "provenance"
+    ]:
+        from .research_temporal import validate_record
+
+        validate_record(record)
+    if record.get("kind") == "morphometrics" or "morphometrics" in record["provenance"]:
+        from .research_morphometrics import validate_record
+
+        validate_record(record)
     if record.get("kind") == "spatial-distance-bands" or "spatial" in record["provenance"]:
         from .research_spatial import validate_record
 
@@ -1010,6 +1044,15 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if result.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in provenance:
+        from .research_temporal import validate_inputs
+
+        validate_inputs(result, results)
+    if result.get("kind") == "morphometrics" or "morphometrics" in provenance:
+        from .research_morphometrics import validate_parents, validate_source
+
+        validate_parents(result, results)
+        validate_source(result, sources[result["source_id"]])
     if "spatial" in provenance:
         from .research_spatial import validate_parents
 
@@ -1165,6 +1208,11 @@ def _validate_document_crossrefs(
         from .research_spatial_density import validate_portable_references
 
         validate_portable_references(data, results, sources, documents)
+
+    if kind == "wound_closure_report":
+        from .research_wound_closure import preflight_portable_references
+
+        preflight_portable_references(data, results, sources, documents)
 
 
 def _validate_comparison_document(
@@ -1625,6 +1673,13 @@ def import_project(
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
             for result in results:
+                if "morphometrics" in result["provenance"]:
+                    from .research_morphometrics import validate_arrays
+
+                    validate_arrays(
+                        result,
+                        {name: project.load_array(item) for name, item in result["arrays"].items()},
+                    )
                 if "spatial" in result["provenance"]:
                     from .research_spatial import validate_arrays
 
@@ -1643,6 +1698,13 @@ def import_project(
             from .research_correction_effect import validate_document as validate_effect_document
 
             for document in documents:
+                if document["kind"] == "wound_closure_report":
+                    from .research_wound_closure import validate_portable_references
+
+                    validate_portable_references(
+                        document["data"], result_by_id, source_by_id, documents,
+                        array_loader=project.load_array,
+                    )
                 if document["kind"] == "intensity_report":
                     from .research_intensity_reports import validate_reviews
 

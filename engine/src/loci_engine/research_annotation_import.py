@@ -90,6 +90,10 @@ def import_annotations(
         "annotation import",
     )
     parent = _bound_result(workbench, request)
+    if parent.get("kind") == "morphometrics" or "morphometrics" in parent["provenance"]:
+        from .research_morphometrics import CORRECTION_REFUSAL
+
+        raise ValueError(CORRECTION_REFUSAL)
     working_bytes = integer(
         request.get("working_bytes", 512 * 1024**2),
         "working-memory budget",

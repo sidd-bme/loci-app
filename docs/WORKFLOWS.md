@@ -66,7 +66,9 @@ Definitions can be created through the scoped MCP interface. The panel does not
 yet provide a graphical editor for authoring every connection.
 
 Version 2 supports acyclic graphs of at most 32 nodes. Its typed adapters are
-`run_recipe`, `classical_run`, `associate_results` and `spatial_distance_run`.
+`run_recipe`, `classical_run`, `associate_results`, `spatial_distance_run` and
+`morphometrics_run`. The morphology adapter consumes one exact `objects`
+label-result and retains its raw measurements; see [the assay definitions](ASSAY_MEASUREMENTS.md).
 Nodes accept declared source selections or exact label-result revisions. A join
 can consume outputs from separate upstream nodes; arbitrary operation names,
 scripts, loops and JSON-path wiring are refused. The saved definition, its

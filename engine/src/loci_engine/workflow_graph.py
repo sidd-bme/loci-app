@@ -40,6 +40,7 @@ ADAPTERS = {
     "run_recipe": {"source": "source-selection"},
     "classical_run": {"source": "source-selection"},
     "associate_results": {"cells": "label-result", "nuclei": "label-result"},
+    "morphometrics_run": {"objects": "label-result"},
     "spatial_distance_run": {
         "objects": "label-result",
         "compartment": "label-result",
@@ -226,6 +227,10 @@ def _settings(operation, settings, budget):
                 raise ValueError("Association requires 1-32 distinct measurement channels")
             for channel in channels:
                 integer(channel, "measurement channel", 0, 255)
+    elif operation == "morphometrics_run":
+        from .research_morphometrics import validate_settings
+
+        validate_settings({**settings, **_BINDING})
     else:
         from .research_spatial import validate_settings
 
@@ -550,6 +555,11 @@ def _request(workbench, node, inputs, budget):
             workbench.selection(
                 records[0]["source_id"], {**records[0]["provenance"]["selection"], "c": channel}
             )
+    elif operation == "morphometrics_run":
+        from .research_morphometrics import validate_request
+
+        request = {**inputs["objects"], **settings}
+        validate_request(workbench, request)
     else:
         from .research_spatial import validate_request
 
@@ -627,4 +637,8 @@ def build_plan(workbench, definition, bindings) -> dict[str, Any]:
         "node_scopes": _lineage_scopes(workbench, definition, bindings),
         "runtime": runtime_record(),
     }
+    if any(node["operation"] == "morphometrics_run" for node in definition["nodes"]):
+        from .research_morphometrics import _software
+
+        payload["method_identities"] = {"morphometrics_run": _software()}
     return _copy({**payload, "plan_sha256": _hash(payload)})

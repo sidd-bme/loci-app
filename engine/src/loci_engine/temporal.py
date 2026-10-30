@@ -457,18 +457,21 @@ def validate_track_graph(graph: TrackingGraph) -> None:
     visiting: set[tuple[str, str]] = set()
     visited: set[tuple[str, str]] = set()
 
-    def visit(node: tuple[str, str]) -> None:
-        if node in visiting:
-            raise ValueError("Track graph must be acyclic")
-        if node not in visited:
-            visiting.add(node)
-            for target in adjacency.get(node, []):
-                visit(target)
-            visiting.remove(node)
-            visited.add(node)
-
-    for node in adjacency:
-        visit(node)
+    # The supported frame range must not depend on Python's recursion limit.
+    # Exit markers retain the recursive traversal's active-path cycle check.
+    for start in adjacency:
+        stack = [(start, False)]
+        while stack:
+            node, exiting = stack.pop()
+            if exiting:
+                visiting.remove(node)
+                visited.add(node)
+            elif node in visiting:
+                raise ValueError("Track graph must be acyclic")
+            elif node not in visited:
+                visiting.add(node)
+                stack.append((node, True))
+                stack.extend((target, False) for target in adjacency.get(node, []))
 
 
 @dataclass(frozen=True)

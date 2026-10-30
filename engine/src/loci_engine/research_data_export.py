@@ -457,6 +457,12 @@ def _references(project, result, check):
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if "morphometrics" in provenance:
+        from .research_morphometrics import project_parents, validate_arrays
+
+        project_parents(project, result, check=check)
+        validate_arrays(result, {name: project.load_array(descriptor)
+                                for name, descriptor in result["arrays"].items()}, check=check)
     verify_result_derivation(project.source(result["source_id"]), provenance)
     if "spatial" in provenance:
         from .research_spatial import validate_parents
@@ -840,6 +846,10 @@ def _provenance(project, plan, items):
                     }
                 ),
                 "scientific_provenance": _safe(result["provenance"]),
+                # This code-owned contract has exact validated keys/rules. Keep
+                # its mathematical text intact; the generic projector omits '/'.
+                **({"morphometrics": result["provenance"]["morphometrics"]}
+                   if "morphometrics" in result["provenance"] else {}),
                 "model_profile_sha256": _hash(
                     result["provenance"].get("profile")
                     or result["provenance"].get("model", {}).get("profile")

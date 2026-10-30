@@ -13,9 +13,15 @@ density, not anatomical boundary inference or tissue thickness. See
 Current source also adds compact [donor-density reports](SPATIAL_DONOR_DENSITY.md),
 bounded [native workflow composition](WORKFLOWS.md#composed-workflows), retained
 spatial mask inspection, and explicit verified Cellpose checkpoint downloads.
-The new composition supports four declared native adapters; learned-model
+The new composition supports five declared native adapters; learned-model
 chaining and arbitrary method execution are not included. These source additions
 do not change the published beta or establish scientific validation.
+
+The next source slice adds [object shape, filled-wound closure and observed
+trajectory measurements](ASSAY_MEASUREMENTS.md), donor-density plots and editable
+SVG figure exports. The assay definitions preserve pixel/physical units, missing
+observations, exact source masks and uncertainty flags. Wound reports cover one
+declared specimen/sequence; across-specimen wound comparisons remain unsupported.
 
 This matrix covers the current source implementation.
 

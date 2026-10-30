@@ -687,6 +687,8 @@ export class ResearchBridge {
       "perinuclear_run",
       "spatial_distance_run",
       "spatial_density_save",
+      "morphometrics_run",
+      "wound_closure_save",
       "associate_results",
       "colocalisation_run",
     ]);
@@ -1095,9 +1097,14 @@ export class ResearchBridge {
     return this.planReportExport("spatial_density", reportId, keyValue);
   }
 
-  private async planReportExport(kind: "intensity" | "spatial_density", reportId: unknown, keyValue: unknown): Promise<unknown> {
-    const schema = kind === "intensity" ? "intensity" : "spatial-density";
-    const label = kind === "intensity" ? "intensity" : "spatial density";
+  async planWoundClosureExport(reportId: unknown, keyValue: unknown): Promise<unknown> {
+    return this.planReportExport("wound_closure", reportId, keyValue);
+  }
+
+  private async planReportExport(kind: "intensity" | "spatial_density" | "wound_closure", reportId: unknown, keyValue: unknown): Promise<unknown> {
+    const schema = kind.replaceAll("_", "-");
+    const label = kind.replaceAll("_", " ");
+    const identityKey = kind === "wound_closure" ? "source_id" : "result_id";
     const key = this.dataExportKey(keyValue);
     if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId))
       throw new Error(`Choose an exact saved ${label} comparison.`);
@@ -1106,7 +1113,8 @@ export class ResearchBridge {
     const active = this.beginDataExport(key, project, "plan");
     this.running = { id: `${schema}-report-plan`, project };
     try {
-      const response = await this.worker.request<import("../shared/intensity-contracts").IntensityExportPlan | import("../shared/spatial-density-contracts").SpatialDensityExportPlan>(`research_${kind}_export_plan`, { project, report_id: reportId }, 0);
+      const response = await this.worker.request<{ schema: string; report_id: string; report_hash: string; plan_hash: string;
+        status: { current: boolean; changes: Array<Record<string, unknown>> } }>(`research_${kind}_export_plan`, { project, report_id: reportId }, 0);
       if (active.cancelled) throw new Error(`${label} export preparation cancelled.`);
       if (this.project !== project || this.viewDocumentEpoch !== epoch) throw new Error("The study changed during preparation.");
       if (!response || response.schema !== `loci.${schema}-export-plan/v1` ||
@@ -1114,13 +1122,14 @@ export class ResearchBridge {
           !/^[a-f0-9]{64}$/u.test(response.report_hash) || response.report_hash.slice(0, 32) !== reportId ||
           typeof response.plan_hash !== "string" || !/^[a-f0-9]{64}$/u.test(response.plan_hash) ||
           !response.status || typeof response.status.current !== "boolean" ||
-          !Array.isArray(response.status.changes) || response.status.changes.length > (kind === "intensity" ? 100 : 256) ||
-          response.status.changes.some(row => !row || typeof row.result_id !== "string" ||
-            !/^[a-f0-9]{32}$/u.test(row.result_id) || typeof row.reason !== "string" || row.reason.length > 2048))
+          !Array.isArray(response.status.changes) || response.status.changes.length > (kind === "intensity" ? 100 : kind === "wound_closure" ? 1000 : 256) ||
+          response.status.changes.some(row => !row || typeof row[identityKey] !== "string" ||
+            !/^[a-f0-9]{32}$/u.test(row[identityKey] as string) || typeof row.reason !== "string" || row.reason.length > 2048) ||
+          kind === "wound_closure" && response.status.current !== (response.status.changes.length === 0))
         throw new Error(`The engine returned an invalid ${label} export preview.`);
       return { schema: response.schema, report_id: response.report_id, report_hash: response.report_hash,
         plan_hash: response.plan_hash, status: { current: response.status.current,
-          changes: response.status.changes.map(row => ({ result_id: row.result_id, reason: row.reason })) } };
+          changes: response.status.changes.map(row => ({ [identityKey]: row[identityKey], reason: row.reason })) } };
     } finally {
       if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; }
       active.finish();
@@ -1135,9 +1144,13 @@ export class ResearchBridge {
     return this.exportSavedReport("spatial_density", reportId, planHash, keyValue);
   }
 
-  private async exportSavedReport(kind: "intensity" | "spatial_density", reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
-    const schema = kind === "intensity" ? "intensity" : "spatial-density";
-    const label = kind === "intensity" ? "Intensity" : "Spatial density";
+  async exportWoundClosureReport(reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    return this.exportSavedReport("wound_closure", reportId, planHash, keyValue);
+  }
+
+  private async exportSavedReport(kind: "intensity" | "spatial_density" | "wound_closure", reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    const schema = kind.replaceAll("_", "-");
+    const label = kind === "intensity" ? "Intensity" : kind === "spatial_density" ? "Spatial density" : "Wound closure";
     const key = this.dataExportKey(keyValue);
     if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId) ||
         typeof planHash !== "string" || !/^[a-f0-9]{64}$/u.test(planHash))
@@ -1147,7 +1160,7 @@ export class ResearchBridge {
     const active = this.beginDataExport(key, project, "export");
     this.running = { id: `${schema}-report-export`, project }; this.switching = true;
     try {
-      const picked = await dialog.showSaveDialog({ title: kind === "intensity" ? "Export intensity comparison" : "Export spatial donor density", defaultPath: `Loci-${schema}`, buttonLabel: "Export report" });
+      const picked = await dialog.showSaveDialog({ title: kind === "intensity" ? "Export intensity comparison" : kind === "spatial_density" ? "Export spatial donor density" : "Export wound closure report", defaultPath: `Loci-${schema}`, buttonLabel: "Export report" });
       if (active.cancelled) throw new Error(`${label} report export cancelled.`);
       if (picked.canceled || !picked.filePath) return null;
       if (!path.isAbsolute(picked.filePath) || this.project !== project || this.viewDocumentEpoch !== epoch)
@@ -1856,6 +1869,8 @@ export class ResearchBridge {
     handle("intensity-export-package", (reportId, planHash, key) => this.exportIntensityReport(reportId, planHash, key));
     handle("spatial-density-export-plan", (reportId, key) => this.planSpatialDensityExport(reportId, key));
     handle("spatial-density-export-package", (reportId, planHash, key) => this.exportSpatialDensityReport(reportId, planHash, key));
+    handle("wound-closure-export-plan", (reportId, key) => this.planWoundClosureExport(reportId, key));
+    handle("wound-closure-export-package", (reportId, planHash, key) => this.exportWoundClosureReport(reportId, planHash, key));
     handle("cancel", (id) => this.cancel(id));
     handle("review", (result_id, revision_hash, disposition) =>
       this.control.request("research_review", {

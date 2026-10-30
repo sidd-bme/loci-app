@@ -1,0 +1,21 @@
+.density-plot-section { margin-block: 20px; min-width: 0; }
+.density-plot-section h4 { margin-block: 0 12px; font-size: var(--type-md); }
+.density-plot-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 8px; }
+.density-plot-controls label { min-width: 0; }
+.density-plot-host { width: 100%; min-width: 0; }
+.density-plot-host svg { display: block; width: 100%; overflow: visible; }
+.density-plot-host text { fill: var(--ink-secondary); font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.density-plot-grid { stroke: var(--line); stroke-width: 1; }
+.density-plot-zero { stroke: var(--ink-secondary); stroke-dasharray: 3 3; }
+.density-plot-pair { stroke: var(--ink-secondary); stroke-width: 1; opacity: 0.6; }
+.density-plot-mean { stroke: var(--ink); stroke-width: 2; }
+.density-plot-point { cursor: pointer; outline: none; }
+.density-plot-point > circle:not(.density-plot-hit) { fill: var(--mineral); stroke: var(--graphite-900); stroke-width: 1; }
+.density-plot-point .density-plot-hit { fill: transparent; stroke: transparent; }
+.density-plot-point:is(:hover, :focus-visible, .is-selected) .density-plot-hit { stroke: var(--ink); stroke-width: 1; }
+.density-plot-point[aria-disabled="true"] { cursor: default; opacity: 0.55; }
+.density-donor-selection { border-top: 1px solid var(--line); margin-top: 12px; padding-top: 8px; }
+.density-donor-selection ul { list-style: none; padding: 0; }
+.density-donor-selection li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-block: 8px; }
+.density-donor-selection li > span { min-width: 0; flex: 1 1 160px; overflow-wrap: anywhere; }
+.density-donor-selection small { display: block; color: var(--ink-secondary); margin-top: 4px; }

@@ -210,6 +210,11 @@ def authorize_action(
             policy, workbench, request["source_id"], selection, channels
         )
         policy.require_runtime(runtime_record())
+    elif operation == "morphometrics_run":
+        from .research_morphometrics import validate_request
+
+        validate_request(workbench, request, check=policy.recheck)
+        policy.require_runtime(runtime_record())
     elif operation == "spatial_distance_run":
         from .research_spatial import validate_request
 

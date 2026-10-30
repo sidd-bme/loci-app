@@ -436,6 +436,15 @@ bounded pages bound to one report hash. Follow the returned `next_offset`.
 Source/result authorization is checked recursively across all inputs, including
 phenotype groups. See [the donor-density contract](SPATIAL_DONOR_DENSITY.md).
 
+`morphometrics_run` adds digital shape descriptors to an exact saved label mask.
+`wound_closure_preview` and token-only `wound_closure_save` retain one explicitly
+declared filled-area sequence; saved reports support `wound_closure_get`,
+`wound_closure_list` and bounded `wound_closure_query` pages. Native export uses
+a picker grant. `tracking_result` adds graph-bound trajectory summaries and
+optional `tracks`/`intervals` pages, preserving missing and uncertain observations.
+See [shape, wound and migration definitions](ASSAY_MEASUREMENTS.md) before
+interpreting these endpoints; directionality is not a fitted persistence time.
+
 The version 2 `workflow_graph_*` actions inspect and control typed native
 composition. `workflow_graph_inspect` and `workflow_graph_control` are explicit
 policy capabilities, and neither substitutes for the underlying action/source

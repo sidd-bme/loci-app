@@ -58,6 +58,24 @@ OPERATION_CATALOG = {
         "mutates": False,
         "summary": "Publish a density report through a private native grant",
     },
+    "wound_closure_preview": {
+        "mutates": False,
+        "summary": "Preview declared filled-wound areas over actual elapsed seconds",
+    },
+    "wound_closure_save": {
+        "mutates": True,
+        "summary": "Save an immutable exact-mask wound closure report",
+    },
+    "wound_closure_get": {"mutates": False, "summary": "Verify and reopen an exact wound report"},
+    "wound_closure_list": {"mutates": False, "summary": "List authorized saved wound reports"},
+    "wound_closure_query": {
+        "mutates": False,
+        "summary": "Inspect bounded exact wound frame, interval and selected-label pages",
+    },
+    "wound_closure_export": {
+        "mutates": False,
+        "summary": "Publish an exact-mask wound report through a private native grant",
+    },
     "remote_analysis_cancel": {
         "mutates": True,
         "summary": "Cancel a remote analysis bound to the current study",
@@ -122,6 +140,10 @@ OPERATION_CATALOG = {
     "spatial_distance_run": {
         "mutates": True,
         "summary": "Measure physical distance bands and sampled compartment density on exact masks",
+    },
+    "morphometrics_run": {
+        "mutates": True,
+        "summary": "Add exact-parent digital boundary and sample-center shape measurements",
     },
     "perinuclear_run": {
         "mutates": True,
@@ -402,6 +424,8 @@ TASK_OPERATIONS = frozenset(
         "intensity_export",
         "spatial_density_save",
         "spatial_density_export",
+        "wound_closure_save",
+        "wound_closure_export",
         "preview_recipe",
         "histology_run",
         "histology_preview",
@@ -426,6 +450,7 @@ TASK_OPERATIONS = frozenset(
         "associate_results",
         "perinuclear_run",
         "spatial_distance_run",
+        "morphometrics_run",
         "colocalisation_run",
     }
 )

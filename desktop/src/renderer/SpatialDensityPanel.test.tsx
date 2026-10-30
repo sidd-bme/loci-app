@@ -6,6 +6,7 @@ import { createHash, webcrypto } from "node:crypto";
 import type { ResearchDesktopApi, ResearchResult, ResearchSnapshot } from "../shared/research-contracts";
 import { checkedSpatialDensityPage, checkedSpatialDensityReport, spatialDensityRequestHash, spatialDensityTables, type SpatialDensityReport, type SpatialDensityRequest, type SpatialDensityTable, type SpatialDensityViewSummary } from "../shared/spatial-density-contracts";
 import { SpatialDensityPanel } from "./SpatialDensityPanel";
+import { readDensityPlot } from "./spatial-density-plot";
 
 beforeEach(() => vi.stubGlobal("crypto", webcrypto));
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -106,6 +107,56 @@ async function openSaved() {
 }
 
 describe("Spatial donor density", () => {
+  it("loads every plot page before linking a donor point to its exact result", async () => {
+    const report = reportFor();
+    const app = mount({ saved: true, response: (op, args) => {
+      if (op === "spatial_density_get") return { ...savedFor(report), summary: summaryFor(report, 1) };
+      if (op === "spatial_density_query") return pageFor(report, args, 1);
+      return undefined;
+    } });
+    await openSaved();
+    fireEvent.click(screen.getByText("Plot donor comparisons"));
+    const donor = await screen.findByRole("button", { name: /Inspect donor Donor 1, Treated/ });
+    fireEvent.click(donor);
+    fireEvent.click(screen.getByRole("button", { name: `Inspect donor field ${results[1].id}` }));
+    expect(app.props.onInspect).toHaveBeenCalledWith(results[1]);
+    expect(app.execute).toHaveBeenCalledWith("spatial_density_query", { report_id: reportId, table: "donor_rows", offset: 1, limit: 100 });
+  });
+
+  it("does not navigate a plotted donor to a replacement field revision", async () => {
+    const current = structuredClone(snapshot); current.results[1].revision_hash = "1".repeat(64);
+    const app = mount({ saved: true, snapshot: current });
+    await openSaved(); fireEvent.click(screen.getByText("Plot donor comparisons"));
+    fireEvent.click(await screen.findByRole("button", { name: /Inspect donor Donor 1, Treated/ }));
+    fireEvent.click(screen.getByRole("button", { name: `Inspect donor field ${results[1].id}` }));
+    expect(screen.getByRole("alert")).toHaveTextContent("exact field revision is unavailable");
+    expect(app.props.onInspect).not.toHaveBeenCalled();
+  });
+
+  it("rejects foreign report pages instead of showing a partial donor plot", async () => {
+    const report = reportFor(), summary = summaryFor(report, 0);
+    const execute = vi.fn(async (_op, args) => ({ ...pageFor(report, args), report_hash: "f".repeat(64) }));
+    await expect(readDensityPlot({ execute }, { report_id: reportId }, summary, () => true)).rejects.toThrow("does not match");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("abandons page loading when the inspected report is replaced", async () => {
+    const report = reportFor(); let current = true;
+    const execute = vi.fn(async (_op, args) => { current = false; return pageFor(report, args, 1); });
+    expect(await readDensityPlot({ execute }, { report_id: reportId }, summaryFor(report, 0), () => current)).toBeNull();
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects repeated field identities across independently returned pages", async () => {
+    const report = reportFor();
+    const execute = vi.fn(async (_op, args) => {
+      const page = pageFor(report, args, 1);
+      if (args.table === "input_snapshots" && args.offset === 1) page.rows = [report.aggregation.input_snapshots[0]];
+      return page;
+    });
+    await expect(readDensityPlot({ execute }, { report_id: reportId }, summaryFor(report, 0), () => true)).rejects.toThrow("repeated field bindings");
+  });
+
   it("previews exact selected revisions, displays donor endpoints and saves only the retained identity", async () => {
     const app = mount(); selectFields(); await preview();
     expect(app.execute).toHaveBeenCalledWith("spatial_density_preview", request);

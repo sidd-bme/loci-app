@@ -702,6 +702,11 @@ class PolicyAgent:
             # receives its separately authorized rows/view, not hidden fields.
             for key in ("perinuclear", "nucleus_analysis", "parent_result"):
                 value.pop(key, None)
+        if "morphometrics" in value and not self.policy.disclosures >= DISCLOSURES:
+            # The exact method snapshot combines counts, units and parent hashes.
+            # A narrower reader receives only its separately authorized payload.
+            for key in ("morphometrics", "accepted_request", "parent_result"):
+                value.pop(key, None)
         if "geometry" not in self.policy.disclosures:
             value.pop("geometry", None)
             value.pop("selection", None)
