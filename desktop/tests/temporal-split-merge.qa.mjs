@@ -283,6 +283,61 @@ function exactHypotheses(graph) {
     }));
 }
 
+async function inspectTrajectoryMetrics(page, result, graph, navigate = false) {
+  const read = (table) => page.evaluate(({ result, table }) => window.lociResearch.execute("tracking_result", {
+    result_id: result.id, revision_hash: result.revision_hash, table, offset: 0, limit: 12,
+  }), { result, table });
+  const tracks = await read("tracks"), intervals = await read("intervals");
+  assert.equal(tracks.summary.storage, "persisted");
+  assert.equal(tracks.summary.units.velocity, "um/s");
+  assert.equal(tracks.next_offset, null); assert.equal(intervals.next_offset, null);
+  // Generated 8-um X displacements at a true 4-second cadence are 2 um/s.
+  // Y and Z do not move; unresolved split/merge flags remain separate.
+  for (const row of intervals.rows) {
+    assert.equal(row.elapsed_s, 4); assert.equal(row.speed, 2);
+    assert.equal(Math.abs(row.velocity_xyz[0]), 2);
+    assert.deepEqual(row.velocity_xyz.slice(1), [0, 0]);
+  }
+  const panel = page.getByRole("region", { name: "Trajectory measurements", exact: true });
+  const table = panel.getByRole("region", { name: "Trajectory measurement rows", exact: true });
+  const format = value => value === null ? "—" : Number(value.toPrecision(6)).toString();
+  const exactHelp = cell => cell.evaluate(element => element.getAttribute("data-loci-help") ?? element.getAttribute("title"));
+  await panel.getByLabel("Trajectory measurement table", { exact: true }).selectOption("tracks");
+  await table.getByRole("columnheader", { name: "Directionality", exact: true }).waitFor();
+  await waitFor(page, () => table.locator("tbody tr").count(), n => n === tracks.rows.length, "exact trajectory track rows");
+  for (const [index, row] of tracks.rows.entries()) {
+    const cells = table.locator("tbody tr").nth(index).locator("td");
+    assert.equal(await exactHelp(cells.nth(1)), String(row.observed_path_length));
+    assert.equal(await cells.nth(2).innerText(), format(row.mean_speed));
+    assert.equal(await cells.nth(3).innerText(), row.directionality_ratio === null ? row.directionality_status.replaceAll("-", " ") : format(row.directionality_ratio));
+  }
+  const selectedIndex = tracks.rows.findIndex(row => row.interval_count > 0);
+  assert.ok(selectedIndex >= 0);
+  await panel.getByRole("button", { name: `Track ${selectedIndex + 1}`, exact: true }).click();
+  const points = graph.tracking.trajectories.find(points => JSON.stringify([points[0].frame_id, points[0].label]) === tracks.rows[selectedIndex].track_key);
+  const plot = panel.getByRole("group", { name: "Selected trajectory in world XY coordinates", exact: true });
+  await visible(page, plot, "selected world-XY trajectory");
+  assert.equal(await plot.getByRole("button").count(), points.length);
+  assert.deepEqual(await plot.locator("title").allTextContents(), points.map(point => `${point.time_s} s; XYZ ${point.centroid_world_xyz.join(", ")} um`));
+  await screenshot(page, `trajectory-${result.id.slice(0, 8)}${navigate ? "-reopened" : ""}`);
+  await panel.getByLabel("Trajectory measurement table", { exact: true }).selectOption("intervals");
+  await table.getByRole("columnheader", { name: "XYZ velocity (um/s)", exact: true }).waitFor();
+  await waitFor(page, () => table.locator("tbody tr").count(), n => n === intervals.rows.length, "exact trajectory velocity rows");
+  for (const [index, row] of intervals.rows.entries()) {
+    const cells = table.locator("tbody tr").nth(index).locator("td");
+    assert.equal(await exactHelp(cells.nth(2)), row.velocity_xyz.join(", "));
+    assert.equal(await cells.nth(3).innerText(), "2");
+  }
+  if (navigate) {
+    await panel.getByLabel("Trajectory measurement table", { exact: true }).selectOption("tracks");
+    await panel.getByRole("button", { name: `Track ${selectedIndex + 1}`, exact: true }).click();
+    await plot.getByRole("button").first().focus();
+    await plot.getByRole("button").first().press("Enter");
+    await waitFor(page, () => page.locator(`button[data-result-id="${points[0].frame_id}"]`).getAttribute("aria-pressed"), value => value === "true", "trajectory observation opens exact retained frame");
+  }
+  return { tracks, intervals, plotted_observation_count: points.length, keyboard_frame_navigation: navigate };
+}
+
 let app;
 let page;
 const rendererMessages = [];
@@ -294,7 +349,7 @@ try {
 
   await createEmptyStudy(page);
   await visible(page, page.getByRole("main", { name: "Research workspace" }), "research workspace");
-  await page.getByRole("button", { name: "Open images", exact: true }).click();
+  await page.getByRole("button", { name: "Add images…", exact: true }).click();
   const sourceButton = page
     .locator(".research-sources")
     .getByRole("button", { name: /^synthetic-split-merge\.ome\.tiff/ });
@@ -358,15 +413,17 @@ try {
   await screenshot(page, "01-segmented-observed-frames");
 
   await selectWorkbenchTool(page, "Temporal");
+  await page.locator(".research-temporal details").filter({ has: page.getByText("Tracking method", { exact: true }) }).locator("summary").click();
   await visible(
     page,
     page.getByText(/Associations describe observations, not biological lineage or identity/),
     "non-biological interpretation",
   );
-  for (const frame of frames) {
+  for (const [index, frame] of frames.entries()) {
     const candidate = page
       .locator(".research-temporal .research-compact-list > div")
-      .filter({ hasText: frame.id.slice(0, 8) });
+      .filter({ has: page.locator("span").filter({ hasText: new RegExp(` · Run ${index + 1}$`, "u") }) });
+    assert.equal(await candidate.count(), 1, `Exact displayed acquisition run for ${frame.id}`);
     await candidate.getByRole("button", { name: "Add frame", exact: true }).click();
   }
   for (let index = 0; index < frames.length; index += 1) {
@@ -432,10 +489,11 @@ try {
   const visibleHypotheses = await hypothesisItems.allTextContents();
   assert.ok(visibleHypotheses.some((text) => text.includes("one source has multiple plausible targets")));
   assert.ok(visibleHypotheses.some((text) => text.includes("one target has multiple plausible sources")));
-  assert.ok(visibleHypotheses.every((text) => text.includes("unresolved automatic hypothesis")));
+  assert.ok(visibleHypotheses.every((text) => text.includes("Review candidates before publishing an association edit.")));
   await hypothesisItems.first().scrollIntoViewIfNeeded();
   await visible(page, hypothesisItems.first(), "visible unresolved split/merge interpretation");
   await screenshot(page, "03-visible-split-merge-hypotheses");
+  const originalMetrics = await inspectTrajectoryMetrics(page, tracked, graph);
 
   await page.getByLabel("Association to remove").selectOption("0");
   const corrected = await newResult(
@@ -449,6 +507,7 @@ try {
   assert.deepEqual(exactHypotheses(correctedGraph), exactHypotheses(graph));
   assert.deepEqual(correctedGraph.inputs, graph.inputs);
   await screenshot(page, "04-corrected-association-revision");
+  const correctedMetrics = await inspectTrajectoryMetrics(page, corrected, correctedGraph);
 
   await selectWorkbenchTool(page, "Info");
   await selectResultSection(page, "Review"); await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
@@ -515,6 +574,7 @@ try {
   assert.deepEqual(canonical(reopenedGraph.tracking), canonical(correctedGraph.tracking));
   assert.deepEqual(canonical(reopenedGraph.inputs), canonical(correctedGraph.inputs));
   await selectWorkbenchTool(page, "Temporal");
+  await page.locator(".research-temporal details").filter({ has: page.getByText("Tracking method", { exact: true }) }).locator("summary").click();
   await page.getByLabel("Tracking result revision").selectOption(corrected.id);
   await page.getByRole("button", { name: "Inspect graph", exact: true }).click();
   await visible(page, page.getByRole("heading", { name: "Observed associations", exact: true }), "reopened graph inspection");
@@ -529,6 +589,9 @@ try {
   await reopenedHypotheses.first().scrollIntoViewIfNeeded();
   await visible(page, reopenedHypotheses.first(), "reopened unresolved split/merge interpretation");
   await screenshot(page, "06-reopened-exact-temporal-graph");
+  const reopenedMetrics = await inspectTrajectoryMetrics(page, reopenedResult, reopenedGraph, true);
+  assert.deepEqual(reopenedMetrics.tracks, correctedMetrics.tracks);
+  assert.deepEqual(reopenedMetrics.intervals, correctedMetrics.intervals);
   const reopenDialogs = await app.evaluate(() => globalThis.__lociTemporalQaDialogs);
   assert.deepEqual(reopenDialogs.filter((item) => item.kind !== "message"), [
     { kind: "open", title: "Open research study" },
@@ -593,6 +656,7 @@ try {
       export_files: exportFiles,
       export_reopened_exactly: true,
     },
+    trajectory_metrics: { original: originalMetrics, corrected: correctedMetrics, reopened: reopenedMetrics },
     renderer_messages: { initial: rendererMessages, reopen: reopenRendererMessages },
     screenshots: await fs.readdir(screenshotsPath).then((names) => names.sort()),
     hardware: {

@@ -168,10 +168,11 @@ def verify(root, exports, policy_sha256=None):
         mask = np.load(frame["reference"], allow_pickle=False)
         z, y, x = np.argwhere(mask == LABEL).mean(axis=0)
         positions.append([float(x), float(y * 2), float(z * 3)])
-        raw = np.load(
-            project / "arrays" / (original["arrays"]["image"]["sha256"] + ".npy"),
-            allow_pickle=False,
+        raw_path = (
+            project / "artifacts" / (original["arrays"]["image"]["sha256"] + ".npy")
         )
+        assert sha(raw_path) == original["arrays"]["image"]["sha256"]
+        raw = np.load(raw_path, allow_pickle=False)
         row = original["provenance"]["measurements"][0]
         assert row["label"] == LABEL and row["voxel_count"] == 1 and row["measure"] == 6
         close(row["intensity"]["raw"]["mean"], float(raw[mask == LABEL].mean()))

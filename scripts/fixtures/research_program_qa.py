@@ -338,6 +338,37 @@ def verify(root, exports, expected_owner="native"):
             file = destination / item["name"]
             assert sha(file) == item["sha256"] and file.stat().st_size == item["size_bytes"]
         assert json.loads((destination / "report.json").read_text()) == report
+        # Bind every plotted donor point to the independently verified saved
+        # table, including its label and the direction of the value-to-Y map.
+        import xml.etree.ElementTree as ET
+
+        for filename, table, value_key in (
+            ("donor-density.svg", "donor_rows", "density"),
+            ("paired-density-change.svg", "paired_rows", "difference"),
+        ):
+            svg = ET.parse(destination / filename).getroot()
+            circles = list(svg.iter("{http://www.w3.org/2000/svg}circle"))
+            expected = {
+                i: row for i, row in enumerate(aggregate[table]) if row[value_key] is not None
+            }
+            assert len(circles) == len(expected)
+            points = {}
+            for circle in circles:
+                assert circle.attrib["data-table"] == table
+                index = int(circle.attrib["data-row"])
+                assert index in expected and index not in points
+                row = expected[index]
+                title = circle.find("{http://www.w3.org/2000/svg}title")
+                assert title.text == f"{row['biological_replicate']}: {row[value_key]!r}"
+                points[index] = float(circle.attrib["cy"])
+            assert set(points) == set(expected)
+            for i, left in expected.items():
+                for j, right in expected.items():
+                    if (left["study"], left["band_index"]) == (right["study"], right["band_index"]):
+                        if left[value_key] == right[value_key]:
+                            assert points[i] == points[j]
+                        elif left[value_key] < right[value_key]:
+                            assert points[i] > points[j]
         with (destination / "donor-rows.csv").open(newline="") as handle:
             rows = [
                 {key: json.loads(value) for key, value in row.items()}

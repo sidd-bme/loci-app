@@ -109,6 +109,7 @@ def host_calls(events):
         "result": None,
         "result_view": None,
         "review_result": None,
+        "review_history": None,
         "job_status": None,
         "validate_action": {
             "morphometrics_run",
@@ -527,6 +528,35 @@ def verify_host(
         job_ids.append(job["id"])
         if role == "corrected":
             expected_views.add(result["id"])
+    for call in matching(calls, "review_history"):
+        require(
+            call["arguments"] == {"result_id": call["arguments"].get("result_id")}
+            and call["arguments"]["result_id"]
+            in {binding["result_id"] for binding in results.values()},
+            "Review history inspection escaped the exact derived-result scope",
+        )
+        require(
+            response(call)
+            == {
+                "events": [],
+                "total_events": 0,
+                "next_offset": None,
+                "current_review_sha256": None,
+                "assessment_disclosed": True,
+            },
+            "Pre-review history must disclose an unreviewed derived result",
+        )
+        review_index = next(
+            i
+            for i, item in enumerate(calls)
+            if item["tool"] == "review_result"
+            and item["arguments"]["request"]["result_id"]
+            == call["arguments"]["result_id"]
+        )
+        require(
+            calls.index(call) < review_index,
+            "Review history was inspected after review",
+        )
     require(
         len(set(job_ids)) == 7 and {job["id"] for job in jobs} == set(job_ids),
         "Extra or duplicate native jobs",
