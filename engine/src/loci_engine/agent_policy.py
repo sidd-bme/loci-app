@@ -61,6 +61,8 @@ STUDY_OPERATIONS = frozenset(
         "validate_action",
         "inspect_action",
         "submit_action",
+        "workflow_graph_inspect",
+        "workflow_graph_control",
     }
 )
 _TOP_LEVEL_KEYS = {
@@ -293,8 +295,7 @@ class AgentPolicy:
             or (current_project.st_dev, current_project.st_ino) != self.project_directory_identity
         ):
             raise PermissionError("The authorized project directory changed")
-        project = ResearchProject(self.project_path)
-        if project.meta["project_id"] != self.project_id:
+        if ResearchProject._policy_project_id(self.project_path) != self.project_id:
             raise PermissionError("The policy project identity no longer matches")
         if self.export_root is not None:
             current = self.export_root.lstat()

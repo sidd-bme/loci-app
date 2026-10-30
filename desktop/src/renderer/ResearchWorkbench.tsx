@@ -1,4 +1,6 @@
 import { StudyWorkspace, type StudySection } from "./StudyWorkspace";
+import { ResearchWorkflowGraphPanel } from "./ResearchWorkflowGraphPanel";
+import { SpatialDensityPanel } from "./SpatialDensityPanel";
 import { ExperimentIntensityPanel } from "./ExperimentIntensityPanel";
 import { SampleSheetPanel } from "./SampleSheetPanel";
 import { resolveStudyResult, resolveStudySource } from "./study-sample-navigation";
@@ -824,7 +826,9 @@ export default function ResearchWorkbench({
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Display");
   const [workflowOpened, setWorkflowOpened] = useState(false);
+  const [graphOpened, setGraphOpened] = useState(false);
   const [quantificationOpened, setQuantificationOpened] = useState(false);
+  const [densityOpened, setDensityOpened] = useState(false);
   const [quantificationEntryKey, setQuantificationEntryKey] = useState(0);
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
   const [populationOpened, setPopulationOpened] = useState(false);
@@ -2858,6 +2862,7 @@ export default function ResearchWorkbench({
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
     }
     if (next === "Quantify") setQuantificationOpened(true);
+    if (next === "Density") setDensityOpened(true);
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
@@ -2961,7 +2966,7 @@ export default function ResearchWorkbench({
   const segmentationChannelNames = Array.from({ length: dimensions?.c ?? 0 }, (_, index) =>
     declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
-  const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
+  const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent", "Density"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
   const panelFocused = canFocusPanel && focusedPanel === tab;
   return (
     <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
@@ -3586,6 +3591,13 @@ export default function ResearchWorkbench({
             onExport={async (result, runId) => { await api.exportResult(result.id, result.revision_hash, runId); }}
             onRefresh={async () => { await api.getSnapshot().then(adopt); }}
           />
+          <details className="composed-workflows" onToggle={(event) => setGraphOpened(event.currentTarget.open)}><summary>Composed workflows</summary>
+            {graphOpened && <ResearchWorkflowGraphPanel key={`graph-${documentEpoch}`} api={api} snapshot={snapshot}
+              sourceId={source.id} selection={shownSelection} active={tab === "Workflow"} busy={busy !== null}
+              onBusyChange={(value) => setBusy((current) => value ? (current ?? "composed-workflow") : current === "composed-workflow" ? null : current)}
+              onOpenResult={async (result) => { await navigateExactResult(result); }}
+              onRefresh={async () => { await api.getSnapshot().then(adopt); }} />}
+          </details>
         </div>}
         {source && snapshot.project.first_study?.example_id === "synthetic-shapes-v1" &&
           snapshot.project.first_study.source_id === source.id && snapshot.project.first_study.source_sha256 === source.sha256 && tab !== "Workflow" && <FirstStudyGuide onNavigate={openWorkbenchTab} hasResult={Boolean(selectedResult)} />}
@@ -4095,6 +4107,11 @@ export default function ResearchWorkbench({
             busy={busy !== null}
           />
         )}
+        {densityOpened && <div hidden={tab !== "Density"}>
+          <SpatialDensityPanel key={`density:${exportDraftStudy}`} api={api} snapshot={snapshot} active={tab === "Density"}
+            busy={busy !== null || documentSwitching} onSnapshot={adopt}
+            onInspect={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
+        </div>}
         <StudyWorkspace active={tab === "Study"} section={studySection} onSection={setStudySection}
           focused={studyFocused} onToggleFocus={() => setStudyFocused((value) => !value)} sourceName={source?.name}
           samples={
@@ -6557,7 +6574,7 @@ export function Info({
             <button type="button" aria-pressed={section === "export"} onClick={() => changeSection("export")}>Export</button>
           </div>
           {section === "review" && <section aria-label="Review result">
-            {result.kind === "spatial-distance-bands" && <SpatialSummary value={result.spatial} />}
+            {result.kind === "spatial-distance-bands" && <SpatialSummary value={result.spatial} api={api} result={result} />}
             {result.kind === "perinuclear-enrichment" && <PerinuclearResultSummary api={api} result={result} rows={rows} />}
             {rows.length > 0 && (
               <div className="research-result-summary-card">

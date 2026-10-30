@@ -75,6 +75,7 @@ READ_ONLY_TOOLS = frozenset(
         "study_results",
         "validate_action",
         "inspect_action",
+        "workflow_graph_inspect",
         "remote_status",
     }
 )
@@ -84,6 +85,7 @@ APPROVAL_GATED_TOOLS = frozenset(
         "submit_recipe",
         "cancel_job",
         "submit_action",
+        "workflow_graph_control",
         "set_source_display",
         "export_vision_handoff",
         "review_result",
@@ -129,6 +131,24 @@ _GRANTED_MCP_MAPPING: dict[str, tuple[str, str]] = {
     )
     for operation in ("submit", "status", "cancel", "retrieve", "attach")
 }
+
+for _graph_name in (
+    "validate",
+    "get",
+    "list",
+    "preflight",
+    "status",
+    "save",
+    "start",
+    "advance",
+    "cancel",
+):
+    _GRANTED_MCP_MAPPING[f"workflow_graph_{_graph_name}"] = (
+        "workflow_graph_inspect"
+        if _graph_name in {"validate", "get", "list", "preflight", "status"}
+        else "workflow_graph_control",
+        "Requires the explicit graph tool grant and every native node's independent action and source grants.",
+    )
 
 _GUI_ONLY_REASONS: dict[str, str] = {
     "field_assay_preview": (

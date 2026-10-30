@@ -345,6 +345,8 @@ function mockApi(overrides: Partial<LociDesktopApi> = {}): LociDesktopApi {
     listProfiles: vi.fn().mockResolvedValue([readyClassicalProfile]),
     getCellposeStatus: vi.fn().mockResolvedValue(cellposeStatus("cellpose-sam-v2", false)),
     importCellposeModel: vi.fn().mockResolvedValue(null),
+    downloadCellposeModel: vi.fn().mockResolvedValue(cellposeStatus("cellpose-sam-v2", false)),
+    cancelCellposeDownload: vi.fn().mockResolvedValue(false),
     openCellposeModelPage: vi.fn().mockResolvedValue(undefined),
     openCellposeModelFolder: vi.fn().mockResolvedValue({
       profileId: "cellpose-sam-v2",

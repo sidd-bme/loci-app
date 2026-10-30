@@ -90,6 +90,10 @@ const api: LociDesktopApi = {
     ipcRenderer.invoke("loci:cellpose-status", profileId),
   importCellposeModel: (profileId) =>
     ipcRenderer.invoke("loci:import-cellpose-model", profileId),
+  downloadCellposeModel: (profileId) =>
+    ipcRenderer.invoke("loci:download-cellpose-model", profileId),
+  cancelCellposeDownload: (profileId) =>
+    ipcRenderer.invoke("loci:cancel-cellpose-download", profileId),
   openCellposeModelPage: (profileId) =>
     ipcRenderer.invoke("loci:open-cellpose-model-page", profileId),
   openCellposeModelFolder: (profileId) =>
@@ -325,6 +329,8 @@ const researchApi: ResearchDesktopApi = {
   exportReviewPackage: (bindings, options) =>
     ipcRenderer.invoke("loci-research:review-package-export", bindings, options),
   planDataExport: (request, key) => ipcRenderer.invoke("loci-research:data-export-plan", request, key),
+  planSpatialDensityExport: (reportId, key) => ipcRenderer.invoke("loci-research:spatial-density-export-plan", reportId, key),
+  exportSpatialDensityReport: (reportId, planHash, key) => ipcRenderer.invoke("loci-research:spatial-density-export-package", reportId, planHash, key),
   planIntensityExport: (reportId, key) => ipcRenderer.invoke("loci-research:intensity-export-plan", reportId, key),
   exportIntensityReport: (reportId, planHash, key) => ipcRenderer.invoke("loci-research:intensity-export-package", reportId, planHash, key),
   exportDataPackage: (planJson, key) => ipcRenderer.invoke("loci-research:data-export-package", planJson, key),

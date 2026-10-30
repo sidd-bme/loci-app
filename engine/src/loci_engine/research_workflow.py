@@ -692,9 +692,19 @@ def execute_workflow(workbench, operation, request, *, job_id=None, publication_
         workflows = workbench.project.documents("workflow")
         if len(workflows) > MAX_WORKFLOWS:
             raise ValueError("Study exceeds the saved workflow listing bound")
+        linear = []
         for doc in workflows:
+            if doc["data"].get("schema") == "loci.saved-workflow/v2":
+                # The two editors share a document collection. Validate a
+                # composed definition through its own contract, then keep it
+                # out of the v1 editor instead of interpreting it as v1.
+                from .research_workflow_graph import _get as get_graph
+
+                get_graph(workbench, doc["id"])
+                continue
             _get(workbench, doc["id"])
-        return {"workflows": workflows}
+            linear.append(doc)
+        return {"workflows": linear}
     if operation == "workflow_get":
         exact_keys(request, {"workflow_id"}, operation)
         return {"workflow": _get(workbench, request.get("workflow_id"))[0]}

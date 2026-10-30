@@ -55,7 +55,8 @@ Display changes do not change the saved measurements.
 Known-grid tests exercise independent distance calculations, anisotropic pixels,
 fractional centroids, sparse IDs, tissue holes, exclusions, empty area, stale
 inputs, altered units/measurements, publication cancellation and portability.
-The generated packaged fixture has a separate brute-force oracle. Current run
-status and exact candidate evidence belong in [project state](PROJECT_STATE.md).
+The generated packaged fixture has a separate brute-force oracle.
+The [release status](RELEASE_STATUS.md) identifies published downloads; source
+changes do not alter that release or qualify a different packaged artifact.
 These checks establish software arithmetic and persistence, not anatomical
 accuracy, adequate boundary annotation or biological/clinical validity.

@@ -1,0 +1,30 @@
+.spatial-density { min-width: 0; contain: inline-size; }
+.spatial-density .density-setup { min-width: 0; margin: 16px 0; }
+.spatial-density :is(select, input:not([type="checkbox"])) { width: 100%; min-width: 0; box-sizing: border-box; }
+.density-field-choices { max-height: 360px; overflow: auto; overscroll-behavior: contain; }
+.density-field-choice { padding-block: 12px; border-bottom: 1px solid var(--line); }
+.spatial-density .density-field-choice > label:first-child,
+.spatial-density .density-check { display: flex; align-items: flex-start; gap: 8px; }
+.density-field-choice input[type="checkbox"], .density-check input { flex: 0 0 auto; margin-top: 3px; }
+.density-field-choice span { min-width: 0; overflow-wrap: anywhere; }
+.density-field-choice small, .density-report-list small { display: block; margin-top: 4px; color: var(--ink-secondary); }
+.density-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 8px; }
+.density-pair p { grid-column: 1 / -1; }
+.density-table { width: 100%; min-width: 0; max-height: 400px; overflow: auto; overscroll-behavior: contain; margin-block: 12px; border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; }
+.density-table:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.density-table table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: var(--type-sm); font-variant-numeric: tabular-nums; }
+.density-table caption { text-align: left; padding: 8px; color: var(--ink-secondary); }
+.density-table :is(th, td) { padding: 8px; border-bottom: 1px solid var(--line); text-align: right; vertical-align: top; max-width: 240px; overflow-wrap: anywhere; }
+.density-table :is(th, td):first-child { text-align: left; min-width: 140px; }
+.density-table thead th { position: sticky; top: 0; background: var(--graphite-850); color: var(--ink-secondary); z-index: 1; font-weight: 600; }
+.density-table tbody th { font-weight: 400; }
+.density-pages { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.density-details { margin-block: 12px; }
+.density-details > summary { min-height: 32px; align-content: center; cursor: pointer; }
+.density-details pre { max-height: 260px; overflow: auto; font-size: var(--type-sm); }
+.density-hash { display: block; overflow-wrap: anywhere; font-size: var(--type-sm); }
+.density-field-link { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.density-report-list { list-style: none; padding: 0 !important; }
+.spatial-density .density-report-list li { display: flex; flex-wrap: wrap; gap: 8px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+.density-report-list li > span { flex: 1 1 200px; }
+.density-caution, .density-current-status { color: var(--ink-secondary); }

@@ -73,6 +73,59 @@ def test_explicit_delegation_creates_named_review_authority_and_plugin(tmp_path)
     assert reviewed["actor"] == "agent" and reviewed["actor_id"] == "codex"
 
 
+@pytest.mark.parametrize("allow_run", [False, True])
+def test_graph_access_is_explicit_and_does_not_add_native_actions(tmp_path, allow_run):
+    from loci_engine.agent_policy import DISCLOSURES
+
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "graph-access"
+    receipt = create_agent_access(
+        workbench,
+        access_request(
+            request,
+            allow_run=allow_run,
+            allow_workflow_graph=True,
+            disclosures=sorted(DISCLOSURES),
+            delegation={
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "granted-sources",
+                "allow_review": False,
+            },
+            actions=[],
+        ),
+        destination,
+    )
+    assert "workflow_graph_inspect" in receipt["operations"]
+    assert ("workflow_graph_control" in receipt["operations"]) is allow_run
+    assert not load_policy(destination / "agent-policy.json").actions
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"allow_workflow_graph": "yes"},
+        {"allow_workflow_graph": True},
+        {
+            "allow_workflow_graph": True,
+            "delegation": {
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "pinned-recipes",
+                "allow_review": False,
+            },
+            "disclosures": ["agent_metadata"],
+        },
+    ],
+)
+def test_incomplete_graph_scope_does_not_publish_access(tmp_path, changes):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "invalid-graph"
+    with pytest.raises(ValueError):
+        create_agent_access(workbench, access_request(request, **changes), destination)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize(
     "change",
     [

@@ -45,6 +45,14 @@ from .research_process import research_command
 from .research_project import ResearchProject, checked_id, parse_json, timestamp
 from .research_tool_schemas import ReviewResultRequest, SourceImageRequest, tool_request_schema
 from .workbench import Workbench, runtime_record
+from .agent_workflow_graph import (
+    GraphControlOperation,
+    GraphControlRequest,
+    GraphInspectOperation,
+    GraphInspectRequest,
+    workflow_graph_control,
+    workflow_graph_inspect,
+)
 
 _TOOL_CATALOG = (
     ("catalog", "Describe the static policy-bound Loci tool surface without study data."),
@@ -111,6 +119,14 @@ _VISION_TOOL_CATALOG = (
     ),
 )
 _STUDY_TOOL_CATALOG = (
+    (
+        "workflow_graph_inspect",
+        "Validate or inspect a typed workflow/v2 graph, exact preflight or owned run. Each native node still needs its own action and source grants; no execution occurs.",
+    ),
+    (
+        "workflow_graph_control",
+        "Save, start, advance one node, or cancel an exact workflow/v2 run. Every node uses its own normal durable job and independent grants. Reuse the exact start request key; call advance after each completed child until terminal.",
+    ),
     (
         "action_guide",
         "Discover shared analysis and editing request schemas, units, effects and retry "
@@ -386,7 +402,7 @@ class JobSupervisor:
                 + active_remote_count(self.policy, project)
             )
             if active >= self.policy.concurrency:
-                raise PermissionError("The policy concurrency limit is already in use")
+                raise AgentCapacityError("The policy concurrency limit is already in use")
             command = self._command(project, job["id"])
             process = self._popen(
                 command,
@@ -425,7 +441,7 @@ class JobSupervisor:
                 + active_remote_count(self.policy, workbench.project)
                 >= self.policy.concurrency
             ):
-                raise PermissionError("The policy concurrency limit is already in use")
+                raise AgentCapacityError("The policy concurrency limit is already in use")
             self._preview_count += 1
         try:
             return self._preview(workbench, request)
@@ -452,7 +468,7 @@ class JobSupervisor:
                 + active_remote_count(self.policy, workbench.project)
                 >= self.policy.concurrency
             ):
-                raise PermissionError("The shared policy concurrency limit is in use")
+                raise AgentCapacityError("The shared policy concurrency limit is in use")
             # Count vision reservations in the existing shared preview counter,
             # including during spawn; remote/local admission already observes it.
             self._preview_count += 1
@@ -607,6 +623,10 @@ class JobSupervisor:
                         finished_at=timestamp(),
                         error="The bounded preview stopped before disclosure.",
                     )
+
+
+class AgentCapacityError(PermissionError):
+    """A retryable admission refusal, without widening policy authority."""
 
 
 class PolicyAgent:
@@ -1329,10 +1349,13 @@ class PolicyAgent:
     def result_view(
         self,
         result_id: str,
-        axis: str = "z",
+        axis: Literal["x", "y", "z"] = "z",
         index: int | None = None,
         labels: bool = True,
-        label_field: Literal["nuclei", "rings", "ambiguous"] | None = None,
+        label_field: Literal[
+            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+        ]
+        | None = None,
     ) -> dict[str, Any]:
         workbench = self._workbench("result_view")
         try:
@@ -1956,6 +1979,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "study_results",
             "validate_action",
             "inspect_action",
+            "workflow_graph_inspect",
         }
         return ToolAnnotations(
             read_only_hint=read_only,
@@ -2006,6 +2030,8 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "study_results": ({"source_id", "offset", "limit"}, set()),
                 "validate_action": ({"operation", "request"}, {"operation", "request"}),
                 "inspect_action": ({"operation", "request"}, {"operation", "request"}),
+                "workflow_graph_inspect": ({"operation", "request"}, {"operation", "request"}),
+                "workflow_graph_control": ({"operation", "request"}, {"operation", "request"}),
                 "submit_action": (
                     {"operation", "request", "request_key"},
                     {"operation", "request", "request_key"},
@@ -2188,6 +2214,20 @@ def build_server(policy_path: str | Path) -> MCPServer:
                         last_error=exc.public_message,
                     )
             raise boundary_error(exc.public_message) from None
+        except AgentCapacityError:
+            message = (
+                "Another analysis or inspection is using this policy's concurrency allowance. "
+                "Wait for it to finish, then retry this same request."
+            )
+            if agent.session_id is not None:
+                with suppress(Exception):
+                    heartbeat_session(
+                        ResearchProject(agent.policy.project_path),
+                        agent.session_id,
+                        increment_calls=True,
+                        last_error=message,
+                    )
+            raise boundary_error(message) from None
         except PermissionError:
             if agent.session_id is not None:
                 with suppress(Exception):
@@ -2375,10 +2415,13 @@ def build_server(policy_path: str | Path) -> MCPServer:
     )
     def result_view(
         result_id: str,
-        axis: str = "z",
+        axis: Literal["x", "y", "z"] = "z",
         index: int | None = None,
         labels: bool = True,
-        label_field: Literal["nuclei", "rings", "ambiguous"] | None = None,
+        label_field: Literal[
+            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+        ]
+        | None = None,
     ) -> dict[str, Any]:
         return image_result(lambda: agent.result_view(result_id, axis, index, labels, label_field))
 
@@ -2445,6 +2488,28 @@ def build_server(policy_path: str | Path) -> MCPServer:
             operation: str, request: dict[str, Any], request_key: str
         ) -> dict[str, Any]:
             return invoke(lambda: agent.submit_action(operation, request, request_key))
+
+        @server.tool(
+            name="workflow_graph_inspect",
+            structured_output=True,
+            description=descriptions["workflow_graph_inspect"],
+            annotations=annotations("workflow_graph_inspect"),
+        )
+        def inspect_graph(
+            operation: GraphInspectOperation, request: GraphInspectRequest
+        ) -> dict[str, Any]:
+            return invoke(lambda: workflow_graph_inspect(agent, operation, request))
+
+        @server.tool(
+            name="workflow_graph_control",
+            structured_output=True,
+            description=descriptions["workflow_graph_control"],
+            annotations=annotations("workflow_graph_control"),
+        )
+        def control_graph(
+            operation: GraphControlOperation, request: GraphControlRequest
+        ) -> dict[str, Any]:
+            return invoke(lambda: workflow_graph_control(agent, operation, request))
 
         @server.tool(
             name="review_history",

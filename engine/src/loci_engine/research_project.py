@@ -117,6 +117,31 @@ class ResearchProject:
     """A versioned .loci-study directory; all database writes are transactions."""
 
     def __init__(self, directory: str | Path):
+        self._read_identity(directory)
+        # Ordinary native opens still validate scientific snapshots. A policy
+        # heartbeat only needs the separately checked directory/schema/project
+        # identity; actual scientific readers enforce their own full contracts.
+        from .research_intensity_reports import load as load_intensity_report
+
+        for document in self.documents("intensity_report"):
+            load_intensity_report(self, document["id"])
+        from .research_spatial_density import load as load_spatial_density
+
+        for document in self.documents("spatial_density_report"):
+            load_spatial_density(self, document["id"], verify_arrays=False)
+
+    @classmethod
+    def _policy_project_id(cls, directory: str | Path) -> str:
+        """Check identity for repeated authority guards without reading reports.
+
+        Return only the validated ID, never an incompletely validated project
+        handle. This is not a source/result access or publication authority.
+        """
+        candidate = cls.__new__(cls)
+        candidate._read_identity(directory)
+        return candidate.meta["project_id"]
+
+    def _read_identity(self, directory: str | Path) -> None:
         requested = Path(directory).expanduser()
         if not requested.is_absolute():
             raise ValueError("Research project location must be absolute")
@@ -141,12 +166,6 @@ class ResearchProject:
             if self.meta.get("schema") != f"loci.study/v{version}":
                 raise ValueError("Study project schema identity is invalid")
             self.schema_version = version
-        # Saved comparisons are scientific snapshots, including on native reopen.
-        from .research_intensity_reports import load as load_intensity_report
-
-        for document in self.documents("intensity_report"):
-            load_intensity_report(self, document["id"])
-
     @classmethod
     def create(
         cls, directory: str | Path, title: str, *, schema_version: int = SCHEMA
@@ -599,6 +618,8 @@ class ResearchProject:
             "exploration",
             "intensity_report",
             "intensity_export_grant",
+            "spatial_density_report",
+            "spatial_density_export_grant",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
@@ -608,6 +629,12 @@ class ResearchProject:
             validate_report(record)
             if expected_revision != 0 or document_id != record["report_hash"][:32]:
                 raise ValueError("Intensity reports are immutable; create a new report")
+        if kind == "spatial_density_report":
+            from .research_spatial_density import validate_report
+
+            validate_report(record)
+            if expected_revision != 0 or document_id != record["report_hash"][:32]:
+                raise ValueError("Spatial density reports are immutable; create a new report")
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)

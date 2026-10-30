@@ -434,6 +434,53 @@ REQUESTS.update(
                 ),
             }
         ),
+        "spatial_density_preview": _object(
+            {
+                "fields": _array(
+                    {
+                        "oneOf": [
+                            _object(BOUND),
+                            _object(
+                                {**BOUND, "phenotype_group_id": ID, "phenotype_record_sha256": SHA}
+                            ),
+                        ]
+                    },
+                    1,
+                    256,
+                ),
+                "phenotype_name": TEXT,
+                "stratum": _object({"t": INDEX, "z": INDEX}),
+                "condition_pair": _array(TEXT, 2, 2),
+            },
+            ["fields"],
+        ),
+        "spatial_density_save": _object({"preview_id": ID, "preview_hash": SHA}),
+        "spatial_density_query": _object(
+            {
+                "preview_id": ID,
+                "preview_hash": SHA,
+                "report_id": ID,
+                "table": {
+                    "enum": [
+                        "input_snapshots",
+                        "field_rows",
+                        "donor_rows",
+                        "condition_rows",
+                        "paired_rows",
+                        "paired_summary",
+                        "unmatched_donors",
+                        "exclusion_audit",
+                        "cells",
+                    ]
+                },
+                "field_result_id": ID,
+                "offset": INDEX,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            ["table", "offset", "limit"],
+        ),
+        "spatial_density_get": _object({"report_id": ID}),
+        "spatial_density_list": _object({}),
         "intensity_get": _object({"report_id": ID}),
         "intensity_list": _object({}),
         "task_preview_get": _object({"job_id": ID}),
@@ -471,6 +518,10 @@ READ_ACTIONS = frozenset(
         "intensity_preview",
         "intensity_get",
         "intensity_list",
+        "spatial_density_preview",
+        "spatial_density_get",
+        "spatial_density_list",
+        "spatial_density_query",
         "task_preview_get",
     }
 )
@@ -481,6 +532,7 @@ PUBLICATION_ACTIONS = frozenset(
         "classical_run",
         "perinuclear_run",
         "spatial_distance_run",
+        "spatial_density_save",
         "correct_result",
         "roi_add",
         "puncta_run",
@@ -516,6 +568,8 @@ def _execution_contract(name):
             if name in READ_ACTIONS
             else "task-preview"
             if name in PREVIEW_ACTIONS
+            else "immutable-density-report"
+            if name == "spatial_density_save"
             else "immutable-result-revision"
         ],
         "cancellation": "Cancel only the exact policy/session-owned job"
@@ -557,10 +611,14 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "execution": "bounded-read" if name in READ_ACTIONS else "durable-task",
                 **_execution_contract(name),
                 "side_effects": (
-                    "saved-comparison-receipt"
+                    "bounded-preview-cache"
+                    if name == "spatial_density_preview"
+                    else "saved-comparison-receipt"
                     if name == "exploration_compare"
                     else "none"
                     if name in READ_ACTIONS or name in PREVIEW_ACTIONS
+                    else "saved-density-report"
+                    if name == "spatial_density_save"
                     else "new-result-revision"
                 ),
                 "permissions": [
@@ -575,6 +633,8 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "undo": (
                     "No result adopted; retained preview may expire"
                     if name in PREVIEW_ACTIONS
+                    else "Retain the immutable report; preview changed inputs as a new report."
+                    if name == "spatial_density_save"
                     else "Select the immutable parent result; a new result starts without review."
                     if name in TASK_ACTIONS
                     else "not-applicable"

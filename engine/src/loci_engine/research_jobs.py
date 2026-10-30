@@ -29,7 +29,9 @@ def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -
             (
                 doc["data"]
                 for doc in project.documents(
-                    "intensity_export_grant"
+                    "spatial_density_export_grant"
+                    if job["operation"] == "spatial_density_export"
+                    else "intensity_export_grant"
                     if job["operation"] == "intensity_export"
                     else "data_export_grant"
                     if job["operation"] == "scientific_data_export"
@@ -41,7 +43,7 @@ def _export_interruption_detail(project: ResearchProject, job: dict[str, Any]) -
         )
     except (OSError, ValueError, KeyError, TypeError):
         return "Export publication status is unknown; inspect the destination before retrying."
-    if job["operation"] == "intensity_export":
+    if job["operation"] in {"intensity_export", "spatial_density_export"}:
         if not grant or grant.get("plan", {}).get("plan_hash") != request.get("plan_hash"):
             return "Export publication status is unknown; inspect the destination before retrying."
     elif not grant or (
@@ -81,6 +83,7 @@ def reconcile_jobs(project: ResearchProject) -> list[dict[str, Any]]:
                     "large_result_export",
                     "scientific_data_export",
                     "intensity_export",
+                    "spatial_density_export",
                 }:
                     error = "Execution stopped. " + _export_interruption_detail(project, job)
                 project.update_job(
@@ -197,6 +200,14 @@ def submit_job(
             from .research_intensity_export import task_source
 
             source_id = task_source(workbench.project, request)
+        elif operation == "spatial_density_export":
+            from .research_spatial_density import task_source
+
+            source_id = task_source(workbench.project, request)
+        elif operation == "spatial_density_save":
+            from .research_spatial_density import save_task_source
+
+            source_id = save_task_source(workbench.project, request)
         elif operation == "exploration_run":
             from .research_exploration import adoption_receipt
 
@@ -263,6 +274,18 @@ def run_job(
 ) -> dict[str, Any]:
     project = workbench.project
     job = project.job(job_id)
+    from .research_workflow_graph import KEY_PREFIX, guard_node_job
+
+    if job.get("request_key", "").startswith(KEY_PREFIX):
+        outer_guard = publication_guard
+
+        def guard_graph_job() -> None:
+            if outer_guard is not None:
+                outer_guard()
+            guard_node_job(workbench, job)
+
+        publication_guard = guard_graph_job
+        publication_guard()
     if job.get("owner") is not None:
         from .agent_sessions import require_session_authority
 
@@ -337,6 +360,7 @@ def run_job(
                 "large_result_export",
                 "scientific_data_export",
                 "intensity_export",
+                "spatial_density_export",
             }:
                 err_msg = f"{type(exc).__name__}: " + _export_interruption_detail(project, job)
             project.update_job(

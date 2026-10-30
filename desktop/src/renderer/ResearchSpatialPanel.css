@@ -1,0 +1,46 @@
+.spatial-summary {
+  min-width: 0;
+  max-width: 100%;
+  /* Keep intrinsic table widths inside the inspector, including at large text. */
+  contain: inline-size;
+}
+.spatial-counts { font-variant-numeric: tabular-nums; }
+.spatial-counts strong { color: var(--ink); font-weight: 600; }
+.spatial-summary .spatial-table {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.spatial-table table { min-width: 20rem; }
+.spatial-summary .spatial-table :is(th, td) { padding: 8px; text-align: right; }
+.spatial-summary .spatial-table :is(th, td):first-child { text-align: left; }
+.spatial-table thead th { vertical-align: top; }
+.spatial-table thead th span { display: block; font-weight: 400; }
+.spatial-summary .spatial-table tbody th {
+  position: static;
+  color: var(--ink);
+  font-size: inherit;
+  font-weight: 400;
+  background: transparent;
+}
+.spatial-summary .spatial-table tr { cursor: auto; user-select: text; }
+.spatial-undefined { display: inline-block; max-width: 10rem; white-space: normal; }
+.spatial-qc { margin-block: 16px; min-width: 0; }
+.spatial-qc select { width: 100%; min-width: 0; box-sizing: border-box; }
+.spatial-qc-image { margin: 12px 0; min-width: 0; }
+.spatial-qc-image img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: var(--graphite-925);
+}
+.spatial-qc-image figcaption {
+  margin-top: 8px;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+  line-height: 1.45;
+}
+.population-dialog-body .spatial-qc-image img { max-height: 70vh; }

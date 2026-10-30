@@ -13,8 +13,8 @@ segmentation, raw-channel measurement, an optional population filter, human revi
 and export. Select a node to inspect its parameters and input/output meaning.
 Processing nodes can be added, removed and reconnected in their execution order.
 Connections that would put labels or measurements into an image-processing input
-are rejected. The initial version supports one connected sequence, without loops
-or branches.
+are rejected. The linear editor supports one connected sequence. The separate
+composed workflow panel below supports a bounded set of branches and joins.
 
 Name and save the workflow before executing it. Saving checks the expected
 revision, so another edit cannot be silently overwritten. Workflows are stored in
@@ -58,12 +58,41 @@ population, independent of plot sampling or table paging. Filtering does not
 renumber labels or erase the full segmentation. File hashes bind the receipt to
 the published bundle.
 
+## Composed workflows
+
+The **Composed workflows** panel opens saved version 2 definitions, checks exact
+input bindings, starts native runs and advances them one native job at a time.
+Definitions can be created through the scoped MCP interface. The panel does not
+yet provide a graphical editor for authoring every connection.
+
+Version 2 supports acyclic graphs of at most 32 nodes. Its typed adapters are
+`run_recipe`, `classical_run`, `associate_results` and `spatial_distance_run`.
+Nodes accept declared source selections or exact label-result revisions. A join
+can consume outputs from separate upstream nodes; arbitrary operation names,
+scripts, loops and JSON-path wiring are refused. The saved definition, its
+revision/hash, resolved plan and exact input identities remain bound to each run.
+
+Each executing node owns a distinct durable native job. The coordinator persists
+the submission intent before dispatch and reconciles exact job ownership,
+request identity and published output during recovery. Reopening a study does
+not rerun completed nodes. Advance executes the next eligible native job;
+cancellation prevents further dispatch and cooperatively cancels active work.
+An interrupted or failed run remains inspectable rather than becoming a new
+successful result through implicit retry.
+
+Agent workflow control requires its own explicit grant in addition to permission
+for every native operation and source dependency. Inspect permission does not
+authorize execution. Native UI inspection of an agent-owned run does not transfer
+its ownership or execute its pending jobs. Completion does not review results.
+Linear version 1 definitions and their execution semantics remain supported.
+
 ## Scope and design basis
 
 This workspace reuses the validated quantitative recipe engine. It does not make
 every Loci operation an interchangeable graph node. Reference-image flat-field
-recipes, learned-model chaining, temporal loops, arbitrary scripts and general
-branching require separate composition contracts. Unsupported steps are refused.
+recipes, learned-model chaining, temporal loops, arbitrary scripts and adapters
+outside the declared version 2 set require separate contracts. Unsupported steps
+are refused.
 Existing specialist tools remain available in their usual locations.
 
 The integrated editor follows Loci's established image-first visual system.

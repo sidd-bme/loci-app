@@ -1,6 +1,17 @@
 import type { CellposeProfileId } from "../shared/contracts";
+import type { PinnedModelArtifact } from "./model-download";
 
 const CELLPOSE_MODEL_REVISION = "7c61431b5fbb078f3296754bd15d9f51b320f837";
+
+// Official revision metadata, independently matched to the engine's immutable
+// checkpoint registry. Adding a CDN origin requires another source review.
+export const CELLPOSE_DOWNLOADS: readonly PinnedModelArtifact[] = [
+  { id: "cpsam", sha256: "e1440429eb384f95afe32bcba6510f90d518eaedc917ede549bed6804004abe2", sizeBytes: 1_233_587_898 },
+  { id: "cpsam_v2", sha256: "0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667", sizeBytes: 1_233_586_851 },
+].map((artifact) => ({ ...artifact,
+  url: `https://huggingface.co/mouseland/cellpose-sam/resolve/${CELLPOSE_MODEL_REVISION}/${artifact.id}`,
+  redirectOrigins: ["https://us.aws.cdn.hf.co"],
+}));
 
 export const CELLPOSE_MODELS = {
   "cellpose-sam": {

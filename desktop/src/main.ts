@@ -110,8 +110,10 @@ import {
 } from "./main/cellpose-models";
 import {
   cellposeImportDialogDefaultDirectory,
+  ensureCellposeModelImportDirectory,
   openCellposeModelImportDirectory,
 } from "./main/cellpose-model-imports";
+import { CellposeModelDownloads } from "./main/cellpose-model-downloads";
 import {
   resolvedViewerExportTarget,
   suggestedViewerExportFilename,
@@ -3792,6 +3794,18 @@ function registerIpc(): void {
     return mapCellposeStatus(await engine.request<any>("cellpose_status", {
       profile_id: profileId,
     }), profileId);
+  });
+  const cellposeDownloads = new CellposeModelDownloads(ensureCellposeModelImportDirectory,
+    async (profileId, filename) => mapCellposeStatus(await engine.request<any>("import_cellpose_model", {
+      path: filename, profile_id: profileId,
+    }), profileId));
+  ipcMain.handle("loci:download-cellpose-model", async (event, profileIdValue: unknown) => {
+    assertTrustedSender(event);
+    return cellposeDownloads.install(profileIdValue);
+  });
+  ipcMain.handle("loci:cancel-cellpose-download", (event, profileIdValue: unknown) => {
+    assertTrustedSender(event);
+    return cellposeDownloads.cancel(profileIdValue);
   });
   ipcMain.handle("loci:import-cellpose-model", async (event, profileIdValue: unknown) => {
     assertTrustedSender(event);

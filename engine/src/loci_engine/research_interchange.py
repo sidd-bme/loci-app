@@ -74,6 +74,7 @@ _RECORD_KINDS = frozenset(
         "population_group",
         "exploration",
         "intensity_report",
+        "spatial_density_report",
     }
 )
 _MEMBER_PATTERN = re.compile(
@@ -562,6 +563,7 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             "large_export_grant",
             "data_export_grant",
             "intensity_export_grant",
+            "spatial_density_export_grant",
             "labels_import_grant",
         ):
             continue
@@ -579,6 +581,20 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             from .research_intensity_reports import references
 
             references(project, envelope["data"])
+        if envelope["kind"] == "spatial_density_report":
+            from .research_spatial_density import references
+
+            references(project, envelope["data"])
+        if envelope["data"].get("schema") in {"loci.saved-workflow/v2", "loci.workflow-run/v2"}:
+            from .research_workflow_graph import validate_workflow_graph_document
+
+            validate_workflow_graph_document(
+                envelope,
+                snapshot["sources"],
+                snapshot["results"],
+                snapshot["documents"],
+                snapshot["jobs"],
+            )
         if envelope["kind"] == "population_group":
             from .research_groups import validate_group_document
 
@@ -899,6 +915,12 @@ def _validate_document(record: Any, kind: str, expected_id: str) -> dict[str, An
         report = validate_report(record["data"])
         if record["revision"] != 1 or expected_id != report["report_hash"][:32]:
             raise ValueError("Intensity report document identity is invalid")
+    if kind == "spatial_density_report":
+        from .research_spatial_density import validate_report
+
+        report = validate_report(record["data"])
+        if record["revision"] != 1 or expected_id != report["report_hash"][:32]:
+            raise ValueError("Spatial density report document identity is invalid")
     if kind == "model" and record["data"].get("interchange_state") != "model-package-not-included":
         raise ValueError("Interchanged managed model must declare its unavailable package")
     if kind == "policy" and record["data"].get("interchange_state") != (
@@ -1082,6 +1104,7 @@ def _validate_document_crossrefs(
     document: dict[str, Any],
     sources: dict[str, dict[str, Any]],
     results: dict[str, dict[str, Any]],
+    documents: list[dict[str, Any]],
 ) -> None:
     kind = document["kind"]
     data = document["data"]
@@ -1138,6 +1161,10 @@ def _validate_document_crossrefs(
         from .experiment_intensity import validate_references
 
         validate_references(data, results, sources)
+    if kind == "spatial_density_report":
+        from .research_spatial_density import validate_portable_references
+
+        validate_portable_references(data, results, sources, documents)
 
 
 def _validate_comparison_document(
@@ -1513,14 +1540,28 @@ def import_project(
                         raise ValueError("One artifact hash has conflicting descriptors")
             for result in results:
                 _validate_result_crossrefs(result, source_by_id, result_by_id)
+            result_ids = set(result_by_id)
+            jobs = [
+                _validate_job(record, expected_id, result_ids) for record, expected_id in jobs_raw
+            ]
             for document in documents:
                 if document["kind"] == "workspace" and document["id"] != project_meta["project_id"]:
                     raise ValueError("Workspace visibility belongs to a different study")
-                _validate_document_crossrefs(document, source_by_id, result_by_id)
+                _validate_document_crossrefs(document, source_by_id, result_by_id, documents)
                 if document["kind"] in {"workflow", "workflow_run", "workflow_export"}:
                     from .research_workflow import validate_workflow_document
 
-                    validate_workflow_document(document, source_by_id, result_by_id, documents)
+                    if document["data"].get("schema") in {
+                        "loci.saved-workflow/v2",
+                        "loci.workflow-run/v2",
+                    }:
+                        from .research_workflow_graph import validate_workflow_graph_document
+
+                        validate_workflow_graph_document(
+                            document, source_by_id, result_by_id, documents, jobs
+                        )
+                    else:
+                        validate_workflow_document(document, source_by_id, result_by_id, documents)
                 if document["kind"] == "population_group":
                     from .research_groups import validate_group_document
 
@@ -1531,10 +1572,6 @@ def import_project(
                     validate_exploration_document(document, source_by_id, result_by_id, documents)
             if set(artifact_members) != set(referenced_artifacts):
                 raise ValueError("Study artifact members do not exactly match result records")
-            result_ids = set(result_by_id)
-            jobs = [
-                _validate_job(record, expected_id, result_ids) for record, expected_id in jobs_raw
-            ]
             review_by_result = {}
             for review in reviews:
                 if (

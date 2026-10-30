@@ -10,6 +10,13 @@ This is unsigned distance to supplied boundary pixel centers and sampled-area
 density, not anatomical boundary inference or tissue thickness. See
 [the spatial contract](SPATIAL_DISTANCE_BANDS.md).
 
+Current source also adds compact [donor-density reports](SPATIAL_DONOR_DENSITY.md),
+bounded [native workflow composition](WORKFLOWS.md#composed-workflows), retained
+spatial mask inspection, and explicit verified Cellpose checkpoint downloads.
+The new composition supports four declared native adapters; learned-model
+chaining and arbitrary method execution are not included. These source additions
+do not change the published beta or establish scientific validation.
+
 This matrix covers the current source implementation.
 
 This matrix describes implemented subsets, not biological validation or public

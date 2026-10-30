@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import csv
 import hashlib
 import json
 import math
 import sys
+import xml.etree.ElementTree as ET
 from itertools import pairwise
 from pathlib import Path
 
@@ -431,6 +433,79 @@ def verify_record(record, arrays, parents, fixture, expected, band_labels):
         )
 
 
+def verify_export_tables(exported, record):
+    """Check every CSV value and the structured methods blocks independently."""
+    expected_rows = []
+    for row in record["provenance"]["measurements"]:
+        flat = {}
+        for field, value in row.items():
+            if isinstance(value, dict):
+                for name, item in value.items():
+                    if isinstance(item, dict):
+                        for statistic, number in item.items():
+                            flat[f"{field}:{name}:{statistic}"] = number
+                    else:
+                        flat[f"{field}:{name}"] = item
+            elif isinstance(value, list):
+                flat.update(
+                    {f"{field}:{index}": item for index, item in enumerate(value)}
+                )
+            else:
+                flat[field] = value
+        expected_rows.append(flat)
+    with (exported / "objects.csv").open(newline="") as stream:
+        reader = csv.DictReader(stream)
+        rows = list(reader)
+        check(
+            len(reader.fieldnames or []) == len(set(reader.fieldnames or [])),
+            "CSV duplicate columns",
+        )
+    check(len(rows) == len(expected_rows), "CSV object row count")
+    for actual, expected in zip(rows, expected_rows, strict=True):
+        compare(sorted(actual), sorted(expected), "CSV columns")
+        for field, value in expected.items():
+            text = actual[field]
+            if value is None:
+                compare(text, "", f"CSV {field}")
+            elif isinstance(value, bool | str | list | int):
+                compare(text, str(value), f"CSV {field}")
+            else:
+                compare(float(text), value, f"CSV {field}")
+    methods = (exported / "methods.md").read_text()
+    blocks = [
+        json.loads(part.split("```", 1)[0]) for part in methods.split("```json\n")[1:]
+    ]
+    check(len(blocks) == 3, "Methods selected-data, execution and runtime blocks")
+    p = record["provenance"]
+    compare(
+        blocks[0],
+        {"geometry": p["geometry"], "selection": p["selection"]},
+        "methods geometry",
+    )
+    for field, key in (
+        ("spatial", "spatial"),
+        ("spatial_request", "accepted_request"),
+        ("object_analysis", "object_analysis"),
+        ("parent_result", "parent_result"),
+        ("measurement_basis", "measurement_basis"),
+    ):
+        compare(blocks[1][field], p[key], f"methods {field}")
+    compare(blocks[2], p["runtime"], "methods runtime")
+    check(
+        f"Result revision: `{record['revision_hash']}`." in methods,
+        "methods revision identity",
+    )
+    check(
+        f"Source identity: `{record['source_sha256']}`." in methods,
+        "methods source identity",
+    )
+    check(
+        "They do not establish biological accuracy." in methods,
+        "methods evidence limitation",
+    )
+    return len(rows)
+
+
 def verify(study, result_id, root=None, negative_checks=False, exports=()):
     project_class = engine_imports()
     project = project_class(study)
@@ -556,20 +631,97 @@ def verify(study, result_id, root=None, negative_checks=False, exports=()):
             )
             compare(digest(path), entry["sha256"], "export file hash")
             compare(path.stat().st_size, entry["size_bytes"], "export file size")
+        inventory = {entry["name"]: entry for entry in manifest["files"]}
+        compare(
+            sorted(receipt["artifact_files"]),
+            sorted(arrays),
+            "export mapped retained arrays",
+        )
         for name, wanted in arrays.items():
-            for suffix in (".npy", ".ome.tif"):
-                path = exported / (name + suffix)
-                got = (
-                    np.load(path, allow_pickle=False)
-                    if suffix == ".npy"
-                    else tifffile.imread(path)
+            mapping = receipt["artifact_files"][name]
+            filename = mapping["file"]
+            check(
+                Path(filename).name == filename and filename.endswith(".npy"),
+                "plain mapped NPY name",
+            )
+            compare(
+                mapping["sha256"],
+                record["arrays"][name]["sha256"],
+                "export retained array identity",
+            )
+            compare(
+                mapping["size_bytes"],
+                record["arrays"][name]["bytes"],
+                "export retained array bytes",
+            )
+            compare(
+                inventory[filename],
+                {
+                    "name": filename,
+                    "sha256": mapping["sha256"],
+                    "size_bytes": mapping["size_bytes"],
+                },
+                "mapped artifact manifest",
+            )
+            got = np.load(exported / filename, allow_pickle=False)
+            check(got.dtype == wanted.dtype, f"{name}: mapped export dtype")
+            np.testing.assert_array_equal(got, wanted)
+        # The supported export profile emits TIFFs for image and labels. Other
+        # retained masks are lossless NPY artifacts described by artifact_files.
+        tiffs = {name for name in inventory if name.endswith(".ome.tif")}
+        compare(
+            sorted(tiffs), ["image.ome.tif", "labels.ome.tif"], "TIFF export profile"
+        )
+        for filename in sorted(tiffs):
+            wanted = arrays[filename.removesuffix(".ome.tif")]
+            with tifffile.TiffFile(exported / filename) as tif:
+                check(
+                    len(tif.series) == 1 and tif.series[0].axes == "YX",
+                    "export TIFF axes",
                 )
-                check(got.dtype == wanted.dtype, "export dtype")
+                got = tif.asarray()
+                check(got.dtype == wanted.dtype, "export TIFF dtype")
                 np.testing.assert_array_equal(got, wanted)
+                pixels = next(
+                    node
+                    for node in ET.fromstring(tif.ome_metadata).iter()
+                    if node.tag.rsplit("}", 1)[-1] == "Pixels"
+                )
+                for axis, spacing in (("Y", 2.0), ("X", 1.0)):
+                    compare(
+                        float(pixels.attrib[f"PhysicalSize{axis}"]),
+                        spacing,
+                        "export TIFF spacing",
+                    )
+                    check(
+                        pixels.attrib[f"PhysicalSize{axis}Unit"] in {"µm", "μm", "um"},
+                        "export TIFF units",
+                    )
+        csv_count = verify_export_tables(exported, record)
+        compare(receipt["source"]["id"], record["source_id"], "export source id")
+        compare(
+            receipt["source"]["sha256"], record["source_sha256"], "export source hash"
+        )
+        compare(receipt["review"]["result_id"], result_id, "export review binding")
+        compare(
+            receipt["review"]["revision_hash"],
+            record["revision_hash"],
+            "export review revision",
+        )
+        compare(receipt["review"]["disposition"], "reviewed", "export review gate")
+        check(
+            str(root) not in json.dumps(receipt)
+            and str(study) not in json.dumps(receipt),
+            "export provenance must not contain private input paths",
+        )
         checked_exports.append(
             {
                 "path": str(exported),
                 "manifest_sha256": digest(exported / "manifest.json"),
+                "retained_arrays": sorted(receipt["artifact_files"]),
+                "tiffs": sorted(tiffs),
+                "csv_rows": csv_count,
+                "methods_provenance": "exact geometry, inputs, settings, parent analysis and runtime",
             }
         )
     return {

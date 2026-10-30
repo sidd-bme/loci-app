@@ -81,6 +81,25 @@ function renderPanel(
 }
 
 describe("ResearchAgentPanel", () => {
+  it("requires explicit graph access and retains existing native action grants", async () => {
+    // Native destination cancellation still exposes the exact requested scope.
+    const createAgentAccess = vi.fn().mockResolvedValue(null);
+    const api = bridge(vi.fn().mockResolvedValue(validation), createAgentAccess);
+    const { props, rerender } = renderPanel(api);
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
+    fireEvent.click(screen.getByLabelText("Allow durable recipe runs and result reads"));
+    const graph = screen.getByLabelText("Compose reusable workflows from granted actions");
+    expect(graph).not.toBeChecked();
+    fireEvent.click(graph);
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      allow_workflow_graph: true, allow_run: true, actions: [],
+      delegation: expect.objectContaining({ result_scope: "granted-sources" }),
+    })));
+    rerender(<ResearchAgentPanel {...props} source={{ ...source, id: "e".repeat(32) }} />);
+    expect(screen.getByLabelText("Compose reusable workflows from granted actions")).not.toBeChecked();
+  });
   it("refuses automatic/manual validation and access creation while numeric configuration is unfinished", async () => {
     const execute = vi.fn().mockResolvedValue(validation);
     const createAgentAccess = vi.fn();

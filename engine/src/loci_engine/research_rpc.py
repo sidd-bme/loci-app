@@ -48,6 +48,21 @@ def _open(path: str) -> Workbench:
 
 
 def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "research_spatial_density_export_plan":
+        from .research_spatial_density import plan
+
+        exact_keys(params, {"project", "report_id"}, method)
+        return plan(_open(params["project"]).project, params["report_id"])
+    if method == "research_spatial_density_export_grant":
+        from .research_spatial_density import grant
+
+        exact_keys(params, {"project", "report_id", "plan_hash", "destination"}, method)
+        return grant(
+            _open(params["project"]).project,
+            params["report_id"],
+            params["plan_hash"],
+            params["destination"],
+        )
     if method == "research_intensity_export_plan":
         from .research_intensity_export import plan
 

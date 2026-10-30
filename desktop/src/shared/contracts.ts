@@ -554,6 +554,8 @@ export interface LociDesktopApi {
   listProfiles: () => Promise<SegmentationProfile[]>;
   getCellposeStatus: (profileId: CellposeProfileId) => Promise<CellposeStatus>;
   importCellposeModel: (profileId: CellposeProfileId) => Promise<CellposeStatus | null>;
+  downloadCellposeModel: (profileId: CellposeProfileId) => Promise<CellposeStatus>;
+  cancelCellposeDownload: (profileId: CellposeProfileId) => Promise<boolean>;
   openCellposeModelPage: (profileId: CellposeProfileId) => Promise<void>;
   openCellposeModelFolder: (
     profileId: CellposeProfileId,

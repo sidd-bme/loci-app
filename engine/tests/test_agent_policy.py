@@ -1,12 +1,13 @@
 import json
 import os
+import sqlite3
 
 import numpy as np
 import pytest
 import tifffile
 
 from loci_engine.agent_policy import load_policy, write_policy
-from loci_engine.research_project import ResearchProject
+from loci_engine.research_project import ResearchProject, canonical_json
 from loci_engine.workbench import Workbench, runtime_record
 
 
@@ -162,3 +163,86 @@ def test_policy_path_and_project_identity_are_explicit(tmp_path):
     os.chmod(path, 0o600)
     with pytest.raises(ValueError, match="identity"):
         load_policy(path)
+
+
+def test_repeated_policy_identity_guard_does_not_replace_scientific_read_validation(tmp_path):
+    workbench, source, request = make_study(tmp_path)
+    export_root = tmp_path / "exports"
+    export_root.mkdir()
+    path = tmp_path / "agent-policy.json"
+    write_policy(path, workbench.project, specification(workbench, source, request, export_root))
+    policy = load_policy(path)
+    identity = "b" * 32
+    malformed = {
+        "id": identity,
+        "kind": "spatial_density_report",
+        "revision": 1,
+        "updated_at": "2026-01-01T00:00:00Z",
+        "data": {"schema": "loci.spatial-density-report/v2"},
+    }
+    # Simulated on-disk corruption after the policy was created. Authority
+    # rechecks verify identity; neither they nor possession of a policy disclose
+    # this malformed scientific document.
+    with workbench.project.connection() as connection:
+        connection.execute(
+            "INSERT INTO documents VALUES(?,?,?,?)",
+            (malformed["kind"], identity, 1, canonical_json(malformed)),
+        )
+    policy.recheck()
+    with pytest.raises(ValueError):
+        ResearchProject(workbench.project.root)
+    with pytest.raises(ValueError):
+        workbench.execute("spatial_density_get", {"report_id": identity})
+    with pytest.raises(ValueError):
+        load_policy(path)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "project_id",
+        "metadata_schema",
+        "database_schema",
+        "missing_identity",
+        "artifact_link",
+        "database_link",
+        "project_replaced",
+        "export_replaced",
+    ],
+)
+def test_policy_identity_only_guard_still_rejects_replaced_or_invalid_authority(tmp_path, tamper):
+    workbench, source, request = make_study(tmp_path)
+    export_root = tmp_path / "exports"
+    export_root.mkdir()
+    path = tmp_path / "agent-policy.json"
+    write_policy(path, workbench.project, specification(workbench, source, request, export_root))
+    policy = load_policy(path)
+    project = workbench.project
+    workbench.close()
+    if tamper in {"project_id", "metadata_schema", "database_schema", "missing_identity"}:
+        with sqlite3.connect(project.database) as connection:
+            if tamper == "database_schema":
+                connection.execute("PRAGMA user_version=999")
+            elif tamper == "missing_identity":
+                connection.execute("DELETE FROM metadata WHERE key='project'")
+            else:
+                metadata = dict(project.meta)
+                metadata["project_id" if tamper == "project_id" else "schema"] = (
+                    "f" * 32 if tamper == "project_id" else "loci.study/v999"
+                )
+                connection.execute(
+                    "UPDATE metadata SET value=? WHERE key='project'", (canonical_json(metadata),)
+                )
+    elif tamper in {"artifact_link", "database_link"}:
+        original = project.arrays if tamper == "artifact_link" else project.database
+        preserved = original.with_name(original.name + "-preserved")
+        original.rename(preserved)
+        original.symlink_to(preserved, target_is_directory=tamper == "artifact_link")
+    elif tamper == "project_replaced":
+        project.root.rename(project.root.with_name("preserved-study"))
+        ResearchProject.create(project.root, "Replacement")
+    else:
+        export_root.rename(export_root.with_name("preserved-exports"))
+        export_root.mkdir()
+    with pytest.raises((ValueError, PermissionError)):
+        policy.recheck()

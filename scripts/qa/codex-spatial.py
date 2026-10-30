@@ -120,6 +120,7 @@ def main():
         prompt = (
             "You are exercising the real Loci MCP integration on explicitly generated technical images. "
             "Use ONLY tools from loci-spatial-qa. Do not use shell, files, browsing, other servers, or subagents. "
+            "The policy concurrency allowance is one: make every tool call sequentially, awaiting its result before the next. "
             "The input masks are authored geometry, not biological segmentation evidence. "
             "Discover the action guide and inspect the source and object result, including an actual result_view image. "
             "Run tissue distance bands with the exact request below after validating it. Wait for its durable job to succeed. "
@@ -218,6 +219,12 @@ def main():
         ]
         if not calls or any(item.get("server") != "loci-spatial-qa" for item in calls):
             raise AssertionError("Expected actual scoped MCP calls from Codex")
+        succeeded = [item for item in calls if item.get("status") == "completed"]
+        receipt["failed_calls"] = [
+            {key: item.get(key) for key in ("tool", "arguments", "status", "error")}
+            for item in calls
+            if item.get("status") != "completed"
+        ]
         for required in (
             "action_guide",
             "result_view",
@@ -228,8 +235,36 @@ def main():
             "review_result",
             "export_result",
         ):
-            if required not in {item.get("tool") for item in calls}:
-                raise AssertionError("Codex did not exercise " + required)
+            if required not in {item.get("tool") for item in succeeded}:
+                raise AssertionError("Codex did not successfully exercise " + required)
+        for operation in ("population_query", "population_locate"):
+            if not any(
+                item.get("tool") == "inspect_action"
+                and item.get("arguments", {}).get("operation") == operation
+                for item in succeeded
+            ):
+                raise AssertionError("Codex did not successfully inspect " + operation)
+        submissions = [
+            item
+            for item in succeeded
+            if item.get("tool") == "submit_action"
+            and item.get("arguments", {}).get("operation") == "spatial_distance_run"
+        ]
+        if len(submissions) != 2 or submissions[0].get("arguments") != submissions[
+            1
+        ].get("arguments"):
+            raise AssertionError(
+                "Codex did not replay the exact spatial request and key"
+            )
+        images = [
+            block
+            for item in succeeded
+            if item.get("tool") == "result_view"
+            for block in (item.get("result") or {}).get("content", [])
+            if block.get("type") == "image"
+        ]
+        if len(images) < 2:
+            raise AssertionError("Codex did not receive actual input/output MCP images")
         if any(
             event.get("item", {}).get("type") in {"command_execution", "file_change"}
             for event in events

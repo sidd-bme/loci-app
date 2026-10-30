@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
+import { populationDisplayUnit } from "./PopulationChart";
+import PopulationChartDialog from "./PopulationChartDialog";
 import { resultTitle } from "./result-title";
+import "./ResearchSpatialPanel.css";
 
 export type SpatialRecord = {
   schema: "loci.spatial-distance-bands/v1";
@@ -31,16 +34,89 @@ export function spatialRecord(value: unknown): SpatialRecord {
   return record;
 }
 
-export function SpatialSummary({ value }: { value: unknown }) {
+const SPATIAL_VIEWS = {
+  objects: { label: "Objects (including excluded)", array: "labels", basis: "Retained object labels, including excluded objects" },
+  compartment: { label: "Tissue compartment", array: "compartment_labels", basis: "Declared analyzable tissue compartment" },
+  boundary: { label: "Reference boundary", array: "boundary_labels", basis: "Declared boundary pixel centers" },
+  bands: { label: "Distance bands", array: "distance_bands", basis: "Sampled compartment distance bands; zero outside supplied bands" },
+} as const;
+type SpatialViewField = keyof typeof SPATIAL_VIEWS;
+type SpatialView = {
+  result_id: string; revision_hash: string; axis: string; index: number;
+  label_field: SpatialViewField; label_field_basis: string; shape: number[];
+  geometry: ResearchResult["geometry"]; image: string; label_image: string;
+};
+
+function SpatialMaskInspection({ api, result }: { api: ResearchDesktopApi; result: ResearchResult }) {
+  const viewerLane = `spatial-qc-${useId().replace(/[^a-z0-9_-]/giu, "").toLowerCase()}`;
+  const [field, setField] = useState<SpatialViewField>("objects");
+  const [expanded, setExpanded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [response, setResponse] = useState<{ key: string; view?: SpatialView; error?: string } | null>(null);
+  const key = `${result.id}:${result.revision_hash}:${field}:${attempt}`;
+  const expectedShape = JSON.stringify(result.arrays?.[SPATIAL_VIEWS[field].array]?.shape);
+  const expectedGeometry = JSON.stringify(result.geometry);
+  useEffect(() => {
+    let current = true;
+    // Keep this inspection pane independent of the main result viewer. Each
+    // response must still match the selected immutable revision and mask field.
+    void api.execute("result_view", { result_id: result.id, axis: "z", index: 0, labels: true, label_field: field }, { viewer_lane: viewerLane }).then((value) => {
+      const view = value as SpatialView;
+      const geometry = JSON.parse(expectedGeometry ?? "null") as ResearchResult["geometry"];
+      if (!view || view.result_id !== result.id || view.revision_hash !== result.revision_hash ||
+          view.axis !== "z" || view.index !== 0 || view.label_field !== field || view.label_field_basis !== SPATIAL_VIEWS[field].basis ||
+          !Array.isArray(view.shape) || view.shape.length !== 2 || view.shape.some((size) => !Number.isSafeInteger(size) || size <= 0) ||
+          JSON.stringify(view.shape) !== expectedShape ||
+          !view.geometry || view.geometry.axes !== "YX" || view.geometry.unit !== geometry?.unit ||
+          view.geometry.frame !== geometry?.frame || JSON.stringify(view.geometry.affine) !== JSON.stringify(geometry?.affine) ||
+          typeof view.image !== "string" || !view.image.startsWith("data:image/png;base64,") ||
+          typeof view.label_image !== "string" || !view.label_image.startsWith("data:image/png;base64,"))
+        throw new Error("The mask preview does not match this saved revision and label field.");
+      if (current) setResponse({ key, view });
+    }).catch((caught) => {
+      if (current) setResponse({ key, error: caught instanceof Error ? caught.message : "Could not load the saved mask preview." });
+    });
+    return () => { current = false; };
+  }, [api, key, result.id, result.revision_hash, field, viewerLane, expectedShape, expectedGeometry]);
+  const current = response?.key === key ? response : null;
+  const name = SPATIAL_VIEWS[field].label;
+  const preview = current?.view ? <figure className="spatial-qc-image">
+    <img src={current.view.image} alt={`${name} — saved spatial result`} onError={() => setResponse({ key, error: "Could not display the saved mask image. Retry the preview." })} />
+    <figcaption>{current.view.label_field_basis}{field === "bands" && ". Band labels follow the table row order, starting at 1."}</figcaption>
+  </figure> : current?.error ? <p role="alert">{current.error}</p> : <p role="status">Loading saved mask…</p>;
+  return <section className="spatial-qc" aria-label="Inspect saved spatial masks">
+    <label>Inspect saved masks<select aria-label="Spatial mask" value={field} onChange={(event) => {
+      if (Object.hasOwn(SPATIAL_VIEWS, event.target.value)) setField(event.target.value as SpatialViewField);
+    }}>
+      {(Object.keys(SPATIAL_VIEWS) as SpatialViewField[]).map((value) => <option key={value} value={value}>{SPATIAL_VIEWS[value].label}</option>)}
+    </select></label>
+    {preview}
+    {current?.error && <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry mask preview</button>}
+    {current?.view && <button type="button" onClick={() => setExpanded(true)}>Enlarge mask inspection</button>}
+    {expanded && <PopulationChartDialog title="Spatial mask inspection" closeLabel="Close spatial mask inspection" onClose={() => setExpanded(false)}>
+      <p>{name}</p>{preview}
+    </PopulationChartDialog>}
+  </section>;
+}
+
+export function SpatialSummary({ value, api, result }: { value: unknown; api?: ResearchDesktopApi; result?: ResearchResult }) {
   try {
     const record = spatialRecord(value);
-    return <section aria-label="Saved tissue distance bands">
+    const counted = record.bands.reduce((sum, band) => sum + band.object_count, 0);
+    if (!Number.isSafeInteger(counted) || (result && (!Number.isSafeInteger(result.object_count) || result.object_count < counted)))
+      throw new Error("The saved band counts exceed the retained object count or are invalid.");
+    const distanceUnit = populationDisplayUnit(record.distance_unit);
+    const areaUnit = populationDisplayUnit(record.area_unit).replace("^2", "²");
+    return <section className="spatial-summary" aria-label="Saved tissue distance bands">
+      <p className="spatial-counts"><strong>{counted} counted in bands</strong>{result && <> of {result.object_count} retained objects<br /><span>{result.object_count - counted} excluded from bands</span></>}</p>
       <p>Distances to the declared boundary pixels. Area covers the sampled compartment only.</p>
-      <div className="research-result-table" role="region" aria-label="Tissue distance table" tabIndex={0}>
-        <table><thead><tr><th>Band ({record.distance_unit})</th><th>Objects</th><th>Area ({record.area_unit})</th><th>Objects / {record.area_unit}</th></tr></thead>
-          <tbody>{record.bands.map((band) => <tr key={band.lower}><th scope="row">[{band.lower}, {band.upper})</th><td>{band.object_count}</td><td>{band.area}</td><td>{band.density === null ? "Undefined: no sampled area" : band.density.toPrecision(6)}</td></tr>)}</tbody>
+      <div className="research-result-table spatial-table" role="region" aria-label="Tissue distance table" tabIndex={0}>
+        <table><thead><tr><th scope="col">Band <span>({distanceUnit})</span></th><th scope="col">Count</th><th scope="col">Area <span>({areaUnit})</span></th><th scope="col">Density <span>(objects/{areaUnit})</span></th></tr></thead>
+          <tbody>{record.bands.map((band) => <tr key={band.lower}><th scope="row">[{band.lower}, {band.upper})</th><td>{band.object_count}</td><td>{band.area}</td><td title={band.density === null ? undefined : String(band.density)}>{band.density === null ? <span className="spatial-undefined">Undefined: no sampled area</span> : band.density.toPrecision(6)}</td></tr>)}</tbody>
         </table>
-      </div><p>Use Statistics to plot distance and select individual objects. Correct the input masks, then rerun to create a new version.</p>
+      </div>
+      {api && result && <SpatialMaskInspection key={`${result.id}:${result.revision_hash}`} api={api} result={result} />}
+      <p>Use Statistics to plot distance and select individual objects. Correct the input masks, then rerun to create a new version.</p>
     </section>;
   } catch (error) { return <p role="alert">{(error as Error).message}</p>; }
 }

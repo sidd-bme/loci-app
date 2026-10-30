@@ -62,6 +62,14 @@ describe("preload Cellpose bridge", () => {
     expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:compute-targets", "use", { id: "a".repeat(32), revision: 3 });
   });
 
+  it("forwards density report identities to dedicated native export channels without a renderer destination", async () => {
+    const reportId = "a".repeat(32), planHash = "b".repeat(64), key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    await researchApi.planSpatialDensityExport?.(reportId, key);
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:spatial-density-export-plan", reportId, key);
+    await researchApi.exportSpatialDensityReport?.(reportId, planHash, key);
+    expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:spatial-density-export-package", reportId, planHash, key);
+  });
+
   it("forwards only a correction-effect receipt hash to the native export picker", async () => {
     await researchApi.exportCorrectionEffect?.("a".repeat(64));
     expect(electronMocks.invoke).toHaveBeenCalledWith("loci-research:export-correction-effect", "a".repeat(64));
@@ -221,6 +229,8 @@ describe("preload Cellpose bridge", () => {
   it.each([
     ["getCellposeStatus", "loci:cellpose-status"],
     ["importCellposeModel", "loci:import-cellpose-model"],
+    ["downloadCellposeModel", "loci:download-cellpose-model"],
+    ["cancelCellposeDownload", "loci:cancel-cellpose-download"],
     ["openCellposeModelPage", "loci:open-cellpose-model-page"],
     ["openCellposeModelFolder", "loci:open-cellpose-model-folder"],
   ] as const)("forwards the selected profile through %s", async (method, channel) => {

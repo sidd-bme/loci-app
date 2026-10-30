@@ -423,6 +423,25 @@ Correct the inputs and rerun; direct correction of the derivative is refused.
 See [the endpoint and persistence contract](SPATIAL_DISTANCE_BANDS.md). This
 operation does not infer epidermis or establish tissue thickness.
 
+For every durable job, wait until `job_status` reports a terminal state and
+`owned_worker_active=false` before issuing another operation under concurrency 1.
+A result may publish before its worker exits; that interval still consumes the
+owned worker slot. A capacity refusal is retryable after the worker exits.
+
+`spatial_density_preview` aggregates exact distance results into donor-level
+endpoints and returns a bounded summary plus a retained preview token.
+`spatial_density_save` takes that token; it does not accept an echoed report.
+Use `spatial_density_get` for saved summaries and `spatial_density_query` for
+bounded pages bound to one report hash. Follow the returned `next_offset`.
+Source/result authorization is checked recursively across all inputs, including
+phenotype groups. See [the donor-density contract](SPATIAL_DONOR_DENSITY.md).
+
+The version 2 `workflow_graph_*` actions inspect and control typed native
+composition. `workflow_graph_inspect` and `workflow_graph_control` are explicit
+policy capabilities, and neither substitutes for the underlying action/source
+grants. Every child executes under its own durable job and original owner.
+See [composed workflows](WORKFLOWS.md#composed-workflows) for adapters and recovery.
+
 Read `correction_info` before editing: `expected_input_sha256` is the label-array
 hash, not `revision_hash`. Corrections preserve the parent, remeasure the changed
 labels and start without review. Read `review_history` before `review_result`;

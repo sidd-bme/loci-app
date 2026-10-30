@@ -215,3 +215,35 @@ def test_portable_interchange_preserves_spatial_arrays_and_inputs(spatial, tmp_p
     record = restored.result(result["id"])
     assert record == wb.project.result(result["id"])
     validate_arrays(record, {k: restored.load_array(v) for k, v in record["arrays"].items()})
+
+
+def test_retained_spatial_label_views_match_exact_arrays(spatial):
+    import base64
+    import io
+
+    from PIL import Image
+
+    wb, request, inputs = spatial
+    result = wb.execute("spatial_distance_run", request)["result"]
+    record = wb.project.result(result["id"])
+    default = wb.result_view({"result_id": result["id"]})
+    assert default["label_field"] == "objects"
+    for field, array in {
+        "objects": "labels",
+        "compartment": "compartment_labels",
+        "boundary": "boundary_labels",
+        "bands": "distance_bands",
+    }.items():
+        view = wb.result_view({"result_id": result["id"], "label_field": field})
+        assert view["revision_hash"] == result["revision_hash"]
+        assert view["label_field"] == field and view["label_field_basis"]
+        image = np.asarray(
+            Image.open(io.BytesIO(base64.b64decode(view["label_image"].split(",")[1])))
+        )
+        labels = wb.project.load_array(record["arrays"][array])
+        np.testing.assert_array_equal(image[..., 3], np.where(labels > 0, 150, 0))
+    for field in ("nuclei", "rings", "ambiguous", "unknown", 1):
+        with pytest.raises(ValueError, match="label fields"):
+            wb.result_view({"result_id": result["id"], "label_field": field})
+    with pytest.raises(ValueError, match="Alternative"):
+        wb.result_view({"result_id": inputs[0]["id"], "label_field": "boundary"})

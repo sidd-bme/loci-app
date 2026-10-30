@@ -1,0 +1,28 @@
+.composed-workflows { flex: 0 1 auto; max-height: 70%; overflow: auto; border-top: 1px solid var(--line-strong); min-width: 0; }
+.composed-workflows > summary { padding: 12px 16px; font-weight: 600; cursor: pointer; color: var(--ink); }
+.composed-workflows > summary:focus-visible, .composed-workflow-panel :is(button, select, summary):focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
+.composed-workflow-panel { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px; color: var(--ink); font-size: var(--type-md); min-width: 0; }
+.composed-workflow-panel p { margin: 0; line-height: 1.5; color: var(--ink-secondary); }
+.composed-workflow-panel label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.composed-workflow-panel label > span, .composed-workflow-panel small, .composed-identity { color: var(--ink-secondary); font-size: var(--type-sm); }
+.composed-workflow-panel select { width: 100%; min-width: 0; min-height: 34px; font: inherit; color: var(--ink); background: var(--graphite-950); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px 8px; }
+.composed-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
+.composed-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.composed-workflow-panel button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--graphite-850); color: var(--ink); cursor: pointer; }
+.composed-workflow-panel button:hover:not(:disabled) { background: var(--graphite-750); border-color: var(--mineral); }
+.composed-workflow-panel button.primary { background: var(--action-background); color: var(--action-foreground); border-color: var(--action-background); }
+.composed-workflow-panel button:disabled { opacity: .5; cursor: default; }
+.composed-workflow-panel summary { cursor: pointer; line-height: 1.5; }
+.composed-workflow-panel pre { margin: 8px 0; padding: 8px; max-height: 220px; overflow: auto; background: var(--graphite-950); color: var(--ink-secondary); font-size: var(--type-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
+.composed-workflow-panel code, .composed-workflow-panel small { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.composed-definition, .composed-run-nodes { margin: 8px 0 0; padding-left: 20px; }
+.composed-definition > li { margin-bottom: 12px; }
+.composed-current-run { border-top: 1px solid var(--line-strong); padding-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.composed-run-heading { display: flex; justify-content: space-between; gap: 8px; }
+.composed-run-nodes { list-style: none; padding: 0; margin: 0; }
+.composed-run-nodes > li { padding: 10px 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+.composed-run-nodes > li > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.composed-run-nodes span, .composed-run-nodes code { color: var(--ink-secondary); font-size: var(--type-sm); }
+.composed-workflow-panel [role=alert] { color: var(--error); }
+
+.composed-workflow-panel button.primary:hover:not(:disabled) { background: var(--action-hover); border-color: var(--action-hover); }
