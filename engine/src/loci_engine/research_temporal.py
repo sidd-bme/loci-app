@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from .quantitative import exact_keys, finite_number, integer
+from .quantitative import (
+    DEFAULT_WORKING_BYTES,
+    MAX_WORKING_BYTES,
+    exact_keys,
+    finite_number,
+    integer,
+)
 from .research_project import canonical_json, checked_id, checked_text, parse_json
 from .temporal import (
     Detection,
@@ -129,13 +135,46 @@ def metrics_summary(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str
     }
 
 
+def _settings(provenance):
+    settings = provenance.get("tracking_settings")
+    if not isinstance(settings, dict) or settings.get("method") != (
+        "distance-gated-one-to-one-linear-sum-assignment"
+    ):
+        raise ValueError("Tracking requires its retained code-owned automatic method")
+    registration = settings.get("registration")
+    if not isinstance(registration, dict) or registration.get("method") not in {
+        "none",
+        "translation",
+    }:
+        raise ValueError("Tracking registration method must be explicit")
+    exact_keys(
+        registration,
+        {"method", "upsample_factor", "min_normalized_correlation"},
+        "retained tracking registration",
+    )
+    checked_text(settings.get("time_declaration"), "Tracking seconds declaration", 1024)
+    budget = integer(
+        settings.get("working_bytes", DEFAULT_WORKING_BYTES),
+        "retained tracking working bytes",
+        1024**2,
+        MAX_WORKING_BYTES,
+    )
+    return settings, registration, budget
+
+
 def validate_inputs(result: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:
-    """Pure checks against original observations and an exact correction parent."""
+    """Pixel-free original/automatic-graph proof; translations also need array replay.
+
+    Call validate_registration_arrays only after source authorization, or with
+    verified staged arrays before portable publication. A transform being
+    internally consistent does not establish its image-derived estimate.
+    """
     from .workbench import geometry_from_dict
 
     validate_record(result)
     p = result["provenance"]
     graph = _graph_from_record(p["tracking"])
+    settings, registration_settings, _ = _settings(p)
     inputs = p.get("temporal_inputs")
     if not isinstance(inputs, list) or len(inputs) != len(graph.frames):
         raise ValueError("Tracking inputs differ from the exact scheduled frames")
@@ -176,8 +215,16 @@ def validate_inputs(result: dict[str, Any], results: dict[str, dict[str, Any]]) 
         if acquisition in acquisitions:
             raise ValueError("One acquisition cannot represent two tracking observations")
         acquisitions.add(acquisition)
-        first = original if first is None else first
+        is_reference = first is None
+        first = original if is_reference else first
         registration = binding.get("registration")
+        if registration_settings["method"] == "none" and registration is not None:
+            raise ValueError("Tracking registration method none forbids retained transforms")
+        if registration_settings["method"] == "translation":
+            if is_reference and registration is not None:
+                raise ValueError("Tracking reference observation cannot carry a registration shift")
+            if not is_reference and not isinstance(registration, dict):
+                raise ValueError("Tracking translation requires its image-derived transform")
         shift = np.zeros(3)
         if registration is not None:
             shift = np.asarray(registration.get("moving_to_reference_shift_world"), dtype=float)
@@ -217,6 +264,14 @@ def validate_inputs(result: dict[str, Any], results: dict[str, dict[str, Any]]) 
     if correction is None:
         if result.get("parent_id") != first["id"]:
             raise ValueError("Tracking lost its exact first observation parent")
+        automatic = track_detections(
+            graph.frames,
+            max_distance=settings.get("max_distance"),
+            max_gap_frames=settings.get("max_gap_frames", 0),
+            ambiguity_distance=settings.get("ambiguity_distance", 1e-9),
+        )
+        if canonical_json(_graph_record(automatic)) != canonical_json(p["tracking"]):
+            raise ValueError("Stored automatic tracking differs from its retained method/settings")
         return
     if (
         not isinstance(correction, dict)
@@ -255,7 +310,67 @@ def validate_inputs(result: dict[str, Any], results: dict[str, dict[str, Any]]) 
         raise ValueError("Tracking corrected graph differs from its exact parent/edit ledger")
 
 
-def project_inputs(project, result, *, check=None) -> None:
+def validate_registration_arrays(result, results, *, array_loader, check=None, working_bytes=None):
+    """Reproduce translation from exact retained original images, after authority.
+
+    This is intentionally separate from metadata-only project/portable preflight:
+    opening a policy-scoped study must not decode ungranted source pixels. The
+    caller supplies its verified loader and applies source/resource authority.
+    Legacy records without a retained budget use the original 512 MiB default;
+    a caller cap can only reduce the declared working-memory allowance.
+    """
+    from .workbench import geometry_from_dict
+
+    validate_inputs(result, results)
+    p = result["provenance"]
+    _, registration, budget = _settings(p)
+    if registration["method"] == "none":
+        return
+    if working_bytes is not None:
+        budget = min(
+            budget,
+            integer(working_bytes, "tracking replay working bytes", 1024**2, MAX_WORKING_BYTES),
+        )
+    observed = [binding for binding in p["temporal_inputs"] if not binding.get("missing_reason")]
+    geometry = geometry_from_dict(p["geometry"])
+    for binding in observed:
+        descriptor = results[binding["result_id"]]["arrays"]["image"]
+        shape = descriptor.get("shape")
+        if (
+            not isinstance(shape, list)
+            or len(shape) != len(geometry.axes)
+            or any(type(length) is not int or length < 1 for length in shape)
+        ):
+            raise ValueError("Tracking registration replay requires an exact scalar image shape")
+        if math.prod(shape) * 128 > budget:
+            raise ValueError(
+                "Tracking registration replay exceeds its bounded working-memory budget"
+            )
+    if check:
+        check()
+    reference = array_loader(results[observed[0]["result_id"]]["arrays"]["image"])
+    for binding in observed[1:]:
+        if check:
+            check()
+        moving = array_loader(results[binding["result_id"]]["arrays"]["image"])
+        estimate = estimate_translation(
+            reference,
+            moving,
+            geometry,
+            upsample_factor=registration.get("upsample_factor", 20),
+            min_normalized_correlation=registration.get("min_normalized_correlation", 0.25),
+            working_bytes=budget,
+        )
+        if canonical_json(asdict(estimate)) != canonical_json(binding["registration"]):
+            raise ValueError("Stored tracking translation differs from the exact original images")
+        del moving
+    if check:
+        check()
+
+
+def project_inputs(
+    project, result, *, check=None, verify_arrays=False, working_bytes=None
+) -> dict[str, dict[str, Any]]:
     """Bound/hash-check original snapshots without recursive forged graph reads."""
     records = {result["id"]: result}
     pending = [(result, 0)]
@@ -310,6 +425,15 @@ def project_inputs(project, result, *, check=None) -> None:
             pending.append((parent, depth + 1))
     for current in tracks:
         validate_inputs(current, records)
+        if verify_arrays:
+            validate_registration_arrays(
+                current,
+                records,
+                array_loader=project.load_array,
+                check=check,
+                working_bytes=working_bytes,
+            )
+    return records
 
 
 def _metrics_page(result, metrics, request):
@@ -345,22 +469,31 @@ def _metrics_page(result, metrics, request):
 
 
 def _tracking_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
-    result = workbench.project.result(checked_id(request.get("result_id")))
+    result = workbench.project.result(
+        checked_id(request.get("result_id")), verify_scientific_arrays=False
+    )
     if result["revision_hash"] != request.get("revision_hash"):
         raise ValueError("Select the exact temporal result revision")
     if "tracking" not in result["provenance"]:
         raise ValueError("The selected result contains no temporal observation graph")
+    workbench.project.validate_result_arrays(result)
     return result
 
 
-def _input_guard(workbench: Workbench, bindings: list[dict[str, Any]]) -> None:
+def _input_guard(
+    workbench: Workbench, bindings: list[dict[str, Any]], *, verify_arrays=False
+) -> None:
     for item in bindings:
         if item.get("missing_reason"):
             continue
-        actual = workbench.project.result(item["result_id"])
+        actual = workbench.project.result(item["result_id"], verify_scientific_arrays=False)
         if actual["revision_hash"] != item["revision_hash"]:
             raise ValueError("A bound temporal result changed before publication")
         workbench.project.source(actual["source_id"], verify=True)
+        if verify_arrays:
+            workbench.project.validate_result_arrays(actual)
+            for descriptor in actual["arrays"].values():
+                workbench.project.verify_array(descriptor)
 
 
 def execute_temporal(
@@ -525,9 +658,12 @@ def execute_temporal(
                 frames.append(TimeFrame(frame_id, time_s, ()))
                 bindings.append({"frame_id": frame_id, "time_s": time_s, "missing_reason": reason})
                 continue
-            result = workbench.project.result(checked_id(raw_frame.get("result_id")))
+            result = workbench.project.result(
+                checked_id(raw_frame.get("result_id")), verify_scientific_arrays=False
+            )
             if result["revision_hash"] != raw_frame.get("revision_hash"):
                 raise ValueError("Every tracked frame must bind to its exact result revision")
+            workbench.project.validate_result_arrays(result)
             record = result["provenance"]
             acquisition = (
                 result["source_id"],
@@ -614,6 +750,7 @@ def execute_temporal(
                 "registration": registration,
                 "time_declaration": declaration,
                 "method": "distance-gated-one-to-one-linear-sum-assignment",
+                "working_bytes": budget,
             },
             "measurement_basis": (
                 "original-frame-object-measurements; "
@@ -646,10 +783,13 @@ def execute_temporal(
     def guard() -> None:
         if publication_guard is not None:
             publication_guard()
-        _input_guard(workbench, provenance["temporal_inputs"])
+        _input_guard(workbench, provenance["temporal_inputs"], verify_arrays=True)
         if (
             operation == "correct_tracks"
-            and workbench.project.result(parent["id"])["revision_hash"] != parent["revision_hash"]
+            and workbench.project.result(parent["id"], verify_scientific_arrays=False)[
+                "revision_hash"
+            ]
+            != parent["revision_hash"]
         ):
             raise ValueError("Tracking correction parent changed before publication")
 

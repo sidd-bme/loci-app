@@ -43,7 +43,7 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
         if len(results) >= 1024 or len(visiting) >= 64:
             raise PermissionError("Result dependencies exceed the bounded study grant")
         visiting.add(identity)
-        record = workbench.project.result(identity)
+        record = workbench.project.result(identity, verify_scientific_arrays=False)
         provenance = record["provenance"]
         recipe = provenance.get("recipe", {})
         if not isinstance(recipe, dict):
@@ -103,4 +103,12 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
         visiting.remove(identity)
         return record
 
-    return visit(result_id)
+    selected = visit(result_id)
+    # Resolve every dependency/source grant before reading any retained pixels.
+    # Validate these exact records, without a second record lookup that could
+    # replace the already-authorized source/revision between the two phases.
+    for record in results.values():
+        workbench.project.validate_result_arrays(
+            record, check=policy.recheck, working_bytes=policy.memory_bytes
+        )
+    return selected

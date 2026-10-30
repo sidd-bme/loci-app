@@ -35,6 +35,8 @@ def make_parent(tmp_path):
 
     def make(volume=False, calibrated=True, labels=None):
         shape = (5, 8, 10) if volume else (8, 10)
+        if labels is not None:
+            shape = labels.shape
         image = np.arange(math.prod(shape), dtype=np.uint16).reshape(shape)
         metadata = {"axes": "ZYX" if volume else "YX"}
         if calibrated:

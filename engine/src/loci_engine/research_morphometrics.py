@@ -678,7 +678,7 @@ class _ArrayDigest:
         pass
 
 
-def validate_arrays(result, arrays, *, check=None):
+def validate_arrays(result, arrays, *, check=None, working_bytes=None):
     """Verify exact NPY identities and recompute only the new scientific endpoints."""
     validate_record(result)
     if set(arrays) != {"image", "labels"}:
@@ -698,13 +698,61 @@ def validate_arrays(result, arrays, *, check=None):
         if digest.size != descriptor["bytes"] or digest.hash.hexdigest() != descriptor["sha256"]:
             raise ValueError("Morphometrics retained array hash disagrees")
     record = result["provenance"]["morphometrics"]
+    budget = record["resource_estimate"]["working_bytes"]
+    if working_bytes is not None:
+        budget = min(budget, working_bytes)
     measured = measure_morphometrics(
         arrays["labels"],
         _geometry(result["provenance"]["geometry"]),
-        working_bytes=record["resource_estimate"]["working_bytes"],
+        working_bytes=budget,
         check=check,
     )
     _compare_rows(result["provenance"]["measurements"], measured["rows"])
+
+
+def validate_project_arrays(project, result, *, arrays=None, check=None, working_bytes=None):
+    """Verify numeric endpoints before use, caching only exact validated records.
+
+    Cache hits still hash/verify both retained artifacts. The cache contains no
+    pixels or rows, is bounded per open project, and cannot authorize a rewritten
+    result even when its record hash has been recomputed by an external writer.
+    """
+    kernel_budget = None
+    if working_bytes is not None:
+        budget = integer(working_bytes, "morphometrics replay budget", 1024**2, MAX_WORKING_BYTES)
+        overhead = 2 * sum(d["bytes"] for d in result["arrays"].values())
+        overhead += 16 * len(canonical_json(result).encode())
+        required = estimated_working_bytes(
+            math.prod(result["arrays"]["labels"]["shape"]),
+            len(result["provenance"]["measurements"]),
+        )
+        kernel_budget = budget - overhead
+        if required > kernel_budget:
+            raise ValueError(
+                "Morphometrics replay exceeds current working-memory budget before decode"
+            )
+    key = _hash({k: value for k, value in result.items() if k != "revision_hash"})
+    cache = project._morphometrics_validation_cache
+    if key not in cache:
+        if arrays is None:
+            arrays = {}
+            for name, descriptor in result["arrays"].items():
+                if check:
+                    check()
+                arrays[name] = project.load_array(descriptor)
+        validate_arrays(result, arrays, check=check, working_bytes=kernel_budget)
+    # Source arrays can change independently of SQLite; a validated record hash
+    # alone must never suppress artifact-integrity checks on later reads.
+    for descriptor in result["arrays"].values():
+        if check:
+            check()
+        project.verify_array(descriptor)
+    if check:
+        check()
+    if key not in cache:
+        if len(cache) >= 128:
+            del cache[next(iter(cache))]
+        cache[key] = None
 
 
 def _compare_rows(rows, measured):

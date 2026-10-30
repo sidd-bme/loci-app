@@ -392,7 +392,7 @@ def test_native_export_preserves_every_mask_csv_value_and_plot_gaps(wound, tmp_p
         assert (target / ("labels-" + artifact["sha256"] + ".npy")).read_bytes() == (
             wb.project.arrays / (artifact["sha256"] + ".npy")
         ).read_bytes()
-    svg = ET.fromstring((target / "closure.svg").read_text())
+    svg = ET.fromstring((target / "closure.svg").read_text(encoding="utf-8"))
     ns = {"s": "http://www.w3.org/2000/svg"}
     assert len(svg.findall(".//s:circle", ns)) == 4
     lines = [node for node in svg.findall(".//s:path", ns) if node.get("stroke") == "#285c8d"]

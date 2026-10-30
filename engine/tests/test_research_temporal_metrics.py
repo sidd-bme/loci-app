@@ -9,12 +9,21 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+import test_research_temporal as temporal_fixtures
 import tifffile
+from test_research_interchange import _rewrite
 
 from loci_engine.research_export import export_research_result
 from loci_engine.research_interchange import export_project, import_project
 from loci_engine.research_project import ResearchProject, canonical_json
-from loci_engine.research_temporal import PAGE_BYTES, _graph_from_record, _graph_record
+from loci_engine.research_temporal import (
+    PAGE_BYTES,
+    _graph_from_record,
+    _graph_record,
+    project_inputs,
+    validate_inputs,
+    validate_registration_arrays,
+)
 from loci_engine.temporal_metrics import measure_trajectories
 from loci_engine.workbench import Workbench
 
@@ -80,6 +89,11 @@ def scene(tmp_path):
     yield make
     for wb in opened:
         wb.close()
+
+
+@pytest.fixture
+def registered_observations(tmp_path):
+    yield from temporal_fixtures.observations.__wrapped__(tmp_path)
 
 
 def bound(result):
@@ -266,7 +280,10 @@ def test_legacy_reads_derive_without_rewrite_and_export_adds_xyz_tables(scene, t
     reopened.close()
 
 
-def test_self_consistent_altered_graph_and_metrics_still_fail_original_observation_binding(scene):
+@pytest.mark.parametrize("matching_registration", [False, True])
+def test_self_consistent_altered_graph_and_metrics_still_fail_original_observation_binding(
+    scene, matching_registration
+):
     wb, _, request, _ = scene()
     bad = publish(wb, request)
     graph = _graph_from_record(bad["provenance"]["tracking"])
@@ -295,9 +312,203 @@ def test_self_consistent_altered_graph_and_metrics_still_fail_original_observati
     forged = replace(graph, frames=tuple(frames), edges=edges)
     bad["provenance"]["tracking"] = _graph_record(forged)
     bad["provenance"]["trajectory_metrics"] = measure_trajectories(forged, "um")
+    if matching_registration:
+        # A self-consistent coordinate shift is still forbidden when the
+        # retained method explicitly states there is no registration.
+        bad["provenance"]["temporal_inputs"][1]["registration"] = {
+            "moving_to_reference_shift_index": [0, 0, 0.25],
+            "moving_to_reference_shift_world": [0.25, 0, 0],
+        }
     rewrite(wb.project, bad)
-    with pytest.raises(ValueError, match="original observations"):
+    with pytest.raises(ValueError, match="original observations|method none forbids"):
         wb.project.result(bad["id"])
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_automatic_graph_cannot_drop_edge_without_correction_ledger(scene, legacy):
+    wb, _, request, _ = scene()
+    bad = publish(wb, request)
+    graph = _graph_from_record(bad["provenance"]["tracking"])
+    forged = replace(graph, edges=graph.edges[1:])
+    bad["provenance"]["tracking"] = _graph_record(forged)
+    if legacy:
+        bad["provenance"].pop("trajectory_metrics")
+        bad["provenance"]["tracking_settings"].pop("working_bytes", None)
+    else:
+        bad["provenance"]["trajectory_metrics"] = measure_trajectories(forged, "um")
+    rewrite(wb.project, bad)
+    with pytest.raises(ValueError, match="automatic tracking"):
+        wb.project.result(bad["id"])
+
+
+def forged_translation(result):
+    bad = copy.deepcopy(result)
+    graph = _graph_from_record(bad["provenance"]["tracking"])
+    frames = list(graph.frames)
+    frames[1] = replace(
+        frames[1],
+        detections=tuple(
+            replace(
+                d, centroid_world_xyz=(d.centroid_world_xyz[0] + 0.25, *d.centroid_world_xyz[1:])
+            )
+            for d in frames[1].detections
+        ),
+    )
+    nodes = {
+        (frame.frame_id, d.label): d.centroid_world_xyz
+        for frame in frames
+        for d in frame.detections
+    }
+    edges = tuple(
+        replace(
+            edge,
+            cost=math.dist(
+                nodes[(edge.source_frame_id, edge.source_label)],
+                nodes[(edge.target_frame_id, edge.target_label)],
+            ),
+        )
+        for edge in graph.edges
+    )
+    forged = replace(graph, frames=tuple(frames), edges=edges)
+    bad["provenance"]["tracking"] = _graph_record(forged)
+    bad["provenance"]["trajectory_metrics"] = measure_trajectories(forged, "um")
+    registration = bad["provenance"]["temporal_inputs"][1]["registration"]
+    registration["moving_to_reference_shift_index"][1] += 0.5
+    registration["moving_to_reference_shift_world"][0] += 0.25
+    return bad
+
+
+def test_translation_replay_requires_authoritative_original_images(
+    registered_observations, monkeypatch
+):
+    wb, path, originals = registered_observations
+    before = path.read_bytes()
+    spec = {
+        **temporal_fixtures.request(originals),
+        "registration": {"method": "translation", "upsample_factor": 1},
+    }
+    good = publish(wb, spec)
+    records = {record["id"]: record for record in originals}
+    validate_registration_arrays(good, records, array_loader=wb.project.load_array)
+    bad = forged_translation(good)
+    # Metadata authority/preflight does not touch any source pixels. It is a
+    # necessary structural check, not acceptance of an image-derived estimate.
+    with monkeypatch.context() as patch:
+        patch.setattr(wb.project, "load_array", lambda *_: pytest.fail("Preflight decoded pixels"))
+        validate_inputs(bad, records)
+        project_inputs(wb.project, bad, verify_arrays=False)
+    with pytest.raises(ValueError, match="exact original images"):
+        validate_registration_arrays(bad, records, array_loader=wb.project.load_array)
+    rewrite(wb.project, bad)
+    with pytest.raises(ValueError, match="exact original images"):
+        wb.project.result(bad["id"])
+    assert path.read_bytes() == before
+    assert all(wb.project.result(record["id"]) == record for record in originals)
+
+
+def test_valid_legacy_translation_is_read_without_rewriting(registered_observations):
+    wb, _, originals = registered_observations
+    result = publish(
+        wb,
+        {
+            **temporal_fixtures.request(originals),
+            "registration": {"method": "translation", "upsample_factor": 1},
+        },
+    )
+    result["provenance"].pop("trajectory_metrics")
+    result["provenance"]["tracking_settings"].pop("working_bytes")
+    rewrite(wb.project, result)
+    before = canonical_json(result)
+    read = wb.execute("tracking_result", bound(result))
+    assert read["trajectory_metrics"]["storage"] == "derived-from-legacy-graph"
+    assert canonical_json(wb.project.result(result["id"])) == before
+
+
+def test_translation_replay_budget_refuses_before_array_loader(
+    registered_observations, tmp_path, monkeypatch
+):
+    wb, path, _ = registered_observations
+    padded = np.pad(tifffile.imread(path), ((0, 0), (0, 96), (0, 92)))
+    bigger = tmp_path / "generated-registration-budget.ome.tif"
+    tifffile.imwrite(
+        bigger,
+        padded,
+        ome=True,
+        photometric="minisblack",
+        metadata={
+            "axes": "TYX",
+            "PhysicalSizeX": 0.5,
+            "PhysicalSizeY": 0.5,
+            "PhysicalSizeXUnit": "µm",
+            "PhysicalSizeYUnit": "µm",
+        },
+    )
+    source = wb.import_native(str(bigger))
+    originals = []
+    for t in range(3):
+        output = wb.execute(
+            "run_recipe",
+            {
+                "source_id": source["id"],
+                "selection": {"t": t},
+                "recipe": {
+                    "segmentation": {"method": "components", "threshold": 50},
+                    "measurement_channels": [0],
+                },
+            },
+        )
+        originals.append(wb.project.result(output["result"]["id"]))
+    good = publish(
+        wb,
+        {
+            **temporal_fixtures.request(originals),
+            "working_bytes": 8 * 1024**2,
+            "registration": {"method": "translation", "upsample_factor": 1},
+        },
+    )
+    records = {record["id"]: record for record in originals}
+    monkeypatch.setattr(
+        wb.project, "load_array", lambda *_: pytest.fail("Decoded over-budget images")
+    )
+    with pytest.raises(ValueError, match="working-memory budget"):
+        validate_registration_arrays(
+            good, records, array_loader=wb.project.load_array, working_bytes=1024**2
+        )
+
+
+def test_portable_translation_acceptance_replays_staged_arrays(registered_observations, tmp_path):
+    wb, _, originals = registered_observations
+    good = publish(
+        wb,
+        {
+            **temporal_fixtures.request(originals),
+            "registration": {"method": "translation", "upsample_factor": 1},
+        },
+    )
+    archive = tmp_path / "valid-registered.zip"
+    export_project(wb.project, archive)
+    bad = forged_translation(good)
+    bad.pop("revision_hash")
+    bad["revision_hash"] = hashlib.sha256(canonical_json(bad).encode()).hexdigest()
+
+    def transform(entries):
+        name = f"results/{bad['id']}.json"
+        payload = canonical_json(bad).encode()
+        changed = [(info, payload if info.filename == name else data) for info, data in entries]
+        for index, (info, data) in enumerate(changed):
+            if info.filename == "manifest.json":
+                manifest = json.loads(data)
+                item = next(item for item in manifest["members"] if item["path"] == name)
+                item.update(sha256=hashlib.sha256(payload).hexdigest(), size_bytes=len(payload))
+                changed[index] = (info, canonical_json(manifest).encode())
+        return changed
+
+    tampered = tmp_path / "forged-registered.zip"
+    _rewrite(archive, tampered, transform)
+    target = tmp_path / "refused-registered"
+    with pytest.raises(ValueError, match="exact original images"):
+        import_project(tampered, target)
+    assert not target.exists()
 
 
 def test_portable_roundtrip_retains_exact_graph_metrics_and_correction_history(scene, tmp_path):

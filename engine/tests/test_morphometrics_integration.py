@@ -48,6 +48,60 @@ def changed_moments(record):
     return rehash(bad)
 
 
+@pytest.mark.parametrize("route", ["read", "cold-read", "population", "review", "publication"])
+def test_forged_moments_fail_before_inspection_or_review(make_parent, route):
+    wb, parent, _, labels, _ = make_parent()
+    _, result = derived(wb, parent)
+    bad = changed_moments(result)
+    if route != "publication":
+        replace_record(wb.project, bad)
+    with pytest.raises(ValueError, match="endpoints disagree"):
+        if route == "read":
+            wb.project.result(bad["id"])
+        elif route == "cold-read":
+            ResearchProject(wb.project.root).result(bad["id"])
+        elif route == "population":
+            wb.execute("population_query", exact(bad))
+        elif route == "review":
+            wb.project.review(bad["id"], bad["revision_hash"], "reviewed")
+        else:
+            wb.project.save_result(
+                source_id=parent["source_id"],
+                kind="morphometrics",
+                arrays={
+                    "image": wb.project.load_array(parent["arrays"]["image"]),
+                    "labels": labels,
+                },
+                provenance=bad["provenance"],
+                parent_id=parent["id"],
+            )
+
+
+def test_validated_morphology_cache_still_rejects_changed_artifact_bytes(make_parent):
+    wb, parent, _, _, _ = make_parent()
+    _, result = derived(wb, parent)
+    assert wb.project.result(result["id"]) == result
+    artifact = wb.project.arrays / (result["arrays"]["labels"]["sha256"] + ".npy")
+    original = artifact.read_bytes()
+    artifact.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
+    try:
+        with pytest.raises(ValueError, match="artifact hash/size verification"):
+            wb.project.result(result["id"])
+    finally:
+        artifact.write_bytes(original)
+
+
+def test_current_morphology_replay_budget_is_enforced_before_loading(make_parent, monkeypatch):
+    labels = np.zeros((128, 128), dtype=np.uint32)
+    labels[2:4, 3:6] = 4_000_000_000
+    wb, parent, _, _, _ = make_parent(labels=labels)
+    _, result = derived(wb, parent)
+    cold = ResearchProject(wb.project.root)
+    monkeypatch.setattr(cold, "load_array", lambda *_: pytest.fail("Over-budget pixels decoded"))
+    with pytest.raises(ValueError, match="working-memory budget before decode"):
+        cold.validate_result_arrays(result, working_bytes=1024**2)
+
+
 def data_request(result):
     return {
         "purpose": "provisional",

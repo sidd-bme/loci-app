@@ -69,7 +69,7 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
             source_target(source_id, value.get("selection"))
         result_id = value.get("result_id")
         if _id(result_id):
-            result = project.result(result_id)
+            result = project.result(result_id, verify_scientific_arrays=False)
             revision = value.get("revision_hash", result["revision_hash"])
             if not _sha(revision):
                 raise ValueError("Invalid agent result revision")
@@ -222,7 +222,7 @@ def targets_stale(project, targets, *, verify_sources=False) -> bool:
                 if source_sha(identity) != target["sha256"]:
                     return True
             elif kind == "result":
-                record = project.result(identity)
+                record = project.result(identity, verify_scientific_arrays=False)
                 if record["revision_hash"] != target["revision_hash"]:
                     return True
                 if source_sha(record["source_id"]) != target["source_sha256"]:

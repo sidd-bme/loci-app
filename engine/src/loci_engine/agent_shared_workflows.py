@@ -141,7 +141,7 @@ def _result(agent, workbench, identity, revision=None, *, _seen=None):
     identity = checked_id(identity)
     seen = {} if _seen is None else _seen
     if identity in seen:
-        result = workbench.project.result(identity)
+        result = agent._authorize_result(workbench, identity)
         if revision is not None and result["revision_hash"] != revision:
             raise PermissionError("Action result revision changed; inspect it again")
         return result
@@ -304,7 +304,10 @@ def _density_view(agent, workbench, reports=(), fields=None):
     documents = {"spatial_density_report": list(reports), "population_group": [], "sample": []}
     if fields is not None:
         documents["population_group"] = _density_selection_scope(agent, workbench, fields)
-        source_ids = {workbench.project.result(f["result_id"])["source_id"] for f in fields}
+        source_ids = {
+            workbench.project.result(f["result_id"], verify_scientific_arrays=False)["source_id"]
+            for f in fields
+        }
     else:
         source_ids, groups = set(), {}
         for document in reports:
@@ -363,8 +366,12 @@ def _wound_view(agent, workbench, reports=(), request=None):
         from .research_wound_closure import request_result_bindings
 
         _wound_request_scope(agent, workbench, request)
-        source_ids = {workbench.project.result(binding["result_id"])["source_id"]
-                      for binding in request_result_bindings(request)}
+        source_ids = {
+            workbench.project.result(binding["result_id"], verify_scientific_arrays=False)[
+                "source_id"
+            ]
+            for binding in request_result_bindings(request)
+        }
     else:
         source_ids = set()
         for document in reports:

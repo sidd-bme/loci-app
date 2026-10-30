@@ -117,6 +117,7 @@ class ResearchProject:
     """A versioned .loci-study directory; all database writes are transactions."""
 
     def __init__(self, directory: str | Path):
+        self._morphometrics_validation_cache: dict[str, None] = {}
         self._read_identity(directory)
         # Ordinary native opens still validate scientific snapshots. A policy
         # heartbeat only needs the separately checked directory/schema/project
@@ -171,6 +172,7 @@ class ResearchProject:
             if self.meta.get("schema") != f"loci.study/v{version}":
                 raise ValueError("Study project schema identity is invalid")
             self.schema_version = version
+
     @classmethod
     def create(
         cls, directory: str | Path, title: str, *, schema_version: int = SCHEMA
@@ -878,12 +880,17 @@ class ResearchProject:
         if kind in {"temporal-tracking", "tracking"} or "tracking" in provenance:
             from .research_temporal import project_inputs
 
-            project_inputs(self, record)
+            project_inputs(self, record, verify_arrays=True)
         if kind == "morphometrics" or "morphometrics" in provenance:
-            from .research_morphometrics import project_parents, validate_source
+            from .research_morphometrics import (
+                project_parents,
+                validate_project_arrays,
+                validate_source,
+            )
 
             project_parents(self, record)
             validate_source(record, source)
+            validate_project_arrays(self, record, arrays=arrays)
         if kind == "perinuclear-enrichment" or "perinuclear" in provenance:
             from .research_perinuclear import validate_record, validate_source
 
@@ -1133,7 +1140,18 @@ class ResearchProject:
             )
         return record
 
-    def result(self, result_id: str, *, check: Callable[[], None] | None = None) -> dict[str, Any]:
+    def result(
+        self,
+        result_id: str,
+        *,
+        check: Callable[[], None] | None = None,
+        verify_scientific_arrays: bool = True,
+    ) -> dict[str, Any]:
+        """Read a result; metadata-only mode is for internal authority preflight.
+
+        Metadata-only callers must not disclose numerical measurements until
+        validate_result_arrays has checked the exact authorized record.
+        """
         if check is not None:
             check()
         with self.connection() as connection:
@@ -1201,7 +1219,23 @@ class ResearchProject:
             validate_object_table(self, record["object_table"], check=check)
         else:
             raise ValueError("Unsupported research result schema")
+        if verify_scientific_arrays:
+            self.validate_result_arrays(record, check=check)
         return record
+
+    def validate_result_arrays(self, record, *, check=None, working_bytes=None):
+        """Numerically check one exact record after its source access is authorized."""
+        provenance = record.get("provenance", {})
+        if record.get("kind") == "morphometrics" or "morphometrics" in provenance:
+            from .research_morphometrics import validate_project_arrays
+
+            validate_project_arrays(self, record, check=check, working_bytes=working_bytes)
+        if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in provenance:
+            from .research_temporal import project_inputs
+
+            project_inputs(
+                self, record, check=check, verify_arrays=True, working_bytes=working_bytes
+            )
 
     def list_results(self, source_id: str | None = None) -> list[dict[str, Any]]:
         if source_id is not None:

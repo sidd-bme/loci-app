@@ -1673,6 +1673,12 @@ def import_project(
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
             for result in results:
+                if "tracking" in result["provenance"]:
+                    from .research_temporal import validate_registration_arrays
+
+                    validate_registration_arrays(
+                        result, result_by_id, array_loader=project.load_array
+                    )
                 if "morphometrics" in result["provenance"]:
                     from .research_morphometrics import validate_arrays
 

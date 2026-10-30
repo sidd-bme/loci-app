@@ -827,7 +827,7 @@ class PolicyAgent:
             from .agent_study import authorize_result
 
             return authorize_result(self.policy, workbench, result_id)
-        result = workbench.project.result(checked_id(result_id))
+        result = workbench.project.result(checked_id(result_id), verify_scientific_arrays=False)
         self.policy.source_grant(workbench.project, result["source_id"])
         provenance = result.get("provenance")
         if not isinstance(provenance, dict):
@@ -888,6 +888,9 @@ class PolicyAgent:
                     )
             if not granted:
                 raise PermissionError("Remote result is outside the exact pinned run")
+        workbench.project.validate_result_arrays(
+            result, check=self.policy.recheck, working_bytes=self.policy.memory_bytes
+        )
         return result
 
     def remote_operation(self, grant_key: str, operation: str) -> dict[str, Any]:

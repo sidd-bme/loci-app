@@ -13,6 +13,7 @@ from test_research_mcp import stdio_parameters
 from loci_engine import research_morphometrics as morphology
 from loci_engine.agent_actions import authorize_action
 from loci_engine.agent_policy import load_policy, write_policy
+from loci_engine.agent_study import authorize_result
 from loci_engine.research_jobs import run_job, submit_job
 from loci_engine.research_mcp import PolicyAgent
 
@@ -23,6 +24,21 @@ def request(parent):
         "revision_hash": parent["revision_hash"],
         "working_bytes": 64 * 1024**2,
     }
+
+
+def test_denied_shape_source_scope_precedes_all_pixel_validation(tmp_path, monkeypatch):
+    _, wb, parent, path, _, spec, _ = actions_agent(tmp_path)
+    output = morphology.execute_morphometrics(wb, request(parent))
+    spec["sources"][0]["crop"]["width"] = 16
+    write_policy(path, wb.project, spec)
+    monkeypatch.setattr(wb.project, "load_array", lambda *_: pytest.fail("Ungrantable pixels read"))
+    monkeypatch.setattr(
+        wb.project,
+        "validate_result_arrays",
+        lambda *_: pytest.fail("Pixels validated before all source grants"),
+    )
+    with pytest.raises(PermissionError, match="exceed the grant"):
+        authorize_result(load_policy(path), wb, output["result"]["id"])
 
 
 @pytest.mark.parametrize("change", ["action", "channel", "crop", "runtime", "revision", "extra"])
