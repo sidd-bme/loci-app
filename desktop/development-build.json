@@ -1,5 +1,5 @@
 {
   "schema": "loci.development-build-config/v1",
   "channel": "development",
-  "buildNumber": 15
+  "buildNumber": 16
 }

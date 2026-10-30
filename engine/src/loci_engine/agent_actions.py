@@ -210,6 +210,16 @@ def authorize_action(
             policy, workbench, request["source_id"], selection, channels
         )
         policy.require_runtime(runtime_record())
+    elif operation == "spatial_distance_run":
+        from .research_spatial import validate_request
+
+        result_binding(request["compartment"])
+        result_binding(request["boundary"])
+        parents, _ = validate_request(workbench, request)
+        for parent in parents:
+            selection = parent["provenance"]["selection"]
+            source_scope(policy, workbench, parent["source_id"], selection, [selection["c"]])
+        policy.require_runtime(runtime_record())
     elif operation == "perinuclear_run":
         from .research_perinuclear import validate_request
 

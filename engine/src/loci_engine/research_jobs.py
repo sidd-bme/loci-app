@@ -142,6 +142,7 @@ def submit_job(
         if operation in {
             "correct_result",
             "perinuclear_run",
+            "spatial_distance_run",
             "roi_add",
             "roi_import",
             "correct_tracks",

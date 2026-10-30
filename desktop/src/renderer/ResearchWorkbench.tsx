@@ -78,6 +78,7 @@ import { ResearchRegistrationPanel } from "./ResearchRegistrationPanel";
 import { ResearchPopulationExplorer } from "./ResearchPopulationExplorer";
 import { ResearchWorkflowPanel } from "./ResearchWorkflowPanel";
 import { ResearchQuantificationPanel } from "./ResearchQuantificationPanel";
+import { SpatialSummary } from "./ResearchSpatialPanel";
 import { PerinuclearResultSummary } from "./ResearchPerinuclearPanel";
 import { AgentImagePanel } from "./AgentImagePanel";
 import { SourceDisplayFollower } from "./source-display-follower";
@@ -6556,6 +6557,7 @@ export function Info({
             <button type="button" aria-pressed={section === "export"} onClick={() => changeSection("export")}>Export</button>
           </div>
           {section === "review" && <section aria-label="Review result">
+            {result.kind === "spatial-distance-bands" && <SpatialSummary value={result.spatial} />}
             {result.kind === "perinuclear-enrichment" && <PerinuclearResultSummary api={api} result={result} rows={rows} />}
             {rows.length > 0 && (
               <div className="research-result-summary-card">

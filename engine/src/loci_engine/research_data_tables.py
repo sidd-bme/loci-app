@@ -318,6 +318,12 @@ def _selection(item: dict) -> set[int] | None:
 
 
 def _metric_value(row: dict, descriptor: dict) -> tuple[Any, str]:
+    if descriptor["id"].startswith("spatial:"):
+        field = descriptor["id"].split(":", 1)[1]
+        target = row.get("spatial", {})
+        if field not in target:
+            return None, "missing"
+        return target[field], "null" if target[field] is None else "value"
     if descriptor["id"].startswith("principal_rms_radius:"):
         if "principal_rms_radii" not in row:
             return None, "missing"

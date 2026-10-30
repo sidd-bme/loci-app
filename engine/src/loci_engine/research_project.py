@@ -840,6 +840,16 @@ class ResearchProject:
 
             validate_record(record)
             validate_source(record, source)
+        if kind == "spatial-distance-bands" or "spatial" in provenance:
+            from .research_spatial import validate_parents
+
+            validate_parents(
+                record,
+                {
+                    b["result_id"]: self.result(b["result_id"])
+                    for b in provenance["spatial"]["inputs"].values()
+                },
+            )
         record["revision_hash"] = hashlib.sha256(canonical_json(record).encode()).hexdigest()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1091,6 +1101,12 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
+            if record.get("kind") == "spatial-distance-bands" or "spatial" in record.get(
+                "provenance", {}
+            ):
+                from .research_spatial import validate_record
+
+                validate_record(record)
             if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record.get(
                 "provenance", {}
             ):

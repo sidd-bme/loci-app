@@ -61,6 +61,7 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
                 raise PermissionError("A model input channel is outside the source grant")
         bindings = [*provenance.get("temporal_inputs", [])]
         bindings.extend(provenance.get("association_inputs", {}).values())
+        bindings.extend(provenance.get("spatial", {}).get("inputs", {}).values())
         compartment = provenance.get("compartment_measurement", {})
         bindings.extend(compartment.get("label_inputs", {}).values())
         bindings.extend(

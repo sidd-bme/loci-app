@@ -326,6 +326,7 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
     return {
         "perinuclear_nuclei_eligible": nucleus_result_eligible(result),
         **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
+        **({"spatial": provenance["spatial"]} if "spatial" in provenance else {}),
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
@@ -1620,6 +1621,12 @@ class Workbench:
             from .research_annotation_import import import_annotations
 
             return import_annotations(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "spatial_distance_run":
+            from .research_spatial import execute_spatial
+
+            return execute_spatial(
                 self, request, job_id=job_id, publication_guard=publication_guard
             )
         if operation == "perinuclear_run":

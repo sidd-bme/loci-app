@@ -166,6 +166,19 @@ def _objects(
                 },
                 True,
             )
+        if "spatial" in row:
+            spatial = row["spatial"]
+            for name, title, metric_kind, metric_unit in (
+                ("distance", "Distance to declared boundary", "distance", row["distance_unit"]),
+                ("band_index", "Distance band (zero based)", "index", "index"),
+            ):
+                metric = "spatial:" + name
+                add(
+                    metric,
+                    spatial[name],
+                    {"id": metric, "label": title, "kind": metric_kind, "unit": metric_unit},
+                    True,
+                )
         intensity = row.get("intensity")
         if not isinstance(intensity, dict) or len(intensity) > 32:
             raise ValueError("Population requires bounded actual intensity measurements")
@@ -322,7 +335,7 @@ def _objects(
     ordered.extend(
         descriptors[key]
         for key in sorted(descriptors)
-        if key.startswith(("intensity:", "compartment:"))
+        if key.startswith(("intensity:", "compartment:", "spatial:"))
     )
     for row in result:
         row["values"] = {metric["id"]: row["values"].get(metric["id"]) for metric in ordered}

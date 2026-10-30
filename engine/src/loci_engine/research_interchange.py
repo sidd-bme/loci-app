@@ -654,6 +654,12 @@ def export_project(project: ResearchProject, destination: str | Path) -> dict[st
     # Every persisted scientific scope/budget is preflighted before decoding
     # even a parent artifact from another result in this portable study.
     for result in snapshot["results"]:
+        if "spatial" in result["provenance"]:
+            from .research_spatial import validate_arrays
+
+            validate_arrays(
+                result, {name: project.load_array(item) for name, item in result["arrays"].items()}
+            )
         if result["id"] in perinuclear_parents:
             from .research_perinuclear import validate_arrays
 
@@ -927,6 +933,10 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
+    if record.get("kind") == "spatial-distance-bands" or "spatial" in record["provenance"]:
+        from .research_spatial import validate_record
+
+        validate_record(record)
     if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record["provenance"]:
         from .research_perinuclear import validate_record
 
@@ -978,6 +988,10 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if "spatial" in provenance:
+        from .research_spatial import validate_parents
+
+        validate_parents(result, results)
     if result.get("kind") == "perinuclear-enrichment" or "perinuclear" in provenance:
         from .research_perinuclear import validate_parent, validate_record, validate_source
 
@@ -1574,6 +1588,13 @@ def import_project(
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
             for result in results:
+                if "spatial" in result["provenance"]:
+                    from .research_spatial import validate_arrays
+
+                    validate_arrays(
+                        result,
+                        {name: project.load_array(item) for name, item in result["arrays"].items()},
+                    )
                 if "perinuclear" in result["provenance"]:
                     from .research_perinuclear import validate_arrays
 

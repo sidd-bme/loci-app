@@ -641,6 +641,7 @@ export class ResearchBridge {
       "field_assay_preview",
       "field_assay_run",
       "perinuclear_run",
+      "spatial_distance_run",
       "associate_results",
       "colocalisation_run",
     ]);

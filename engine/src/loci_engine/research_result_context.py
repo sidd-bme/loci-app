@@ -138,6 +138,7 @@ _KIND_LABELS = {
     "puncta-quantification": "Puncta detection",
     "nucleus-cell-association": "Nucleus-cell association",
     "perinuclear-enrichment": "Perinuclear enrichment",
+    "spatial-distance-bands": "Tissue distance bands",
     "field-assay": "Fluorescence field assay",
     "tracking": "Object tracking",
     "temporal-tracking": "Object tracking",

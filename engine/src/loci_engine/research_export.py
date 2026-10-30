@@ -106,6 +106,11 @@ def methods_text(result: dict[str, Any]) -> str:
                 "association_inputs": provenance.get("association_inputs"),
                 "compartment_measurement": provenance.get("compartment_measurement"),
                 "perinuclear": provenance.get("perinuclear"),
+                "spatial": provenance.get("spatial"),
+                "spatial_request": provenance.get("accepted_request")
+                if "spatial" in provenance
+                else None,
+                "object_analysis": provenance.get("object_analysis"),
                 "nucleus_analysis": provenance.get("nucleus_analysis"),
                 "parent_result": provenance.get("parent_result"),
                 "colocalisation": provenance.get("colocalisation"),
@@ -171,6 +176,7 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
         for key in ("parent_result", "fixed_result", "moving_result")
         if key in provenance
     )
+    result_bindings.extend(result["provenance"].get("spatial", {}).get("inputs", {}).values())
     for binding in result_bindings:
         if binding.get("missing_reason"):
             continue
@@ -190,6 +196,12 @@ def _export_extended_records(
     provenance = result["provenance"]
     summary: dict[str, Any] = {"imagej_roi_files": [], "geojson_only_annotations": []}
     summary["quantification_files"] = []
+    if "spatial" in provenance:
+        filename = "spatial-distance-bands.json"
+        (stage / filename).write_text(
+            canonical_json(provenance["spatial"]) + "\n", encoding="utf-8"
+        )
+        summary["quantification_files"].append(filename)
     if "perinuclear" in provenance:
         filename = "perinuclear-summary.json"
         (stage / filename).write_text(
@@ -326,6 +338,17 @@ def export_research_result(
             arrays,
             parent=project.result(result["provenance"]["parent_result"]["result_id"]),
         )
+    if "spatial" in result["provenance"]:
+        from .research_spatial import validate_arrays, validate_parents
+
+        validate_parents(
+            result,
+            {
+                b["result_id"]: project.result(b["result_id"])
+                for b in result["provenance"]["spatial"]["inputs"].values()
+            },
+        )
+        validate_arrays(result, arrays)
     image = arrays.get("image")
     labels = arrays.get("labels")
     geometry = geometry_from_dict(result["provenance"]["geometry"])

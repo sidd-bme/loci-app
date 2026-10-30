@@ -85,6 +85,7 @@ export interface ResearchResult {
   working_bytes?: number;
   label_import?: ResearchLabelImportIdentity;
   perinuclear?: ResearchPerinuclearRecord;
+  spatial?: unknown;
   /** Parent-label eligibility only; full source/grid/revision checks still apply. */
   perinuclear_nuclei_eligible?: boolean;
 }

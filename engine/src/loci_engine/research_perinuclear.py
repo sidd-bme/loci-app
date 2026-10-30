@@ -107,7 +107,9 @@ def nucleus_result_eligible(parent: dict[str, Any]) -> bool:
         and {"image", "labels"} <= set(parent.get("arrays", {}))
         and not provenance.get("derived_measurement_arrays")
         and not provenance.get("stain_separation")
-        and not any(key in provenance for key in ("perinuclear", "association", "tracking"))
+        and not any(
+            key in provenance for key in ("perinuclear", "association", "tracking", "spatial")
+        )
     )
 
 

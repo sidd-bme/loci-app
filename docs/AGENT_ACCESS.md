@@ -413,6 +413,16 @@ Reviewed export includes these arrays, TIFF masks, `objects.csv` and
 only for this result kind. Its default remains nuclei. The selected field and its
 basis accompany every QC view; a ring proxy must never be called true cytoplasm.
 
+`spatial_distance_run` measures **Tissue distance bands** from exact object,
+compartment and declared-boundary result revisions on one calibrated YX plane.
+It requires explicit `band_edges`, crop-border policy, controls, boundary
+coverage and a working-memory budget. Counts use eligible object centroids;
+area uses sampled compartment pixels within each half-open band. Zero area has
+undefined density. All three input masks remain permission-bound dependencies.
+Correct the inputs and rerun; direct correction of the derivative is refused.
+See [the endpoint and persistence contract](SPATIAL_DISTANCE_BANDS.md). This
+operation does not infer epidermis or establish tissue thickness.
+
 Read `correction_info` before editing: `expected_input_sha256` is the label-array
 hash, not `revision_hash`. Corrections preserve the parent, remeasure the changed
 labels and start without review. Read `review_history` before `review_result`;

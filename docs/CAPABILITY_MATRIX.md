@@ -1,5 +1,15 @@
 # Loci capability matrix
 
+**Spatial source update:** 30 October 2026. Other rows retain their documented
+implementation scope; consult the current handoff for tested identities.
+
+Tissue distance bands now bind exact object, compartment and declared-boundary
+masks on calibrated orthogonal YX grids. The GUI, CLI and scoped MCP action share
+the same durable executor; saved distances are available in Statistics & objects.
+This is unsigned distance to supplied boundary pixel centers and sampled-area
+density, not anatomical boundary inference or tissue thickness. See
+[the spatial contract](SPATIAL_DISTANCE_BANDS.md).
+
 This matrix covers the current source implementation.
 
 This matrix describes implemented subsets, not biological validation or public

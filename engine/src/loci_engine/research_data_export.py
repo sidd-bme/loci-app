@@ -458,6 +458,16 @@ def _references(project, result, check):
 
     provenance = result["provenance"]
     verify_result_derivation(project.source(result["source_id"]), provenance)
+    if "spatial" in provenance:
+        from .research_spatial import validate_parents
+
+        validate_parents(
+            result,
+            {
+                b["result_id"]: project.result(b["result_id"])
+                for b in provenance["spatial"]["inputs"].values()
+            },
+        )
     snapshots = []
     for reference in provenance.get("references", {}).values():
         _check(check)
@@ -467,6 +477,7 @@ def _references(project, result, check):
         snapshots.append({"source_id": source["id"], "source_sha256": source["sha256"]})
     bindings = list(provenance.get("temporal_inputs", []))
     bindings.extend(provenance.get("association_inputs", {}).values())
+    bindings.extend(provenance.get("spatial", {}).get("inputs", {}).values())
     bindings.extend(provenance.get("compartment_measurement", {}).get("label_inputs", {}).values())
     bindings.extend(
         provenance[key]

@@ -125,6 +125,18 @@ REQUESTS = {
         }
     ),
     "describe_result": _object(BOUND),
+    "spatial_distance_run": _object(
+        {
+            **BOUND,
+            "compartment": _object(BOUND),
+            "boundary": _object(BOUND),
+            "band_edges": _array(NUMBER, 2, 33),
+            "exclude_crop_border": {"type": "boolean"},
+            "control": TEXT,
+            "boundary_coverage": TEXT,
+            "working_bytes": MEMORY,
+        }
+    ),
     "perinuclear_run": _object(
         {
             **BOUND,
@@ -468,6 +480,7 @@ PUBLICATION_ACTIONS = frozenset(
         "run_recipe",
         "classical_run",
         "perinuclear_run",
+        "spatial_distance_run",
         "correct_result",
         "roi_add",
         "puncta_run",

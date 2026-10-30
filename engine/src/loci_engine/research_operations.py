@@ -98,6 +98,10 @@ OPERATION_CATALOG = {
         "mutates": True,
         "summary": "Associate exact declared nucleus and cell revisions with overlap ambiguity",
     },
+    "spatial_distance_run": {
+        "mutates": True,
+        "summary": "Measure physical distance bands and sampled compartment density on exact masks",
+    },
     "perinuclear_run": {
         "mutates": True,
         "summary": "Measure raw nuclear-to-perinuclear-ring enrichment on an exact native 2D grid",
@@ -384,6 +388,7 @@ TASK_OPERATIONS = frozenset(
         "field_assay_run",
         "associate_results",
         "perinuclear_run",
+        "spatial_distance_run",
         "colocalisation_run",
     }
 )

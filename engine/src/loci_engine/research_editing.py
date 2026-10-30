@@ -249,6 +249,11 @@ def execute_edit(
         operation,
     )
     parent = _bound_result(workbench, request)
+    if "spatial" in parent["provenance"]:
+        raise ValueError(
+            "Correct the underlying object, compartment or boundary masks "
+            "and rerun spatial distances"
+        )
     if "perinuclear" in parent["provenance"]:
         raise ValueError(
             "Edit or annotate the underlying nucleus result and rerun perinuclear enrichment"
