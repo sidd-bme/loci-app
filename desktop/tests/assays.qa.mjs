@@ -119,7 +119,7 @@ async function woundJourney() {
   await assayTool('Wound closure');
   const choices = page.getByRole('region', { name: 'Wound mask choices', exact: true });
   for (const [index, field] of [...fixture.wound, fixture.wrong_grid].entries()) {
-    await choices.getByLabel('Saved label mask', { exact: true }).selectOption(`${field.result_id}:${field.revision_hash}`);
+    await choices.getByRole('combobox', { name: 'Saved label mask', exact: true }).selectOption(`${field.result_id}:${field.revision_hash}`);
     await choices.getByRole('button', { name: 'Load complete mask labels', exact: true }).click();
     await wait(() => choices.locator('li').count(), count => count === index + 1, 'complete exact mask membership');
     await choices.locator('li').nth(index).getByText(`${field.object_count} measured positive label IDs`, { exact: true }).waitFor();
@@ -138,7 +138,7 @@ async function woundJourney() {
       await frame(index).getByLabel('Missing acquisition', { exact: true }).check();
       await frame(index).getByLabel('Missing frame reason', { exact: true }).fill(slot.missing_reason);
     } else {
-      await frame(index).getByLabel('Exact filled-area mask', { exact: true }).selectOption(`${slot.result_id}:${slot.revision_hash}`);
+      await frame(index).getByRole('combobox', { name: 'Exact filled-area mask', exact: true }).selectOption(`${slot.result_id}:${slot.revision_hash}`);
       if (slot.selected_labels.length) await frame(index).getByLabel('Filled-region label IDs', { exact: true }).fill(slot.selected_labels.join(', '));
       else await frame(index).getByLabel('Observed zero area (no selected labels)', { exact: true }).check();
     }
@@ -155,12 +155,12 @@ async function woundJourney() {
   assert.equal(await preview.isEnabled(), false); assert.equal(await panel.getByRole('button', { name: 'Save immutable report', exact: true }).count(), 0);
   await frame(2).getByLabel('Actual time (s)', { exact: true }).fill('90');
   await preview.click(); await panel.getByRole('heading', { name: 'Verified preview', exact: true }).waitFor();
-  await frame(2).getByLabel('Exact filled-area mask', { exact: true }).selectOption(`${fixture.wrong_grid.result_id}:${fixture.wrong_grid.revision_hash}`);
+  await frame(2).getByRole('combobox', { name: 'Exact filled-area mask', exact: true }).selectOption(`${fixture.wrong_grid.result_id}:${fixture.wrong_grid.revision_hash}`);
   assert.equal(await panel.getByRole('button', { name: 'Save immutable report', exact: true }).count(), 0);
   await frame(2).getByLabel('Filled-region label IDs', { exact: true }).fill('4000000000');
   await preview.click(); await panel.getByRole('alert').filter({ hasText: /field of view|grid|calibration/iu }).waitFor();
   const proper = fixture.wound.find(value => value.t === 2);
-  await frame(2).getByLabel('Exact filled-area mask', { exact: true }).selectOption(`${proper.result_id}:${proper.revision_hash}`);
+  await frame(2).getByRole('combobox', { name: 'Exact filled-area mask', exact: true }).selectOption(`${proper.result_id}:${proper.revision_hash}`);
   await frame(2).getByLabel('Filled-region label IDs', { exact: true }).fill('4000000000');
   await preview.click(); await panel.getByRole('heading', { name: 'Verified preview', exact: true }).waitFor();
   await shot('02-wound-missing-growth-zero');
@@ -189,7 +189,7 @@ async function shapeJourney(item) {
   await chooseSource(item.source_id); await assayTool('Nuclear & cell shape');
   const panel = page.getByRole('region', { name: 'Nuclear and cell shape', exact: true });
   assert.equal(await panel.getByRole('button', { name: 'Measure object shape', exact: true }).isEnabled(), false);
-  await panel.getByLabel('Shape label result', { exact: true }).selectOption(`${item.result_id}:${item.revision_hash}`);
+  await panel.getByRole('combobox', { name: 'Shape label result', exact: true }).selectOption(`${item.result_id}:${item.revision_hash}`);
   await panel.getByRole('button', { name: 'Measure object shape', exact: true }).click();
   const state = await wait(snapshot, value => value.results.some(r => r.kind === 'morphometrics' && r.parent_id === item.result_id), 'exact native morphology derivative');
   const result = state.results.find(r => r.kind === 'morphometrics' && r.parent_id === item.result_id);
@@ -250,7 +250,15 @@ try {
   receipt.status = 'passed';
 } catch (error) {
   failure = error; receipt.status = 'failed'; receipt.error = { message: error.message, stack: error.stack, stdout: error.stdout, stderr: error.stderr };
-  if (page) { await shot('failure').catch(() => {}); await fs.writeFile(path.join(output, 'failure-ui.txt'), await page.locator('body').innerText().catch(() => 'unavailable')); }
+  if (page) {
+    await shot('failure').catch(() => {});
+    await fs.writeFile(path.join(output, 'failure-ui.txt'), await page.locator('body').innerText().catch(() => 'unavailable'));
+    await fs.writeFile(path.join(output, 'failure-accessibility.txt'), await page.locator('body').ariaSnapshot().catch(() => 'unavailable'));
+    await fs.writeFile(path.join(output, 'failure-forms.json'), JSON.stringify(await page.locator('input, select, textarea').evaluateAll(elements => elements.map(element => ({
+      tag: element.tagName, labels: [...(element.labels ?? [])].map(label => label.textContent),
+      ariaLabel: element.getAttribute('aria-label'), value: element.value, disabled: element.disabled,
+    }))).catch(() => []), null, 2));
+  }
 } finally {
   await closeApp().catch(error => { receipt.cleanup_error = error.message; receipt.status = 'failed'; failure ??= error; });
   receipt.finished_at = new Date().toISOString(); await fs.writeFile(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
