@@ -39,12 +39,6 @@ from .agent_sessions import (
     require_session_authority,
     start_session,
 )
-from .export import _rename_noreplace
-from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
-from .research_process import research_command
-from .research_project import ResearchProject, checked_id, parse_json, timestamp
-from .research_tool_schemas import ReviewResultRequest, SourceImageRequest, tool_request_schema
-from .workbench import Workbench, runtime_record
 from .agent_workflow_graph import (
     GraphControlOperation,
     GraphControlRequest,
@@ -53,6 +47,12 @@ from .agent_workflow_graph import (
     workflow_graph_control,
     workflow_graph_inspect,
 )
+from .export import _rename_noreplace
+from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
+from .research_process import research_command
+from .research_project import ResearchProject, checked_id, parse_json, timestamp
+from .research_tool_schemas import ReviewResultRequest, SourceImageRequest, tool_request_schema
+from .workbench import Workbench, runtime_record
 
 _TOOL_CATALOG = (
     ("catalog", "Describe the static policy-bound Loci tool surface without study data."),
@@ -121,11 +121,14 @@ _VISION_TOOL_CATALOG = (
 _STUDY_TOOL_CATALOG = (
     (
         "workflow_graph_inspect",
-        "Validate or inspect a typed workflow/v2 graph, exact preflight or owned run. Each native node still needs its own action and source grants; no execution occurs.",
+        "Validate or inspect a typed workflow/v2 graph, exact preflight or owned run. Each "
+        "native node still needs its own action and source grants; no execution occurs.",
     ),
     (
         "workflow_graph_control",
-        "Save, start, advance one node, or cancel an exact workflow/v2 run. Every node uses its own normal durable job and independent grants. Reuse the exact start request key; call advance after each completed child until terminal.",
+        "Save, start, advance one node, or cancel an exact workflow/v2 run. Every node uses "
+        "its own normal durable job and independent grants. Reuse the exact start request "
+        "key; call advance after each completed child until terminal.",
     ),
     (
         "action_guide",

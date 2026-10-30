@@ -147,7 +147,8 @@ for _graph_name in (
         "workflow_graph_inspect"
         if _graph_name in {"validate", "get", "list", "preflight", "status"}
         else "workflow_graph_control",
-        "Requires the explicit graph tool grant and every native node's independent action and source grants.",
+        "Requires the explicit graph tool grant and every native node's independent action "
+        "and source grants.",
     )
 
 _GUI_ONLY_REASONS: dict[str, str] = {
