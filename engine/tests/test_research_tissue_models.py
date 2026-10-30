@@ -250,6 +250,43 @@ def test_preview_metadata_only_run_repeats_exact_inference(make_case, monkeypatc
     assert result["measurements"][0]["centroid_world_xyz"] == [4, 3, 0]
 
 
+@pytest.mark.parametrize("with_correction", [False, True])
+def test_tissue_regions_are_not_offered_as_nuclei(make_case, monkeypatch, with_correction):
+    from loci_engine.research_perinuclear import validate_request
+
+    case = make_case()
+    result, arrays = adopted(case)
+    if with_correction:
+        result, _ = corrected(case, result, arrays)
+    summary = case.wb.execute("result", {"result_id": result["id"]})["result"]
+    assert summary["tissue_model"]["label_semantics"] in {
+        "original_selected_compartment",
+        "edited_selected_compartment",
+    }
+    assert summary["perinuclear_nuclei_eligible"] is False
+
+    original_source = case.project.source
+
+    def registered_metadata_only(*args, **kwargs):
+        # Record validation still binds the saved metadata; no source-file access.
+        assert not kwargs.get("verify", False)
+        return original_source(*args, **kwargs)
+
+    monkeypatch.setattr(case.project, "source", registered_metadata_only)
+    with pytest.raises(ValueError, match="underlying native nucleus label result"):
+        validate_request(
+            case.wb,
+            {
+                "result_id": result["id"],
+                "revision_hash": result["revision_hash"],
+                "signal_channel": 0,
+                "radius_px": 2,
+                "working_bytes": 16 * 1024**2,
+                "control": "Synthetic engineering refusal check",
+            },
+        )
+
+
 def test_rgba_explicit_decode_and_uncalibrated_pixel_geometry(make_case):
     case = make_case(rgba=True, calibrated=False)
     output = preview(case)
