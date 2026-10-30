@@ -423,6 +423,20 @@ Correct the inputs and rerun; direct correction of the derivative is refused.
 See [the endpoint and persistence contract](SPATIAL_DISTANCE_BANDS.md). This
 operation does not infer epidermis or establish tissue thickness.
 
+The separate optional [epidermis model](TISSUE_MODELS.md) exposes
+`tissue_model_profiles`, exact-request `tissue_model_status` and
+`tissue_model_preview`, and token-only `tissue_model_run`. Preview and run create
+durable jobs. The request includes `declared_stain: "hematoxylin-eosin"`, full
+native normalization context, output selection, pinned model/runtime contracts
+and a working-memory allowance. Grants must cover both context and output;
+authorizing an output crop alone does not authorize the normalization pixels.
+The managed two-file model import is native-only. Retained `result_view` uses
+`label_field: "tissue_classes"` for original classes, default `compartments` for
+effective region labels, or `labels: false` for the original epidermis score.
+Compartment edits preserve original predictions, and review/export retain exact
+revision and source authority. Scores are not calibrated confidence, and class 4
+is not a basal boundary or a dermal definition.
+
 For every durable job, wait until `job_status` reports a terminal state and
 `owned_worker_active=false` before issuing another operation under concurrency 1.
 A result may publish before its worker exits; that interval still consumes the

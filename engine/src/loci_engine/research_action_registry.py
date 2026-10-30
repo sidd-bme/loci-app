@@ -252,10 +252,15 @@ REQUESTS = {
         },
         ["frames", "time_declaration", "max_distance"],
     ),
-    "tracking_result": _object({
-        **BOUND, "table": {"enum": ["tracks", "intervals"]}, "offset": INDEX,
-        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-    }, list(BOUND)),
+    "tracking_result": _object(
+        {
+            **BOUND,
+            "table": {"enum": ["tracks", "intervals"]},
+            "offset": INDEX,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        list(BOUND),
+    ),
     "correct_tracks": _object(
         {
             **BOUND,
@@ -438,29 +443,67 @@ REQUESTS.update(
                 ),
             }
         ),
-        "wound_closure_preview": _object({
-            "frames": _array({"oneOf": [
-                _object({"frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
-                         **BOUND, "selected_labels": _array(LABEL, 0, 100_000),
-                         "mask_semantics": {"const": "filled-wound-area"}}),
-                _object({"frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
-                         "missing_reason": {"type": "string", "minLength": 1, "maxLength": 512}}),
-            ]}, 2, 1000),
-            "time_s": _array({"type": "number", "minimum": -1e15, "maximum": 1e15}, 2, 1000),
-            "time_unit": {"const": "s"}, "time_declaration": TEXT,
-            "specimen_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "sequence_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "area_declaration": TEXT, "grid_declaration": TEXT, "working_bytes": MEMORY,
-        }),
+        "wound_closure_preview": _object(
+            {
+                "frames": _array(
+                    {
+                        "oneOf": [
+                            _object(
+                                {
+                                    "frame_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128,
+                                    },
+                                    **BOUND,
+                                    "selected_labels": _array(LABEL, 0, 100_000),
+                                    "mask_semantics": {"const": "filled-wound-area"},
+                                }
+                            ),
+                            _object(
+                                {
+                                    "frame_id": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 128,
+                                    },
+                                    "missing_reason": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 512,
+                                    },
+                                }
+                            ),
+                        ]
+                    },
+                    2,
+                    1000,
+                ),
+                "time_s": _array({"type": "number", "minimum": -1e15, "maximum": 1e15}, 2, 1000),
+                "time_unit": {"const": "s"},
+                "time_declaration": TEXT,
+                "specimen_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "sequence_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "area_declaration": TEXT,
+                "grid_declaration": TEXT,
+                "working_bytes": MEMORY,
+            }
+        ),
         "wound_closure_save": _object({"preview_id": ID, "preview_hash": SHA}),
         "wound_closure_get": _object({"report_id": ID}),
         "wound_closure_list": _object({}),
-        "wound_closure_query": _object({
-            "preview_id": ID, "preview_hash": SHA, "report_id": ID,
-            "table": {"enum": ["frames", "intervals", "inputs", "selected_labels"]},
-            "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
-            "offset": INDEX, "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-        }, ["table", "offset", "limit"]),
+        "wound_closure_query": _object(
+            {
+                "preview_id": ID,
+                "preview_hash": SHA,
+                "report_id": ID,
+                "table": {"enum": ["frames", "intervals", "inputs", "selected_labels"]},
+                "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "offset": INDEX,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            ["table", "offset", "limit"],
+        ),
         "spatial_density_preview": _object(
             {
                 "fields": _array(
@@ -518,10 +561,49 @@ REQUESTS["exploration_run"]["properties"]["receipt_json"] = {
     "minLength": 1,
     "maxLength": 1024**2,
 }
+TISSUE_REQUEST = _object(
+    {
+        "source_id": ID,
+        "source_sha256": SHA,
+        "series": INDEX,
+        "context_selection": _object(
+            {
+                **{key: INDEX for key in ("x", "y", "c", "z", "t", "level")},
+                "width": {"type": "integer", "minimum": 1, "maximum": 1024},
+                "height": {"type": "integer", "minimum": 1, "maximum": 1024},
+            }
+        ),
+        "output_selection": _object(
+            {
+                **{key: INDEX for key in ("x", "y", "c", "z", "t", "level")},
+                "width": {"type": "integer", "minimum": 1, "maximum": 1024},
+                "height": {"type": "integer", "minimum": 1, "maximum": 1024},
+            }
+        ),
+        "profile_id": {"const": "puma-tissue-cpu"},
+        "profile_contract_sha256": SHA,
+        "runtime_contract_sha256": SHA,
+        "weights_sha256": SHA,
+        "rgb_policy": {"const": "puma-first-three-samples"},
+        "declared_stain": {"const": "hematoxylin-eosin"},
+        "working_bytes": {"type": "integer", "minimum": 2 * 1024**3, "maximum": 8 * 1024**3},
+    }
+)
+REQUESTS.update(
+    {
+        "tissue_model_profiles": _object({}),
+        "tissue_model_status": TISSUE_REQUEST,
+        "tissue_model_preview": TISSUE_REQUEST,
+        "tissue_model_run": _object({"preview_id": ID, "preview_hash": SHA}),
+    }
+)
+
 # Explicit execution membership is deliberate: a new native operation gains no
 # agent authority by changing its mutates flag or joining a general dispatcher.
 READ_ACTIONS = frozenset(
     {
+        "tissue_model_profiles",
+        "tissue_model_status",
         "describe_result",
         "correction_info",
         "tracking_result",
@@ -556,9 +638,12 @@ READ_ACTIONS = frozenset(
         "task_preview_get",
     }
 )
-PREVIEW_ACTIONS = frozenset({"workflow_preview", "exploration_preview", "exploration_compare"})
+PREVIEW_ACTIONS = frozenset(
+    {"workflow_preview", "exploration_preview", "exploration_compare", "tissue_model_preview"}
+)
 PUBLICATION_ACTIONS = frozenset(
     {
+        "tissue_model_run",
         "run_recipe",
         "classical_run",
         "perinuclear_run",

@@ -133,6 +133,7 @@ _KIND_LABELS = {
     "processed": "Image processing",
     "declared-stain-analysis": "Declared stain analysis",
     "tissue-region-mask": "Tissue region mask",
+    "tissue-model-regions": "Candidate PUMA tissue regions",
     "annotated-result": "Annotated result",
     "puncta": "Puncta detection",
     "puncta-quantification": "Puncta detection",
@@ -378,17 +379,31 @@ def _replay(workbench: Workbench, result: dict[str, Any]) -> dict[str, Any]:
         "reason": "The complete original execution request is unavailable.",
     }
     provenance = result["provenance"]
+    if "tissue_model" in provenance:
+        return {
+            "status": "unsupported",
+            "operation": None,
+            "request": None,
+            "reason": "Tissue inference requires a new explicit declared-H&E preview in an "
+            "exclusive durable task; retained reads never rerun the model.",
+        }
     if result["kind"] == "morphometrics":
         from .research_morphometrics import _software, validate_request
         from .workbench import runtime_record
 
-        if (provenance["morphometrics"]["software"] != _software()
-                or provenance.get("runtime") != runtime_record()):
+        if (
+            provenance["morphometrics"]["software"] != _software()
+            or provenance.get("runtime") != runtime_record()
+        ):
             return {**unsupported, "reason": "The exact morphology method/runtime is unavailable."}
         request = provenance["accepted_request"]
         validate_request(workbench, request)
-        return {"status": "available", "operation": "morphometrics_run",
-                "request": request, "reason": None}
+        return {
+            "status": "available",
+            "operation": "morphometrics_run",
+            "request": request,
+            "reason": None,
+        }
     if result.get("parent_id") or provenance.get("workflow"):
         return {
             **unsupported,
@@ -535,6 +550,27 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
         current = parent
     provenance = result["provenance"]
     settings: list[dict[str, Any]] = []
+    if "tissue_model" in provenance:
+        _fields(
+            provenance["tissue_model"]["receipt"]["request"],
+            (
+                "profile_id",
+                "profile_contract_sha256",
+                "runtime_contract_sha256",
+                "weights_sha256",
+                "rgb_policy",
+                "declared_stain",
+                "working_bytes",
+            ),
+            "provenance.tissue_model.receipt.request",
+            settings,
+        )
+        _fields(
+            provenance["tissue_model"],
+            ("label_semantics", "initial_statistics_apply_to_effective_labels"),
+            "provenance.tissue_model",
+            settings,
+        )
     compartment = provenance.get("compartment_measurement")
     compartment_inputs = []
     if compartment is not None:
@@ -575,15 +611,24 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
         )
     _fields(provenance.get("settings"), _SETTINGS, "provenance.settings", settings)
     morphology = provenance.get("morphometrics")
-    _fields(morphology, ("schema", "kernel_schema", "calibration_status"),
-            "provenance.morphometrics", settings)
+    _fields(
+        morphology,
+        ("schema", "kernel_schema", "calibration_status"),
+        "provenance.morphometrics",
+        settings,
+    )
     if morphology is not None:
         # The project loader verifies this code-owned contract. Preserve its
         # exact formula text, including division, without allowing generic paths.
         for section in ("rules", "units", "input", "software"):
             for key, value in morphology[section].items():
-                settings.append({"name": key, "value": value,
-                                 "source": f"provenance.morphometrics.{section}.{key}"})
+                settings.append(
+                    {
+                        "name": key,
+                        "value": value,
+                        "source": f"provenance.morphometrics.{section}.{key}",
+                    }
+                )
         if len(settings) > MAX_FIELDS:
             raise ValueError("Result context exceeds the bounded settings field limit")
     _fields(
@@ -685,6 +730,19 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
                     runtime,
                 )
     model: list[dict[str, Any]] = []
+    if "tissue_model" in provenance:
+        _fields(
+            provenance["tissue_model"]["receipt"]["inference"]["profile"]["model"],
+            (
+                "artifact_id",
+                "sha256",
+                "bytes",
+                "original_checkpoint_sha256",
+                "conversion_receipt_sha256",
+            ),
+            "provenance.tissue_model.receipt.inference.profile.model",
+            model,
+        )
     _fields(
         provenance.get("model"),
         ("id", "version", "task", "model_sha256", "metadata_sha256", "package_sha256"),

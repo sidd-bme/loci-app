@@ -17,11 +17,18 @@ The new composition supports five declared native adapters; learned-model
 chaining and arbitrary method execution are not included. These source additions
 do not change the published beta or establish scientific validation.
 
-The next source slice adds [object shape, filled-wound closure and observed
+Current source adds [object shape, filled-wound closure and observed
 trajectory measurements](ASSAY_MEASUREMENTS.md), donor-density plots and editable
 SVG figure exports. The assay definitions preserve pixel/physical units, missing
 observations, exact source masks and uncertainty flags. Wound reports cover one
 declared specimen/sequence; across-specimen wound comparisons remain unsupported.
+
+The optional [epidermis tissue model](TISSUE_MODELS.md) adds exact managed PUMA
+import and bounded CPU preview/adoption on declared H&E RGB/RGBA planes. Original
+class predictions and scores remain separate from corrected compartment regions.
+Full native normalization context, output ROI, source calibration and execution
+identity remain explicit. This source route has no independent accuracy claim;
+it does not infer a basal boundary, dermis definition or tissue thickness.
 
 This matrix covers the current source implementation.
 
@@ -202,8 +209,9 @@ biological accuracy or supplies missing model/training-data rights.
 - Manual epidermal thickness stores two-endpoint transects on one native T/Z
   plane, physical calibration when available, per-transect boundary/orientation/
   exclusion rules and reviewer state. CSV preserves that saved protocol. Ridge-base
-  and suprapapillary classes remain distinct; there is no automatic epidermis
-  segmentation or claim that a drawn transect is a validated minimum/maximum.
+  and suprapapillary classes remain distinct. This manual tool does not derive
+  its boundaries from the optional tissue-class prediction or establish that a
+  drawn transect is a validated minimum/maximum.
 - The fluorescence field assay measures unthresholded target-channel signal in
   a reviewed native-plane ROI, explicit background and reviewed nuclei counts.
   Preview/QC and an explicit reviewed result route retain source/plane/settings

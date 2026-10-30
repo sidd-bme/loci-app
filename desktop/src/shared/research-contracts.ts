@@ -34,6 +34,7 @@ export interface ResearchSource {
     multiscale_index?: number | null;
   };
   metadata: {
+    selected_series?: number;
     format?: string;
     axes?: string;
     shape?: number[];
@@ -87,6 +88,12 @@ export interface ResearchResult {
   perinuclear?: ResearchPerinuclearRecord;
   spatial?: unknown;
   morphometrics?: unknown;
+  tissue_model?: {
+    schema: "loci.puma-tissue-result/v1";
+    label_semantics: "original_selected_compartment" | "edited_selected_compartment";
+    preview: { preview_id: string; preview_hash: string };
+    [key: string]: unknown;
+  };
   /** Parent-label eligibility only; full source/grid/revision checks still apply. */
   perinuclear_nuclei_eligible?: boolean;
 }
@@ -782,6 +789,59 @@ export type ResearchExecuteOptions =
   { viewer_lane: string } |
   /** Unique guided-exploration submission identity, used for exact cancellation ownership. */
   { request_key: string };
+export interface ResearchTissueProfile {
+  schema: "loci.tissue-model-profile/v1";
+  id: "puma-tissue-cpu";
+  version: string;
+  contract_sha256: string;
+  model: { sha256: string; bytes: number; conversion_receipt_sha256: string; [key: string]: unknown };
+  input: { rgb_policy: "puma-first-three-samples"; maximum_context_edge: number; [key: string]: unknown };
+  runtime: Record<string, unknown>;
+  resources: { minimum_working_bytes: number; maximum_working_bytes: number; [key: string]: unknown };
+  class_map: Record<string, string>;
+  selected_compartment: { class_id: number; name: string };
+  compatibility: { status: string; [key: string]: unknown };
+  scientific_validation: { status: string; independent_accuracy: string; scope: string; [key: string]: unknown };
+  rights: Record<string, string>;
+  [key: string]: unknown;
+}
+export interface ResearchTissueStoreStatus {
+  schema: "loci.puma-store-status/v1";
+  profile_id: "puma-tissue-cpu";
+  profile_contract_sha256: string;
+  weights_sha256: string;
+  weights_bytes: number;
+  conversion_receipt_sha256: string;
+  conversion_receipt_bytes: number;
+  state: "missing" | "provisioned-unverified" | "verified" | "invalid";
+  provisioned: boolean;
+  files_verified: boolean;
+  runtime_compatibility: "not-established";
+  scientific_qualification: "not-established";
+  model_execution_performed: false;
+  execution_authority: false;
+}
+export interface ResearchTissueRuntimeStatus {
+  status: "missing" | "mismatch" | "metadata-matches-unverified";
+  expected: Record<string, string>;
+  observed: Record<string, string | null>;
+  expected_python_major_minor: number[];
+  observed_python_major_minor: number[];
+  missing: string[];
+  mismatched: string[];
+  runtime_import_verified: false;
+  technical_compatibility_verified: false;
+}
+export interface ResearchTissueProfiles {
+  profiles: Array<{ profile: ResearchTissueProfile; store: ResearchTissueStoreStatus; runtime: ResearchTissueRuntimeStatus }>;
+}
+export interface ResearchTissueImportPhase {
+  profile_id: "puma-tissue-cpu";
+  operation_id: string | null;
+  phase: "idle" | "choosing-weights" | "choosing-receipt" | "importing";
+  cancel_requested: boolean;
+}
+
 export interface ResearchDesktopApi {
   /** Application-private targets; paths and credentials are never returned. */
   computeTargets?(operation: "list" | "import_ssh" | "save" | "test" | "resources" | "remember" | "use" | "forget",
@@ -840,6 +900,11 @@ export interface ResearchDesktopApi {
   addSources(kind?: "files" | "dicom" | "ome_zarr"): Promise<ResearchSnapshot>;
   /** Opens a local package picker; package paths never cross the renderer boundary. */
   importModel?(workingBytes: number, recoveryModelId?: string): Promise<unknown>;
+  /** Main owns both file pickers. Renderer can supply only a registered profile. */
+  importTissueModel?(profileId: "puma-tissue-cpu"): Promise<ResearchTissueProfiles | null>;
+  getTissueModelImportStatus?(profileId: "puma-tissue-cpu"): Promise<ResearchTissueImportPhase>;
+  /** Cancels pending picker selection only; returns false once import starts. */
+  cancelTissueModelImport?(profileId: "puma-tissue-cpu"): Promise<{ cancelled: boolean; phase: ResearchTissueImportPhase["phase"] }>;
   /** Opens native destination dialogs; no canonical path crosses into the renderer. */
   createAgentAccess?(
     request: ResearchAgentAccessRequest,

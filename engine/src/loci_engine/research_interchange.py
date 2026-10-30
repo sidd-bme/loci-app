@@ -979,14 +979,19 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
-    if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in record[
-        "provenance"
-    ]:
+    if (
+        record.get("kind") in {"temporal-tracking", "tracking"}
+        or "tracking" in record["provenance"]
+    ):
         from .research_temporal import validate_record
 
         validate_record(record)
     if record.get("kind") == "morphometrics" or "morphometrics" in record["provenance"]:
         from .research_morphometrics import validate_record
+
+        validate_record(record)
+    if record.get("kind") == "tissue-model-regions" or "tissue_model" in record["provenance"]:
+        from .research_tissue_models import validate_record
 
         validate_record(record)
     if record.get("kind") == "spatial-distance-bands" or "spatial" in record["provenance"]:
@@ -1044,6 +1049,10 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if result.get("kind") == "tissue-model-regions" or "tissue_model" in provenance:
+        from .research_tissue_models import validate_portable_references
+
+        validate_portable_references(result, results, sources, check=lambda: None)
     if result.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in provenance:
         from .research_temporal import validate_inputs
 
@@ -1673,6 +1682,16 @@ def import_project(
                 _load_npy_file(output, referenced_artifacts[digest])
             _fsync_directory(project.arrays)
             for result in results:
+                if "tissue_model" in result["provenance"]:
+                    from .research_tissue_models import validate_portable_references
+
+                    validate_portable_references(
+                        result,
+                        result_by_id,
+                        source_by_id,
+                        array_loader=project.load_array,
+                        check=lambda: None,
+                    )
                 if "tracking" in result["provenance"]:
                     from .research_temporal import validate_registration_arrays
 
@@ -1708,7 +1727,10 @@ def import_project(
                     from .research_wound_closure import validate_portable_references
 
                     validate_portable_references(
-                        document["data"], result_by_id, source_by_id, documents,
+                        document["data"],
+                        result_by_id,
+                        source_by_id,
+                        documents,
                         array_loader=project.load_array,
                     )
                 if document["kind"] == "intensity_report":

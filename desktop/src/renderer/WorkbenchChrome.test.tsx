@@ -389,11 +389,14 @@ describe("workbench tool selector", () => {
     expect(input).toHaveValue("");
     expect(input).toHaveFocus();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(21);
+    expect(screen.getAllByRole("option")).toHaveLength(22);
+    expect(screen.getByRole("option", { name: "Epidermis model" })).toBeEnabled();
     expect(screen.getByRole("option", { name: "Nuclear & cell shape" })).toBeEnabled();
     expect(screen.getByRole("option", { name: "Wound closure" })).toBeEnabled();
     expect(screen.getByRole("option", { name: /Spatial donor density/ })).toBeVisible();
     expect(screen.getByRole("option", { name: /Workflow builder/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("option", { name: "Epidermis model" }));
+    expect(onTab).toHaveBeenLastCalledWith("Tissue model");
   });
 
   it("opens prerequisite routes for scalar fluorescence and correction", () => {

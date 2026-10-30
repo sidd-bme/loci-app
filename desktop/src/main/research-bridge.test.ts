@@ -272,6 +272,52 @@ describe("native research bridge", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  it("imports tissue files only from the two native pickers and exposes no file paths", async () => {
+    const project = path.join(root, "Tissue.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project }); await call("create");
+    const weights = path.join(root, "weights.pth"), receipt = path.join(root, "receipt.json");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [weights] }).mockResolvedValueOnce({ canceled: false, filePaths: [receipt] });
+    const catalogue = { profiles: [{ profile: { id: "puma-tissue-cpu" }, store: { profile_id: "puma-tissue-cpu", provisioned: true } }] };
+    mocks.request.mockImplementation(async (_method, params) => params.operation === "tissue_model_profiles" ? catalogue : {});
+    expect(await call("import-tissue-model", "puma-tissue-cpu")).toEqual(catalogue);
+    expect(mocks.clients[0].request).toHaveBeenCalledWith("research_execute", { project, operation: "tissue_model_import",
+      request: { profile_id: "puma-tissue-cpu", weights_path: weights, receipt_path: receipt } }, 0);
+    expect(await call("tissue-model-import-status", "puma-tissue-cpu")).toEqual({ profile_id: "puma-tissue-cpu", phase: "idle", operation_id: null, cancel_requested: false });
+    await expect(call("import-tissue-model", { profile_id: "puma-tissue-cpu", weights_path: weights })).rejects.toThrow("registered PUMA");
+    await expect(call("import-tissue-model", "puma-tissue-cpu", receipt)).rejects.toThrow("only a registered profile");
+    await expect(call("execute", "tissue_model_import", { profile_id: "puma-tissue-cpu", weights_path: weights, receipt_path: receipt })).rejects.toThrow("native file pickers");
+    await expect(call("execute", "tissue_model_profiles", { path: weights })).rejects.toThrow("do not accept paths");
+  });
+
+  it.each(["weights", "receipt"])("cancels tissue selection at the %s picker without importing", async (stage) => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Tissue.loci-study") }); await call("create");
+    let finish!: (value: unknown) => void;
+    if (stage === "receipt") mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [path.join(root, "weights.pth")] });
+    mocks.open.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = call("import-tissue-model", "puma-tissue-cpu");
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(await call("tissue-model-import-status", "puma-tissue-cpu")).toMatchObject({ phase: `choosing-${stage}`, operation_id: expect.any(String) });
+    await expect(call("import-tissue-model", "puma-tissue-cpu")).rejects.toThrow("Finish the active");
+    expect(await call("cancel-tissue-model-import", "puma-tissue-cpu")).toEqual({ cancelled: true, phase: `choosing-${stage}` });
+    finish({ canceled: false, filePaths: [path.join(root, stage === "receipt" ? "receipt.json" : "weights.pth")] });
+    expect(await pending).toBeNull();
+    expect(mocks.request.mock.calls.some(([, params]) => params.operation === "tissue_model_import")).toBe(false);
+  });
+
+  it("drains a tissue import on shutdown and does not misreport cancellation as rollback", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Tissue.loci-study") }); await call("create");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [path.join(root, "weights.pth")] }).mockResolvedValueOnce({ canceled: false, filePaths: [path.join(root, "receipt.json")] });
+    let finish!: (value: unknown) => void;
+    mocks.request.mockImplementation(async (_method, params) => params.operation === "tissue_model_import"
+      ? new Promise(resolve => { finish = resolve; }) : { profiles: [{ profile: { id: "puma-tissue-cpu" }, store: { profile_id: "puma-tissue-cpu", provisioned: true } }] });
+    const pending = call("import-tissue-model", "puma-tissue-cpu"); await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(await call("cancel-tissue-model-import", "puma-tissue-cpu")).toEqual({ cancelled: false, phase: "importing" });
+    const closing = bridge.dispose(); await Promise.resolve();
+    expect(mocks.clients[0].dispose).not.toHaveBeenCalled(); expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    finish({}); await pending; await closing;
+    expect(mocks.clients[0].dispose).toHaveBeenCalledOnce(); expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+  });
+
   const labelBinding = () => ({ source_id: "b".repeat(32), source_sha256: sha,
     selection: { x: 0, y: 0, width: 8, height: 4, t: 0, c: 1, z: 0, level: 0 }, working_bytes: 64 * 1024 ** 2 });
 

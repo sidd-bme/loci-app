@@ -308,6 +308,9 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:agent-session-control", request),
   importModel: (workingBytes, recoveryModelId) =>
     ipcRenderer.invoke("loci-research:import-model", workingBytes, recoveryModelId),
+  importTissueModel: (profileId) => ipcRenderer.invoke("loci-research:import-tissue-model", profileId),
+  getTissueModelImportStatus: (profileId) => ipcRenderer.invoke("loci-research:tissue-model-import-status", profileId),
+  cancelTissueModelImport: (profileId) => ipcRenderer.invoke("loci-research:cancel-tissue-model-import", profileId),
   createStudy: () => ipcRenderer.invoke("loci-research:create"),
   openStudy: () => ipcRenderer.invoke("loci-research:open"),
   getSnapshot: () => ipcRenderer.invoke("loci-research:snapshot"),

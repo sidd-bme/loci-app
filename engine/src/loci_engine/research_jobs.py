@@ -225,6 +225,14 @@ def submit_job(
 
             receipt = adoption_receipt(request)
             source_id = receipt["source_id"]
+        elif operation == "tissue_model_run":
+            from .research_tissue_models import task_source
+
+            source_id = task_source(workbench.project, request)
+        elif operation == "tissue_model_preview":
+            from .research_tissue_integration import preflight
+
+            source_id = preflight(workbench, operation, request)["source_id"]
         elif operation == "model_run":
             preview = next(
                 (

@@ -328,6 +328,16 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
         **({"spatial": provenance["spatial"]} if "spatial" in provenance else {}),
         **({"morphometrics": provenance["morphometrics"]} if "morphometrics" in provenance else {}),
+        **(
+            {
+                "tissue_model": {
+                    key: provenance["tissue_model"][key]
+                    for key in ("schema", "label_semantics", "preview")
+                }
+            }
+            if "tissue_model" in provenance
+            else {}
+        ),
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
@@ -1332,7 +1342,10 @@ class Workbench:
         result = self.project.result(request["result_id"])
         perinuclear = result.get("kind") == "perinuclear-enrichment"
         spatial = result.get("kind") == "spatial-distance-bands"
-        label_field = request.get("label_field", "objects" if spatial else "nuclei")
+        tissue = "tissue_model" in result["provenance"]
+        label_field = request.get(
+            "label_field", "compartments" if tissue else "objects" if spatial else "nuclei"
+        )
         fields = (
             {
                 "objects": ("labels", "Retained object labels, including excluded objects"),
@@ -1345,6 +1358,18 @@ class Workbench:
             }
             if spatial
             else {
+                "tissue_classes": (
+                    "class_labels",
+                    "Immutable original six-class PUMA prediction; class 4 is predicted epidermis",
+                ),
+                "compartments": (
+                    "labels",
+                    "Effective selected-compartment connected regions; "
+                    "corrections do not alter original predictions",
+                ),
+            }
+            if tissue
+            else {
                 "nuclei": ("labels", "original nucleus labels, including endpoint exclusions"),
                 "rings": (
                     "ring_labels",
@@ -1356,7 +1381,7 @@ class Workbench:
                 ),
             }
         )
-        if "label_field" in request and not (perinuclear or spatial):
+        if "label_field" in request and not (perinuclear or spatial or tissue):
             raise ValueError("Alternative label fields require a perinuclear or spatial result")
         if not isinstance(label_field, str) or label_field not in fields:
             raise ValueError(
@@ -1364,7 +1389,7 @@ class Workbench:
                 if perinuclear
                 else "Choose one of the result's declared label fields"
             )
-        if perinuclear or spatial:
+        if perinuclear or spatial or tissue:
             integer(request.get("index", 0), "label inspection plane index", 0, 0)
             if type(request.get("labels", True)) is not bool:
                 raise ValueError("Label visibility must be an explicit boolean")
@@ -1402,8 +1427,10 @@ class Workbench:
         if request.get("labels", True) and label_array in result["arrays"]:
             labels = self.project.load_array(result["arrays"][label_array])
             label_plane = labels if labels.ndim == 2 else np.take(labels, index, axis=axis_number)
+            # Original tissue classes are uint8; widen before palette arithmetic.
+            palette_labels = label_plane.astype(np.uint32) if tissue else label_plane
             tint = np.stack(
-                [(label_plane * multiplier % 223 + 32) / 255 for multiplier in (67, 97, 137)],
+                [(palette_labels * multiplier % 223 + 32) / 255 for multiplier in (67, 97, 137)],
                 axis=-1,
             )
             rgba = np.concatenate(
@@ -1421,7 +1448,18 @@ class Workbench:
                     "label_field": label_field,
                     "label_field_basis": label_basis,
                 }
-                if perinuclear or spatial
+                if perinuclear or spatial or tissue
+                else {}
+            ),
+            **(
+                {
+                    "field": label_field if request.get("labels", True) else "epidermis_score",
+                    "basis": label_basis
+                    if request.get("labels", True)
+                    else "Immutable original class-4 softmax score; "
+                    "candidate model output, not calibrated confidence",
+                }
+                if tissue
                 else {}
             ),
             "image": _png(np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8)),
@@ -1512,6 +1550,17 @@ class Workbench:
         job_id: str | None = None,
         publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if operation == "tissue_model_profiles":
+            from .research_tissue_integration import profiles
+
+            exact_keys(request, set(), "tissue model profiles")
+            return profiles()
+        if operation in {"tissue_model_status", "tissue_model_preview", "tissue_model_run"}:
+            from .research_tissue_integration import execute
+
+            return execute(
+                self, operation, request, job_id=job_id, publication_guard=publication_guard
+            )
         if operation == "task_preview_get":
             from .research_task_preview import get_preview
 

@@ -696,6 +696,9 @@ class PolicyAgent:
 
     def _provenance(self, original: dict[str, Any]) -> dict[str, Any]:
         value = dict(original)
+        if "tissue_model" in value and not self.policy.disclosures >= DISCLOSURES:
+            value.pop("tissue_model", None)
+            value.pop("host_runtime", None)
         if "perinuclear" in value and not self.policy.disclosures >= DISCLOSURES:
             # These bounded scientific snapshots combine counts, channel
             # declarations, geometry and parent identities. A narrower reader
@@ -828,6 +831,10 @@ class PolicyAgent:
 
             return authorize_result(self.policy, workbench, result_id)
         result = workbench.project.result(checked_id(result_id), verify_scientific_arrays=False)
+        if "tissue_model" in result["provenance"]:
+            from .agent_study import authorize_result
+
+            return authorize_result(self.policy, workbench, result_id)
         self.policy.source_grant(workbench.project, result["source_id"])
         provenance = result.get("provenance")
         if not isinstance(provenance, dict):
@@ -1346,6 +1353,8 @@ class PolicyAgent:
                     },
                 )
             output: dict[str, Any] = {"result": safe_summary}
+            if "tissue_model" in summary and self.policy.disclosures >= DISCLOSURES:
+                safe_summary["tissue_model"] = summary["tissue_model"]
             if "measurements" in self.policy.disclosures:
                 output.update(
                     measurements=self._measurements(value["measurements"]),
@@ -1364,7 +1373,15 @@ class PolicyAgent:
         index: int | None = None,
         labels: bool = True,
         label_field: Literal[
-            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+            "nuclei",
+            "rings",
+            "ambiguous",
+            "objects",
+            "compartment",
+            "boundary",
+            "bands",
+            "tissue_classes",
+            "compartments",
         ]
         | None = None,
     ) -> dict[str, Any]:
@@ -1384,6 +1401,7 @@ class PolicyAgent:
                     if "label_field" in value
                     else {}
                 ),
+                **({key: value[key] for key in ("field", "basis")} if "field" in value else {}),
                 "image": value["image"],
                 "result_id": value["result_id"],
                 "revision_hash": value["revision_hash"],
@@ -2430,7 +2448,15 @@ def build_server(policy_path: str | Path) -> MCPServer:
         index: int | None = None,
         labels: bool = True,
         label_field: Literal[
-            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+            "nuclei",
+            "rings",
+            "ambiguous",
+            "objects",
+            "compartment",
+            "boundary",
+            "bands",
+            "tissue_classes",
+            "compartments",
         ]
         | None = None,
     ) -> dict[str, Any]:

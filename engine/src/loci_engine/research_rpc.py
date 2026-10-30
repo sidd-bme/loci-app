@@ -59,7 +59,9 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         exact_keys(params, {"project", "report_id", "plan_hash", "destination"}, method)
         return grant(
             _open(params["project"]).project,
-            params["report_id"], params["plan_hash"], params["destination"],
+            params["report_id"],
+            params["plan_hash"],
+            params["destination"],
         )
     if method == "research_spatial_density_export_plan":
         from .research_spatial_density import plan
@@ -488,6 +490,13 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             params.get("operation", "run_recipe"),
         )
     if method == "research_run":
+        if workbench.project.job(params["job_id"])["operation"] in {
+            "tissue_model_preview",
+            "tissue_model_run",
+        }:
+            from .research_tissue_integration import run_disposable
+
+            return run_disposable(workbench.project, params["job_id"])
         return run_job(workbench, params["job_id"])
     if method == "research_cancel":
         return cancel_job(workbench.project, params["job_id"])

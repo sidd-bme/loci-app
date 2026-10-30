@@ -116,3 +116,43 @@ containing the Cellpose runtime, including both current qualification profiles,
 must include its dependency licences as well. This summary is not a substitute
 for that release audit. No model checkpoint is bundled or downloaded during
 either platform build. The running app provides the explicit verified-download action described above.
+
+## PUMA tissue integration
+
+The optional [epidermis tissue profile](docs/TISSUE_MODELS.md) adapts fixed
+preprocessing and tiling formulas from the MIT-licensed PUMA baseline at commit
+`211782054387f0d28e170ed565cdfb6e8b53d1a7`. Its fixed PlainConvUNet hierarchy is
+adapted from the Apache-2.0 dynamic-network-architectures reference at commit
+`19f56442581461ca428b7ea5d79e81d672c8d5a1`, copyright 2022 Division of Medical
+Image Computing, German Cancer Research Center (DKFZ), Heidelberg, Germany.
+Loci removes dynamic architecture configuration and upstream imports and adds
+exact tensor-schema and artifact-identity checks. The Apache-2.0 text is retained
+in [LICENSE](LICENSE); the PUMA permission notice follows below.
+
+PUMA model weights and datasets are separate artifacts. The profile records the
+upstream declarations and pinned identities; no weights or datasets are bundled
+by this integration, and derivative redistribution review is incomplete. Explicit
+import does not establish commercial clearance, technical compatibility or
+scientific accuracy. The PUMA code notice does not relicense model or data assets.
+
+MIT License
+
+Copyright (c) 2025 Medical Image Analysis Group Eindhoven (IMAG/e)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

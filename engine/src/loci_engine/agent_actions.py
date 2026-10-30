@@ -173,7 +173,12 @@ def authorize_action(
 
     if "result_id" in request:
         bound = result_binding(request)
-    if operation == "run_recipe":
+    if operation in {"tissue_model_status", "tissue_model_preview", "tissue_model_run"}:
+        from .research_tissue_integration import preflight
+
+        _schema_check(request, contract)
+        preflight(workbench, operation, request, policy=policy)
+    elif operation == "run_recipe":
         normalized = recipe_scope(policy, workbench, request)
         request = {key: normalized[key] for key in ("source_id", "selection", "recipe")}
     elif operation == "classical_run":
@@ -315,7 +320,7 @@ def authorize_action(
                 )
         if operation == "large_result_delete" and policy.memory_bytes < 256 * 1024**2:
             raise PermissionError("Large-result editing requires a 256 MiB working allowance")
-    if operation in TASK_ACTIONS:
+    if operation in TASK_ACTIONS and operation not in {"tissue_model_preview", "tissue_model_run"}:
         policy.require_runtime(runtime_record())
     policy.recheck()
     return request

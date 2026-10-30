@@ -407,8 +407,31 @@ for _name, _mutates, _summary in (
     OPERATION_CATALOG[_name] = {"mutates": _mutates, "summary": _summary}
 
 
+OPERATION_CATALOG.update(
+    {
+        "tissue_model_profiles": {
+            "mutates": False,
+            "summary": "Discover tissue contracts and path-free runtime/store metadata",
+        },
+        "tissue_model_status": {
+            "mutates": False,
+            "summary": "Inspect declared H&E tissue-model source and metadata status",
+        },
+        "tissue_model_preview": {
+            "mutates": False,
+            "summary": "Preview exact candidate PUMA tissue classes without adoption",
+        },
+        "tissue_model_run": {
+            "mutates": True,
+            "summary": "Repeat and retain an exact candidate tissue preview",
+        },
+    }
+)
+
 TASK_OPERATIONS = frozenset(
     {
+        "tissue_model_preview",
+        "tissue_model_run",
         "workflow_run",
         "exploration_preview",
         "exploration_compare",
@@ -456,6 +479,7 @@ TASK_OPERATIONS = frozenset(
 )
 PREVIEW_OPERATIONS = frozenset(
     {
+        "tissue_model_preview",
         "exploration_preview",
         "exploration_compare",
         "workflow_preview",

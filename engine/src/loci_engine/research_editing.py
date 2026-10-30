@@ -196,7 +196,10 @@ def execute_edit(
             else None
         )
         provenance = result["provenance"]
-        if provenance.get("derived_measurement_arrays"):
+        if "tissue_model" in provenance:
+            names = []
+            basis = "selected-tissue-region-geometry-only"
+        elif provenance.get("derived_measurement_arrays"):
             prefix = _derived_prefix(provenance)
             names = [prefix + ":" + name for name in provenance["derived_measurement_arrays"]]
             basis = prefix + " scalar values"
@@ -282,6 +285,10 @@ def execute_edit(
     geometry = geometry_from_dict(parent["provenance"]["geometry"])
     provenance = copy.deepcopy(parent["provenance"])
     provenance.pop("job_id", None)
+    if "tissue_model" in provenance and operation != "correct_result":
+        raise ValueError(
+            "Tissue region annotations are not supported; correct the effective compartment labels"
+        )
     if operation == "correct_result":
         if "labels" not in arrays:
             raise ValueError("Choose a segmented result before correcting labels")
@@ -309,9 +316,20 @@ def execute_edit(
             arrays["labels"], audit = correct_labels(
                 arrays["labels"], geometry, operations, working_bytes=working_bytes
             )
-        provenance["measurements"] = _measurements(
-            workbench, parent, arrays["labels"], working_bytes
-        )
+        if "tissue_model" in provenance:
+            from .research_tissue_models import prepare_correction
+
+            edited = arrays["labels"]
+            originals = {
+                key: workbench.project.load_array(value) for key, value in parent["arrays"].items()
+            }
+            arrays, provenance = prepare_correction(
+                parent, originals, edited, check=publication_guard or (lambda: None)
+            )
+        else:
+            provenance["measurements"] = _measurements(
+                workbench, parent, arrays["labels"], working_bytes
+            )
         provenance["correction"] = {
             "parent_id": parent["id"],
             "parent_revision_hash": parent["revision_hash"],

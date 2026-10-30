@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument("--max-concurrency", type=int)
             command.add_argument("--policy")
             command.add_argument("--policy-sha256")
+            command.add_argument("--supervisor-pid", type=int)
     review = sub.add_parser("review", help="Explicit local-human review of an exact revision")
     review.add_argument("--project", required=True)
     review.add_argument("--result", required=True)
@@ -286,7 +288,29 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
         return write_policy(args.destination, project, _request(args.specification))
     workbench = Workbench(project)
+    # This CLI invocation owns one task and exits; the reusable JSON worker must
+    # delegate tissue inference here instead of sharing Torch serialization state.
+    if (
+        args.command == "run"
+        and type(args.cpu_seconds) is int
+        and args.cpu_seconds > 0
+        and type(args.memory_bytes) is int
+        and args.memory_bytes > 0
+    ):
+        workbench._exclusive_tissue_worker = True
     try:
+        if args.command == "run" and args.supervisor_pid is not None:
+            from .research_tissue_integration import TASKS
+
+            job = project.job(args.job)
+            if (
+                args.supervisor_pid <= 1
+                or os.getppid() != args.supervisor_pid
+                or job["operation"] not in TASKS
+                or job.get("owner") is not None
+            ):
+                raise ValueError("Native tissue task supervisor identity is invalid")
+            workbench._tissue_supervisor_pid = args.supervisor_pid
         if args.command == "import-model":
             from .research_models import import_model
 
