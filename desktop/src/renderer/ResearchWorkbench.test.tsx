@@ -381,7 +381,8 @@ function api(overrides: Partial<ResearchDesktopApi> = {}): ResearchDesktopApi {
 }
 
 async function selectHistoryResult(name = /^Segmentation,/i) {
-  const button = await screen.findByRole("button", { name });
+  const sourcesHeading = await screen.findByRole("heading", { name: /^Images(?: \(\d+\))?$/, level: 2 });
+  const button = await within(sourcesHeading.closest("aside")!).findByRole("button", { name });
   await waitFor(() => expect(button).toBeEnabled());
   fireEvent.click(button);
   return button;
@@ -392,24 +393,35 @@ async function openTool(
   studySection: "samples" | "intensity" | "batch" = "batch",
   toolScope?: HTMLElement,
 ) {
-  const tools = toolScope ? within(toolScope) : screen;
-  fireEvent.click(await tools.findByRole("button", { name: group }));
+  // Hidden study/analysis panels stay mounted. Search only the visible tool
+  // header, rather than recomputing names/visibility for every workspace button.
+  const navigation = await (toolScope ? within(toolScope) : screen).findByRole("navigation", { name: "Task groups" });
+  const tools = within(navigation.parentElement!);
+  fireEvent.click(within(navigation).getByRole("button", { name: group }));
   const labels: Record<string, string> = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
     Analyze: "Segment & measure", Process: "Preprocess", Model: "Use a model", Quantify: "Fluorescence & field assay",
     Temporal: "Track over time", Registration: "Register & resample", Info: "Review & export", Study: "Study & batch" };
   fireEvent.click(await tools.findByRole("combobox", { name: `${group} tool` }));
-  fireEvent.click(await tools.findByRole("option", { name: labels[tool] }));
-  if (tool === "Study") fireEvent.click(screen.getByRole("tab", { name: { samples: "Samples", intensity: "Intensity", batch: "Batch" }[studySection] }));
-  if (tool === "Study") for (const details of document.querySelectorAll<HTMLDetailsElement>("details.study-analysis-section")) {
-    details.open = true; fireEvent(details, new Event("toggle"));
+  const options = within(await tools.findByRole("listbox", { name: `${group} tool` }));
+  fireEvent.click(await options.findByRole("option", { name: labels[tool] }));
+  if (tool === "Study") {
+    const study = await screen.findByRole("region", { name: "Study workspace" });
+    const sections = within(await within(study).findByRole("tablist", { name: "Study sections" }));
+    fireEvent.click(await sections.findByRole("tab", { name: { samples: "Samples", intensity: "Intensity", batch: "Batch" }[studySection] }));
+    for (const details of study.querySelectorAll<HTMLDetailsElement>("details.study-analysis-section")) {
+      details.open = true; fireEvent(details, new Event("toggle"));
+    }
   }
 }
 async function openAdvancedTool(tool: string) {
-  fireEvent.click(await screen.findByRole("button", { name: "Search all tools" }));
-  fireEvent.change(await screen.findByLabelText("Search all tools"), {
+  const navigation = await screen.findByRole("navigation", { name: "Task groups" });
+  const tools = within(navigation.parentElement!);
+  fireEvent.click(await tools.findByRole("button", { name: "Search all tools" }));
+  fireEvent.change(await tools.findByLabelText("Search all tools"), {
     target: { value: tool },
   });
-  fireEvent.click(await screen.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
+  const options = within(await tools.findByRole("listbox", { name: "All tools" }));
+  fireEvent.click(await options.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
 }
 describe("ResearchWorkbench", () => {
   it("keeps one complete channel editor and provides a model prerequisite route without changing scientific settings", async () => {
@@ -484,9 +496,9 @@ describe("ResearchWorkbench", () => {
       exportDataPackage: vi.fn(), cancelDataExport: vi.fn().mockResolvedValue({ cancelled: true }) });
     return { bridge, study, resultA, resultB, execute, planDataExport };
   }
-  const exportChoice = (name: string, value: string) => fireEvent.change(screen.getByRole("combobox", { name }), { target: { value } });
   const exportPanel = () => within(screen.getByRole("region", { name: "Export scientific data" }));
-  const exactExportChoices = () => within(screen.getByRole("group", { name: "Exact result revisions" }));
+  const exportChoice = (name: string, value: string) => fireEvent.change(exportPanel().getByRole("combobox", { name }), { target: { value } });
+  const exactExportChoices = () => within(exportPanel().getByRole("group", { name: "Exact result revisions" }));
 
   it("focuses Analyze without remounting invalid input drafts or changing the image scope", async () => {
     const bridge=api();
@@ -3042,24 +3054,26 @@ describe("ResearchWorkbench", () => {
     await selectHistoryResult();
     await openTool("Results", "Info");
 
-    expect(screen.getByText("Review required before export")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Export" }));
-    const exportRevision = screen.getByRole("button", { name: "Export result" });
+    const info = within((await screen.findByRole("heading", { name: "Review & export", level: 2 })).parentElement!);
+    const sections = within(info.getByRole("group", { name: "Result sections" }));
+    expect(info.getByText("Review required before export")).toBeVisible();
+    fireEvent.click(sections.getByRole("button", { name: "Export" }));
+    const exportRevision = info.getByRole("button", { name: "Export result" });
     expect(exportRevision).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Review" }));
-    const markReviewed = screen.getByRole("button", { name: "Mark reviewed" });
+    fireEvent.click(sections.getByRole("button", { name: "Review" }));
+    const markReviewed = info.getByRole("button", { name: "Mark reviewed" });
     fireEvent.click(markReviewed);
     fireEvent.click(markReviewed);
     expect(reviewResult).toHaveBeenCalledOnce();
     expect(markReviewed).toBeDisabled();
-    expect(screen.getByText("Review pending")).toBeVisible();
+    expect(info.getByText("Review pending")).toBeVisible();
 
-    finishReview();
-    await waitFor(() => expect(screen.getByText("Reviewed", { selector: '[role="status"]' })).toBeVisible());
+    await act(async () => { finishReview(); });
+    await waitFor(() => expect(info.getByText("Reviewed", { selector: '[role="status"]' })).toBeVisible());
     expect(fetchSnapshot).toHaveBeenCalledTimes(2);
     expect(markReviewed).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Export" }));
-    expect(screen.getByRole("button", { name: "Export result" })).toBeEnabled();
+    fireEvent.click(sections.getByRole("button", { name: "Export" }));
+    expect(info.getByRole("button", { name: "Export result" })).toBeEnabled();
   });
   it("keeps primary segmentation controls before collapsed comparison and label import", async () => {
     const active = structuredClone(snapshot);

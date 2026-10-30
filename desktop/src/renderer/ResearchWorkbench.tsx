@@ -1502,6 +1502,7 @@ export default function ResearchWorkbench({
       ? update(rgbChannelsForPlane(previous, isRgb, shownSelection.c)) : update);
   }, [isRgb, shownSelection.c]);
   const selectSourcePlane = (next: ResearchSelection) => {
+    if (!viewSettingsReady || sourceIsChanging || documentSwitching) return;
     if (isRgb && next.c !== shownSelection.c) {
       setResultId(null); setResultView(null); setImage(null); setVolume(null);
     }
@@ -3665,7 +3666,8 @@ export default function ResearchWorkbench({
         {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && (
           <>{assistantFollowing && <div className="assistant-display-status" role="status"><span>Assistant display is active</span>
             <button disabled={assistantFollowBusy} onClick={() => void followAssistantDisplay(false)}>Take control</button></div>}
-          <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy}><SourceDisplayPanel
+          <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy || !viewSettingsReady || sourceIsChanging || documentSwitching}
+            aria-busy={!viewSettingsReady || sourceIsChanging}><SourceDisplayPanel
             api={api}
             source={source}
             sources={snapshot.sources}

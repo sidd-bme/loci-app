@@ -93,7 +93,7 @@ async function launch(label) {
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("request", request => { if (/^https?:/.test(request.url())) network.push(request.url()); });
-  await app.evaluate(({ BrowserWindow, dialog }, targets) => {
+  await app.evaluate(({ BrowserWindow, dialog, ipcMain }, targets) => {
     BrowserWindow.getAllWindows()[0].setBounds({ x: 20, y: 40, width: 1440, height: 1000 });
     dialog.showOpenDialog = async (...args) => {
       const title = args.at(-1)?.title;
@@ -104,7 +104,26 @@ async function launch(label) {
     dialog.showSaveDialog = async (...args) => ({ canceled: false,
       filePath: args.at(-1)?.title === "Save research study as" ? targets.study : targets.exported });
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  }, { sources: sourcePaths, study, exported });
+    if (targets.delayInitialDisplay) {
+      // Hold one real worker response to expose cold-load interaction races.
+      // The original handler still enforces all IPC and source checks.
+      const channel = "loci-research:execute";
+      const original = ipcMain._invokeHandlers.get(channel);
+      if (typeof original !== "function") throw new Error("Research IPC handler unavailable");
+      globalThis.__paletteDisplayLoad = { waiting: false, captured: false, release: null };
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, async (event, operation, ...args) => {
+        const response = await original(event, operation, ...args);
+        const gate = globalThis.__paletteDisplayLoad;
+        if (operation === "source_view" && !gate.captured) {
+          gate.captured = true; gate.waiting = true;
+          await new Promise(resolve => { gate.release = resolve; });
+          gate.waiting = false;
+        }
+        return response;
+      });
+    }
+  }, { sources: sourcePaths, study, exported, delayInitialDisplay: label === "initial" });
 }
 async function choose(source) {
   await page.locator(`${researchSourceButtonSelector}[data-source-id="${source.id}"]`).click();
@@ -218,7 +237,17 @@ try {
   assert.deepEqual(synthetic.metadata.shape, [1, 2, 3, 160, 1280, 3]);
   assert.deepEqual(synthetic.metadata.channel_dtypes, ["uint16", "uint16"]);
   assert.equal(synthetic.metadata.palette.stored_index_dtype, "uint8");
+  await poll(() => app.evaluate(() => globalThis.__paletteDisplayLoad?.waiting === true), "held real source-view response");
+  const initialChannel = panel().getByRole("combobox", { name: "Image channel", exact: true });
+  await initialChannel.waitFor({ state: "visible" });
+  assert.equal(await initialChannel.isEnabled(), false, "Channel control must wait for exact saved display hydration");
+  assert.equal(await initialChannel.inputValue(), "0");
+  await capture("initial-display-hydration-disabled");
+  report.stages.push({ stage: "delayed initial saved display response", real_worker_response: true,
+    image_channel_disabled_until_hydrated: true, unchanged_channel: 0 });
+  await app.evaluate(() => { globalThis.__paletteDisplayLoad.release(); });
   await choose(synthetic);
+  assert.equal(await initialChannel.isEnabled(), true);
   for (const [c, z] of [[0, 0], [1, 0], [1, 1], [0, 2], [1, 2]]) {
     stage = `synthetic C${c} Z${z}`;
     const saved = await setPlane(synthetic, c, z);
