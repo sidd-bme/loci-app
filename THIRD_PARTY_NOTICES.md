@@ -40,7 +40,7 @@ artifact identity, upstream source and qualification scope.
 | OpenSlide binary bundle 4.0.1.2 | LGPL-2.1 and the per-library terms shipped in its `licenses` directory; see the distribution boundary below |
 | Zarr 3.1.6 | MIT |
 | numcodecs 0.16.5 and its bundled codecs | MIT plus the codec licence files shipped by the distribution |
-| Model Context Protocol Python SDK 2.1.1 | MIT |
+| Model Context Protocol Python SDK 2.2.0 | MIT |
 | ONNX 1.22.0 | Apache-2.0 and its distribution `NOTICE` |
 | ONNX Runtime 1.29.0 | MIT plus `ThirdPartyNotices.txt` |
 | PyYAML 6.0.3 | MIT |
@@ -58,8 +58,8 @@ artifact identity, upstream source and qualification scope.
 | Component | Version or artifact | Declaration and boundary |
 | --- | --- | --- |
 | Cellpose source/runtime | `cellpose==4.2.1.1` | MouseLand declares BSD-3-Clause. The current macOS and Windows qualification package profiles include this runtime; a future explicitly labelled Lite build may omit it. |
-| Original Cellpose-SAM checkpoint | `cpsam` | The official Hugging Face repository currently declares BSD-3-Clause for its files. Loci uses this artifact in the website-compatible default profile; that compatibility default is not an accuracy recommendation. Loci does not bundle or download it. |
-| Cellpose-SAM v2 checkpoint | `cpsam_v2` | The official Hugging Face repository currently declares BSD-3-Clause for its files. Loci exposes it as a separate updated, unvalidated profile and does not bundle or download it. |
+| Original Cellpose-SAM checkpoint | `cpsam` | The official Hugging Face repository currently declares BSD-3-Clause for its files. Loci uses this artifact in the website-compatible default profile; that compatibility default is not an accuracy recommendation. Loci does not bundle it; import or an explicit verified download provisions it. |
+| Cellpose-SAM v2 checkpoint | `cpsam_v2` | The official Hugging Face repository currently declares BSD-3-Clause for its files. Loci exposes it as a separate updated, unvalidated profile and does not bundle it; import or an explicit verified download provisions it. |
 
 Loci accepts only the pinned official artifact for the selected profile and
 verifies its size and SHA-256 digest before installation. The original `cpsam`
@@ -67,9 +67,11 @@ identity is 1,233,587,898 bytes with SHA-256
 `e1440429eb384f95afe32bcba6510f90d518eaedc917ede549bed6804004abe2`;
 the `cpsam_v2` identity is 1,233,586,851 bytes with SHA-256
 `0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667`.
-A valid artifact for one profile is rejected by the other. Users obtain each
-artifact from MouseLand; doing so is subject to the terms and provenance of
-that external work.
+A valid artifact for one profile is rejected by the other. Users explicitly
+import an existing artifact or choose the verified-download action for the selected profile. Downloads come from the pinned official
+MouseLand source, support cancellation and require exact size and hash checks
+before atomic import. Loci never downloads a checkpoint silently. Obtaining an
+artifact remains subject to the terms and provenance of that external work.
 
 PyTorch dominates the frozen macOS analysis-engine footprint. The dated QA
 checkpoint records the measured size; no Cellpose checkpoint is bundled. The
@@ -112,5 +114,5 @@ A public release must also carry an audited dependency SBOM and the full
 licence files from the exact locked Python and JavaScript runtime. A build
 containing the Cellpose runtime, including both current qualification profiles,
 must include its dependency licences as well. This summary is not a substitute
-for that release audit. No model checkpoint is included or downloaded by either
-platform build.
+for that release audit. No model checkpoint is bundled or downloaded during
+either platform build. The running app provides the explicit verified-download action described above.
