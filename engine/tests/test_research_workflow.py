@@ -150,6 +150,36 @@ def test_saved_revision_and_source_bindings_are_fail_closed(workflow):
     assert wb.project.list_results() == []
 
 
+def test_linear_and_composed_workflow_libraries_coexist(workflow):
+    from test_research_workflow_graph import definition as graph_definition
+
+    wb, binding, _, _ = workflow
+    graph = wb.execute(
+        "workflow_graph_save",
+        {
+            "workflow_id": "b" * 32,
+            "expected_revision": 0,
+            "definition": graph_definition(),
+        },
+    )["workflow"]
+    assert [r["id"] for r in wb.execute("workflow_list", {})["workflows"]] == [
+        binding["workflow_id"]
+    ]
+    assert [r["id"] for r in wb.execute("workflow_graph_list", {})["workflows"]] == [graph["id"]]
+    root = wb.project.root
+    wb.close()
+    reopened = Workbench(ResearchProject(root))
+    try:
+        assert [r["id"] for r in reopened.execute("workflow_list", {})["workflows"]] == [
+            binding["workflow_id"]
+        ]
+        assert [r["id"] for r in reopened.execute("workflow_graph_list", {})["workflows"]] == [
+            graph["id"]
+        ]
+    finally:
+        reopened.close()
+
+
 def test_preflight_units_unknown_metrics_gates_and_budget(workflow):
     wb, binding, _, _ = workflow
     for metric, unit in [("measure", "um^2"), ("inferred_phenotype", "pixel^2")]:

@@ -15,13 +15,13 @@ export async function waitForSnapshot(page, predicate, label, timeout = 30_000) 
 const toolGroup = {
   Display: "View", Annotate: "Annotate", Epidermis: "Annotate", Correction: "Annotate", Analyze: "Analyze",
   Process: "Analyze", Workflow: "Analyze", Model: "Analyze", Quantify: "Analyze", Temporal: "Analyze",
-  Registration: "Analyze", Population: "Results", Info: "Results", Study: "Results",
+  Registration: "Analyze", Population: "Results", Density: "Results", Info: "Results", Study: "Results",
 };
 const advancedLabel = { Agent: "Connect an assistant", Remote: "Remote compute",
   Portability: "Import & share results", "Vendor import": "Convert vendor images" };
 const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
   Analyze: "Segment & measure", Process: "Preprocess", Workflow: "Workflow builder", Model: "Use a model", Quantify: "Fluorescence & field assay",
-  Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Info: "Review & export", Study: "Study & batch" };
+  Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Density: "Spatial donor density", Info: "Review & export", Study: "Study & batch" };
 
 /** Exercise the same task-group and search controls available to a researcher. */
 export async function selectWorkbenchTool(page, tool, studySection = "Batch") {

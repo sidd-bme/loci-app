@@ -137,6 +137,13 @@ const result: ResearchResult = {
   created_at: "2026-09-08T00:00:00Z", revision_hash: "d".repeat(64), object_count: 2,
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 function status(ready: boolean): CellposeStatus {
   return {
     profileId: "cellpose-sam-v2",
@@ -157,6 +164,8 @@ function installNative(overrides: Partial<LociDesktopApi> = {}) {
     listProfiles: vi.fn().mockResolvedValue([profile]),
     getCellposeStatus: vi.fn().mockResolvedValue(status(true)),
     importCellposeModel: vi.fn().mockResolvedValue(status(true)),
+    downloadCellposeModel: vi.fn().mockResolvedValue(status(true)),
+    cancelCellposeDownload: vi.fn().mockResolvedValue(true),
     ...overrides,
   } as unknown as LociDesktopApi;
   Object.defineProperty(window, "loci", { configurable: true, value: native });
@@ -242,6 +251,7 @@ describe("ResearchCellposePanel", () => {
     expect(native.listProfiles).toHaveBeenCalledOnce();
     expect(native.getCellposeStatus).toHaveBeenCalledWith("cellpose-sam-v2");
     expect(native.importCellposeModel).not.toHaveBeenCalled();
+    expect(native.downloadCellposeModel).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
     expect(screen.getByText("Model, licence & validation")).toBeVisible();
     expect(screen.queryByText(/Opening an image never downloads a model/)).not.toBeInTheDocument();
@@ -255,6 +265,162 @@ describe("ResearchCellposePanel", () => {
     await waitFor(() => expect(native.importCellposeModel).toHaveBeenCalledWith("cellpose-sam-v2"));
     expect(await screen.findByText("Ready locally")).toBeVisible();
     expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled();
+  });
+
+  it("downloads only the explicitly selected checkpoint and keeps execution disabled until verified", async () => {
+    let finish!: (value: CellposeStatus) => void;
+    const downloadCellposeModel = vi.fn(() => new Promise<CellposeStatus>((resolve) => { finish = resolve; }));
+    const native = installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)), downloadCellposeModel });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    expect(downloadCellposeModel).toHaveBeenCalledWith("cellpose-sam-v2");
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Downloading and verifying…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await waitFor(() => expect(native.cancelCellposeDownload).toHaveBeenCalledWith("cellpose-sam-v2"));
+    await act(async () => { finish(status(true)); });
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled();
+    expect(native.importCellposeModel).not.toHaveBeenCalled();
+  });
+
+  it("ends cancellation feedback when the download actually settles", async () => {
+    const download = deferred<CellposeStatus>(), cancel = deferred<boolean>();
+    const native = installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)),
+      downloadCellposeModel: vi.fn(() => download.promise), cancelCellposeDownload: vi.fn(() => cancel.promise) });
+    const { onError } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    expect(screen.getByText("Requesting cancellation…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Cancel download" })).toBeDisabled();
+    await act(async () => { cancel.resolve(true); });
+    expect(screen.getByText("Cancelling download…")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Downloading and verifying…" })).toBeDisabled();
+    await act(async () => { download.reject(new Error("Model download cancelled. No checkpoint was imported.")); });
+    expect(screen.queryByText(/Requesting cancellation|Cancelling download|Verification is finishing/u)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download verified checkpoint" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Import checkpoint…" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+    expect(onError).toHaveBeenCalledWith("Model download cancelled. No checkpoint was imported.");
+    expect(native.cancelCellposeDownload).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([true, false])("ignores a late cancellation acknowledgement (%s) after setup completion", async (accepted) => {
+    const download = deferred<CellposeStatus>(), cancel = deferred<boolean>();
+    const verifiedWithoutRuntime = { ...status(false), model: { ...status(false).model, present: true, verified: true } };
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)),
+      downloadCellposeModel: vi.fn(() => download.promise), cancelCellposeDownload: vi.fn(() => cancel.promise) });
+    const { onError } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await act(async () => { download.resolve(verifiedWithoutRuntime); });
+    expect(screen.getByRole("button", { name: "Import checkpoint…" })).toBeEnabled();
+    await act(async () => { cancel.resolve(accepted); });
+    expect(screen.queryByText(/Requesting cancellation|Cancelling download|Verification is finishing/u)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it.each(["acknowledgement", "error"])("ignores a previous attempt's late cancel %s during a new download", async (reply) => {
+    const first = deferred<CellposeStatus>(), second = deferred<CellposeStatus>(), cancel = deferred<boolean>();
+    const downloadCellposeModel = vi.fn().mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)), downloadCellposeModel,
+      cancelCellposeDownload: vi.fn(() => cancel.promise) });
+    const { onError } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await act(async () => { first.reject(new Error("Model download cancelled.")); });
+    expect(screen.getByRole("button", { name: "Download verified checkpoint" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Download verified checkpoint" }));
+    expect(downloadCellposeModel).toHaveBeenCalledTimes(2);
+    await act(async () => { if (reply === "error") cancel.reject(new Error("Late old cancellation error")); else cancel.resolve(true); });
+    expect(screen.queryByText(/Requesting cancellation|Cancelling download|Verification is finishing/u)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel download" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Downloading and verifying…" })).toBeDisabled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenLastCalledWith("Model download cancelled.");
+    await act(async () => { second.resolve(status(true)); });
+    expect(screen.getByText("Ready locally")).toBeVisible();
+  });
+
+  it.each(["acknowledgement", "error"])("discards late download failure and cancel %s after a profile change", async (reply) => {
+    const download = deferred<CellposeStatus>(), cancel = deferred<boolean>();
+    const originalProfile = { ...profile, id: "cellpose-sam" as const, name: "Cellpose-SAM", model: { ...profile.model, artifactId: "cpsam" } };
+    const originalStatus = { ...status(false), profileId: "cellpose-sam" as const, model: { ...status(false).model, artifactId: "cpsam" } };
+    const native = installNative({ listProfiles: vi.fn().mockResolvedValue([originalProfile, profile]),
+      getCellposeStatus: vi.fn((id) => Promise.resolve(id === "cellpose-sam" ? originalStatus : status(false))),
+      downloadCellposeModel: vi.fn(() => download.promise), cancelCellposeDownload: vi.fn(() => cancel.promise) });
+    const props = { api: researchApi(), source, selection, busy: false, onBusy: vi.fn(), onError: vi.fn(), onResult: vi.fn() };
+    const { rerender } = render(<ResearchCellposePanel {...props} profileId="cellpose-sam-v2" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    rerender(<ResearchCellposePanel {...props} profileId="cellpose-sam" />);
+    await waitFor(() => expect(native.getCellposeStatus).toHaveBeenLastCalledWith("cellpose-sam"));
+    await act(async () => {
+      download.reject(new Error("Old profile download failed"));
+      if (reply === "error") cancel.reject(new Error("Old profile cancellation failed")); else cancel.resolve(false);
+    });
+    expect(screen.queryByText(/Requesting cancellation|Cancelling download|Verification is finishing/u)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download verified checkpoint" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+    expect(props.onError).not.toHaveBeenCalled();
+  });
+
+  it("allows retrying a failed live cancel request without ending the active download", async () => {
+    const download = deferred<CellposeStatus>(), firstCancel = deferred<boolean>();
+    const cancelCellposeDownload = vi.fn().mockImplementationOnce(() => firstCancel.promise).mockResolvedValueOnce(true);
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)),
+      downloadCellposeModel: vi.fn(() => download.promise), cancelCellposeDownload });
+    const { onError } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await act(async () => { firstCancel.reject(new Error("Cancellation request failed")); });
+    expect(onError).toHaveBeenCalledWith("Cancellation request failed");
+    expect(screen.getByRole("button", { name: "Cancel download" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Downloading and verifying…" })).toBeDisabled();
+    expect(screen.queryByText("Requesting cancellation…")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel download" }));
+    await screen.findByText("Cancelling download…"); expect(cancelCellposeDownload).toHaveBeenCalledTimes(2);
+    await act(async () => { download.reject(new Error("Model download cancelled.")); });
+    expect(screen.queryByText("Cancelling download…")).not.toBeInTheDocument();
+  });
+
+  it("does not treat a downloaded checkpoint as runtime readiness", async () => {
+    const missingRuntime = { ...status(false), model: { ...status(false).model, present: true, verified: true } };
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)), downloadCellposeModel: vi.fn().mockResolvedValue(missingRuntime) });
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Download verified checkpoint" })).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+  });
+
+  it("ignores a completed download after switching to a different model profile", async () => {
+    let finish!: (value: CellposeStatus) => void;
+    const originalProfile = { ...profile, id: "cellpose-sam" as const, name: "Cellpose-SAM", model: { ...profile.model, artifactId: "cpsam" } };
+    const originalStatus = { ...status(false), profileId: "cellpose-sam" as const, model: { ...status(false).model, artifactId: "cpsam" } };
+    const native = installNative({
+      listProfiles: vi.fn().mockResolvedValue([originalProfile, profile]),
+      getCellposeStatus: vi.fn((id) => Promise.resolve(id === "cellpose-sam" ? originalStatus : status(false))),
+      downloadCellposeModel: vi.fn(() => new Promise<CellposeStatus>(resolve => { finish = resolve; })),
+    });
+    const props = { api: researchApi(), source, selection, busy: false, onBusy: vi.fn(), onError: vi.fn(), onResult: vi.fn() };
+    const { rerender } = render(<ResearchCellposePanel {...props} profileId="cellpose-sam-v2" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    rerender(<ResearchCellposePanel {...props} profileId="cellpose-sam" />);
+    await waitFor(() => expect(native.getCellposeStatus).toHaveBeenLastCalledWith("cellpose-sam"));
+    await act(async () => { finish(status(true)); });
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download verified checkpoint" })).toBeEnabled();
+    expect(screen.queryByText("Ready locally")).not.toBeInTheDocument();
+    expect(props.onError).not.toHaveBeenCalled();
+  });
+
+  it("refuses a completed download for the wrong checkpoint identity", async () => {
+    const mismatch = { ...status(true), model: { ...status(true).model, artifactId: "cpsam" } };
+    installNative({ getCellposeStatus: vi.fn().mockResolvedValue(status(false)), downloadCellposeModel: vi.fn().mockResolvedValue(mismatch) });
+    const { onError } = renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Download verified checkpoint" }));
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.stringContaining("does not match the selected model")));
+    expect(screen.getByRole("button", { name: "Segment image" })).toBeDisabled();
   });
 
   it("blocks invalid numeric drafts, then executes corrected settings bound to the source", async () => {

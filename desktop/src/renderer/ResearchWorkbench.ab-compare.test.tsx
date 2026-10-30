@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -254,13 +255,19 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     let saved: { source_id: string; source_sha256: string; revision: number; state: any } = {
       source_id: rgb.id, source_sha256: rgb.sha256, revision: 0, state: null,
     };
+    let finishInitialLoad!: () => void;
+    let initialLoad = true;
+    const initialSavedView = new Promise<void>((resolve) => { finishInitialLoad = resolve; });
     const api = mockApi(snapshot);
     const execute = vi.mocked(api.execute);
     execute.mockImplementation(async (operation, request) => {
       if (request.source_id === rgb.id) {
         if (operation === "viewer_defaults") return { source_id: rgb.id, source_sha256: rgb.sha256, basis: "Native RGB",
           channels: [{ channel: request.c ?? 0, low: 0, high: 65535, gamma: 1, color: "#ffffff", opacity: 1, visible: true }] };
-        if (operation === "source_view") return structuredClone(saved);
+        if (operation === "source_view") {
+          if (initialLoad) await initialSavedView;
+          return structuredClone(saved);
+        }
         if (operation === "save_source_view") {
           expect(request.expected_revision).toBe(saved.revision);
           saved = { ...saved, revision: saved.revision + 1, state: structuredClone(request.state) };
@@ -272,7 +279,15 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
       return viewerContractResponse(operation, request, snapshot) ?? {};
     });
     const view = render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
-    fireEvent.change(await screen.findByRole("combobox", { name: "Image channel" }), { target: { value: "1" } });
+    const imageChannel = await screen.findByRole("combobox", { name: "Image channel" });
+    expect(imageChannel).toBeDisabled();
+    // A programmatic event must not bypass the same initialization boundary.
+    fireEvent.change(imageChannel, { target: { value: "1" } });
+    expect(execute.mock.calls.some(([operation]) => operation === "save_source_view")).toBe(false);
+    await act(async () => { initialLoad = false; finishInitialLoad(); });
+    await waitFor(() => expect(imageChannel).toBeEnabled());
+    expect(imageChannel).toHaveValue("0");
+    fireEvent.change(imageChannel, { target: { value: "1" } });
     await waitFor(() => expect(execute.mock.calls.some(([operation, request]) => operation === "viewer_tile" &&
       request.source_id === rgb.id && ((request.selection as { c?: number })?.c ?? request.c) === 1 &&
       (request.channels as Array<{ channel: number }>)[0].channel === 1)).toBe(true));

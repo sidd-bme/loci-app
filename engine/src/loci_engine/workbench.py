@@ -326,6 +326,8 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
     return {
         "perinuclear_nuclei_eligible": nucleus_result_eligible(result),
         **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
+        **({"spatial": provenance["spatial"]} if "spatial" in provenance else {}),
+        **({"morphometrics": provenance["morphometrics"]} if "morphometrics" in provenance else {}),
         **({"label_import": label_import} if label_import else {}),
         "id": result["id"],
         "source_id": result["source_id"],
@@ -1328,19 +1330,45 @@ class Workbench:
             "result view",
         )
         result = self.project.result(request["result_id"])
-        label_field = request.get("label_field", "nuclei")
         perinuclear = result.get("kind") == "perinuclear-enrichment"
-        if "label_field" in request and not perinuclear:
-            raise ValueError("Alternative label fields require a perinuclear enrichment result")
-        if label_field not in {"nuclei", "rings", "ambiguous"}:
-            raise ValueError("Choose nuclei, rings or ambiguous perinuclear label fields")
-        if perinuclear:
-            integer(request.get("index", 0), "perinuclear plane index", 0, 0)
+        spatial = result.get("kind") == "spatial-distance-bands"
+        label_field = request.get("label_field", "objects" if spatial else "nuclei")
+        fields = (
+            {
+                "objects": ("labels", "Retained object labels, including excluded objects"),
+                "compartment": ("compartment_labels", "Declared analyzable tissue compartment"),
+                "boundary": ("boundary_labels", "Declared boundary pixel centers"),
+                "bands": (
+                    "distance_bands",
+                    "Sampled compartment distance bands; zero outside supplied bands",
+                ),
+            }
+            if spatial
+            else {
+                "nuclei": ("labels", "original nucleus labels, including endpoint exclusions"),
+                "rings": (
+                    "ring_labels",
+                    "unique perinuclear ring pixels; geometric proxy, not cytoplasm",
+                ),
+                "ambiguous": (
+                    "ring_ambiguous",
+                    "multiply claimed ring pixels discarded from every ring",
+                ),
+            }
+        )
+        if "label_field" in request and not (perinuclear or spatial):
+            raise ValueError("Alternative label fields require a perinuclear or spatial result")
+        if not isinstance(label_field, str) or label_field not in fields:
+            raise ValueError(
+                "Choose nuclei, rings or ambiguous perinuclear label fields"
+                if perinuclear
+                else "Choose one of the result's declared label fields"
+            )
+        if perinuclear or spatial:
+            integer(request.get("index", 0), "label inspection plane index", 0, 0)
             if type(request.get("labels", True)) is not bool:
-                raise ValueError("Perinuclear label visibility must be an explicit boolean")
-        label_array = {"nuclei": "labels", "rings": "ring_labels", "ambiguous": "ring_ambiguous"}[
-            label_field
-        ]
+                raise ValueError("Label visibility must be an explicit boolean")
+        label_array, label_basis = fields[label_field]
         if result.get("schema") == "loci.research-result/v2":
             raise ValueError("Use the bounded large-result viewport for this result")
         array = self.project.load_array(result["arrays"]["image"])
@@ -1391,13 +1419,9 @@ class Workbench:
             **(
                 {
                     "label_field": label_field,
-                    "label_field_basis": {
-                        "nuclei": "original nucleus labels, including endpoint exclusions",
-                        "rings": "unique perinuclear ring pixels; geometric proxy, not cytoplasm",
-                        "ambiguous": "multiply claimed ring pixels discarded from every ring",
-                    }[label_field],
+                    "label_field_basis": label_basis,
                 }
-                if perinuclear
+                if perinuclear or spatial
                 else {}
             ),
             "image": _png(np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8)),
@@ -1503,6 +1527,55 @@ class Workbench:
             from .research_intensity_export import execute
 
             return execute(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation == "spatial_density_export":
+            from .research_spatial_density import execute_export
+
+            return execute_export(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation.startswith("spatial_density_"):
+            from .research_spatial_density import execute
+
+            return execute(self.project, operation, request, check=publication_guard, job_id=job_id)
+        if operation == "wound_closure_export":
+            from .research_wound_closure import execute_export
+
+            return execute_export(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation.startswith("wound_closure_"):
+            from .research_wound_closure import execute
+
+            if operation == "wound_closure_save" and job_id is None:
+                raise ValueError("Save wound reports through a durable native job")
+            return execute(self.project, operation, request, check=publication_guard, job_id=job_id)
+        if operation == "workflow_graph_runs":
+            from .research_interchange import _reject_absolute_strings
+            from .research_workflow_graph import RUN_SCHEMA, _run
+
+            exact_keys(request, set(), operation)
+            records = self.project.documents("workflow_run")
+            if (
+                len(records) > 1024
+                or sum(len(canonical_json(record).encode()) for record in records) > 8 * 1024**2
+            ):
+                raise ValueError("Saved graph runs exceed the bounded listing budget")
+            runs = [
+                _run(self, record["id"])
+                for record in records
+                if record["data"].get("schema") == RUN_SCHEMA
+            ]
+            _reject_absolute_strings(runs, "Saved graph runs")
+            return {"runs": runs}
+        if operation.startswith("workflow_graph_"):
+            from .research_workflow_graph import execute_workflow_graph
+
+            # This dispatcher is the trusted local application boundary. Agent
+            # calls use their separate adapter and reauthorize every native leaf.
+            return execute_workflow_graph(
+                self,
+                operation,
+                request,
+                authorize=lambda *_: None,
+                authorize_binding=lambda *_: None,
+                publication_guard=publication_guard,
+            )
         if operation.startswith("intensity_"):
             from .research_intensity_reports import execute
 
@@ -1620,6 +1693,18 @@ class Workbench:
             from .research_annotation_import import import_annotations
 
             return import_annotations(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "spatial_distance_run":
+            from .research_spatial import execute_spatial
+
+            return execute_spatial(
+                self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation == "morphometrics_run":
+            from .research_morphometrics import execute_morphometrics
+
+            return execute_morphometrics(
                 self, request, job_id=job_id, publication_guard=publication_guard
             )
         if operation == "perinuclear_run":

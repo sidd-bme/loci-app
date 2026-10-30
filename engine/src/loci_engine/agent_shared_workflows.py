@@ -32,6 +32,16 @@ SHARED_ACTIONS = frozenset(
         "intensity_preview",
         "intensity_get",
         "intensity_list",
+        "wound_closure_preview",
+        "wound_closure_save",
+        "wound_closure_get",
+        "wound_closure_list",
+        "wound_closure_query",
+        "spatial_density_preview",
+        "spatial_density_save",
+        "spatial_density_get",
+        "spatial_density_list",
+        "spatial_density_query",
         "task_preview_get",
     }
 )
@@ -50,6 +60,22 @@ def _documents(agent, workbench, kind, *, identity=None, filters=()):
             "(SELECT value FROM json_each(?)))"
         )
         values.append(canonical_json(sorted(agent.policy.sources)))
+    if kind in {"spatial_density_report", "wound_closure_report"}:
+        # Source filtering is performed in SQL before bounded materialization.
+        # The code-owned predicate then checks complete selection/channel/runtime
+        # authority before a report can enter enumeration or its byte/count budget.
+        query += (
+            " AND json_type(record, '$.data.source_snapshots')='array'"
+            " AND json_array_length(record, '$.data.source_snapshots')>0"
+            " AND NOT EXISTS (SELECT 1 FROM json_each(record, '$.data.source_snapshots') s "
+            "WHERE COALESCE(json_extract(s.value, '$.id'), '') NOT IN "
+            "(SELECT value FROM json_each(?)))"
+        )
+        values.append(canonical_json(sorted(agent.policy.sources)))
+        if identity is None:
+            function = ("loci_density_scope" if kind == "spatial_density_report"
+                        else "loci_wound_scope")
+            query += f" AND {function}(record)=1"
     if identity is not None:
         query += " AND id=?"
         values.append(checked_id(identity))
@@ -59,6 +85,19 @@ def _documents(agent, workbench, kind, *, identity=None, filters=()):
     query += " ORDER BY rowid"
     documents, used = [], 0
     with workbench.project.connection() as connection:
+        if kind in {"spatial_density_report", "wound_closure_report"} and identity is None:
+
+            def allowed(encoded):
+                agent.policy.recheck()
+                try:
+                    scope = (_density_report_scope if kind == "spatial_density_report"
+                             else _wound_report_scope)
+                    scope(agent, workbench, parse_json(encoded)["data"])
+                except (PermissionError, ValueError, KeyError, TypeError):
+                    return 0
+                return 1
+
+            connection.create_function(function, 1, allowed)
         for row in connection.execute(query, values):
             agent.policy.recheck()
             used += len(row[0].encode())
@@ -102,7 +141,7 @@ def _result(agent, workbench, identity, revision=None, *, _seen=None):
     identity = checked_id(identity)
     seen = {} if _seen is None else _seen
     if identity in seen:
-        result = workbench.project.result(identity)
+        result = agent._authorize_result(workbench, identity)
         if revision is not None and result["revision_hash"] != revision:
             raise PermissionError("Action result revision changed; inspect it again")
         return result
@@ -127,6 +166,7 @@ def _result(agent, workbench, identity, revision=None, *, _seen=None):
             )
     dependencies = [*provenance.get("temporal_inputs", [])]
     dependencies.extend(provenance.get("association_inputs", {}).values())
+    dependencies.extend(provenance.get("spatial", {}).get("inputs", {}).values())
     dependencies.extend(
         provenance.get("compartment_measurement", {}).get("label_inputs", {}).values()
     )
@@ -182,6 +222,165 @@ def _report_scope(agent, workbench, document):
         _result(agent, workbench, binding.get("result_id"), binding.get("revision_hash"))
         for reference in (binding.get("label_inputs") or {}).values():
             _result(agent, workbench, reference.get("result_id"), reference.get("revision_hash"))
+
+
+def _density_result(agent, workbench, identity, revision, seen):
+    from .spatial_measurements import estimated_working_bytes
+
+    result = _result(agent, workbench, identity, revision, _seen=seen)
+    if "spatial" in result["provenance"]:
+        shape = result["arrays"]["labels"]["shape"]
+        retained = sum(d["bytes"] for d in result["arrays"].values())
+        workspace = estimated_working_bytes(shape[0] * shape[1])
+        if retained + workspace > agent.policy.memory_bytes // 2:
+            raise PermissionError("Density masks exceed the delegated working-memory budget")
+    return result
+
+
+def _density_selection_scope(agent, workbench, fields):
+    """Authorize exact spatial inputs and every phenotype dependency without widening grants."""
+    seen, groups, visiting = {}, {}, set()
+    group_bytes = 0
+
+    def group(identity):
+        nonlocal group_bytes
+        if identity in visiting or len(visiting) >= 16 or len(groups) >= 256:
+            raise PermissionError("Density phenotype dependencies exceed the delegated bound")
+        if identity in groups:
+            return groups[identity]
+        documents = _documents(agent, workbench, "population_group", identity=identity)
+        if len(documents) != 1:
+            raise ValueError("Choose an exact saved density phenotype group")
+        document = documents[0]
+        from .research_groups import _record
+
+        data = _record(document)
+        group_bytes += len(canonical_json(document).encode())
+        if group_bytes > agent.policy.memory_bytes // 8:
+            raise PermissionError(
+                "Density phenotype records exceed the delegated inspection budget"
+            )
+        binding = data["receipt"]
+        _density_result(agent, workbench, binding["result_id"], binding["revision_hash"], seen)
+        visiting.add(identity)
+        for reference in data["definition"].get("groups", []):
+            group(reference["group_id"])
+        visiting.remove(identity)
+        groups[identity] = document
+        return document
+
+    if not isinstance(fields, list) or not 1 <= len(fields) <= 256:
+        raise ValueError("Choose 1-256 exact density fields")
+    for field in fields:
+        _density_result(agent, workbench, field["result_id"], field["revision_hash"], {})
+        if "phenotype_group_id" in field:
+            document = group(field["phenotype_group_id"])
+            if document["data"]["record_sha256"] != field["phenotype_record_sha256"]:
+                raise PermissionError("Density phenotype snapshot changed; inspect it again")
+    return list(groups.values())
+
+
+def _density_report_scope(agent, workbench, report):
+    from .research_spatial_density import validate_report
+
+    # Authorize each retained result BEFORE pure report reproduction/disclosure.
+    # The source SQL filter is only a candidate filter, never the grant itself.
+    seen = {}
+    snapshots = report.get("result_bindings", report.get("result_snapshots"))
+    if not isinstance(snapshots, list) or not 1 <= len(snapshots) <= 1024:
+        raise ValueError("Density report requires bounded retained result snapshots")
+    for result in snapshots:
+        _density_result(
+            agent,
+            workbench,
+            result["id"],
+            result["revision_hash"],
+            {} if "result_bindings" in report else seen,
+        )
+    validate_report(report)
+
+
+def _density_view(agent, workbench, reports=(), fields=None):
+    documents = {"spatial_density_report": list(reports), "population_group": [], "sample": []}
+    if fields is not None:
+        documents["population_group"] = _density_selection_scope(agent, workbench, fields)
+        source_ids = {
+            workbench.project.result(f["result_id"], verify_scientific_arrays=False)["source_id"]
+            for f in fields
+        }
+    else:
+        source_ids, groups = set(), {}
+        for document in reports:
+            report = document["data"]
+            _density_report_scope(agent, workbench, report)
+            source_ids.update(
+                f["result"]["source_id"] for f in report["aggregation"]["input_snapshots"]
+            )
+            for snapshot in report.get("phenotype_bindings", report.get("phenotype_groups", [])):
+                actual = _documents(agent, workbench, "population_group", identity=snapshot["id"])
+                if len(actual) != 1:
+                    raise ValueError("Density retained phenotype group is unavailable")
+                groups[snapshot["id"]] = actual[0]
+        documents["population_group"] = list(groups.values())
+    documents["sample"] = [
+        doc
+        for identity in sorted(source_ids)
+        for doc in _documents(agent, workbench, "sample", identity=identity)
+    ]
+    return _ProjectView(workbench.project, documents, source_ids)
+
+
+def _wound_request_scope(agent, workbench, request, *, _seen=None):
+    from .research_wound_closure import request_result_bindings
+
+    if request.get("working_bytes", 0) > agent.policy.memory_bytes:
+        raise PermissionError("Wound working memory exceeds the delegated budget")
+    seen = {} if _seen is None else _seen
+    for binding in request_result_bindings(request):
+        _result(agent, workbench, binding["result_id"], binding["revision_hash"], _seen=seen)
+
+
+def _wound_report_scope(agent, workbench, report):
+    from .research_wound_closure import validate_report
+
+    bindings = report.get("result_bindings")
+    if not isinstance(bindings, list) or not 1 <= len(bindings) <= 1024:
+        raise ValueError("Wound report requires bounded retained result bindings")
+    if len(canonical_json(report).encode()) > min(8 * 1024**2, agent.policy.memory_bytes // 8):
+        raise PermissionError("Wound report metadata exceeds the delegated budget")
+    seen = {}
+    for binding in bindings:
+        _result(agent, workbench, binding["id"], binding["revision_hash"], _seen=seen)
+    _wound_request_scope(agent, workbench, report["request"], _seen=seen)
+    for snapshot in report["source_snapshots"]:
+        grant = agent.policy.source_grant(workbench.project, snapshot["id"])
+        if snapshot["sha256"] != grant.sha256:
+            raise PermissionError("Wound source snapshot exceeds the delegated scope")
+    validate_report(report)
+    agent.policy.require_runtime(report["software"]["runtime"])
+
+
+def _wound_view(agent, workbench, reports=(), request=None):
+    documents = {"wound_closure_report": list(reports), "sample": []}
+    if request is not None:
+        from .research_wound_closure import request_result_bindings
+
+        _wound_request_scope(agent, workbench, request)
+        source_ids = {
+            workbench.project.result(binding["result_id"], verify_scientific_arrays=False)[
+                "source_id"
+            ]
+            for binding in request_result_bindings(request)
+        }
+    else:
+        source_ids = set()
+        for document in reports:
+            report = document["data"]
+            _wound_report_scope(agent, workbench, report)
+            source_ids.update(snapshot["id"] for snapshot in report["source_snapshots"])
+    documents["sample"] = [doc for identity in sorted(source_ids)
+                           for doc in _documents(agent, workbench, "sample", identity=identity)]
+    return _ProjectView(workbench.project, documents, source_ids)
 
 
 def _exploration_scope(agent, workbench, document):
@@ -291,6 +490,55 @@ def authorize_shared_action(agent, workbench, operation, request):
             if len(documents) != 1:
                 raise ValueError("Saved comparison is unavailable in this source")
             _exploration_scope(agent, workbench, documents[0])
+    elif operation == "wound_closure_preview":
+        _wound_request_scope(agent, workbench, request)
+    elif operation in {"wound_closure_save", "wound_closure_get", "wound_closure_query"}:
+        from .research_wound_closure import peek_preview
+
+        if "report_id" in request:
+            if "preview_id" in request or "preview_hash" in request:
+                raise ValueError("Choose one exact wound query identity")
+            documents = _documents(agent, workbench, "wound_closure_report",
+                                   identity=request["report_id"])
+            if len(documents) != 1:
+                raise PermissionError("Wound report is unavailable in the delegated scope")
+            report = documents[0]["data"]
+        else:
+            report = peek_preview(workbench.project,
+                                  {k: request[k] for k in ("preview_id", "preview_hash")
+                                   if k in request})
+        _wound_report_scope(agent, workbench, report)
+    elif operation == "spatial_density_preview":
+        _density_selection_scope(agent, workbench, request["fields"])
+    elif operation == "spatial_density_save":
+        from .research_spatial_density import _candidate
+
+        _density_report_scope(agent, workbench, _candidate(workbench.project, request))
+    elif operation == "spatial_density_query":
+        from .research_spatial_density import _load_preview
+
+        if "report_id" in request:
+            if "preview_id" in request or "preview_hash" in request:
+                raise ValueError("Choose one exact density query identity")
+            documents = _documents(
+                agent, workbench, "spatial_density_report", identity=request["report_id"]
+            )
+            if len(documents) != 1:
+                raise PermissionError("Density report is unavailable in the delegated scope")
+            report = documents[0]["data"]
+        else:
+            report = _load_preview(
+                workbench.project,
+                {k: request[k] for k in ("preview_id", "preview_hash") if k in request},
+            )
+        _density_report_scope(agent, workbench, report)
+    elif operation == "spatial_density_get":
+        documents = _documents(
+            agent, workbench, "spatial_density_report", identity=request["report_id"]
+        )
+        if len(documents) != 1:
+            raise PermissionError("Density report is unavailable in the delegated scope")
+        _density_report_scope(agent, workbench, documents[0]["data"])
     elif operation in {"study_summary", "intensity_catalog", "intensity_preview"}:
         _results(agent, workbench, request["result_ids"])
     elif operation == "intensity_get":
@@ -375,6 +623,51 @@ def inspect_shared_action(agent, workbench, operation, request):
         # Every dependency is bound by the native reproducer to this same exact
         # result revision; the view cannot enumerate another result's groups.
         return dispatch_group(_view(workbench, {"population_group": documents}), operation, request)
+    if operation in {"wound_closure_preview", "wound_closure_get",
+                     "wound_closure_list", "wound_closure_query"}:
+        from .research_wound_closure import execute, peek_preview
+
+        if operation == "wound_closure_preview":
+            project = _wound_view(agent, workbench, request=request)
+        elif operation == "wound_closure_query" and "preview_id" in request:
+            report = peek_preview(workbench.project,
+                                  {k: request[k] for k in ("preview_id", "preview_hash")})
+            project = _wound_view(agent, workbench, reports=[{"data": report}])
+        else:
+            documents = _documents(agent, workbench, "wound_closure_report",
+                                   identity=request.get("report_id"))
+            project = _wound_view(agent, workbench, reports=documents)
+        output = execute(project, operation, request, check=agent.policy.recheck)
+        if operation == "wound_closure_get":
+            report = output.pop("report")
+            output["time_declaration"] = report["request"]["time_declaration"]
+        return output
+    if operation in {
+        "spatial_density_preview",
+        "spatial_density_get",
+        "spatial_density_list",
+        "spatial_density_query",
+    }:
+        from .research_spatial_density import execute
+
+        if operation == "spatial_density_preview":
+            project = _density_view(agent, workbench, fields=request["fields"])
+        elif operation == "spatial_density_query" and "preview_id" in request:
+            from .research_spatial_density import _load_preview
+
+            report = _load_preview(
+                workbench.project, {k: request[k] for k in ("preview_id", "preview_hash")}
+            )
+            project = _density_view(agent, workbench, reports=[{"data": report}])
+        else:
+            documents = _documents(
+                agent, workbench, "spatial_density_report", identity=request.get("report_id")
+            )
+            project = _density_view(agent, workbench, reports=documents)
+        output = execute(project, operation, request, check=agent.policy.recheck)
+        if operation == "spatial_density_get":
+            output.pop("report", None)
+        return output
     if operation in {"study_summary", "intensity_catalog", "intensity_preview"}:
         results = _results(agent, workbench, request["result_ids"])
         samples = [

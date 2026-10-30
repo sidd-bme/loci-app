@@ -10,6 +10,7 @@ import type {
   ResearchSource,
 } from "../shared/research-contracts";
 import "./ResearchQuantificationPanel.css";
+import { ResearchSpatialPanel } from "./ResearchSpatialPanel";
 import { ResearchPerinuclearPanel } from "./ResearchPerinuclearPanel";
 import { resultTitle } from "./result-title";
 import { punctaDistanceUnit, UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
@@ -340,7 +341,7 @@ export function ResearchQuantificationPanel({
   };
   const isRgb = source.metadata.sample_semantics === "RGB";
   const distanceUnit = punctaDistanceUnit(source, selection);
-  const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "perinuclear" | "field-assay">(initialMode);
+  const [mode, setMode] = useState<"channels" | "recipe" | "puncta" | "colocalisation" | "association" | "perinuclear" | "spatial" | "field-assay">(initialMode);
   useEffect(() => { setMode(initialMode); }, [entryKey, initialMode]);
   const liveView = useRef({ active, sourceId: source.id, sourceSha256: source.sha256, mode });
   liveView.current = { active, sourceId: source.id, sourceSha256: source.sha256, mode };
@@ -1054,8 +1055,8 @@ export function ResearchQuantificationPanel({
   return (
     <div className="research-panel research-quantification">
       <div className="research-mode-tabs research-quantification-tabs">
-        {(["channels", "recipe", "puncta", "colocalisation", "association", "perinuclear", "field-assay"] as const).map((item) => (
-          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{({ channels: "Channels", recipe: "Recipe", puncta: "Puncta", colocalisation: "Colocalisation", association: "Compartments", perinuclear: "Perinuclear", "field-assay": "Field assay" })[item]}</button>
+        {(["channels", "recipe", "puncta", "colocalisation", "association", "perinuclear", "spatial", "field-assay"] as const).map((item) => (
+          <button key={item} className={mode === item ? "active" : ""} onClick={() => setMode(item)}>{({ channels: "Channels", recipe: "Recipe", puncta: "Puncta", colocalisation: "Colocalisation", association: "Compartments", perinuclear: "Perinuclear", spatial: "Tissue distances", "field-assay": "Field assay" })[item]}</button>
         ))}
       </div>
       {actionError && <p role="alert">{actionError}</p>}
@@ -1154,6 +1155,7 @@ export function ResearchQuantificationPanel({
         {associationTotal > 0 && <details><summary>{associationTotal} nucleus assignments{associationCounts ? ` · ${associationCounts.ambiguous_count} ambiguous · ${associationCounts.unassigned_count} unassigned` : ""}</summary><p className="research-summary">Association results cannot be edited directly. Correct a parent label result and rerun.</p><CompactTable rows={associations as Array<Record<string, unknown>>} kind="associations" /></details>}
       </>}
 
+      {mode === "spatial" && <ResearchSpatialPanel key={`${source.id}:${source.sha256}`} api={api} snapshot={snapshot} source={source} busy={locked} active={active} workingBytes={recipe.working_bytes} onBusyChange={onBusyChange} onPublished={onPublished} />}
       {mode === "perinuclear" && <ResearchPerinuclearPanel key={`${source.id}:${source.sha256}`}
         api={api} snapshot={snapshot} source={source} channels={channelOptions} workingBytes={recipe.working_bytes}
         busy={locked} report={report} onBusyChange={onBusyChange} onPublished={onPublished} />}

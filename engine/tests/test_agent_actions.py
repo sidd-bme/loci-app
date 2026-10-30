@@ -235,3 +235,54 @@ def test_real_stdio_exposes_native_actions_with_strict_outer_arguments(tmp_path)
 
     with tempfile.TemporaryFile(mode="w+") as errlog:
         asyncio.run(exercise(errlog))
+
+
+def test_capacity_refusal_has_retry_guidance_without_disclosing_private_error(
+    tmp_path, monkeypatch
+):
+    from loci_engine.research_mcp import AgentCapacityError, build_server
+
+    _, _, _, path, *_ = actions_agent(tmp_path)
+
+    def busy(*args, **kwargs):
+        raise AgentCapacityError(str(tmp_path / "private-source"))
+
+    monkeypatch.setattr(PolicyAgent, "inspect_action", busy)
+    server = build_server(path)
+
+    async def exercise():
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        with pytest.raises(ToolError) as error:
+            await server.call_tool(
+                "inspect_action", {"operation": "population_locate", "request": {}}
+            )
+        text = str(error.value)
+        assert "concurrency allowance" in text
+        assert "Wait for it to finish" in text
+        assert str(tmp_path) not in text
+        tools = {item.name: item for item in await server.list_tools()}
+        assert tools["result_view"].input_schema["properties"]["axis"]["enum"] == ["x", "y", "z"]
+
+    asyncio.run(exercise())
+
+
+def test_inspection_capacity_remains_fail_closed_before_worker_start(tmp_path):
+    from loci_engine.research_mcp import AgentCapacityError
+
+    agent, workbench, result, *_ = actions_agent(tmp_path)
+    agent.supervisor._preview_count = agent.policy.concurrency
+    with pytest.raises(AgentCapacityError):
+        agent.supervisor.vision(
+            workbench,
+            {
+                "operation": "population_locate",
+                "request": {
+                    "result_id": result["id"],
+                    "revision_hash": result["revision_hash"],
+                    "label": 1,
+                },
+            },
+            "inspect_action",
+        )
+    assert agent.supervisor._preview_count == agent.policy.concurrency

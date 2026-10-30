@@ -37,6 +37,45 @@ OPERATION_CATALOG = {
         "mutates": False,
         "summary": "Publish a saved intensity report through a private grant",
     },
+    "spatial_density_preview": {
+        "mutates": False,
+        "summary": "Preview exact phenotype density pooled within donors",
+    },
+    "spatial_density_save": {
+        "mutates": True,
+        "summary": "Save an immutable exact donor density report",
+    },
+    "spatial_density_query": {
+        "mutates": False,
+        "summary": "Inspect bounded pages of exact density report tables",
+    },
+    "spatial_density_get": {
+        "mutates": False,
+        "summary": "Verify and reopen an exact density report",
+    },
+    "spatial_density_list": {"mutates": False, "summary": "List authorized saved density reports"},
+    "spatial_density_export": {
+        "mutates": False,
+        "summary": "Publish a density report through a private native grant",
+    },
+    "wound_closure_preview": {
+        "mutates": False,
+        "summary": "Preview declared filled-wound areas over actual elapsed seconds",
+    },
+    "wound_closure_save": {
+        "mutates": True,
+        "summary": "Save an immutable exact-mask wound closure report",
+    },
+    "wound_closure_get": {"mutates": False, "summary": "Verify and reopen an exact wound report"},
+    "wound_closure_list": {"mutates": False, "summary": "List authorized saved wound reports"},
+    "wound_closure_query": {
+        "mutates": False,
+        "summary": "Inspect bounded exact wound frame, interval and selected-label pages",
+    },
+    "wound_closure_export": {
+        "mutates": False,
+        "summary": "Publish an exact-mask wound report through a private native grant",
+    },
     "remote_analysis_cancel": {
         "mutates": True,
         "summary": "Cancel a remote analysis bound to the current study",
@@ -97,6 +136,14 @@ OPERATION_CATALOG = {
     "associate_results": {
         "mutates": True,
         "summary": "Associate exact declared nucleus and cell revisions with overlap ambiguity",
+    },
+    "spatial_distance_run": {
+        "mutates": True,
+        "summary": "Measure physical distance bands and sampled compartment density on exact masks",
+    },
+    "morphometrics_run": {
+        "mutates": True,
+        "summary": "Add exact-parent digital boundary and sample-center shape measurements",
     },
     "perinuclear_run": {
         "mutates": True,
@@ -346,6 +393,20 @@ for _name, _mutates, _summary in (
     OPERATION_CATALOG[_name] = {"mutates": _mutates, "summary": _summary}
 
 
+for _name, _mutates, _summary in (
+    ("workflow_graph_validate", False, "Validate a bounded v2 workflow graph"),
+    ("workflow_graph_save", True, "Save an exact bounded v2 workflow graph definition"),
+    ("workflow_graph_get", False, "Inspect an exact saved bounded v2 workflow graph"),
+    ("workflow_graph_list", False, "List saved bounded v2 workflow graphs"),
+    ("workflow_graph_preflight", False, "Plan exact inputs for a bounded v2 workflow graph"),
+    ("workflow_graph_start", True, "Start a durable bounded v2 workflow graph coordinator"),
+    ("workflow_graph_advance", True, "Advance a bounded v2 workflow graph coordinator"),
+    ("workflow_graph_status", False, "Inspect an exact bounded v2 workflow graph coordinator"),
+    ("workflow_graph_cancel", True, "Cancel future scheduling for a bounded v2 workflow graph"),
+):
+    OPERATION_CATALOG[_name] = {"mutates": _mutates, "summary": _summary}
+
+
 TASK_OPERATIONS = frozenset(
     {
         "workflow_run",
@@ -361,6 +422,10 @@ TASK_OPERATIONS = frozenset(
         "large_result_export",
         "scientific_data_export",
         "intensity_export",
+        "spatial_density_save",
+        "spatial_density_export",
+        "wound_closure_save",
+        "wound_closure_export",
         "preview_recipe",
         "histology_run",
         "histology_preview",
@@ -384,6 +449,8 @@ TASK_OPERATIONS = frozenset(
         "field_assay_run",
         "associate_results",
         "perinuclear_run",
+        "spatial_distance_run",
+        "morphometrics_run",
         "colocalisation_run",
     }
 )

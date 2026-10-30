@@ -125,6 +125,19 @@ REQUESTS = {
         }
     ),
     "describe_result": _object(BOUND),
+    "morphometrics_run": _object({**BOUND, "working_bytes": MEMORY}),
+    "spatial_distance_run": _object(
+        {
+            **BOUND,
+            "compartment": _object(BOUND),
+            "boundary": _object(BOUND),
+            "band_edges": _array(NUMBER, 2, 33),
+            "exclude_crop_border": {"type": "boolean"},
+            "control": TEXT,
+            "boundary_coverage": TEXT,
+            "working_bytes": MEMORY,
+        }
+    ),
     "perinuclear_run": _object(
         {
             **BOUND,
@@ -239,7 +252,10 @@ REQUESTS = {
         },
         ["frames", "time_declaration", "max_distance"],
     ),
-    "tracking_result": _object(BOUND),
+    "tracking_result": _object({
+        **BOUND, "table": {"enum": ["tracks", "intervals"]}, "offset": INDEX,
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+    }, list(BOUND)),
     "correct_tracks": _object(
         {
             **BOUND,
@@ -422,6 +438,76 @@ REQUESTS.update(
                 ),
             }
         ),
+        "wound_closure_preview": _object({
+            "frames": _array({"oneOf": [
+                _object({"frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                         **BOUND, "selected_labels": _array(LABEL, 0, 100_000),
+                         "mask_semantics": {"const": "filled-wound-area"}}),
+                _object({"frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                         "missing_reason": {"type": "string", "minLength": 1, "maxLength": 512}}),
+            ]}, 2, 1000),
+            "time_s": _array({"type": "number", "minimum": -1e15, "maximum": 1e15}, 2, 1000),
+            "time_unit": {"const": "s"}, "time_declaration": TEXT,
+            "specimen_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "sequence_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "area_declaration": TEXT, "grid_declaration": TEXT, "working_bytes": MEMORY,
+        }),
+        "wound_closure_save": _object({"preview_id": ID, "preview_hash": SHA}),
+        "wound_closure_get": _object({"report_id": ID}),
+        "wound_closure_list": _object({}),
+        "wound_closure_query": _object({
+            "preview_id": ID, "preview_hash": SHA, "report_id": ID,
+            "table": {"enum": ["frames", "intervals", "inputs", "selected_labels"]},
+            "frame_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "offset": INDEX, "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        }, ["table", "offset", "limit"]),
+        "spatial_density_preview": _object(
+            {
+                "fields": _array(
+                    {
+                        "oneOf": [
+                            _object(BOUND),
+                            _object(
+                                {**BOUND, "phenotype_group_id": ID, "phenotype_record_sha256": SHA}
+                            ),
+                        ]
+                    },
+                    1,
+                    256,
+                ),
+                "phenotype_name": TEXT,
+                "stratum": _object({"t": INDEX, "z": INDEX}),
+                "condition_pair": _array(TEXT, 2, 2),
+            },
+            ["fields"],
+        ),
+        "spatial_density_save": _object({"preview_id": ID, "preview_hash": SHA}),
+        "spatial_density_query": _object(
+            {
+                "preview_id": ID,
+                "preview_hash": SHA,
+                "report_id": ID,
+                "table": {
+                    "enum": [
+                        "input_snapshots",
+                        "field_rows",
+                        "donor_rows",
+                        "condition_rows",
+                        "paired_rows",
+                        "paired_summary",
+                        "unmatched_donors",
+                        "exclusion_audit",
+                        "cells",
+                    ]
+                },
+                "field_result_id": ID,
+                "offset": INDEX,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            ["table", "offset", "limit"],
+        ),
+        "spatial_density_get": _object({"report_id": ID}),
+        "spatial_density_list": _object({}),
         "intensity_get": _object({"report_id": ID}),
         "intensity_list": _object({}),
         "task_preview_get": _object({"job_id": ID}),
@@ -459,6 +545,14 @@ READ_ACTIONS = frozenset(
         "intensity_preview",
         "intensity_get",
         "intensity_list",
+        "wound_closure_preview",
+        "wound_closure_get",
+        "wound_closure_list",
+        "wound_closure_query",
+        "spatial_density_preview",
+        "spatial_density_get",
+        "spatial_density_list",
+        "spatial_density_query",
         "task_preview_get",
     }
 )
@@ -468,6 +562,10 @@ PUBLICATION_ACTIONS = frozenset(
         "run_recipe",
         "classical_run",
         "perinuclear_run",
+        "spatial_distance_run",
+        "morphometrics_run",
+        "spatial_density_save",
+        "wound_closure_save",
         "correct_result",
         "roi_add",
         "puncta_run",
@@ -503,6 +601,10 @@ def _execution_contract(name):
             if name in READ_ACTIONS
             else "task-preview"
             if name in PREVIEW_ACTIONS
+            else "immutable-wound-report"
+            if name == "wound_closure_save"
+            else "immutable-density-report"
+            if name == "spatial_density_save"
             else "immutable-result-revision"
         ],
         "cancellation": "Cancel only the exact policy/session-owned job"
@@ -544,10 +646,16 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "execution": "bounded-read" if name in READ_ACTIONS else "durable-task",
                 **_execution_contract(name),
                 "side_effects": (
-                    "saved-comparison-receipt"
+                    "bounded-preview-cache"
+                    if name in {"spatial_density_preview", "wound_closure_preview"}
+                    else "saved-comparison-receipt"
                     if name == "exploration_compare"
                     else "none"
                     if name in READ_ACTIONS or name in PREVIEW_ACTIONS
+                    else "saved-wound-report"
+                    if name == "wound_closure_save"
+                    else "saved-density-report"
+                    if name == "spatial_density_save"
                     else "new-result-revision"
                 ),
                 "permissions": [
@@ -562,6 +670,8 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                 "undo": (
                     "No result adopted; retained preview may expire"
                     if name in PREVIEW_ACTIONS
+                    else "Retain the immutable report; preview changed inputs as a new report."
+                    if name in {"spatial_density_save", "wound_closure_save"}
                     else "Select the immutable parent result; a new result starts without review."
                     if name in TASK_ACTIONS
                     else "not-applicable"

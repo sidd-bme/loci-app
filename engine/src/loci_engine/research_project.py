@@ -117,6 +117,37 @@ class ResearchProject:
     """A versioned .loci-study directory; all database writes are transactions."""
 
     def __init__(self, directory: str | Path):
+        self._morphometrics_validation_cache: dict[str, None] = {}
+        self._read_identity(directory)
+        # Ordinary native opens still validate scientific snapshots. A policy
+        # heartbeat only needs the separately checked directory/schema/project
+        # identity; actual scientific readers enforce their own full contracts.
+        from .research_intensity_reports import load as load_intensity_report
+
+        for document in self.documents("intensity_report"):
+            load_intensity_report(self, document["id"])
+        from .research_spatial_density import load as load_spatial_density
+
+        for document in self.documents("spatial_density_report"):
+            load_spatial_density(self, document["id"], verify_arrays=False)
+
+        from .research_wound_closure import load as load_wound_closure
+
+        for document in self.documents("wound_closure_report"):
+            load_wound_closure(self, document["id"], verify_arrays=False)
+
+    @classmethod
+    def _policy_project_id(cls, directory: str | Path) -> str:
+        """Check identity for repeated authority guards without reading reports.
+
+        Return only the validated ID, never an incompletely validated project
+        handle. This is not a source/result access or publication authority.
+        """
+        candidate = cls.__new__(cls)
+        candidate._read_identity(directory)
+        return candidate.meta["project_id"]
+
+    def _read_identity(self, directory: str | Path) -> None:
         requested = Path(directory).expanduser()
         if not requested.is_absolute():
             raise ValueError("Research project location must be absolute")
@@ -141,11 +172,6 @@ class ResearchProject:
             if self.meta.get("schema") != f"loci.study/v{version}":
                 raise ValueError("Study project schema identity is invalid")
             self.schema_version = version
-        # Saved comparisons are scientific snapshots, including on native reopen.
-        from .research_intensity_reports import load as load_intensity_report
-
-        for document in self.documents("intensity_report"):
-            load_intensity_report(self, document["id"])
 
     @classmethod
     def create(
@@ -599,6 +625,10 @@ class ResearchProject:
             "exploration",
             "intensity_report",
             "intensity_export_grant",
+            "spatial_density_report",
+            "spatial_density_export_grant",
+            "wound_closure_report",
+            "wound_closure_export_grant",
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
@@ -608,6 +638,18 @@ class ResearchProject:
             validate_report(record)
             if expected_revision != 0 or document_id != record["report_hash"][:32]:
                 raise ValueError("Intensity reports are immutable; create a new report")
+        if kind == "spatial_density_report":
+            from .research_spatial_density import validate_report
+
+            validate_report(record)
+            if expected_revision != 0 or document_id != record["report_hash"][:32]:
+                raise ValueError("Spatial density reports are immutable; create a new report")
+        if kind == "wound_closure_report":
+            from .research_wound_closure import validate_report
+
+            validate_report(record)
+            if expected_revision != 0 or document_id != record["report_hash"][:32]:
+                raise ValueError("Wound reports are immutable; create a new report")
         if (
             isinstance(expected_revision, bool)
             or not isinstance(expected_revision, int)
@@ -835,11 +877,35 @@ class ResearchProject:
             "arrays": artifacts,
             "provenance": provenance,
         }
+        if kind in {"temporal-tracking", "tracking"} or "tracking" in provenance:
+            from .research_temporal import project_inputs
+
+            project_inputs(self, record, verify_arrays=True)
+        if kind == "morphometrics" or "morphometrics" in provenance:
+            from .research_morphometrics import (
+                project_parents,
+                validate_project_arrays,
+                validate_source,
+            )
+
+            project_parents(self, record)
+            validate_source(record, source)
+            validate_project_arrays(self, record, arrays=arrays)
         if kind == "perinuclear-enrichment" or "perinuclear" in provenance:
             from .research_perinuclear import validate_record, validate_source
 
             validate_record(record)
             validate_source(record, source)
+        if kind == "spatial-distance-bands" or "spatial" in provenance:
+            from .research_spatial import validate_parents
+
+            validate_parents(
+                record,
+                {
+                    b["result_id"]: self.result(b["result_id"])
+                    for b in provenance["spatial"]["inputs"].values()
+                },
+            )
         record["revision_hash"] = hashlib.sha256(canonical_json(record).encode()).hexdigest()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1074,7 +1140,18 @@ class ResearchProject:
             )
         return record
 
-    def result(self, result_id: str, *, check: Callable[[], None] | None = None) -> dict[str, Any]:
+    def result(
+        self,
+        result_id: str,
+        *,
+        check: Callable[[], None] | None = None,
+        verify_scientific_arrays: bool = True,
+    ) -> dict[str, Any]:
+        """Read a result; metadata-only mode is for internal authority preflight.
+
+        Metadata-only callers must not disclose numerical measurements until
+        validate_result_arrays has checked the exact authorized record.
+        """
         if check is not None:
             check()
         with self.connection() as connection:
@@ -1091,6 +1168,25 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
+            if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in record.get(
+                "provenance", {}
+            ):
+                from .research_temporal import project_inputs
+
+                project_inputs(self, record, check=check)
+            if record.get("kind") == "morphometrics" or "morphometrics" in record.get(
+                "provenance", {}
+            ):
+                from .research_morphometrics import project_parents, validate_source
+
+                project_parents(self, record, check=check)
+                validate_source(record, self.source(record["source_id"]))
+            if record.get("kind") == "spatial-distance-bands" or "spatial" in record.get(
+                "provenance", {}
+            ):
+                from .research_spatial import validate_record
+
+                validate_record(record)
             if record.get("kind") == "perinuclear-enrichment" or "perinuclear" in record.get(
                 "provenance", {}
             ):
@@ -1123,7 +1219,23 @@ class ResearchProject:
             validate_object_table(self, record["object_table"], check=check)
         else:
             raise ValueError("Unsupported research result schema")
+        if verify_scientific_arrays:
+            self.validate_result_arrays(record, check=check)
         return record
+
+    def validate_result_arrays(self, record, *, check=None, working_bytes=None):
+        """Numerically check one exact record after its source access is authorized."""
+        provenance = record.get("provenance", {})
+        if record.get("kind") == "morphometrics" or "morphometrics" in provenance:
+            from .research_morphometrics import validate_project_arrays
+
+            validate_project_arrays(self, record, check=check, working_bytes=working_bytes)
+        if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in provenance:
+            from .research_temporal import project_inputs
+
+            project_inputs(
+                self, record, check=check, verify_arrays=True, working_bytes=working_bytes
+            )
 
     def list_results(self, source_id: str | None = None) -> list[dict[str, Any]]:
         if source_id is not None:

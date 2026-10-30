@@ -11,6 +11,7 @@ import {
   ManagedResearchSessionStore,
   type ManagedSessionState,
 } from "./managed-research-session";
+import { checkedGraphStatus, graphJson } from "../shared/workflow-graph-contracts";
 import { assertResearchRequestBound } from "./research-request-limits";
 import { prepareLegacyProjectImport } from "./legacy-project-adapter";
 import {
@@ -205,7 +206,7 @@ export class ResearchBridge {
   private readonly sessions = new ManagedResearchSessionStore(app.getPath("userData"));
   private project: string | null = null;
   private sessionId: string | null = null;
-  private running: { id: string; project: string } | null = null;
+  private running: { id: string; project: string; graphRunId?: string } | null = null;
   private switching = false;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
@@ -582,6 +583,49 @@ export class ResearchBridge {
       }
     }
     assertResearchRequestBound(operation, request);
+    if (operation.startsWith("workflow_graph_")) {
+      const epoch = this.viewDocumentEpoch;
+      const current = () => this.project === project && this.viewDocumentEpoch === epoch;
+      if (operation !== "workflow_graph_advance") {
+        const output = await this.control.request("research_execute", { project, operation, request });
+        if (!current()) throw new Error("The composed workflow study changed. Its saved state remains in the original study.");
+        if (operation === "workflow_graph_cancel" && this.running?.graphRunId === (request as { run_id?: string }).run_id) this.worker.cancelCurrent();
+        return output;
+      }
+      if (this.running) throw new Error("A local study job is already running.");
+      const runId = (request as { run_id?: unknown }).run_id;
+      if (typeof runId !== "string" || !/^[a-f0-9]{32}$/u.test(runId) || Object.keys(request).join(",") !== "run_id") throw new Error("Choose one exact composed workflow run.");
+      this.running = { id: "graph-advance", project, graphRunId: runId };
+      try {
+        await this.engineSnapshot(project);
+        if (!current()) throw new Error("The composed workflow study changed before scheduling.");
+        const output = checkedGraphStatus(await this.control.request("research_execute", { project, operation, request }));
+        if (!current()) throw new Error("The composed workflow study changed before execution.");
+        if (output.run.id !== runId || output.run.data.owner !== null) throw new Error("Agent-owned runs must remain with their authorized agent session.");
+        const queued = Object.entries(output.run.data.nodes).find(([, node]) => node.state === "queued");
+        if (!queued || output.run.data.cancel_requested || ["succeeded", "failed", "cancelled"].includes(output.state)) return output;
+        const [nodeId, node] = queued;
+        const intent = node.intent;
+        if (!intent?.job_id || intent.job_id === runId) throw new Error("The composed workflow child job identity is invalid.");
+        const snapshot = await this.engineSnapshot(project);
+        const job = snapshot.jobs.find((item) => item.id === intent.job_id);
+        const nativeRequest = job?.operation === "run_recipe" ? job.request : job?.request.task_request;
+        if (!job || job.owner || job.state !== "queued" || job.operation !== intent.operation || job.request_key !== `graph-v2:${runId}:${nodeId}` || graphJson(nativeRequest) !== graphJson(intent.request)) throw new Error("The queued native job does not match the exact composed workflow node.");
+        if (!current()) throw new Error("The composed workflow study changed before execution.");
+        this.running.id = job.id;
+        try {
+          await this.worker.request("research_run", { project, job_id: job.id }, 0);
+        } catch (error) {
+          await this.engineSnapshot(project);
+          const stopped = checkedGraphStatus(await this.control.request("research_execute", { project, operation: "workflow_graph_status", request }));
+          if (current() && ["failed", "cancelled", "cancelling"].includes(stopped.state)) return stopped;
+          throw error;
+        }
+        const status = checkedGraphStatus(await this.control.request("research_execute", { project, operation: "workflow_graph_status", request }));
+        if (!current() || status.run.id !== runId || status.run.data.owner !== null) throw new Error("The composed workflow result belongs to a different study or owner.");
+        return status;
+      } finally { this.running = null; }
+    }
     if (operation.startsWith("remote_")) {
       const epoch = this.viewDocumentEpoch;
       const output = await this.compute.request("research_execute", { project, operation, request }, 0);
@@ -641,6 +685,10 @@ export class ResearchBridge {
       "field_assay_preview",
       "field_assay_run",
       "perinuclear_run",
+      "spatial_distance_run",
+      "spatial_density_save",
+      "morphometrics_run",
+      "wound_closure_save",
       "associate_results",
       "colocalisation_run",
     ]);
@@ -1042,29 +1090,46 @@ export class ResearchBridge {
   }
 
   async planIntensityExport(reportId: unknown, keyValue: unknown): Promise<unknown> {
+    return this.planReportExport("intensity", reportId, keyValue);
+  }
+
+  async planSpatialDensityExport(reportId: unknown, keyValue: unknown): Promise<unknown> {
+    return this.planReportExport("spatial_density", reportId, keyValue);
+  }
+
+  async planWoundClosureExport(reportId: unknown, keyValue: unknown): Promise<unknown> {
+    return this.planReportExport("wound_closure", reportId, keyValue);
+  }
+
+  private async planReportExport(kind: "intensity" | "spatial_density" | "wound_closure", reportId: unknown, keyValue: unknown): Promise<unknown> {
+    const schema = kind.replaceAll("_", "-");
+    const label = kind.replaceAll("_", " ");
+    const identityKey = kind === "wound_closure" ? "source_id" : "result_id";
     const key = this.dataExportKey(keyValue);
     if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId))
-      throw new Error("Choose an exact saved intensity comparison.");
+      throw new Error(`Choose an exact saved ${label} comparison.`);
     if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
     const project = this.requireProject(), epoch = this.viewDocumentEpoch;
     const active = this.beginDataExport(key, project, "plan");
-    this.running = { id: "intensity-report-plan", project };
+    this.running = { id: `${schema}-report-plan`, project };
     try {
-      const response = await this.worker.request<import("../shared/intensity-contracts").IntensityExportPlan>("research_intensity_export_plan", { project, report_id: reportId }, 0);
-      if (active.cancelled) throw new Error("Intensity export preparation cancelled.");
+      const response = await this.worker.request<{ schema: string; report_id: string; report_hash: string; plan_hash: string;
+        status: { current: boolean; changes: Array<Record<string, unknown>> } }>(`research_${kind}_export_plan`, { project, report_id: reportId }, 0);
+      if (active.cancelled) throw new Error(`${label} export preparation cancelled.`);
       if (this.project !== project || this.viewDocumentEpoch !== epoch) throw new Error("The study changed during preparation.");
-      if (!response || response.schema !== "loci.intensity-export-plan/v1" ||
+      if (!response || response.schema !== `loci.${schema}-export-plan/v1` ||
           response.report_id !== reportId || typeof response.report_hash !== "string" ||
           !/^[a-f0-9]{64}$/u.test(response.report_hash) || response.report_hash.slice(0, 32) !== reportId ||
           typeof response.plan_hash !== "string" || !/^[a-f0-9]{64}$/u.test(response.plan_hash) ||
           !response.status || typeof response.status.current !== "boolean" ||
-          !Array.isArray(response.status.changes) || response.status.changes.length > 100 ||
-          response.status.changes.some(row => !row || typeof row.result_id !== "string" ||
-            !/^[a-f0-9]{32}$/u.test(row.result_id) || typeof row.reason !== "string" || row.reason.length > 2048))
-        throw new Error("The engine returned an invalid intensity export preview.");
+          !Array.isArray(response.status.changes) || response.status.changes.length > (kind === "intensity" ? 100 : kind === "wound_closure" ? 1000 : 256) ||
+          response.status.changes.some(row => !row || typeof row[identityKey] !== "string" ||
+            !/^[a-f0-9]{32}$/u.test(row[identityKey] as string) || typeof row.reason !== "string" || row.reason.length > 2048) ||
+          kind === "wound_closure" && response.status.current !== (response.status.changes.length === 0))
+        throw new Error(`The engine returned an invalid ${label} export preview.`);
       return { schema: response.schema, report_id: response.report_id, report_hash: response.report_hash,
         plan_hash: response.plan_hash, status: { current: response.status.current,
-          changes: response.status.changes.map(row => ({ result_id: row.result_id, reason: row.reason })) } };
+          changes: response.status.changes.map(row => ({ [identityKey]: row[identityKey], reason: row.reason })) } };
     } finally {
       if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; }
       active.finish();
@@ -1072,6 +1137,20 @@ export class ResearchBridge {
   }
 
   async exportIntensityReport(reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    return this.exportSavedReport("intensity", reportId, planHash, keyValue);
+  }
+
+  async exportSpatialDensityReport(reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    return this.exportSavedReport("spatial_density", reportId, planHash, keyValue);
+  }
+
+  async exportWoundClosureReport(reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    return this.exportSavedReport("wound_closure", reportId, planHash, keyValue);
+  }
+
+  private async exportSavedReport(kind: "intensity" | "spatial_density" | "wound_closure", reportId: unknown, planHash: unknown, keyValue: unknown): Promise<unknown> {
+    const schema = kind.replaceAll("_", "-");
+    const label = kind === "intensity" ? "Intensity" : kind === "spatial_density" ? "Spatial density" : "Wound closure";
     const key = this.dataExportKey(keyValue);
     if (typeof reportId !== "string" || !/^[a-f0-9]{32}$/u.test(reportId) ||
         typeof planHash !== "string" || !/^[a-f0-9]{64}$/u.test(planHash))
@@ -1079,26 +1158,29 @@ export class ResearchBridge {
     if (this.running || this.switching) throw new Error("Finish or cancel the active study operation first.");
     const project = this.requireProject(), epoch = this.viewDocumentEpoch;
     const active = this.beginDataExport(key, project, "export");
-    this.running = { id: "intensity-report-export", project }; this.switching = true;
+    this.running = { id: `${schema}-report-export`, project }; this.switching = true;
     try {
-      const picked = await dialog.showSaveDialog({ title: "Export intensity comparison", defaultPath: "Loci-intensity", buttonLabel: "Export report" });
-      if (active.cancelled) throw new Error("Intensity report export cancelled.");
+      const picked = await dialog.showSaveDialog({ title: kind === "intensity" ? "Export intensity comparison" : kind === "spatial_density" ? "Export spatial donor density" : "Export wound closure report", defaultPath: `Loci-${schema}`, buttonLabel: "Export report" });
+      if (active.cancelled) throw new Error(`${label} report export cancelled.`);
       if (picked.canceled || !picked.filePath) return null;
       if (!path.isAbsolute(picked.filePath) || this.project !== project || this.viewDocumentEpoch !== epoch)
         throw new Error("The report study or destination changed.");
       const grant = await this.control.request<{ grant_id: string; plan_hash: string; basename: string }>(
-        "research_intensity_export_grant", { project, report_id: reportId, plan_hash: planHash, destination: picked.filePath }, 0);
-      if (active.cancelled) throw new Error("Intensity report export cancelled before submission.");
+        `research_${kind}_export_grant`, { project, report_id: reportId, plan_hash: planHash, destination: picked.filePath }, 0);
+      if (active.cancelled) throw new Error(`${label} report export cancelled before submission.`);
+      if (!grant || typeof grant.grant_id !== "string" || !/^[a-f0-9]{32}$/u.test(grant.grant_id) ||
+          grant.plan_hash !== planHash || grant.basename !== path.basename(picked.filePath))
+        throw new Error("The engine returned an invalid report export grant.");
       const job = await this.control.request<{ id: string }>("research_submit", {
-        project, operation: "intensity_export", request: { grant_id: grant.grant_id, plan_hash: grant.plan_hash }, request_key: key,
+        project, operation: `${kind}_export`, request: { grant_id: grant.grant_id, plan_hash: grant.plan_hash }, request_key: key,
       });
       active.jobId = job.id; this.running.id = job.id; this.switching = false;
-      if (active.cancelled) { await this.cancel(job.id); throw new Error("Intensity report export cancelled before execution."); }
+      if (active.cancelled) { await this.cancel(job.id); throw new Error(`${label} report export cancelled before execution.`); }
       const receipt = await this.worker.request<{ schema: string; basename: string; report_hash: string; manifest_sha256: string }>("research_run", { project, job_id: job.id }, 0);
-      if (receipt.schema !== "loci.intensity-export-receipt/v1" || receipt.basename !== grant.basename ||
+      if (receipt.schema !== `loci.${schema}-export-receipt/v1` || receipt.basename !== grant.basename ||
           !/^[a-f0-9]{64}$/u.test(receipt.manifest_sha256) || typeof receipt.report_hash !== "string" ||
           !/^[a-f0-9]{64}$/u.test(receipt.report_hash) || receipt.report_hash.slice(0, 32) !== reportId)
-        throw new Error("The engine returned an invalid intensity export receipt.");
+        throw new Error(`The engine returned an invalid ${label.toLowerCase()} export receipt.`);
       return { schema: receipt.schema, basename: receipt.basename, report_hash: receipt.report_hash, manifest_sha256: receipt.manifest_sha256 };
     } finally {
       if (this.dataExportActive === active) { this.dataExportActive = null; this.running = null; this.switching = false; }
@@ -1785,6 +1867,10 @@ export class ResearchBridge {
     handle("data-export-cancel", (key) => this.cancelDataExport(key));
     handle("intensity-export-plan", (reportId, key) => this.planIntensityExport(reportId, key));
     handle("intensity-export-package", (reportId, planHash, key) => this.exportIntensityReport(reportId, planHash, key));
+    handle("spatial-density-export-plan", (reportId, key) => this.planSpatialDensityExport(reportId, key));
+    handle("spatial-density-export-package", (reportId, planHash, key) => this.exportSpatialDensityReport(reportId, planHash, key));
+    handle("wound-closure-export-plan", (reportId, key) => this.planWoundClosureExport(reportId, key));
+    handle("wound-closure-export-package", (reportId, planHash, key) => this.exportWoundClosureReport(reportId, planHash, key));
     handle("cancel", (id) => this.cancel(id));
     handle("review", (result_id, revision_hash, disposition) =>
       this.control.request("research_review", {

@@ -111,14 +111,15 @@ codesign --verify --deep --strict --verbose=2 \
   ../.loci/builds/staging/Loci-darwin-arm64/Loci.app
 ```
 
-The packaged runtime exposes two independently provisioned profiles. Import the
+The packaged runtime exposes two independently provisioned profiles. Download or import the
 original official `cpsam` artifact through **Cellpose-SAM · Website compatible**
-for the website-compatible default, or import the genuine official `cpsam_v2`
+for the website-compatible default, or download/import the genuine official `cpsam_v2`
 artifact through **Cellpose-SAM v2** for the separate updated, unvalidated
 profile. The original default is a compatibility choice, not an accuracy
 recommendation. Each
 profile verifies its own exact size and SHA-256 identity and rejects the other
-checkpoint. Building the application never retrieves either artifact.
+checkpoint. The explicit native download control uses pinned upstream artifacts
+and the same atomic importer. Building the application never retrieves either artifact.
 
 Every `package` and `make` command resolves `engine/dist/loci-engine` by
 default, verifies that the platform worker executable exists (and is executable

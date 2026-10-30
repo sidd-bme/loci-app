@@ -18,8 +18,8 @@ import type { ManagedSessionState, ManagedSessionSummary, ResearchDesktopApi, Re
 import BrandMark from "./BrandMark";
 import "./WorkbenchChrome.css";
 
-export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Workflow" | "Quantify" | "Population" | "Correction" |
-  "Temporal" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
+export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Workflow" | "Quantify" | "Density" | "Population" | "Correction" |
+  "Temporal" | "Wound" | "Morphology" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
 type Group = "View" | "Annotate" | "Analyze" | "Results";
 const tabId = (tab: WorkbenchTab) => tab.replaceAll(" ", "-");
 const ADVANCED_LABELS: Partial<Record<Group, string>> = {
@@ -35,9 +35,12 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Workflow", label: "Workflow builder", group: "Analyze", keywords: "pipeline automation nodes batch recipe" },
   { tab: "Model", label: "Use a model", group: "Analyze" },
   { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "fluorescence signal nuclei background intensity puncta association perinuclear nuclear ring enrichment" },
+  { tab: "Morphology", label: "Nuclear & cell shape", group: "Analyze", keywords: "morphology morphometrics circularity eccentricity elongation surface perimeter sphericity organoid" },
   { tab: "Temporal", label: "Track over time", group: "Analyze" },
+  { tab: "Wound", label: "Wound closure", group: "Analyze", keywords: "scratch assay time sequence open area closure curve healing" },
   { tab: "Registration", label: "Register & resample", group: "Analyze" },
   { tab: "Info", label: "Review & export", group: "Results" },
+  { tab: "Density", label: "Spatial donor density", group: "Results", keywords: "tissue bands density donor biological replicate phenotype paired conditions compartment area" },
   { tab: "Population", label: "Statistics & objects", group: "Results", keywords: "explore objects population scatter histogram filter area intensity measurements" },
   { tab: "Study", label: "Study & batch", group: "Results" },
   { tab: "Portability", label: "Import & share results", group: "Results", advanced: true },
@@ -55,8 +58,11 @@ const TOOL_HELP: Record<WorkbenchTab, string> = {
   Process: "Build an ordered preprocessing recipe and preview its effect on a declared region.",
   Model: "Run an explicitly provisioned model with its recorded runtime, settings and validation limits.",
   Quantify: "Measure regional fluorescence, puncta and channel association in declared scalar channels.",
+  Morphology: "Add digital shape measurements to exact saved 2D or 3D object masks, then inspect linked objects and distributions.",
   Temporal: "Associate reviewed objects across time and inspect ambiguous links before export.",
+  Wound: "Measure open wound area from declared masks and actual timepoints, preserving missing frames and input reviews.",
   Registration: "Estimate a transform or resample onto a declared grid while preserving source geometry.",
+  Density: "Pool exact tissue-distance fields within donors and compare conditions with retained counts, areas and exclusions.",
   Population: "Explore all objects in one exact result with linked measurements, distributions and image selection.",
   Info: "Inspect provenance, record a review decision and export the selected result revision.",
   Study: "Organise sources and replicate metadata, reuse recipes and run recoverable batches.",

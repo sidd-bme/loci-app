@@ -301,6 +301,34 @@ describe("workbench tool selector", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("exposes spatial donor density as a Results tool and searchable assay", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: {} } as unknown as ResearchSource;
+    render(<WorkbenchTools tab="Info" onTab={onTab} source={source} hasResult />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Results tool" }));
+    fireEvent.click(screen.getByRole("option", { name: "Spatial donor density" }));
+    expect(onTab).toHaveBeenLastCalledWith("Density");
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    const input = screen.getByRole("combobox", { name: "Search all tools" });
+    fireEvent.change(input, { target: { value: "donor" } });
+    fireEvent.keyDown(input, { key: "ArrowDown" }); fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).toHaveBeenLastCalledWith("Density");
+  });
+
+  it("finds wound closure from the Analyze selector and scratch-assay search", () => {
+    const onTab = vi.fn();
+    const source = { id: "source-1", metadata: {} } as unknown as ResearchSource;
+    render(<WorkbenchTools tab="Analyze" onTab={onTab} source={source} hasResult />);
+    fireEvent.click(screen.getByRole("combobox", { name: "Analyze tool" }));
+    fireEvent.click(screen.getByRole("option", { name: "Wound closure" }));
+    expect(onTab).toHaveBeenLastCalledWith("Wound");
+    fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
+    const input = screen.getByRole("combobox", { name: "Search all tools" });
+    fireEvent.change(input, { target: { value: "scratch" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onTab).toHaveBeenLastCalledWith("Wound");
+  });
+
   it("selects filtered search results with the keyboard and restores focus", () => {
     const onTab = vi.fn();
     const source = { id: "source-1", metadata: { dimensions: { t: 1 } } } as unknown as ResearchSource;
@@ -361,7 +389,10 @@ describe("workbench tool selector", () => {
     expect(input).toHaveValue("");
     expect(input).toHaveFocus();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(18);
+    expect(screen.getAllByRole("option")).toHaveLength(21);
+    expect(screen.getByRole("option", { name: "Nuclear & cell shape" })).toBeEnabled();
+    expect(screen.getByRole("option", { name: "Wound closure" })).toBeEnabled();
+    expect(screen.getByRole("option", { name: /Spatial donor density/ })).toBeVisible();
     expect(screen.getByRole("option", { name: /Workflow builder/ })).toBeEnabled();
   });
 

@@ -63,6 +63,11 @@ def flat_measurements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def methods_text(result: dict[str, Any]) -> str:
     provenance = result["provenance"]
     runtime = provenance.get("runtime", {})
+    trajectory_summary = None
+    if "tracking" in provenance:
+        from .research_temporal import metrics_summary, validate_record
+
+        trajectory_summary = metrics_summary(result, validate_record(result))
     lines = [
         "# Executed Loci research methods",
         "",
@@ -106,6 +111,14 @@ def methods_text(result: dict[str, Any]) -> str:
                 "association_inputs": provenance.get("association_inputs"),
                 "compartment_measurement": provenance.get("compartment_measurement"),
                 "perinuclear": provenance.get("perinuclear"),
+                "spatial": provenance.get("spatial"),
+                "morphometrics": provenance.get("morphometrics"),
+                "morphometrics_request": provenance.get("accepted_request")
+                if "morphometrics" in provenance else None,
+                "spatial_request": provenance.get("accepted_request")
+                if "spatial" in provenance
+                else None,
+                "object_analysis": provenance.get("object_analysis"),
                 "nucleus_analysis": provenance.get("nucleus_analysis"),
                 "parent_result": provenance.get("parent_result"),
                 "colocalisation": provenance.get("colocalisation"),
@@ -119,6 +132,7 @@ def methods_text(result: dict[str, Any]) -> str:
                 "tracking_settings": provenance.get("tracking_settings"),
                 "temporal_inputs": provenance.get("temporal_inputs"),
                 "trajectory_units": provenance.get("trajectory_units"),
+                "trajectory_metrics": trajectory_summary,
                 "track_correction": provenance.get("track_correction"),
             }
         ),
@@ -151,6 +165,11 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    if "morphometrics" in provenance:
+        from .research_morphometrics import project_parents, validate_source
+
+        project_parents(project, result)
+        validate_source(result, project.source(result["source_id"]))
     if "perinuclear" in provenance:
         from .research_perinuclear import validate_parent, validate_source
 
@@ -171,6 +190,7 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
         for key in ("parent_result", "fixed_result", "moving_result")
         if key in provenance
     )
+    result_bindings.extend(result["provenance"].get("spatial", {}).get("inputs", {}).values())
     for binding in result_bindings:
         if binding.get("missing_reason"):
             continue
@@ -190,6 +210,18 @@ def _export_extended_records(
     provenance = result["provenance"]
     summary: dict[str, Any] = {"imagej_roi_files": [], "geojson_only_annotations": []}
     summary["quantification_files"] = []
+    if "morphometrics" in provenance:
+        filename = "morphometrics.json"
+        (stage / filename).write_text(
+            canonical_json(provenance["morphometrics"]) + "\n", encoding="utf-8"
+        )
+        summary["quantification_files"].append(filename)
+    if "spatial" in provenance:
+        filename = "spatial-distance-bands.json"
+        (stage / filename).write_text(
+            canonical_json(provenance["spatial"]) + "\n", encoding="utf-8"
+        )
+        summary["quantification_files"].append(filename)
     if "perinuclear" in provenance:
         filename = "perinuclear-summary.json"
         (stage / filename).write_text(
@@ -250,9 +282,10 @@ def _export_extended_records(
             measurements_csv(flat_measurements(measurements)), encoding="utf-8"
         )
     if "tracking" in provenance:
-        from .research_temporal import _graph_from_record
+        from .research_data_tables import trajectory_csv_rows
+        from .research_temporal import validate_record
 
-        _graph_from_record(provenance["tracking"])
+        metrics = validate_record(result)
         (stage / "tracking.json").write_text(
             canonical_json(
                 {
@@ -260,6 +293,7 @@ def _export_extended_records(
                     "result_id": result["id"],
                     "revision_hash": result["revision_hash"],
                     "tracking": provenance["tracking"],
+                    "trajectory_metrics": metrics,
                     "inputs": provenance["temporal_inputs"],
                     "units": provenance["trajectory_units"],
                     "settings": provenance["tracking_settings"],
@@ -280,6 +314,14 @@ def _export_extended_records(
         (stage / "trajectories.csv").write_text(
             measurements_csv(flat_measurements(trajectory_rows)), encoding="utf-8"
         )
+        files = []
+        for table, filename in (("tracks", "track-summaries.csv"),
+                                ("intervals", "track-intervals.csv")):
+            (stage / filename).write_text(
+                measurements_csv(trajectory_csv_rows(metrics, table)), encoding="utf-8"
+            )
+            files.append(filename)
+        summary["trajectory_metrics_files"] = files
         summary["tracking_file"] = "tracking.json"
     return summary
 
@@ -318,6 +360,10 @@ def export_research_result(
     if sum(descriptor["bytes"] for descriptor in result["arrays"].values()) > 512 * 1024**2:
         raise ValueError("Result export exceeds the 512 MiB decoded artifact budget")
     arrays = {name: project.load_array(descriptor) for name, descriptor in result["arrays"].items()}
+    if "morphometrics" in result["provenance"]:
+        from .research_morphometrics import validate_arrays
+
+        validate_arrays(result, arrays)
     if "perinuclear" in result["provenance"]:
         from .research_perinuclear import validate_arrays
 
@@ -326,6 +372,17 @@ def export_research_result(
             arrays,
             parent=project.result(result["provenance"]["parent_result"]["result_id"]),
         )
+    if "spatial" in result["provenance"]:
+        from .research_spatial import validate_arrays, validate_parents
+
+        validate_parents(
+            result,
+            {
+                b["result_id"]: project.result(b["result_id"])
+                for b in result["provenance"]["spatial"]["inputs"].values()
+            },
+        )
+        validate_arrays(result, arrays)
     image = arrays.get("image")
     labels = arrays.get("labels")
     geometry = geometry_from_dict(result["provenance"]["geometry"])

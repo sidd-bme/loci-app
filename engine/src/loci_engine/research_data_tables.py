@@ -318,6 +318,18 @@ def _selection(item: dict) -> set[int] | None:
 
 
 def _metric_value(row: dict, descriptor: dict) -> tuple[Any, str]:
+    if descriptor["id"].startswith("morphometrics:"):
+        field = descriptor["id"].split(":", 1)[1]
+        target = row.get("morphometrics", {})
+        if field not in target:
+            return None, "missing"
+        return target[field], "null" if target[field] is None else "value"
+    if descriptor["id"].startswith("spatial:"):
+        field = descriptor["id"].split(":", 1)[1]
+        target = row.get("spatial", {})
+        if field not in target:
+            return None, "missing"
+        return target[field], "null" if target[field] is None else "value"
     if descriptor["id"].startswith("principal_rms_radius:"):
         if "principal_rms_radii" not in row:
             return None, "missing"
@@ -662,3 +674,36 @@ def write_tables(
         if progress is not None:
             progress(completed)
     return tables
+
+
+def trajectory_csv_rows(metrics: dict, table: str) -> list[dict]:
+    """Native trajectory tables; never convert tracks into object-population rows.
+
+    The caller recomputes/validates the graph-bound metrics before projection.
+    Explicit rate/directionality statuses accompany nullable singleton/stationary
+    scalars. Vector axes are physical XYZ, independent of image index order.
+    """
+    if table not in {"tracks", "intervals"}:
+        raise ValueError("Choose the tracks or intervals trajectory table")
+    vectors = ("net_displacement_xyz", "mean_velocity_xyz") if table == "tracks" else (
+        "displacement_xyz", "velocity_xyz"
+    )
+    output = []
+    for original in metrics[table]:
+        row = {key: value for key, value in original.items() if key not in vectors}
+        if "hypothesis_indices" in row:
+            row["hypothesis_indices"] = canonical_json(row["hypothesis_indices"])
+        for name in vectors:
+            vector = original[name]
+            for index, axis in enumerate("xyz"):
+                row[name.removesuffix("_xyz") + "_" + axis] = (
+                    None if vector is None else vector[index]
+                )
+        row.update(
+            position_unit=metrics["units"]["position"],
+            time_unit=metrics["units"]["time"],
+            velocity_unit=metrics["units"]["velocity"],
+            directionality_unit=metrics["units"]["directionality"],
+        )
+        output.append(row)
+    return output

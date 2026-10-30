@@ -4,6 +4,8 @@ import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSou
 import { SegmentationAllowanceControl } from "./SegmentationAllowanceControl";
 import type { RemoteAnalysisTarget } from "./ResearchCompute";
 
+type ModelSetupOperation = { epoch: number; profileId: CellposeProfileId; download: boolean; cancelPending: boolean };
+
 export interface ResearchCellposeBatchConfiguration {
   configuredSourceId: string;
   profileId: CellposeProfileId;
@@ -60,6 +62,14 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   const [settings, setSettings] = useState<CellposeSettings | null>(null);
   const [measurement, setMeasurement] = useState(selection.c);
   const [importing, setImporting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState("");
+  const setupEpoch = useRef(0);
+  const setupOperation = useRef<ModelSetupOperation | null>(null);
+  const currentProfile = useRef(profileId); currentProfile.current = profileId;
+  const [cancelPending, setCancelPending] = useState(false);
+  const isCurrentSetup = (operation: ModelSetupOperation) => setupOperation.current === operation &&
+    operation.epoch === setupEpoch.current && operation.profileId === currentProfile.current;
   const [invalidSettings, setInvalidSettings] = useState<Record<string, boolean>>({});
   const [settingsEpoch, setSettingsEpoch] = useState(0);
   const [internalWorkingBytes, setInternalWorkingBytes] = useState(512 * 1024 ** 2);
@@ -74,7 +84,9 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const channels = source.metadata.dimensions?.c ?? 1;
   useEffect(() => {
+    setupEpoch.current += 1; setupOperation.current = null;
     let active = true; setProfile(null); setStatus(null); setSettings(null); setInvalidSettings({});
+    setImporting(false); setDownloading(false); setCancelPending(false); setDownloadStatus("");
     if (!native) return;
     void Promise.all([native.listProfiles(), native.getCellposeStatus(profileId)]).then(([profiles, state]) => {
       if (!active) return;
@@ -82,7 +94,7 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
       if (!selected) throw new Error("The selected Cellpose profile is unavailable in this build.");
       setProfile(selected); setSettings(selected.recommendedSettings as CellposeSettings); setStatus(state);
     }).catch((error) => { if (active) onError(error.message); });
-    return () => { active = false; };
+    return () => { active = false; setupEpoch.current += 1; setupOperation.current = null; };
   }, [native, profileId, onError]);
   useEffect(() => { setMeasurement(selection.c); }, [source.id, selection.c]);
   useEffect(() => {
@@ -117,13 +129,47 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
     } catch (error) { onError(error instanceof Error ? error.message : "Cellpose could not complete this image."); }
     finally { onBusy(null); }
   };
+  const setupModel = async (download: boolean) => {
+    if (!native || setupOperation.current || importing || downloading || busy) return;
+    const operation = { epoch: ++setupEpoch.current, profileId, download, cancelPending: false };
+    setupOperation.current = operation;
+    setImporting(!download); setDownloading(download); setCancelPending(false); setDownloadStatus("");
+    try {
+      const next = await (download ? native.downloadCellposeModel(profileId) : native.importCellposeModel(profileId));
+      if (!isCurrentSetup(operation) || !next) return;
+      if (next.profileId !== profileId || next.model.artifactId !== (profileId === "cellpose-sam" ? "cpsam" : "cpsam_v2"))
+        throw new Error("The installed checkpoint does not match the selected model. Check model setup again.");
+      setStatus(next);
+    } catch (error) {
+      if (isCurrentSetup(operation)) onError(error instanceof Error ? error.message : "Model setup failed.");
+    } finally {
+      if (isCurrentSetup(operation)) {
+        // Settling the setup ends cancellation feedback even if its RPC replies later.
+        setupOperation.current = null;
+        setImporting(false); setDownloading(false); setCancelPending(false); setDownloadStatus("");
+      }
+    }
+  };
   return <div className="research-panel cellpose-panel">
     {remoteTarget ? <p className="model-ready">{remoteTarget.alias} · {remoteTarget.device === "cuda" ? "CUDA required" : "CPU"}</p> : !status ? <p role="status">Checking local model…</p> : !status.ready ? <div className="model-availability">
-      <p>{status.summary}</p><button disabled={importing || busy} onClick={() => {
-        if (!native) return; setImporting(true);
-        void native.importCellposeModel(profileId).then((next) => { if (next) setStatus(next); })
-          .catch((error) => onError(error.message)).finally(() => setImporting(false));
-      }}>{importing ? "Verifying model…" : "Import checkpoint…"}</button>
+      <p>{status.summary}</p>
+      {!status.model.verified && <>
+        <p>Download the official {profileId === "cellpose-sam" ? "Cellpose-SAM" : "Cellpose-SAM v2"} checkpoint from Hugging Face · {(status.model.expectedSizeBytes / 1e9).toFixed(2)} GB.</p>
+        <button disabled={importing || downloading || busy} onClick={() => void setupModel(true)}>{downloading ? "Downloading and verifying…" : "Download verified checkpoint"}</button>
+      </>}
+      {downloading ? <button disabled={cancelPending} onClick={() => {
+        const operation = setupOperation.current;
+        if (!native || !operation || !operation.download || operation.cancelPending || !isCurrentSetup(operation)) return;
+        operation.cancelPending = true; setCancelPending(true); setDownloadStatus("Requesting cancellation…");
+        void native.cancelCellposeDownload(operation.profileId).then((cancelled) => {
+          if (isCurrentSetup(operation)) setDownloadStatus(cancelled ? "Cancelling download…" : "Verification is finishing.");
+        }).catch((error) => {
+          if (!isCurrentSetup(operation)) return;
+          operation.cancelPending = false; setCancelPending(false); setDownloadStatus("");
+          onError(error instanceof Error ? error.message : "Download cancellation could not be requested.");
+        });
+      }}>Cancel download</button> : <button disabled={importing || busy} onClick={() => void setupModel(false)}>{importing ? "Verifying model…" : "Import checkpoint…"}</button>}
+      {downloadStatus && <p role="status">{downloadStatus}</p>}
     </div> : <p className="model-ready">Ready locally</p>}
     {profile && settings && <>
       <p>{rgb ? "Input: interleaved source RGB" : `Input: ${source.metadata.channel_names?.[selection.c] || `Channel ${selection.c + 1}`}`} · Z {selection.z + 1}, T {selection.t + 1}</p>
@@ -150,7 +196,7 @@ export function ResearchCellposePanel({ api, source, selection, profileId, busy,
           <dt>Code / model licence</dt><dd>{profile.rights.codeLicense} / {profile.rights.modelLicense}</dd>
           <dt>Commercial use</dt><dd>{profile.rights.commercialUse}</dd></dl>
         <p>{profile.validation.summary}</p>
-        <p>{remoteTarget ? "The compute target must already have this exact checkpoint and runtime." : "Import a local checkpoint for this profile."} Model and runtime memory are additional to the working allowance; GPU batch size affects accelerator memory.</p></details>
+        <p>{remoteTarget ? "The compute target must already have this exact checkpoint and runtime." : "Download or import the exact checkpoint for this profile. The compatible runtime is installed separately."} Model and runtime memory are additional to the working allowance; GPU batch size affects accelerator memory.</p></details>
       <p role="status" hidden={!hasInvalidSettings}>Correct the highlighted settings before running.</p>
       <button className="research-primary" disabled={busy || hasInvalidSettings || (!status?.ready && !remoteTarget) || selection.z_stop !== undefined} onClick={() => void run()}>{busy ? remoteTarget ? "Preparing remote run…" : "Running…" : remoteTarget ? `Segment on ${remoteTarget.alias}` : "Segment image"}</button>
     </>}

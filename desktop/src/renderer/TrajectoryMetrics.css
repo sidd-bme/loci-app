@@ -1,0 +1,18 @@
+.trajectory-metrics { margin-block: 24px; min-width: 0; }
+.trajectory-metrics > h3 { margin-block: 0 12px; }
+.trajectory-table-scroll { overflow-x: auto; margin-block: 12px; }
+.trajectory-table-scroll:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.trajectory-table-scroll td { font-variant-numeric: tabular-nums; }
+.trajectory-table-scroll td small { display: block; margin-top: 4px; color: var(--ink-secondary); }
+.trajectory-pages { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
+.trajectory-pages span { flex: 1; text-align: center; font-variant-numeric: tabular-nums; }
+.trajectory-plot { margin: 20px 0; }
+.trajectory-plot figcaption { color: var(--ink-secondary); max-width: 70ch; }
+.trajectory-plot svg { width: 100%; display: block; max-height: 300px; }
+.trajectory-plot line { stroke: var(--ink-secondary); stroke-width: 1.5; }
+.trajectory-plot text { fill: var(--ink-secondary); font-size: 11px; font-family: inherit; font-variant-numeric: tabular-nums; }
+.trajectory-point { cursor: pointer; outline: none; }
+.trajectory-point > circle { fill: var(--mineral); }
+.trajectory-point > .trajectory-hit { fill: transparent; stroke: transparent; }
+.trajectory-point:is(:hover, :focus-visible) > .trajectory-hit { stroke: var(--ink); stroke-width: 1; }
+.trajectory-point[aria-disabled="true"] { cursor: default; }

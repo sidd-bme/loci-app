@@ -2064,6 +2064,133 @@ describe("native research bridge", () => {
     await expect(call("data-export-plan", {}, "not a key")).rejects.toThrow(/unique/);
   });
 
+  it.each(["spatial_density_save", "wound_closure_save"])("routes %s retained token through its exact durable job", async (operation) => {
+    const project = path.join(root, "Density.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const token = { preview_id: "a".repeat(32), preview_hash: "a".repeat(64) }, jobId = "d".repeat(32);
+    mocks.request.mockResolvedValueOnce({ id: jobId }).mockResolvedValueOnce({ report_id: "a".repeat(32) });
+    await call("execute", operation, token);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ project, operation, request: token }));
+    expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: jobId }, 0);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+  });
+
+  it("routes exact-parent morphometrics through its own durable job", async () => {
+    const project = path.join(root, "Morphology.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const request = { result_id: "a".repeat(32), revision_hash: "a".repeat(64), working_bytes: 16 * 1024 ** 2 };
+    mocks.request.mockResolvedValueOnce({ id: "d".repeat(32) }).mockResolvedValueOnce({ result: { id: "b".repeat(32) } });
+    await call("execute", "morphometrics_run", request);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ project, operation: "morphometrics_run", request }));
+    expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+  });
+
+  it("minimizes wound export plans and validates source-based status identities", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Wound.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const reportHash = "a".repeat(64), key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const plan = { schema: "loci.wound-closure-export-plan/v1", report_id: reportHash.slice(0, 32), report_hash: reportHash,
+      plan_hash: sha, status: { current: false, changes: [{ source_id: "b".repeat(32), reason: "sample_metadata_changed" }] } };
+    mocks.request.mockResolvedValueOnce({ ...plan, mask_files: [{ private_path: "/private/secret" }], export_software: { engine: "test" } });
+    expect(await call("wound-closure-export-plan", plan.report_id, key)).toEqual(plan);
+    expect(mocks.request).toHaveBeenCalledWith("research_wound_closure_export_plan", expect.objectContaining({ report_id: plan.report_id }), 0);
+    for (const status of [
+      { current: false, changes: [{ result_id: "b".repeat(32), reason: "wrong_identity_kind" }] },
+      { current: true, changes: plan.status.changes },
+      { current: false, changes: [] },
+    ]) {
+      mocks.request.mockResolvedValueOnce({ ...plan, status });
+      await expect(call("wound-closure-export-plan", plan.report_id, key)).rejects.toThrow(/invalid wound closure export preview/);
+    }
+  });
+
+  it("requires a native wound export grant and preserves picker cancellation", async () => {
+    const project = path.join(root, "Wound.loci-study"), destination = path.join(root, "Wound report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111", reportHash = "a".repeat(64), reportId = reportHash.slice(0, 32);
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("wound-closure-export-package", reportId, sha, key)).toBeNull();
+    expect(mocks.request).not.toHaveBeenCalled();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const grant = { grant_id: "b".repeat(32), plan_hash: sha, basename: "Wound report" };
+    const receipt = { schema: "loci.wound-closure-export-receipt/v1", basename: grant.basename, report_hash: reportHash, manifest_sha256: sha };
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) }).mockResolvedValueOnce({ ...receipt, private_path: destination });
+    expect(await call("wound-closure-export-package", reportId, sha, key)).toEqual(receipt);
+    expect(mocks.save).toHaveBeenLastCalledWith(expect.objectContaining({ title: "Export wound closure report" }));
+    expect(mocks.request).toHaveBeenCalledWith("research_wound_closure_export_grant", { project, report_id: reportId, plan_hash: sha, destination }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", { project, operation: "wound_closure_export", request: { grant_id: grant.grant_id, plan_hash: sha }, request_key: key });
+    expect(mocks.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+  });
+
+  it("validates and minimizes a density export plan at the native boundary", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Density.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const reportHash = "a".repeat(64), key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const plan = { schema: "loci.spatial-density-export-plan/v1", report_id: reportHash.slice(0, 32), report_hash: reportHash,
+      plan_hash: sha, status: { current: false, changes: [{ result_id: "b".repeat(32), reason: "sample_metadata_changed" }] } };
+    mocks.request.mockResolvedValueOnce({ ...plan, export_software: { engine: "test" }, private_path: "/private/secret" });
+    expect(await call("spatial-density-export-plan", plan.report_id, key)).toEqual(plan);
+    expect(mocks.request).toHaveBeenCalledWith("research_spatial_density_export_plan", expect.objectContaining({ report_id: plan.report_id }), 0);
+    mocks.request.mockResolvedValueOnce({ ...plan, report_hash: "b".repeat(64) });
+    await expect(call("spatial-density-export-plan", plan.report_id, key)).rejects.toThrow(/invalid spatial density export preview/);
+  });
+
+  it("publishes a density report only through the native destination grant and strips private receipt fields", async () => {
+    const project = path.join(root, "Density.loci-study"), destination = path.join(root, "Density report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const reportHash = "a".repeat(64), reportId = reportHash.slice(0, 32);
+    const grant = { grant_id: "b".repeat(32), plan_hash: sha, basename: "Density report" };
+    const receipt = { schema: "loci.spatial-density-export-receipt/v1", basename: grant.basename, report_hash: reportHash, manifest_sha256: sha };
+    mocks.request.mockResolvedValueOnce(grant).mockResolvedValueOnce({ id: "d".repeat(32) })
+      .mockResolvedValueOnce({ ...receipt, destination, private_path: "/private/secret", grant_id: grant.grant_id });
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    expect(await call("spatial-density-export-package", reportId, sha, key)).toEqual(receipt);
+    expect(mocks.request).toHaveBeenCalledWith("research_spatial_density_export_grant", { project, report_id: reportId, plan_hash: sha, destination }, 0);
+    expect(mocks.request).toHaveBeenCalledWith("research_submit", { project, operation: "spatial_density_export", request: { grant_id: grant.grant_id, plan_hash: sha }, request_key: key });
+  });
+
+  it("does not submit density export after picker cancellation, existing destination refusal, or a mismatched grant", async () => {
+    const project = path.join(root, "Density.loci-study"), destination = path.join(root, "Density report");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111", reportId = "a".repeat(32);
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("spatial-density-export-package", reportId, sha, key)).toBeNull();
+    expect(mocks.request).not.toHaveBeenCalled();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    mocks.request.mockRejectedValueOnce(new Error("Destination already exists; choose a new package name"));
+    await expect(call("spatial-density-export-package", reportId, sha, key)).rejects.toThrow(/already exists/);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_submit", expect.anything());
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    mocks.request.mockResolvedValueOnce({ grant_id: "b".repeat(32), plan_hash: "0".repeat(64), basename: "Density report" });
+    await expect(call("spatial-density-export-package", reportId, sha, key)).rejects.toThrow(/invalid report export grant/);
+    expect(mocks.request).not.toHaveBeenCalledWith("research_submit", expect.anything());
+  });
+
+  it("cooperatively cancels a density export without killing its publication worker", async () => {
+    const project = path.join(root, "Density.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create"); mocks.request.mockClear();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Density report") });
+    let fail!: (reason: Error) => void;
+    mocks.request.mockResolvedValueOnce({ grant_id: "b".repeat(32), plan_hash: sha, basename: "Density report" })
+      .mockResolvedValueOnce({ id: "d".repeat(32) }).mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+    const key = "scientific-export:11111111-1111-4111-8111-111111111111";
+    const pending = call("spatial-density-export-package", "a".repeat(32), sha, key);
+    await vi.waitFor(() => expect(mocks.request).toHaveBeenCalledWith("research_run", { project, job_id: "d".repeat(32) }, 0));
+    mocks.request.mockResolvedValueOnce({ state: "running", cancel_requested: true });
+    expect(await call("data-export-cancel", key)).toEqual({ cancelled: true });
+    expect(mocks.clients[0].cancelCurrent).not.toHaveBeenCalled();
+    const rejected = expect(pending).rejects.toThrow(/cancelled before publication/);
+    fail(new Error("Density export cancelled before publication")); await rejected;
+  });
+
   it("validates and minimizes an intensity export plan at the native boundary", async () => {
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Intensity.loci-study") });
     await call("create"); mocks.request.mockClear();
@@ -2252,6 +2379,68 @@ describe("native research bridge", () => {
     const opening = call("open");
     await expect(call("execute", "save_source_view", view)).rejects.toThrow("finish opening");
     closeOpen({ canceled: true, filePaths: [] }); await opening;
+  });
+
+  function graphFixture(state: "queued" | "succeeded" = "queued", owner: null | { policy_sha256: string; session_id: string | null } = null) {
+    const runId = "a".repeat(32), jobId = "b".repeat(32), sourceId = "c".repeat(32);
+    const request = { source_id: sourceId, selection: {}, recipe: {} };
+    const key = `graph-v2:${runId}:labels`;
+    const job = { id: jobId, operation: "run_recipe", request, request_key: key, request_hash: sha,
+      state, created_at: "2026-10-30", updated_at: "2026-10-30", progress: 0, cancel_requested: false, result_ids: [], error: null };
+    const run = { id: runId, kind: "workflow_run", revision: 1, data: { schema: "loci.workflow-run/v2", workflow_id: "d".repeat(32), workflow_revision: 1, project_id: "e".repeat(32), definition_sha256: sha, run_sha256: sha, plan: { plan_sha256: sha }, owner,
+      state: state === "queued" ? "running" : "succeeded", cancel_requested: false, outputs: {},
+      nodes: { labels: { state, intent: { operation: "run_recipe", request, request_key: key, request_sha256: sha, job_id: jobId }, output: state === "succeeded" ? { result_id: "f".repeat(32), revision_hash: sha } : null } } } };
+    return { runId, jobId, job, status: { run, state: run.data.state, partial_results: [] } };
+  }
+
+  it("advances composed workflows through exact separate native jobs and never reruns completed nodes", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Graph.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let done = false;
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      const fixture = graphFixture(done ? "succeeded" : "queued");
+      if (method === "research_snapshot") return { jobs: [fixture.job] };
+      if (method === "research_execute") return fixture.status;
+      if (method === "research_run") { expect(params.job_id).toBe(fixture.jobId); done = true; return { job: { ...fixture.job, state: "succeeded" } }; }
+      throw new Error(method);
+    });
+    const first = await call("execute", "workflow_graph_advance", { run_id: graphFixture().runId });
+    expect(first).toMatchObject({ state: "succeeded" });
+    await call("execute", "workflow_graph_advance", { run_id: graphFixture().runId });
+    expect(mocks.request.mock.calls.filter(([method]) => method === "research_run")).toHaveLength(1);
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_submit")).toBe(false);
+  });
+
+  it("refuses agent-owned or mismatched composed child jobs before native execution", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Graph.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const agent = graphFixture("queued", { policy_sha256: sha, session_id: "1".repeat(32) });
+    mocks.request.mockImplementation(async (method: string) => method === "research_snapshot" ? { jobs: [agent.job] } : agent.status);
+    await expect(call("execute", "workflow_graph_advance", { run_id: agent.runId })).rejects.toThrow("Agent-owned");
+    const fixture = graphFixture();
+    mocks.request.mockImplementation(async (method: string) => method === "research_snapshot" ? { jobs: [{ ...fixture.job, request_key: "another-job" }] } : fixture.status);
+    await expect(call("execute", "workflow_graph_advance", { run_id: fixture.runId })).rejects.toThrow("exact composed workflow node");
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_run")).toBe(false);
+  });
+
+  it("keeps composed cancellation available while one native child owns the worker", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Graph.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    let finish!: () => void, cancelled = false;
+    const fixture = graphFixture();
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_snapshot") return { jobs: [fixture.job] };
+      if (method === "research_run") return new Promise<void>((resolve) => { finish = resolve; });
+      if (params.operation === "workflow_graph_cancel") { cancelled = true; return { ...fixture.status, state: "cancelling", run: { ...fixture.status.run, data: { ...fixture.status.run.data, state: "cancelling", cancel_requested: true } } }; }
+      if (cancelled) return { ...fixture.status, state: "cancelled", run: { ...fixture.status.run, data: { ...fixture.status.run.data, state: "cancelled", cancel_requested: true } } };
+      return fixture.status;
+    });
+    const advancing = call("execute", "workflow_graph_advance", { run_id: fixture.runId });
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    await expect(call("execute", "workflow_graph_advance", { run_id: fixture.runId })).rejects.toThrow("already running");
+    await expect(call("execute", "workflow_graph_cancel", { run_id: fixture.runId })).resolves.toMatchObject({ state: "cancelling" });
+    expect(mocks.clients[0].cancelCurrent).toHaveBeenCalled();
+    finish(); await expect(advancing).resolves.toMatchObject({ state: "cancelled" });
   });
 
 });

@@ -345,6 +345,8 @@ function mockApi(overrides: Partial<LociDesktopApi> = {}): LociDesktopApi {
     listProfiles: vi.fn().mockResolvedValue([readyClassicalProfile]),
     getCellposeStatus: vi.fn().mockResolvedValue(cellposeStatus("cellpose-sam-v2", false)),
     importCellposeModel: vi.fn().mockResolvedValue(null),
+    downloadCellposeModel: vi.fn().mockResolvedValue(cellposeStatus("cellpose-sam-v2", false)),
+    cancelCellposeDownload: vi.fn().mockResolvedValue(false),
     openCellposeModelPage: vi.fn().mockResolvedValue(undefined),
     openCellposeModelFolder: vi.fn().mockResolvedValue({
       profileId: "cellpose-sam-v2",
@@ -635,7 +637,8 @@ async function saveImportedSourcesAsProject(api: LociDesktopApi): Promise<void> 
 }
 
 function enterAnalyzeWorkspace(): void {
-  fireEvent.click(screen.getByRole("tab", { name: "Analyze" }));
+  const modes = within(screen.getByRole("tablist", { name: "Workspace mode" }));
+  fireEvent.click(modes.getByRole("tab", { name: "Analyze" }));
 }
 
 describe("Loci renderer", () => {
@@ -2306,10 +2309,12 @@ describe("Loci renderer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open images" }));
     await screen.findAllByText("plate-a.tif");
     enterAnalyzeWorkspace();
-    fireEvent.click(screen.getByRole("button", { name: /run segmentation/i }));
-    expect(await screen.findByText("42")).toBeVisible();
+    const inspector = within(screen.getByRole("complementary", { name: "Image workspace inspector" }));
+    fireEvent.click(inspector.getByRole("button", { name: /run segmentation/i }));
+    expect(await inspector.findByText("42")).toBeVisible();
+    const canvas = within(screen.getByRole("region", { name: "Biological image canvas" }));
 
-    const sourceImage = screen.getByAltText("Biological image plate-a.tif");
+    const sourceImage = canvas.getByAltText("Biological image plate-a.tif");
     vi.spyOn(sourceImage, "getBoundingClientRect").mockReturnValue({
       x: 100,
       y: 80,
@@ -2324,8 +2329,13 @@ describe("Loci renderer", () => {
     const viewport = sourceImage.closest<HTMLElement>(".canvas-viewport");
     expect(viewport).not.toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Paint segmentation mask" }));
-    const radius = screen.getByRole("slider", { name: "Brush radius in source pixels" });
+    const paint = canvas.getByRole("button", { name: "Paint segmentation mask" });
+    const erase = canvas.getByRole("button", { name: "Erase segmentation mask" });
+    const vertices = canvas.getByRole("button", { name: "Edit boundary vertices" });
+    await waitFor(() => expect(paint).toBeEnabled());
+    fireEvent.click(paint);
+    const correction = within(canvas.getByRole("region", { name: "Active correction tool" }));
+    const radius = correction.getByRole("slider", { name: "Brush radius in source pixels" });
     fireEvent.change(radius, { target: { value: "12" } });
     fireEvent.pointerDown(viewport!, { button: 0, pointerId: 19, clientX: 200, clientY: 150 });
     fireEvent.pointerMove(viewport!, { pointerId: 19, clientX: 215, clientY: 160 });
@@ -2341,8 +2351,8 @@ describe("Loci renderer", () => {
       12,
     ));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Erase segmentation mask" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Erase segmentation mask" }));
+    await waitFor(() => expect(erase).toBeEnabled());
+    fireEvent.click(erase);
     fireEvent.pointerDown(viewport!, { button: 0, pointerId: 21, clientX: 250, clientY: 180 });
     fireEvent.pointerUp(viewport!, { pointerId: 21, clientX: 250, clientY: 180 });
     await waitFor(() => expect(api.eraseMask).toHaveBeenCalledWith(
@@ -2352,8 +2362,8 @@ describe("Loci renderer", () => {
       12,
     ));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Edit boundary vertices" })).toBeEnabled());
-    fireEvent.click(screen.getByRole("button", { name: "Edit boundary vertices" }));
+    await waitFor(() => expect(vertices).toBeEnabled());
+    fireEvent.click(vertices);
     await act(async () => {
       fireEvent.pointerDown(viewport!, { button: 0, pointerId: 22, clientX: 300, clientY: 230 });
     });
@@ -2362,18 +2372,18 @@ describe("Loci renderer", () => {
       "result-1",
       { x: 1024, y: 768 },
     ));
-    const commit = await screen.findByRole("button", { name: "Commit" });
+    const commit = await correction.findByRole("button", { name: "Commit" });
     expect(commit).toBeDisabled();
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(commit).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(correction.getByRole("button", { name: "Cancel" }));
     expect(api.moveBoundaryVertex).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument();
+    expect(correction.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument();
 
     await act(async () => {
       fireEvent.pointerDown(viewport!, { button: 0, pointerId: 23, clientX: 300, clientY: 230 });
     });
-    const commitAfterCancel = await screen.findByRole("button", { name: "Commit" });
+    const commitAfterCancel = await correction.findByRole("button", { name: "Commit" });
     expect(api.getInstanceBoundary).toHaveBeenCalledTimes(2);
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(commitAfterCancel).toBeEnabled();
@@ -2388,7 +2398,7 @@ describe("Loci renderer", () => {
       { x: 10, y: 10 },
       [{ x: 9, y: 8 }, { x: 12, y: 8 }, { x: 10, y: 12 }],
     ));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument());
+    await waitFor(() => expect(correction.queryByRole("button", { name: "Commit" })).not.toBeInTheDocument());
   });
 
   it("inspects supported images dropped on the microscopy canvas", async () => {

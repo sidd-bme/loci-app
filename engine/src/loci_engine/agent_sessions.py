@@ -75,6 +75,7 @@ READ_ONLY_TOOLS = frozenset(
         "study_results",
         "validate_action",
         "inspect_action",
+        "workflow_graph_inspect",
         "remote_status",
     }
 )
@@ -84,6 +85,7 @@ APPROVAL_GATED_TOOLS = frozenset(
         "submit_recipe",
         "cancel_job",
         "submit_action",
+        "workflow_graph_control",
         "set_source_display",
         "export_vision_handoff",
         "review_result",
@@ -129,6 +131,25 @@ _GRANTED_MCP_MAPPING: dict[str, tuple[str, str]] = {
     )
     for operation in ("submit", "status", "cancel", "retrieve", "attach")
 }
+
+for _graph_name in (
+    "validate",
+    "get",
+    "list",
+    "preflight",
+    "status",
+    "save",
+    "start",
+    "advance",
+    "cancel",
+):
+    _GRANTED_MCP_MAPPING[f"workflow_graph_{_graph_name}"] = (
+        "workflow_graph_inspect"
+        if _graph_name in {"validate", "get", "list", "preflight", "status"}
+        else "workflow_graph_control",
+        "Requires the explicit graph tool grant and every native node's independent action "
+        "and source grants.",
+    )
 
 _GUI_ONLY_REASONS: dict[str, str] = {
     "field_assay_preview": (
@@ -833,7 +854,7 @@ def _target_is_stale(
     expected_revision = approval.get("revision_hash")
     if isinstance(result_id, str) and isinstance(expected_revision, str):
         try:
-            current_result = project.result(result_id)
+            current_result = project.result(result_id, verify_scientific_arrays=False)
         except Exception:
             return True
         if current_result.get("revision_hash") != expected_revision:
@@ -1086,7 +1107,7 @@ def _extract_binding(
 
     if result_id is not None:
         try:
-            result_rec = workbench.project.result(result_id)
+            result_rec = workbench.project.result(result_id, verify_scientific_arrays=False)
             if revision_hash is None:
                 revision_hash = result_rec["revision_hash"]
             if source_id is None:
@@ -1124,7 +1145,7 @@ def _extract_binding(
         if isinstance(req.get("result_id"), str) and result_id is None:
             result_id = req["result_id"]
             try:
-                result_rec = workbench.project.result(result_id)
+                result_rec = workbench.project.result(result_id, verify_scientific_arrays=False)
                 source_id = result_rec["source_id"]
                 source_sha256 = result_rec["source_sha256"]
             except Exception:

@@ -10,11 +10,18 @@ Cellpose profiles:
 | `cellpose-sam` | Website-compatible default; compatibility evidence only | `cpsam` | 1,233,587,898 bytes | `e1440429eb384f95afe32bcba6510f90d518eaedc917ede549bed6804004abe2` |
 | `cellpose-sam-v2` | Separate updated, unvalidated option | `cpsam_v2` | 1,233,586,851 bytes | `0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667` |
 
-The macOS packaged profile includes the pinned Python runtime, but Loci never
-bundles or downloads either checkpoint. A user must select the matching
-official artifact explicitly. Loci verifies its pinned byte size and SHA-256
+The macOS packaged profile includes the pinned Python runtime. Checkpoints are
+provisioned separately: choose **Download verified checkpoint** to download the
+selected official artifact, or **Import checkpoint…** to select a local copy.
+No checkpoint is bundled or downloaded automatically. Loci verifies byte size and SHA-256
 digest before atomically installing it in profile-specific managed storage; a
 valid checkpoint for one profile is rejected by the other.
+
+Downloads use a pinned official repository revision and reviewed HTTPS origins.
+The renderer cannot supply arbitrary URLs or destinations. Cancellation before
+import removes the owned partial artifact; once atomic import starts, the UI
+reports that verification is finishing. Runtime availability, checkpoint identity
+and scientific validation remain separate states.
 
 These adapters are interoperability profiles, not Loci-native models. Their
 outputs remain review-required research results and are not biological

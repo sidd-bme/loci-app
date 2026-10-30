@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResearchWorkflowPanel, type ResearchWorkflowPanelProps } from "./ResearchWorkflowPanel";
@@ -418,4 +420,53 @@ it("keeps exact-result actions in the footer and switches to rerun controls with
   fireEvent.click(within(footer).getByRole("button", { name: "Mark reviewed" }));
   await waitFor(() => expect(desktopApi.reviewResult).toHaveBeenCalledWith(result.id, result.revision_hash, "reviewed"));
   await waitFor(() => expect(within(footer).getByRole("button", { name: "Export reviewed result" })).toBeEnabled());
+});
+
+it("uses one enclosing scroller only while its sibling composed workflow is open", async () => {
+  const { container, props, rerender } = setup();
+  rerender(<div className="workflow-workspace-host">
+    <ResearchWorkflowPanel {...props} />
+    <details className="composed-workflows"><summary>Composed workflows</summary><div>Saved run</div></details>
+  </div>);
+  const style = document.createElement("style");
+  style.textContent = ["ResearchWorkbench.css", "ResearchWorkflowPanel.css", "ResearchWorkflowGraphPanel.css"]
+    .map((file) => readFileSync(resolve("src/renderer", file), "utf8")).join("\n");
+  document.head.appendChild(style);
+  try {
+    const panel = screen.getByRole("region", { name: "Visual workflow builder" });
+    const host = container.querySelector(".workflow-workspace-host")!;
+    const body = panel.querySelector(".workflow-body")!;
+    const footer = within(panel).getByRole("group", { name: "Workflow actions and status" });
+    const composed = host.querySelector<HTMLDetailsElement>(":scope > .composed-workflows")!;
+    // Match the actual workbench topology: classic panel and composed disclosure
+    // are direct siblings. The action footer always belongs to the classic panel.
+    expect(panel.parentElement).toBe(host);
+    expect(panel.nextElementSibling).toBe(composed);
+    expect(footer.parentElement).toBe(panel);
+    expect(body.contains(footer)).toBe(false);
+    expect(getComputedStyle(body).overflow).toBe("auto");
+    expect(getComputedStyle(composed).maxHeight).toBe("70%");
+
+    composed.open = true;
+    expect(getComputedStyle(host).overflowY).toBe("auto");
+    expect(getComputedStyle(panel).height).toBe("auto");
+    expect(getComputedStyle(panel).overflow).toBe("visible");
+    expect(getComputedStyle(body).overflow).toBe("visible");
+    expect(getComputedStyle(composed).maxHeight).toBe("none");
+    expect(getComputedStyle(composed).overflow).toBe("visible");
+    expect(within(footer).getByRole("button", { name: "Run workflow" })).toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Connected workflow nodes" })).toBeInTheDocument();
+
+    composed.open = false;
+    expect(getComputedStyle(body).overflow).toBe("auto");
+    expect(getComputedStyle(composed).maxHeight).toBe("70%");
+    // An unrelated nested disclosure cannot change the workspace scroll model.
+    const nested = document.createElement("details");
+    nested.className = "composed-workflows"; nested.open = true;
+    body.appendChild(nested);
+    expect(getComputedStyle(body).overflow).toBe("auto");
+    await waitFor(() => expect(within(footer).getByRole("button", { name: "Save workflow" })).toBeEnabled());
+  } finally {
+    style.remove();
+  }
 });
