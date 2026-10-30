@@ -260,12 +260,32 @@ def test_real_stdio_graph_schemas_strict_arguments_and_owned_native_pipeline(gra
             assert not started.is_error, started
             run_id = started.structured_content["run"]["id"]
             deadline = time.monotonic() + 25
+            completed_children = set()
             while time.monotonic() < deadline:
                 advanced = await session.call_tool(
                     CONTROL_TOOL,
                     {"operation": "workflow_graph_advance", "request": {"run_id": run_id}},
                 )
                 assert not advanced.is_error, advanced
+                # Result publication can precede worker exit. Follow the actual
+                # concurrency contract before dispatching another native node.
+                for node in advanced.structured_content["run"]["data"]["nodes"].values():
+                    intent = node.get("intent")
+                    if not intent or intent["job_id"] in completed_children:
+                        continue
+                    child_id = intent["job_id"]
+                    while time.monotonic() < deadline:
+                        child = await session.call_tool("job_status", {"job_id": child_id})
+                        assert not child.is_error, child
+                        job = child.structured_content["job"]
+                        if job["state"] in {"succeeded", "failed", "cancelled", "interrupted"}:
+                            assert job["state"] == "succeeded", job
+                            if job["owned_worker_active"] is False:
+                                completed_children.add(child_id)
+                                break
+                        await asyncio.sleep(0.05)
+                    else:
+                        raise AssertionError("Owned graph child did not finish and exit")
                 state = await session.call_tool(
                     INSPECT_TOOL,
                     {"operation": "workflow_graph_status", "request": {"run_id": run_id}},
@@ -274,6 +294,7 @@ def test_real_stdio_graph_schemas_strict_arguments_and_owned_native_pipeline(gra
                 if state.structured_content["state"] in {"succeeded", "failed", "cancelled"}:
                     assert state.structured_content["state"] == "succeeded", state
                     assert len(state.structured_content["partial_results"]) == 3
+                    assert len(completed_children) == 3
                     return run_id
                 await asyncio.sleep(0.05)
             raise AssertionError("Bounded native graph pipeline did not complete")
