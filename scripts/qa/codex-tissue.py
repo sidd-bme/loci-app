@@ -483,7 +483,7 @@ def build_codex_command(
         "approval_policy": "never",
         server + "command": str(worker),
         server + "args": ["--cli", "mcp", "--policy", str(policy_path)],
-        server + "env": {"LOCI_MODEL_HOME": str(model_home)},
+        server + "env.LOCI_MODEL_HOME": str(model_home),
         server + "required": True,
         server + "startup_timeout_sec": 60,
         server + "tool_timeout_sec": 180,
@@ -697,7 +697,27 @@ def prepare_phase(
 def extract_structured(call: dict[str, Any], *, expect_error: bool = False) -> dict[str, Any]:
     result = call.get("result") or {}
     is_err = bool(call.get("error") or result.get("isError") or result.get("is_error"))
-    require(call.get("status") == "completed", f"Incomplete MCP tool call: {call.get('tool')}")
+    # Codex represents an MCP tool-result error as a terminal failed item and
+    # omits isError. Accept that shape only for the exact planned negative call;
+    # transport errors and all other failed calls remain disqualifying.
+    content = result.get("content", [])
+    host_denial = (
+        expect_error
+        and call.get("status") == "failed"
+        and call.get("tool") == "submit_action"
+        and call.get("arguments", {}).get("operation") == "tissue_model_preview"
+        and call.get("arguments", {}).get("request_key") == DENIED_KEY
+        and call.get("error") is None
+        and result.get("structuredContent", result.get("structured_content")) is None
+        and len(content) == 1
+        and content[0].get("type") == "text"
+        and content[0].get("text", "").startswith("Error executing tool submit_action:")
+    )
+    require(
+        call.get("status") == "completed" or host_denial,
+        f"Incomplete MCP tool call: {call.get('tool')}",
+    )
+    is_err = is_err or host_denial
     if expect_error:
         require(is_err, f"Expected negative authority check {call.get('tool')} to fail closed")
         texts = [
@@ -831,7 +851,6 @@ def parse_transcript_events(
                 active == {call_id},
                 f"MCP completion {call_id} lacks matching serial item.started",
             )
-            require(item.get("status") == "completed", "MCP call has non-completed status")
             started = started_items[call_id]
             require(
                 all(started.get(key) == item.get(key) for key in ("tool", "arguments", "server")),
@@ -851,6 +870,11 @@ def parse_transcript_events(
                     f"Unexpected operation {arguments.get('operation')} for tool {tool}",
                 )
             is_denied_call = tool == "submit_action" and arguments.get("request_key") == DENIED_KEY
+            require(
+                item.get("status") == "completed"
+                or (is_denied_call and item.get("status") == "failed"),
+                "MCP call has non-completed status",
+            )
             if executing is not None:
                 require(
                     tool == "job_status" and arguments == {"job_id": executing},
@@ -997,12 +1021,42 @@ def ColdRetainedSubprocessCheck(config_path: Path) -> int:
     return 0
 
 
+def session_shutdown_evidence(session: dict[str, Any], *, expect_mode: str) -> dict[str, Any]:
+    """Observe termination without rewriting the original host session record."""
+    from loci_engine.resource_limits import process_alive
+
+    state = session.get("state")
+    if expect_mode == "codex-host":
+        pid = session.get("private_pid")
+        require(type(pid) is int and pid > 0, "Host session lacks a valid server PID")
+        require(not process_alive(pid), "Host MCP server process is still running")
+        unclean_idle = (
+            state == "connected_idle"
+            and session.get("current_operation") is None
+            and session.get("active_approval_id") is None
+            and session.get("last_error") is None
+        )
+        require(
+            state == "disconnected" or unclean_idle,
+            f"Host MCP session ended in an unexpected state: {state}",
+        )
+    else:
+        require(state == "disconnected", f"MCP session did not disconnect cleanly (state={state})")
+    return {
+        "persisted_state": state,
+        "clean_disconnect_recorded": state == "disconnected",
+        "server_process_running": False if expect_mode == "codex-host" else None,
+        "expected_reconciled_state": "disconnected" if state == "disconnected" else "interrupted",
+    }
+
+
 def verify_phase(
     *,
     output: Path,
     transcript_path: Path | None = None,
     expect_mode: str = "sdk",
     skip_native_export: bool = False,
+    prepared_harness: Path | None = None,
 ) -> dict[str, Any]:
     """Read-only verification of transcript, retained state and previously generated artifacts."""
     _ensure_repo_imports()
@@ -1015,7 +1069,10 @@ def verify_phase(
     prepared = read_json(output_dir / "prepared-fixture.json")
     repo = Path(prepared["repo"]).resolve(strict=True)
 
-    validate_prepared_identity(output_dir, prepared)
+    current_sources = tracked_source_hashes(repo)
+    verifier_identity = validate_prepared_identity(
+        output_dir, prepared, prepared_harness=prepared_harness
+    )
     worker_path = Path(prepared["worker"]["worker_path"])
 
     # 2. Load and validate transcript events and mode separation.
@@ -1053,10 +1110,6 @@ def verify_phase(
         session_record.get("policy_sha256") == prepared["policy_sha256"],
         "Recorded MCP session belongs to a different policy",
     )
-    require(
-        session_record.get("state") == "disconnected",
-        f"MCP session did not disconnect cleanly (state={session_record.get('state')})",
-    )
     if expect_mode == "codex-host":
         validate_host_binding(output_dir, prepared, selected_transcript, events, session_record)
     elif expect_mode == "sdk":
@@ -1064,6 +1117,7 @@ def verify_phase(
             session_record.get("client_id") == SDK_CLIENT_ID,
             f"Expected SDK client_id {SDK_CLIENT_ID}, got {session_record.get('client_id')}",
         )
+    shutdown = session_shutdown_evidence(session_record, expect_mode=expect_mode)
 
     expected_owner = {
         "policy_sha256": prepared["policy_sha256"],
@@ -1507,7 +1561,7 @@ def verify_phase(
     # Final post-verification immutability check.
     require(
         sha256_file(worker_path) == prepared["worker"]["worker_sha256"]
-        and tracked_source_hashes(repo) == prepared["source_hashes"],
+        and tracked_source_hashes(repo) == current_sources,
         "Worker or source files drifted during verification",
     )
 
@@ -1520,6 +1574,7 @@ def verify_phase(
     )
     verification = {
         "schema": "loci.codex-tissue-verification/v1",
+        "verifier_identity": verifier_identity,
         "verified_at": datetime.now(UTC).isoformat(),
         "status": (
             "passed-codex-host-engineering-qa"
@@ -1542,6 +1597,7 @@ def verify_phase(
         "session_id": session_record["session_id"],
         "session_client_id": session_record.get("client_id"),
         "session_state": session_record.get("state"),
+        "session_shutdown": shutdown,
         "study_id": prepared["project_id"],
         "source_id": prepared["source_id"],
         "source_sha256": SOURCE_SHA,
@@ -1560,9 +1616,16 @@ def verify_phase(
     return verification
 
 
-def finalize_artifacts_phase(*, output: Path, expect_mode: str) -> dict[str, Any]:
+def finalize_artifacts_phase(
+    *, output: Path, expect_mode: str, prepared_harness: Path | None = None
+) -> dict[str, Any]:
     """Explicit native QA generation; refuse to overwrite earlier attempts."""
-    verification = verify_phase(output=output, expect_mode=expect_mode, skip_native_export=True)
+    verification = verify_phase(
+        output=output,
+        expect_mode=expect_mode,
+        skip_native_export=True,
+        prepared_harness=prepared_harness,
+    )
     output_dir = output.expanduser().resolve(strict=True)
     for name in (
         "exports",
@@ -1684,6 +1747,7 @@ def finalize_artifacts_phase(*, output: Path, expect_mode: str) -> dict[str, Any
 
     report = {
         "schema": "loci.codex-tissue-artifact-generation/v1",
+        "verifier_identity": verification["verifier_identity"],
         "transcript_sha256": verification["transcript_sha256"],
         "policy_sha256": prepared["policy_sha256"],
         "result_id": result_id,
@@ -2008,7 +2072,9 @@ def study_sessions(study: Path) -> list[dict[str, Any]]:
     return [json.loads(row[0]) for row in rows]
 
 
-def validate_prepared_identity(output: Path, prepared: dict[str, Any]) -> None:
+def validate_prepared_identity(
+    output: Path, prepared: dict[str, Any], *, prepared_harness: Path | None = None
+) -> dict[str, Any]:
     """Read-only immutable inputs check, shared by launch and verification."""
     require(
         Path(prepared["output"]).resolve(strict=True) == output,
@@ -2025,8 +2091,24 @@ def validate_prepared_identity(output: Path, prepared: dict[str, Any]) -> None:
             == worker,
             "App bundle changed after preparation",
         )
+    observed_sources = tracked_source_hashes(Path(prepared["repo"]))
+    harness_key = "scripts/qa/codex-tissue.py"
+    if prepared_harness is not None:
+        require(
+            prepared_harness.is_file() and not prepared_harness.is_symlink(),
+            "Prepared harness must be a plain source file",
+        )
+        archived_sha = sha256_file(prepared_harness)
+        require(
+            archived_sha == prepared["source_hashes"][harness_key],
+            "Archived prepared harness hash mismatch",
+        )
+        # Verification may explicitly bind the original QA source after a
+        # verifier repair. Launch never supplies this option. Every runtime and
+        # other QA source pin still has to match the preparation exactly.
+        observed_sources[harness_key] = archived_sha
     require(
-        tracked_source_hashes(Path(prepared["repo"])) == prepared["source_hashes"],
+        observed_sources == prepared["source_hashes"],
         "Repository engine or QA harness source files changed after preparation",
     )
     require(
@@ -2050,6 +2132,13 @@ def validate_prepared_identity(output: Path, prepared: dict[str, Any]) -> None:
         tree_hashes(Path(prepared["model_home"])) == prepared["model_files_sha256"],
         "Managed model files changed",
     )
+    return {
+        "verifier_sha256": sha256_file(Path(__file__).resolve()),
+        "prepared_harness_sha256": prepared["source_hashes"][harness_key],
+        "archived_prepared_harness": (
+            str(prepared_harness.resolve()) if prepared_harness is not None else None
+        ),
+    }
 
 
 def validate_unused_prepared(
@@ -2325,6 +2414,10 @@ def run_host_phase(
                 check=False,
             )
         receipt["codex_exit_code"] = completed.returncode
+        require(
+            completed.returncode == 0,
+            "Codex CLI host run exited nonzero; inspect codex-stderr.log and codex-events.jsonl",
+        )
         write_json(
             output_dir / "host-run.json",
             {
@@ -2363,10 +2456,6 @@ def run_host_phase(
                 },
             },
             mode=0o600,
-        )
-        require(
-            completed.returncode == 0,
-            "Codex CLI host run exited nonzero; inspect codex-stderr.log and codex-events.jsonl",
         )
         finalize_artifacts_phase(output=output_dir, expect_mode="codex-host")
         verification = verify_phase(
@@ -2449,7 +2538,7 @@ exec {shlex.quote(str(executable_path))} --user-data-dir={shlex.quote(str(user_d
     py_exe = repo / "engine/.venv/bin/python"
     script_self = Path(__file__).resolve()
     steps_lines = [
-        "# Prepared Native UI Qualification Kit (Candidate Build 23)",
+        "# Prepared Native UI Qualification Kit",
         "",
         "## Isolated Paths",
         f"- **App Bundle**: `{app_resolved}`",
@@ -2696,6 +2785,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     artifacts.add_argument("--output", type=Path, required=True)
     artifacts.add_argument("--expect-mode", choices=("sdk", "codex-host"), required=True)
+    artifacts.add_argument("--prepared-harness", type=Path)
 
     ver = subparsers.add_parser(
         "verify",
@@ -2709,6 +2799,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="sdk",
     )
     ver.add_argument("--skip-native-export", action="store_true")
+    ver.add_argument("--prepared-harness", type=Path)
 
     host = subparsers.add_parser(
         "run-host",
@@ -2783,7 +2874,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": result["status"], "output": result["output"]}))
         return 0
     if args.phase == "finalize-artifacts":
-        result = finalize_artifacts_phase(output=args.output, expect_mode=args.expect_mode)
+        result = finalize_artifacts_phase(
+            output=args.output, expect_mode=args.expect_mode, prepared_harness=args.prepared_harness
+        )
         print(json.dumps(result))
         return 0
     if args.phase == "verify":
@@ -2792,6 +2885,7 @@ def main(argv: list[str] | None = None) -> int:
             transcript_path=args.transcript,
             expect_mode=args.expect_mode,
             skip_native_export=args.skip_native_export,
+            prepared_harness=args.prepared_harness,
         )
         print(json.dumps(result, sort_keys=True))
         return 0

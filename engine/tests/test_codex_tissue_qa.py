@@ -10,6 +10,7 @@ import io
 import json
 import shutil
 import subprocess
+import tomllib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,21 @@ def load_codex_tissue_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_codex_configuration_overrides_parse_as_toml(mod, tmp_path):
+    worker = tmp_path / "frozen worker"
+    policy = tmp_path / "policy.json"
+    models = tmp_path / "models with spaces"
+    command = mod.build_codex_command("codex", worker, policy, models, tmp_path / "answer.txt")
+    overrides = [command[i + 1] for i, value in enumerate(command) if value == "-c"]
+    config = tomllib.loads("\n".join(overrides))
+    server = config["mcp_servers"][mod.SERVER]
+    assert server["env"] == {"LOCI_MODEL_HOME": str(models)}
+    assert server["command"] == str(worker)
+    assert server["args"] == ["--cli", "mcp", "--policy", str(policy)]
+    assert server["required"] is True
+    assert config["service_tier"] == "default"
 
 
 def _encode_png(array: np.ndarray) -> bytes:
@@ -1144,3 +1160,116 @@ def test_host_launch_performs_one_preflight_before_refresh_and_lookup(
         if already_prepared
         else ["prepare", "preflight", "lookup"]
     )
+
+
+def test_codex_terminal_denial_does_not_allow_transport_or_polling_failures(
+    mod, ready, tmp_path, monkeypatch
+):
+    _, events, _ = _build_synthetic_verified_environment(mod, ready, tmp_path, monkeypatch)
+    denied = next(
+        e["item"]
+        for e in events
+        if e.get("type") == "item.completed" and e.get("item", {}).get("id") == "c8"
+    )
+    denied.update(
+        status="failed",
+        error=None,
+        result={
+            "content": [{"type": "text", "text": "Error executing tool submit_action: denied"}],
+            "structured_content": None,
+        },
+    )
+    calls, mode = mod.parse_transcript_events(events, expect_mode="sdk")
+    assert mode == "sdk" and denied in calls
+    denied["error"] = {"message": "transport disconnected"}
+    with pytest.raises(AssertionError, match="Incomplete MCP tool call"):
+        mod.parse_transcript_events(events, expect_mode="sdk")
+    denied["error"] = None
+    denied["result"]["structured_content"] = {"job": {"id": "unexpected"}}
+    with pytest.raises(AssertionError, match="Incomplete MCP tool call"):
+        mod.parse_transcript_events(events, expect_mode="sdk")
+    denied["result"]["structured_content"] = None
+    poll = next(
+        e["item"]
+        for e in events
+        if e.get("type") == "item.completed" and e.get("item", {}).get("tool") == "job_status"
+    )
+    poll["status"] = "failed"
+    with pytest.raises(AssertionError, match="non-completed status"):
+        mod.parse_transcript_events(events, expect_mode="sdk")
+
+
+def test_archived_harness_revalidation_preserves_other_source_pins(
+    mod, ready, tmp_path, monkeypatch
+):
+    output, events, prepared = _build_synthetic_verified_environment(
+        mod, ready, tmp_path, monkeypatch
+    )
+    _write_events(output / "sdk-events.jsonl", events)
+    archived = tmp_path / "prepared-harness.py"
+    archived.write_bytes(SCRIPT_PATH.read_bytes())
+    observed = dict(prepared["source_hashes"])
+    observed["scripts/qa/codex-tissue.py"] = "f" * 64
+    monkeypatch.setattr(mod, "tracked_source_hashes", lambda _repo: dict(observed))
+    before = mod.tree_hashes(output)
+    with pytest.raises(AssertionError, match="source files changed"):
+        mod.validate_prepared_identity(output, prepared)
+    identity = mod.validate_prepared_identity(output, prepared, prepared_harness=archived)
+    assert identity["prepared_harness_sha256"] == mod.sha256_file(archived)
+    assert identity["verifier_sha256"] == mod.sha256_file(SCRIPT_PATH)
+    verified = mod.verify_phase(
+        output=output, expect_mode="sdk", skip_native_export=True, prepared_harness=archived
+    )
+    assert verified["verifier_identity"] == identity
+    assert mod.tree_hashes(output) == before
+    observed["engine/src/loci_engine/research_mcp.py"] = "0" * 64
+    with pytest.raises(AssertionError, match="source files changed"):
+        mod.validate_prepared_identity(output, prepared, prepared_harness=archived)
+    archived.write_text("unrelated original harness")
+    with pytest.raises(AssertionError, match="Archived prepared harness hash mismatch"):
+        mod.validate_prepared_identity(output, prepared, prepared_harness=archived)
+    assert mod.tree_hashes(output) == before
+
+
+def test_host_shutdown_distinguishes_dead_idle_from_clean_exit(mod, monkeypatch):
+    from loci_engine import resource_limits
+
+    session = {
+        "private_pid": 12345,
+        "state": "connected_idle",
+        "current_operation": None,
+        "active_approval_id": None,
+        "last_error": None,
+    }
+    monkeypatch.setattr(resource_limits, "process_alive", lambda _pid: False)
+    evidence = mod.session_shutdown_evidence(session, expect_mode="codex-host")
+    assert evidence == {
+        "persisted_state": "connected_idle",
+        "clean_disconnect_recorded": False,
+        "server_process_running": False,
+        "expected_reconciled_state": "interrupted",
+    }
+    assert session["state"] == "connected_idle"
+    with pytest.raises(AssertionError, match="did not disconnect cleanly"):
+        mod.session_shutdown_evidence(session, expect_mode="sdk")
+    monkeypatch.setattr(resource_limits, "process_alive", lambda _pid: True)
+    with pytest.raises(AssertionError, match="still running"):
+        mod.session_shutdown_evidence(session, expect_mode="codex-host")
+    monkeypatch.setattr(resource_limits, "process_alive", lambda _pid: False)
+    for field, value in [
+        ("state", "executing"),
+        ("state", "paused"),
+        ("state", "awaiting_approval"),
+        ("state", "failed"),
+        ("current_operation", "submit_action"),
+        ("active_approval_id", "pending"),
+        ("last_error", "failed"),
+    ]:
+        with pytest.raises(AssertionError, match="unexpected state"):
+            mod.session_shutdown_evidence({**session, field: value}, expect_mode="codex-host")
+    with pytest.raises(AssertionError, match="valid server PID"):
+        mod.session_shutdown_evidence({**session, "private_pid": True}, expect_mode="codex-host")
+    clean = mod.session_shutdown_evidence(
+        {**session, "state": "disconnected"}, expect_mode="codex-host"
+    )
+    assert clean["clean_disconnect_recorded"] is True
