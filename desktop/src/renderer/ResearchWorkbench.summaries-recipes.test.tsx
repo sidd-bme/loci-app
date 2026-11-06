@@ -368,6 +368,27 @@ describe("Info Review & export rendered summary component", () => {
       getSnapshot: vi.fn(async () => structuredClone(mockSnapshot)),
     }) as unknown as ResearchDesktopApi;
 
+  it.each([
+    ["annotation-reference", "Frozen annotation reference", "Frozen reference"],
+    ["annotation-agreement", "Annotation agreement", "Agreement report"],
+  ])("uses report-kind summary for %s in review and saved-result recovery", (kind, title, summary) => {
+    const result = { ...mockResult, kind, created_at: "2026-11-06", object_count: 0 };
+    const props = { source: mockSource, snapshot: { ...mockSnapshot, results: [result] }, api: createMockApi(),
+      rows: [], onSave: vi.fn(), report: async <T,>(work: () => Promise<T>) => work(),
+      busy: false, onSnapshot: vi.fn(), onSelectResult: vi.fn() };
+    const { rerender, container } = render(<Info {...props} result={null} />);
+    const recovery = screen.getByRole("group", { name: "Results on this image" });
+    expect(recovery).toHaveTextContent(`${summary} · To review`);
+    expect(recovery).not.toHaveTextContent("0 objects");
+    fireEvent.click(within(recovery).getByRole("button", { name: /Select rev/ }));
+    expect(props.onSelectResult).toHaveBeenCalledWith(result);
+    rerender(<Info {...props} result={result} />);
+    expect(screen.getByRole("heading", { name: title })).toBeVisible();
+    expect(container.querySelector(".research-result-source")?.nextElementSibling).toHaveTextContent(`${summary} · Review pending`);
+    expect(container.querySelector(".research-result-source")?.nextElementSibling).not.toHaveTextContent("0 objects");
+    expect(result.object_count).toBe(0);
+  });
+
   it("restores the full perinuclear endpoint from saved result metadata before preview rows load", async () => {
     const perinuclear = { ...PERINUCLEAR_RULES, schema: "loci.perinuclear-enrichment/v1" as const,
       radius_px: 5, signal_channel: 0, control: "Recorded field controls",

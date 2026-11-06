@@ -137,6 +137,7 @@ describe("AgentSessionIndicator", () => {
     expect(
       screen.getByText("No MCP client is currently connected."),
     ).toBeVisible();
+    fireEvent.click(screen.getByText("Connection and permissions"));
     expect(screen.getByText("codex (not connected)")).toBeVisible();
     expect(screen.queryByText("Stop active job")).not.toBeInTheDocument();
   });
@@ -238,6 +239,7 @@ describe("AgentSessionIndicator", () => {
     expect(
       screen.getByText("Run classical segmentation on Fluorescence nuclei"),
     ).toBeVisible();
+    fireEvent.click(screen.getByText("Connection and permissions"));
     expect(screen.getByText("codex-cli 1.0.0")).toBeVisible();
     expect(screen.queryByText("Process")).not.toBeInTheDocument();
 
@@ -347,4 +349,23 @@ describe("AgentSessionIndicator", () => {
     expect(within(record).queryByRole("button", { name: /Approve|Deny/ })).not.toBeInTheDocument();
     expect(control).not.toHaveBeenCalled();
   });
+
+  it("puts actionable decisions before recent work and connection detail, with controls before provenance", () => {
+    render(<AgentSessionIndicator api={makeApi()} snapshot={makeSnapshot(wire)} followAgent={false}
+      onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+    const pending = screen.getByLabelText("Pending agent approvals");
+    const timeline = screen.getByLabelText("Agent activity timeline");
+    const connection = screen.getByText("Connection and permissions");
+    expect(pending.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(timeline.compareDocumentPosition(connection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const approve = within(pending).getByRole("button", { name: "Approve review_result" });
+    const provenance = within(pending).getByText("Exact request and provenance");
+    expect(approve).toBeVisible();
+    expect(approve.compareDocumentPosition(provenance) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(provenance.parentElement).not.toHaveAttribute("open");
+    expect(pending.querySelector(".agent-approval-expiry")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Agent permission mode" })).not.toBeVisible();
+  });
+
 });

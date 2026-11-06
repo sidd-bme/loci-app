@@ -12,7 +12,8 @@ const labels: Record<string, string> = {
   "field-assay": "Fluorescence field assay", "perinuclear-enrichment": "Perinuclear enrichment",
   tracking: "Object tracking", "temporal-tracking": "Object tracking",
   registration: "Image registration", "registered-derived": "Registered image", "resampled-derived": "Resampled image", colocalisation: "Colocalisation measurement",
-  segmentation: "Segmentation",
+  segmentation: "Segmentation", "annotation-agreement": "Annotation agreement",
+  "annotation-reference": "Frozen annotation reference", "controlled-method": "Controlled reusable method",
 };
 
 export function resultTitle(result: ResearchResult): string {

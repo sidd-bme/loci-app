@@ -168,6 +168,9 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    from .research_result_extensions import validate_project as validate_extension
+
+    validate_extension(project, result)
     if "morphometrics" in provenance:
         from .research_morphometrics import project_parents, validate_source
 
@@ -190,7 +193,7 @@ def _verify_references(project: ResearchProject, result: dict[str, Any]) -> None
     )
     result_bindings.extend(
         provenance[key]
-        for key in ("parent_result", "fixed_result", "moving_result")
+        for key in ("parent_result", "reference_result", "fixed_result", "moving_result")
         if key in provenance
     )
     result_bindings.extend(result["provenance"].get("spatial", {}).get("inputs", {}).values())
@@ -213,6 +216,11 @@ def _export_extended_records(
     provenance = result["provenance"]
     summary: dict[str, Any] = {"imagej_roi_files": [], "geojson_only_annotations": []}
     summary["quantification_files"] = []
+    for key in ("annotation_evaluation", "annotation_reference", "controlled_method"):
+        if key in provenance:
+            filename = key.replace("_", "-") + ".json"
+            (stage / filename).write_text(canonical_json(provenance[key]) + "\n", encoding="utf-8")
+            summary["quantification_files"].append(filename)
     if "morphometrics" in provenance:
         filename = "morphometrics.json"
         (stage / filename).write_text(
@@ -365,6 +373,9 @@ def export_research_result(
     if sum(descriptor["bytes"] for descriptor in result["arrays"].values()) > 512 * 1024**2:
         raise ValueError("Result export exceeds the 512 MiB decoded artifact budget")
     arrays = {name: project.load_array(descriptor) for name, descriptor in result["arrays"].items()}
+    from .research_result_extensions import validate_arrays as validate_extension_arrays
+
+    validate_extension_arrays(result, arrays)
     if "morphometrics" in result["provenance"]:
         from .research_morphometrics import validate_arrays
 

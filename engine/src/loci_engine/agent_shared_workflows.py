@@ -172,7 +172,7 @@ def _result(agent, workbench, identity, revision=None, *, _seen=None):
     )
     dependencies.extend(
         provenance[key]
-        for key in ("parent_result", "fixed_result", "moving_result")
+        for key in ("parent_result", "reference_result", "fixed_result", "moving_result")
         if key in provenance
     )
     dependencies.extend(

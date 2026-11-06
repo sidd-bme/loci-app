@@ -1,0 +1,31 @@
+.controlled-method-panel { display: grid; gap: 12px; min-width: 0; padding-block: 12px; }
+.controlled-method-heading { display: flex; align-items: flex-start; gap: 10px; }
+.controlled-method-heading > svg { color: var(--mineral); flex: none; margin-top: 3px; }
+.controlled-method-heading h3, .controlled-method-heading p { margin: 0 0 6px; }
+.controlled-method-panel > label, .controlled-method-panel details > label { display: grid; gap: 6px; margin-block: 4px; }
+.controlled-method-panel select, .controlled-method-panel input:not([type="checkbox"]), .controlled-method-panel textarea { width: 100%; min-width: 0; }
+.controlled-method-panel p, .controlled-method-summary p { max-width: 70ch; overflow-wrap: anywhere; }
+.controlled-method-definition { border-block: 1px solid var(--line); padding-block: 12px; }
+.controlled-method-definition strong { font-size: var(--type-md); }
+.controlled-method-definition strong span, .controlled-method-empty { color: var(--ink-secondary); }
+.controlled-method-definition ul { list-style: none; margin: 12px 0 0; padding: 0; }
+.controlled-method-definition li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding-block: 6px; }
+.controlled-method-definition small { color: var(--ink-secondary); white-space: nowrap; }
+.controlled-method-panel fieldset { border: 1px solid var(--line); border-radius: 6px; padding: 10px; min-width: 0; }
+.controlled-method-channels { display: flex; flex-wrap: wrap; gap: 12px; }
+.controlled-method-channels label { display: flex; align-items: center; gap: 6px; }
+.controlled-method-ready { border-block: 1px solid var(--line); padding-block: 12px; }
+.controlled-method-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 8px; }
+.controlled-method-panel button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: fit-content; max-width: 100%; }
+.controlled-method-panel summary, .controlled-method-summary summary { cursor: pointer; padding-block: 8px; }
+.controlled-method-panel dd, .controlled-method-summary dd { margin: 4px 0 12px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.controlled-method-summary { padding-block: 12px; min-width: 0; }
+.controlled-method-table { max-width: 100%; overflow: auto; margin-block: 10px; }
+.controlled-method-table table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.controlled-method-table th, .controlled-method-table td { text-align: start; padding: 8px; border-bottom: 1px solid var(--line); }
+.controlled-method-table th small { display: block; font-weight: 400; color: var(--ink-secondary); }
+
+.controlled-method-panel button, .controlled-method-summary button { min-height: 40px; }
+.controlled-method-panel :is(button, input, select, textarea, summary):focus-visible,
+.controlled-method-summary :is(button, summary, [role="region"]):focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.controlled-method-panel input { accent-color: var(--mineral); }

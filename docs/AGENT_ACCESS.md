@@ -322,6 +322,19 @@ generic operation, shell or model-install escape hatch.
 
 ### Shared researcher and agent workflows
 
+Controlled-method and annotation operations use this same action interface. Discover
+`method_list`, `method_get`, `method_runtime`, `method_preflight`, `method_run`,
+`method_result`, `method_query`, `annotation_reference_candidates`,
+`annotation_reference_run`, `annotation_evaluation_run` and
+`annotation_evaluation_get` through `action_guide`. Submit mutating operations as
+durable tasks and read their exact terminal jobs before inspecting outputs.
+Authority covers every parent/reference dependency and every selected raw channel.
+Method import, rights decisions, input export and external-output grants remain
+native operations. Method manifests and agent requests cannot issue execution
+approval. See [controlled methods](CONTROLLED_METHODS.md) and
+[annotation agreement](ANNOTATION_EVALUATION.md) for request and evidence contracts.
+
+
 The action contract now distinguishes `inspection`, `preview-task` and
 `publication-task`, with the native operation, output type, required scope,
 resource bounds and cancellation behavior exposed in discovery. Availability

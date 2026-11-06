@@ -318,6 +318,12 @@ def _selection(item: dict) -> set[int] | None:
 
 
 def _metric_value(row: dict, descriptor: dict) -> tuple[Any, str]:
+    if descriptor["id"].startswith("controlled_method:"):
+        field = descriptor["id"].split(":", 1)[1]
+        value = row.get("controlled_method", {}).get(field)
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("Controlled method measurement is missing or non-finite")
+        return value, "value"
     if descriptor["id"].startswith("morphometrics:"):
         field = descriptor["id"].split(":", 1)[1]
         target = row.get("morphometrics", {})
@@ -402,6 +408,22 @@ def inspect_item(project: Any, item: dict, check: Callable | None = None) -> dic
     """Validate every raw row; return bounded exact-string preview and totals."""
     selection = _selection(item)
     descriptors: dict[str, dict] = {}
+    if "controlled_method" in item["result"]["provenance"]:
+        from .research_methods import metric_descriptors
+
+        result = item["result"]
+        if "measurements" not in result["provenance"]:
+            # Export plans deliberately omit the population. Derive descriptors
+            # from the full exact revision, whose original hash still applies.
+            authoritative = project.result(result["id"], check=check)
+            if any(
+                authoritative.get(key) != result.get(key)
+                for key in ("id", "schema", "revision_hash", "source_id", "source_sha256")
+            ):
+                raise ValueError("Method descriptors have a stale result/source binding")
+            result = authoritative
+            item = {**item, "result": result}
+        descriptors = {metric["id"]: metric for metric in metric_descriptors(result)}
     channels: dict[str, set[str]] = {"object": set(), "compartment": set()}
     total = selected = 0
     found = set()

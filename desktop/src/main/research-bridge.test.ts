@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   request: vi.fn(),
   open: vi.fn(),
   save: vi.fn(),
+  message: vi.fn(),
   prepareLegacy: vi.fn(),
   clients: [] as Array<{ request: ReturnType<typeof vi.fn>; cancelCurrent: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>; forceDispose: ReturnType<typeof vi.fn> }>,
@@ -22,7 +23,7 @@ vi.mock("electron", () => ({
     getPath: () => process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT,
     getVersion: () => "0.1.0",
   },
-  dialog: { showOpenDialog: mocks.open, showSaveDialog: mocks.save },
+  dialog: { showOpenDialog: mocks.open, showSaveDialog: mocks.save, showMessageBox: mocks.message },
   ipcMain: {
     handle: (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
       mocks.handlers.set(name, operation),
@@ -367,6 +368,57 @@ describe("native research bridge", () => {
     finish({ canceled: false, filePath: path.join(root, "Report") });
     mocks.request.mockResolvedValueOnce({ receipt_sha256: "b".repeat(64), manifest_sha256: sha, files: ["receipt.json"] });
     await expect(exporting).rejects.toThrow(/invalid experiment-effect export receipt/);
+  });
+
+  const methodInput = () => ({ method_id: "b".repeat(32), manifest_sha256: sha, module_sha256: sha,
+    result_id: "c".repeat(32), revision_hash: sha, raw_channels: [1, 0], working_bytes: 64 * 1024 ** 2, preflight_hash: sha });
+
+  it("binds native method input/output pickers to the current study and refuses renderer paths", async () => {
+    const project = path.join(root, "Methods.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project }); await call("create");
+    mocks.request.mockClear(); mocks.open.mockClear();
+    await expect(call("method-import", { path: "/private/method.json" })).rejects.toThrow(/native method controls/);
+    await expect(call("method-output-grant", { ...methodInput(), path: "/private/output.bin" })).rejects.toThrow(/exact hashes/);
+    expect(mocks.open).not.toHaveBeenCalled(); expect(mocks.request).not.toHaveBeenCalled();
+    let finish!: (value: unknown) => void;
+    mocks.open.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = call("method-output-grant", methodInput());
+    await expect(call("create")).rejects.toThrow(/Finish|Wait/);
+    await expect(call("execute", "method_run", {})).rejects.toThrow(/finish opening/);
+    finish({ canceled: false, filePaths: ["/selected/output.bin"] }); await pending;
+    expect(mocks.request).toHaveBeenCalledWith("research_method_output_grant", { project, request: methodInput(), path: "/selected/output.bin" }, 0);
+    mocks.request.mockClear(); mocks.save.mockResolvedValueOnce({ canceled: false, filePath: "/selected/inputs.zip" });
+    await call("method-input-export", methodInput());
+    expect(mocks.request).toHaveBeenCalledWith("research_method_input_export", { project, request: methodInput(), destination: "/selected/inputs.zip" }, 0);
+  });
+
+  it("keeps cancelled method pickers and unconfirmed rights decisions unpublished", async () => {
+    const project = path.join(root, "Methods.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project }); await call("create"); mocks.request.mockClear();
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    expect(await call("method-import")).toBeNull();
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("method-input-export", methodInput())).toBeNull();
+    const review = { method_id: "b".repeat(32), manifest_sha256: sha, module_sha256: sha,
+      decision: "approved", reviewer: "Technical reviewer", evidence: "Authored fixture licence evidence" };
+    mocks.message.mockResolvedValueOnce({ response: 0 });
+    expect(await call("method-rights-review", review)).toBeNull(); expect(mocks.request).not.toHaveBeenCalled();
+    mocks.message.mockResolvedValueOnce({ response: 1 }); await call("method-rights-review", review);
+    expect(mocks.request).toHaveBeenCalledWith("research_method_rights_review", { project, request: review }, 0);
+    expect(mocks.message.mock.calls[1][0]).toMatchObject({ defaultId: 0, cancelId: 0, detail: expect.stringContaining(sha) });
+  });
+
+  it("routes method and annotation publication through exact durable jobs", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Methods.loci-study") }); await call("create");
+    mocks.request.mockClear();
+    mocks.request.mockImplementation(async (method: string) => method === "research_submit" ? { id: "c".repeat(32) } : { result: {} });
+    for (const operation of ["method_run", "annotation_reference_run", "annotation_evaluation_run"]) {
+      const request = { result_id: "b".repeat(32), revision_hash: sha };
+      await call("execute", operation, request);
+      expect(mocks.request).toHaveBeenCalledWith("research_submit", expect.objectContaining({ operation, request }));
+    }
+    expect(mocks.request.mock.calls.filter(([method]) => method === "research_run")).toHaveLength(3);
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_execute")).toBe(false);
   });
 
   it("keeps label picker cancellation unpublished and rejects renderer paths before picking", async () => {

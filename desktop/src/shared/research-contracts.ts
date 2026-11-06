@@ -88,6 +88,9 @@ export interface ResearchResult {
   perinuclear?: ResearchPerinuclearRecord;
   spatial?: unknown;
   morphometrics?: unknown;
+  annotation_evaluation?: unknown;
+  annotation_reference?: unknown;
+  controlled_method?: unknown;
   tissue_model?: {
     schema: "loci.puma-tissue-result/v1";
     label_semantics: "original_selected_compartment" | "edited_selected_compartment";
@@ -847,6 +850,10 @@ export interface ResearchDesktopApi {
   computeTargets?(operation: "list" | "import_ssh" | "save" | "test" | "resources" | "remember" | "use" | "forget",
     request: Record<string, unknown>): Promise<unknown>;
   /** Native TIFF picker; the external file path never enters renderer state. */
+  importControlledMethod?(): Promise<import("./controlled-method-contracts").ControlledMethodInfo | null>;
+  reviewControlledMethodRights?(request: import("./controlled-method-contracts").ControlledMethodRightsReview): Promise<import("./controlled-method-contracts").ControlledMethodInfo | null>;
+  chooseControlledMethodOutput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ output_grant_id: string; output_sha256: string; preflight_hash: string } | null>;
+  exportControlledMethodInput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ basename: string; sha256: string; preflight_hash: string } | null>;
   labelsImportPreview?(binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview | null>;
   recipeResources?(): Promise<import("./recipe-resources").RecipeResources>;
   updateWorkspace?(request: ResearchWorkspaceChange): Promise<ResearchSnapshot>;

@@ -252,6 +252,9 @@ def execute_edit(
         operation,
     )
     parent = _bound_result(workbench, request)
+    from .research_result_extensions import refuse_edit
+
+    refuse_edit(parent)
     if "morphometrics" in parent["provenance"] or parent.get("kind") == "morphometrics":
         from .research_morphometrics import CORRECTION_REFUSAL
 

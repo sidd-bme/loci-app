@@ -3,6 +3,53 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "annotation_reference_candidates": {
+        "mutates": False,
+        "summary": "Inspect closed annotation candidates within an exact granted result grid",
+    },
+    "annotation_evaluation_run": {
+        "mutates": True,
+        "summary": "Compare exact saved labels against an explicitly declared annotation reference",
+    },
+    "annotation_reference_run": {
+        "mutates": True,
+        "summary": "Freeze selected closed source annotations on an exact saved result grid",
+    },
+    "annotation_evaluation_get": {
+        "mutates": False,
+        "summary": "Inspect an exact retained annotation agreement report",
+    },
+    "method_list": {
+        "mutates": False,
+        "summary": "List registered controlled reusable methods without executing them",
+    },
+    "method_get": {
+        "mutates": False,
+        "summary": "Inspect an exact registered method manifest and current authority",
+    },
+    "method_preflight": {
+        "mutates": False,
+        "summary": "Bind an exact method to retained labels and ordered raw source channels",
+    },
+    "method_run": {
+        "mutates": True,
+        "summary": (
+            "Publish controlled method outputs with explicit execution "
+            "or external-adoption provenance"
+        ),
+    },
+    "method_result": {
+        "mutates": False,
+        "summary": "Inspect the exact retained method result and its provenance",
+    },
+    "method_query": {
+        "mutates": False,
+        "summary": "Inspect a bounded page of retained method measurements or predictions",
+    },
+    "method_runtime": {
+        "mutates": False,
+        "summary": "Inspect actual controlled method runtime eligibility and refusal reasons",
+    },
     "task_preview_get": {
         "mutates": False,
         "summary": "Inspect an exact retained durable preview without recomputation",
@@ -474,6 +521,9 @@ TASK_OPERATIONS = frozenset(
         "perinuclear_run",
         "spatial_distance_run",
         "morphometrics_run",
+        "annotation_evaluation_run",
+        "annotation_reference_run",
+        "method_run",
         "colocalisation_run",
     }
 )

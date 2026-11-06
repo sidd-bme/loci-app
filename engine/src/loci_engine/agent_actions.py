@@ -166,7 +166,17 @@ def authorize_action(
     def result_binding(binding):
         if not isinstance(binding, dict):
             raise ValueError("Action requires an exact result binding")
-        result = agent._authorize_result(workbench, binding.get("result_id"))
+        if operation in {
+            "annotation_evaluation_run",
+            "annotation_reference_run",
+            "method_preflight",
+            "method_run",
+        }:
+            result = agent._authorize_result(
+                workbench, binding.get("result_id"), verify_scientific_arrays=False
+            )
+        else:
+            result = agent._authorize_result(workbench, binding.get("result_id"))
         if result["revision_hash"] != binding.get("revision_hash"):
             raise PermissionError("Action result revision changed; inspect it again")
         return result
@@ -214,6 +224,40 @@ def authorize_action(
         request["selection"] = source_scope(
             policy, workbench, request["source_id"], selection, channels
         )
+        policy.require_runtime(runtime_record())
+    elif operation in {
+        "annotation_evaluation_run",
+        "annotation_reference_run",
+        "annotation_evaluation_get",
+    }:
+        from .research_annotation_evaluation import validate_reference_request, validate_request
+
+        _schema_check(request, contract)
+        if operation == "annotation_evaluation_run":
+            reference = result_binding(request["reference"])
+            retained_bytes = sum(
+                item["bytes"] for record in (bound, reference) for item in record["arrays"].values()
+            )
+            if retained_bytes > budget // 4:
+                raise PermissionError(
+                    "Comparison inputs exceed the delegated aggregate memory budget"
+                )
+            validate_request(workbench, request, check=policy.recheck)
+        elif operation == "annotation_reference_run":
+            validate_reference_request(workbench, request, check=policy.recheck)
+        policy.require_runtime(runtime_record())
+    elif operation.startswith("method_"):
+        from .research_methods import REQUEST_KEYS, validate_request
+
+        _schema_check(request, contract)
+        if operation in {"method_preflight", "method_run"}:
+            selection = bound["provenance"]["selection"]
+            for channel in request["raw_channels"]:
+                source_scope(
+                    policy, workbench, bound["source_id"], {**selection, "c": channel}, [channel]
+                )
+            # All source/result/channel grants precede both retained and raw decoding.
+            validate_request(workbench, {k: request[k] for k in REQUEST_KEYS}, check=policy.recheck)
         policy.require_runtime(runtime_record())
     elif operation == "morphometrics_run":
         from .research_morphometrics import validate_request

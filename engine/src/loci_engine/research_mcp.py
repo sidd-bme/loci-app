@@ -727,6 +727,27 @@ class PolicyAgent:
 
     def _provenance(self, original: dict[str, Any]) -> dict[str, Any]:
         value = dict(original)
+        for marker in ("controlled_method", "annotation_evaluation", "annotation_reference"):
+            if marker not in value:
+                continue
+            if not self.policy.disclosures >= DISCLOSURES:
+                value.pop(marker, None)
+                for key in ("accepted_request", "parent_result", "reference_result"):
+                    value.pop(key, None)
+            elif marker == "controlled_method":
+                # Module bytes remain a project-owned artifact, not an agent response.
+                value[marker] = dict(value[marker])
+                package = dict(value[marker]["package"])
+                package["package"] = {
+                    k: v for k, v in package["package"].items() if k != "module_base64"
+                }
+                value[marker]["package"] = package
+                if isinstance(value.get("accepted_request"), dict):
+                    value["accepted_request"] = {
+                        key: item
+                        for key, item in value["accepted_request"].items()
+                        if key != "output_grant_id"
+                    }
         if "tissue_model" in value and not self.policy.disclosures >= DISCLOSURES:
             value.pop("tissue_model", None)
             value.pop("host_runtime", None)
@@ -853,19 +874,31 @@ class PolicyAgent:
         )
         return job
 
-    def _authorize_result(self, workbench: Workbench, result_id: str) -> dict[str, Any]:
+    def _authorize_result(
+        self, workbench: Workbench, result_id: str, *, verify_scientific_arrays=True
+    ) -> dict[str, Any]:
         if (
             self.policy.delegation is not None
             and self.policy.delegation["result_scope"] == "granted-sources"
         ):
             from .agent_study import authorize_result
 
-            return authorize_result(self.policy, workbench, result_id)
+            return authorize_result(
+                self.policy,
+                workbench,
+                result_id,
+                verify_scientific_arrays=verify_scientific_arrays,
+            )
         result = workbench.project.result(checked_id(result_id), verify_scientific_arrays=False)
         if "tissue_model" in result["provenance"]:
             from .agent_study import authorize_result
 
-            return authorize_result(self.policy, workbench, result_id)
+            return authorize_result(
+                self.policy,
+                workbench,
+                result_id,
+                verify_scientific_arrays=verify_scientific_arrays,
+            )
         self.policy.source_grant(workbench.project, result["source_id"])
         provenance = result.get("provenance")
         if not isinstance(provenance, dict):
@@ -926,9 +959,10 @@ class PolicyAgent:
                     )
             if not granted:
                 raise PermissionError("Remote result is outside the exact pinned run")
-        workbench.project.validate_result_arrays(
-            result, check=self.policy.recheck, working_bytes=self.policy.memory_bytes
-        )
+        if verify_scientific_arrays:
+            workbench.project.validate_result_arrays(
+                result, check=self.policy.recheck, working_bytes=self.policy.memory_bytes
+            )
         return result
 
     def remote_operation(self, grant_key: str, operation: str) -> dict[str, Any]:

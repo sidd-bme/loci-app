@@ -457,6 +457,9 @@ def _references(project, result, check):
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    from .research_result_extensions import validate_project as validate_extension
+
+    validate_extension(project, result, arrays=True, check=check)
     if "morphometrics" in provenance:
         from .research_morphometrics import project_parents, validate_arrays
 
@@ -487,7 +490,7 @@ def _references(project, result, check):
     bindings.extend(provenance.get("compartment_measurement", {}).get("label_inputs", {}).values())
     bindings.extend(
         provenance[key]
-        for key in ("parent_result", "fixed_result", "moving_result")
+        for key in ("parent_result", "reference_result", "fixed_result", "moving_result")
         if key in provenance
     )
     if result.get("parent_id"):

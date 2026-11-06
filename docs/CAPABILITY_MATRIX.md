@@ -30,6 +30,16 @@ Full native normalization context, output ROI, source calibration and execution
 identity remain explicit. This source route has no independent accuracy claim;
 it does not infer a basal boundary, dermis definition or tissue thickness.
 
+[Reusable controlled methods](CONTROLLED_METHODS.md) bind a versioned package to
+exact saved labels and ordered raw channels. Native controls import packages,
+export input buffers and adopt externally produced outputs with explicit origin.
+Local execution requires separately accepted Linux runtime evidence and native
+rights review; macOS execution and automatic remote transport are unavailable.
+[Annotation agreement](ANNOTATION_EVALUATION.md) freezes selected drawn references
+or compares saved masks on an identical grid, with explicit instance/region
+semantics, original-ID match tables and undefined scores kept undefined. These
+capabilities use existing Analyze/Annotate tools and shared agent actions.
+
 This matrix covers the current source implementation.
 
 This matrix describes implemented subsets, not biological validation or public
