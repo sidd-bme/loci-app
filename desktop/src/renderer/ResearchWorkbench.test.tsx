@@ -1150,6 +1150,41 @@ describe("ResearchWorkbench", () => {
     expect(second).toHaveAttribute("data-review-state", "pending");
   });
 
+  it.each([
+    ["annotation-reference", "Frozen annotation reference", "Frozen reference"],
+    ["annotation-agreement", "Annotation agreement", "Agreement report"],
+  ])("presents %s as a report rather than an empty segmentation", async (kind, title, summary) => {
+    const active = structuredClone(snapshot);
+    active.sources[0].source_kind = "native";
+    const reportGeometry = { axes: "YX", unit: "pixel", frame: "image",
+      affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] };
+    const parent = active.results[0];
+    const reportResult = { ...parent, id: "e".repeat(32), revision_hash: "f".repeat(64),
+      kind, object_count: 0, parent_id: parent.id,
+      source_sha256: active.sources[0].sha256, geometry: reportGeometry,
+      selection: { x: 0, y: 0, width: 64, height: 48, c: 0, z: 0, t: 0, level: 0 },
+      arrays: { image: { shape: [48, 64] }, labels: { shape: [48, 64] } } };
+    active.results.push(reportResult);
+    const bridge = api({ getSnapshot: vi.fn().mockResolvedValue(active), execute: vi.fn(async (operation, request) => {
+      if (operation === "result") return resultPage(request, active.results);
+      if (operation === "result_view") return { ...resultView(reportResult, "z", 0, [48, 64]), geometry: reportGeometry };
+      return {};
+    }) });
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    const row = await screen.findByRole("button", { name: `${title}, ${summary}, pending review` });
+    expect(row).toHaveTextContent(`${summary} · To review`);
+    expect(row).toHaveTextContent("Derived from Segmentation (1 object)");
+    expect(row).not.toHaveTextContent("0 objects");
+    expect(row).not.toHaveTextContent("Edited from");
+    await waitFor(() => expect(row).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Segmentation, 1 object, pending review" })).toBeEnabled();
+    fireEvent.click(row);
+    await waitFor(() => expect(row).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(container.querySelector(".result-source-count")).toHaveTextContent(summary));
+    expect(reportResult.object_count).toBe(0);
+    expect(bridge.execute).toHaveBeenCalledWith("result", { result_id: reportResult.id, offset: 0, limit: 200 });
+  });
+
   it("distinguishes duplicate result rows with stable visible labels and selects exact revisions", async () => {
     const active = structuredClone(snapshot);
     const first = { ...active.results[0], created_at: "2026-10-22T04:05:06Z" };

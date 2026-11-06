@@ -73,6 +73,7 @@ import { initialSourceDisplay, rgbChannelsForPlane, type SourceDisplayDefaults }
 import { ResultContextPanel } from "./ResultContextPanel";
 import { ResearchReviewHistory, researcherReviewed, reviewLabel } from "./ResearchReviewHistory";
 import { resultTitle } from "./result-title";
+import { resultParentRelation, resultSummary } from "./result-presentation";
 import { LargeAnalysisPanel, LargeResultViewport, LargeResultInspector, isLargeResult } from "./LargeResultWorkspace";
 import {
   ResearchCorrectionPanel,
@@ -3137,7 +3138,7 @@ export default function ResearchWorkbench({
                 data-result-id={item.id}
                 data-review-state={resultReviewState(item)}
                 title={`${resultTitle(item)} · ${new Date(item.created_at).toLocaleString()}`}
-                aria-label={`${resultTitle(item)}, ${discriminator ? `${discriminator}, ` : ""}${item.object_count} ${item.object_count === 1 ? "object" : "objects"}, ${resultReviewState(item)} review`}
+                aria-label={`${resultTitle(item)}, ${discriminator ? `${discriminator}, ` : ""}${resultSummary(item, false)}, ${resultReviewState(item)} review`}
                 className={item.id === resultId ? "selected" : ""}
                 aria-pressed={item.id === resultId}
                 onClick={() => {
@@ -3149,8 +3150,8 @@ export default function ResearchWorkbench({
               >
                 <span className="research-result-kind">{resultTitle(item)}</span>
                 {discriminator && <small className="research-result-meta">{discriminator}</small>}
-                <small className="research-result-meta">{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
-                {parentResult && <small className="research-result-meta">Edited from {resultTitle(parentResult)}{resultDiscriminators.has(parentResult.id) ? ` · ${resultDiscriminators.get(parentResult.id)}` : ""} ({parentResult.object_count.toLocaleString()} {parentResult.object_count === 1 ? "object" : "objects"})</small>}
+                <small className="research-result-meta">{resultSummary(item)} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
+                {parentResult && <small className="research-result-meta">{resultParentRelation(item)} {resultTitle(parentResult)}{resultDiscriminators.has(parentResult.id) ? ` · ${resultDiscriminators.get(parentResult.id)}` : ""} ({resultSummary(parentResult)})</small>}
                 {item.label_import && <small className="research-result-meta">{item.parent_id ? "Corrected from " : "Imported "}{item.label_import.file_name} · {item.label_import.producer?.name ?? "Unknown producer"}</small>}
               </button>
               );
@@ -3217,7 +3218,7 @@ export default function ResearchWorkbench({
           {sourceResultOverlay && (
             <>
               <span className="result-source-link">Result on source · Z {(selectedResult?.selection?.z ?? 0) + 1}, T {(selectedResult?.selection?.t ?? 0) + 1}</span>
-              {selectedResult && <span className="result-source-count">{selectedResult.object_count.toLocaleString()} {selectedResult.object_count === 1 ? "object" : "objects"}</span>}
+              {selectedResult && <span className="result-source-count">{resultSummary(selectedResult)}</span>}
               <button
                 type="button"
                 className="research-review-export-quick-btn"
@@ -3857,7 +3858,7 @@ export default function ResearchWorkbench({
                 <div className="research-result-workflow-bar" role="group" aria-label="Selected result workflow">
                   <div className="research-result-workflow-summary">
                     <strong>{resultTitle(selectedResult)}</strong>
-                    <span>{selectedResult.object_count.toLocaleString()} {selectedResult.object_count === 1 ? "object" : "objects"} · {reviewLabel(selectedResult.review)} · rev {selectedResult.revision_hash.slice(0, 8)}</span>
+                    <span>{resultSummary(selectedResult)} · {reviewLabel(selectedResult.review)} · rev {selectedResult.revision_hash.slice(0, 8)}</span>
                   </div>
                   <div className="research-actions">
                     <button type="button" onClick={() => openWorkbenchTab("Population")}>Inspect in Statistics &amp; objects</button>
@@ -3988,7 +3989,7 @@ export default function ResearchWorkbench({
         {tab === "Correction" && !selectedResult && <section className="research-prerequisite">
           <p>Select a segmentation result to edit its labels or ROIs.</p>
           <div className="research-actions">{snapshot.results.filter((item) => item.source_id === source?.id && !isLargeResult(item) && item.arrays?.labels).map((item) =>
-            <button key={item.id} onClick={() => void loadResult(item.id, item)}>{resultTitle(item)} · {item.object_count} objects</button>)}
+            <button key={item.id} onClick={() => void loadResult(item.id, item)}>{resultTitle(item)} · {resultSummary(item, false)}</button>)}
             <button onClick={() => openWorkbenchTab("Analyze")}>Open Segment &amp; measure</button></div>
         </section>}
         {tab === "Correction" && selectedResult && !isLargeResult(selectedResult) && (
@@ -4935,7 +4936,7 @@ function Analyze({
         <div className="research-result-workflow-bar" role="group" aria-label="Selected result workflow">
           <div className="research-result-workflow-summary">
             <strong>{resultTitle(activeResult)}</strong>
-            <span>{activeResult.object_count.toLocaleString()} {activeResult.object_count === 1 ? "object" : "objects"} · {reviewLabel(activeResult.review)} · rev {activeResult.revision_hash.slice(0, 8)}</span>
+            <span>{resultSummary(activeResult)} · {reviewLabel(activeResult.review)} · rev {activeResult.revision_hash.slice(0, 8)}</span>
           </div>
           <div className="research-actions">
             {onOpenPopulation && <button type="button" onClick={onOpenPopulation}>Inspect in Statistics &amp; objects</button>}
@@ -6630,7 +6631,7 @@ export function Info({
                 <div key={`${item.id}:${item.revision_hash}`} className="research-result-recovery-row">
                   <div>
                     <strong>{resultTitle(item)}</strong>
-                    <small>{item.object_count.toLocaleString()} {item.object_count === 1 ? "object" : "objects"} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
+                    <small>{resultSummary(item)} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
                   </div>
                   <button type="button" disabled={busy || reviewPending} onClick={() => onSelectResult(item)}>
                     Select rev {item.revision_hash.slice(0, 8)}
@@ -6646,7 +6647,7 @@ export function Info({
         <>
           <h3 className="research-result-title">{resultTitle(result)}</h3>
           <p className="research-result-source">{source.name}</p>
-          <p>{result.object_count?.toLocaleString()} {result.object_count === 1 ? "object" : "objects"} · <span role="status">{reviewStatus}</span></p>
+          <p>{resultSummary(result)} · <span role="status">{reviewStatus}</span></p>
           <div className="research-result-sections" role="group" aria-label="Result sections">
             <button type="button" aria-pressed={section === "review"} onClick={() => changeSection("review")}>Review</button>
             <button type="button" aria-pressed={section === "export"} onClick={() => changeSection("export")}>Export</button>

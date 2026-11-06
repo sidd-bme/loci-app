@@ -7,6 +7,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import "./AgentActivityTimeline.css";
+import { resultTitle } from "./result-title";
 
 export interface AgentActivityNavigation {
   currentTargets?: ResearchAgentTargetReference[];
@@ -82,6 +83,8 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
       const label = `Open ${targetName(target)} ${target.id}`;
       const sourceName = state === "current" && target.kind === "source"
         ? snapshot.sources.find((item) => item.id === target.id)?.name : undefined;
+      const result = state === "current" && target.kind === "result"
+        ? snapshot.results.find((item) => item.id === target.id) : undefined;
       const job = target.kind === "job" ? snapshot.jobs.find((item) => item.id === target.id) : undefined;
       const previewAvailable = state === "current" && job?.state === "succeeded" &&
         ["preview_recipe", "workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation) &&
@@ -89,7 +92,7 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
       return <li key={`${target.kind}:${target.id}:${index}`}>
         <button type="button" className="agent-target-link" disabled={Boolean(reason)}
           aria-label={label} title={reason ?? label} onClick={() => callback?.(target)}>
-          Open {targetName(target)} {sourceName && `${sourceName} · `}<span>{target.id.slice(0, 8)}</span>
+          {result ? `Open ${resultTitle(result)}` : <>Open {targetName(target)} {sourceName && `${sourceName} · `}<span>{target.id.slice(0, 8)}</span></>}
         </button>
         {reason && <span className="agent-target-reason">{reason}</span>}
         {previewAvailable && <button type="button" className="agent-target-link"
@@ -121,7 +124,11 @@ function operationLabel(operation: string): string {
     review_result: "result review", set_source_display: "display update",
     submit_recipe: "analysis", run_recipe: "analysis", preview_recipe: "analysis preview",
     workflow_preview: "workflow preview", export_result: "result export",
-    evaluate_annotations: "annotation agreement", run_method: "method execution",
+    annotation_evaluation_run: "annotation agreement", annotation_evaluation_get: "annotation agreement",
+    annotation_reference_run: "freeze annotation reference", annotation_reference_candidates: "reference annotations",
+    method_run: "reusable method", method_query: "method measurements", method_result: "method result",
+    method_preflight: "method input check", method_list: "method library", method_get: "method package",
+    method_runtime: "method runtime", result: "saved result",
   };
   return labels[operation] ?? readable(operation);
 }
@@ -150,19 +157,48 @@ function eventHeadline(event: ResearchAgentEventRecord): string {
     job_stopped: "Job stop requested",
   };
   // Durable job outcomes use an explicit summary; a completed call alone is not a completed job.
-  if ((event.kind === "operation_completed" || event.kind === "operation_failed") &&
-      /^Job [a-f0-9]{8} (succeeded|failed|cancelled|interrupted)\.$/.test(event.summary)) return event.summary;
+  const outcome = jobOutcome(event);
+  if (outcome) {
+    const label = { succeeded: "Completed", failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" }[outcome.state];
+    return `${label} · ${operation}`;
+  }
   return headlines[event.kind] ?? event.summary;
 }
 
-function targetContext(targets: ResearchAgentTargetReference[] | undefined, snapshot: ResearchSnapshot): string | null {
+function jobOutcome(event: ResearchAgentEventRecord) {
+  if (event.kind !== "operation_completed" && event.kind !== "operation_failed") return null;
+  const match = /^Job ([a-f0-9]{8}) (succeeded|failed|cancelled|interrupted)\.$/.exec(event.summary);
+  return match ? { prefix: match[1], state: match[2] as "succeeded" | "failed" | "cancelled" | "interrupted" } : null;
+}
+
+/** A durable job event also records input dependencies. Prefer its recorded
+ * output only when the exact job confirms it; never substitute an input result. */
+function primaryTarget(event: ResearchAgentEventRecord, snapshot: ResearchSnapshot) {
+  const outcome = jobOutcome(event);
+  if (outcome) {
+    const jobs = event.targets?.filter((target) => target.kind === "job" && target.id.startsWith(outcome.prefix)) ?? [];
+    if (jobs.length !== 1) return undefined;
+    const recordedJob = jobs[0];
+    const job = snapshot.jobs.find((item) => item.id === recordedJob.id && item.operation === event.operation && item.state === outcome.state);
+    if (job && outcome.state === "succeeded") {
+      const output = event.targets?.find((target) => target.kind === "result" && job.result_ids.includes(target.id));
+      if (output) return output;
+    }
+    return recordedJob;
+  }
+  return event.targets?.find((target) => target.kind === "result") ??
+    event.targets?.find((target) => target.kind === "job") ?? event.targets?.[0];
+}
+
+function targetContext(targets: ResearchAgentTargetReference[] | undefined, snapshot: ResearchSnapshot,
+  primary?: ResearchAgentTargetReference): string | null {
   if (!targets?.length) return null;
   const source = targets.find((target) => target.kind === "source");
-  const bound = targets.find((target) => target.source_id);
-  const sourceId = source?.id ?? bound?.source_id;
-  const sourceHash = source?.sha256 ?? bound?.source_sha256;
+  const bound = primary?.source_id ? primary : targets.find((target) => target.source_id);
+  const sourceId = bound?.source_id ?? source?.id;
+  const sourceHash = bound?.source_sha256 ?? source?.sha256;
   const current = snapshot.sources.find((item) => item.id === sourceId && sourceHash === item.sha256);
-  const result = targets.find((target) => target.kind === "result");
+  const result = primary?.kind === "result" ? primary : undefined;
   return [sourceId ? (current?.name ?? `Source ${sourceId.slice(0, 8)}`) : null,
     result ? `result ${result.id.slice(0, 8)}${result.revision_hash ? ` · rev ${result.revision_hash.slice(0, 8)}` : ""}` : null]
     .filter(Boolean).join(" · ") || null;
@@ -243,17 +279,18 @@ export function AgentActivityTimeline({ events, approvals, snapshot, navigation,
     <ol className="agent-activity-list">
       {events.slice(0, EVENT_LIMIT).map((event) => {
         const approval = event.approval_id ? approvals.find((item) => item.id === event.approval_id) : undefined;
-        const primary = event.targets?.find((target) => target.kind === "result") ??
-          event.targets?.find((target) => target.kind === "job") ?? event.targets?.[0];
+        const primary = primaryTarget(event, snapshot);
         const otherTargets = event.targets?.filter((target) => target !== primary);
-        const context = targetContext(event.targets, snapshot);
+        const context = targetContext(event.targets, snapshot, primary);
         const Icon = event.kind === "operation_failed" || event.kind === "operation_blocked" ? CircleAlert
           : event.kind === "operation_completed" || event.kind === "operation_inspected" ? Check : ArrowUpRight;
         return <li key={event.id}>
           <div className="agent-activity-heading"><Icon size={16} strokeWidth={1.5} aria-hidden="true" />
             <p className="agent-activity-summary">{eventHeadline(event)}</p></div>
           {context && <p className="agent-activity-context">{context}</p>}
-          <AgentTargetLinks targets={primary ? [primary] : undefined} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
+          {!primary && Boolean(event.targets?.length)
+            ? <p className="agent-activity-note">Inspect recorded activity for the exact targets.</p>
+            : <AgentTargetLinks targets={primary ? [primary] : undefined} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
           <details className="agent-activity-record">
             <summary>Recorded activity <span>· <RecordedTime value={event.timestamp} /></span></summary>
             {eventHeadline(event) !== event.summary && <p className="agent-activity-note">{event.summary}</p>}

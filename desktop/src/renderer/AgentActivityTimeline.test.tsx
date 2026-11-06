@@ -164,4 +164,57 @@ describe("AgentActivityTimeline", () => {
     expect(screen.getByRole("button", { name: `Open source ${sourceId}` })).toBeVisible();
   });
 
+  it("opens the verified output of a completed job before its recorded input dependencies", () => {
+    const jobId = "1".repeat(32), outputId = "2".repeat(32), outputRevision = "3".repeat(64);
+    const input: ResearchAgentTargetReference = { kind: "result", id: resultId, revision_hash: revision, source_id: sourceId, source_sha256: sourceHash };
+    const output: ResearchAgentTargetReference = { ...input, id: outputId, revision_hash: outputRevision };
+    const job: ResearchAgentTargetReference = { kind: "job", id: jobId };
+    const completed = event({ kind: "operation_completed", operation: "annotation_evaluation_run",
+      summary: "Job 11111111 succeeded.", targets: [job, sourceTarget, input, output] });
+    const live: ResearchSnapshot = { ...snapshot,
+      results: [...snapshot.results, { ...snapshot.results[0], id: outputId, revision_hash: outputRevision, kind: "annotation-agreement" }],
+      jobs: [{ ...snapshot.jobs[0], id: jobId, operation: "annotation_evaluation_run", result_ids: [outputId] }] };
+    const onOpenResult = vi.fn();
+    render(<AgentActivityTimeline events={[completed]} approvals={[]} snapshot={live} navigation={{ onOpenResult, onOpenJob: vi.fn() }} />);
+    expect(screen.getByText("Completed · annotation agreement")).toBeVisible();
+    expect(screen.getByRole("button", { name: `Open result ${input.id}` })).not.toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: `Open result ${outputId}` }));
+    expect(onOpenResult).toHaveBeenCalledWith(output);
+    expect(screen.getByText(`Source · result ${outputId.slice(0, 8)} · rev ${outputRevision.slice(0, 8)}`)).toBeVisible();
+    fireEvent.click(screen.getByText(/Recorded activity/));
+    expect(screen.getByText(completed.summary)).toBeVisible();
+    expect(screen.getByRole("button", { name: `Open result ${input.id}` })).toBeVisible();
+  });
+
+  it.each(["missing-job", "missing-output", "wrong-operation", "stale-output"])("does not substitute an input when a job output is %s", (mode) => {
+    const jobId = "1".repeat(32), outputId = "2".repeat(32);
+    const input: ResearchAgentTargetReference = { kind: "result", id: resultId, revision_hash: revision };
+    const output: ResearchAgentTargetReference = { kind: "result", id: outputId, revision_hash: "3".repeat(64) };
+    const job: ResearchAgentTargetReference = { kind: "job", id: jobId };
+    const completed = event({ kind: "operation_completed", operation: "annotation_evaluation_run", summary: "Job 11111111 succeeded.",
+      targets: [job, input, ...(mode === "missing-output" ? [] : [output])] });
+    const live: ResearchSnapshot = { ...snapshot,
+      results: [...snapshot.results, { ...snapshot.results[0], id: outputId }],
+      jobs: mode === "missing-job" ? [] : [{ ...snapshot.jobs[0], id: jobId,
+        operation: mode === "wrong-operation" ? "run_recipe" : "annotation_evaluation_run", result_ids: [outputId] }] };
+    const onOpenResult = vi.fn();
+    render(<AgentActivityTimeline events={[completed]} approvals={[]} snapshot={live} navigation={{ onOpenResult, onOpenJob: vi.fn() }} />);
+    expect(screen.getByRole("button", { name: `Open result ${input.id}` })).not.toBeVisible();
+    if (mode === "stale-output") {
+      const button = screen.getByRole("button", { name: `Open result ${outputId}` });
+      expect(button).toBeVisible(); expect(button).toBeDisabled(); fireEvent.click(button);
+    } else expect(screen.getByRole("button", { name: `Open job ${jobId}` })).toBeVisible();
+    expect(onOpenResult).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["annotation_evaluation_get", "annotation agreement"],
+    ["method_query", "method measurements"],
+    ["method_preflight", "method input check"],
+  ])("names the actual %s action without claiming job completion", (operation, label) => {
+    render(<AgentActivityTimeline events={[event({ kind: "operation_inspected", operation })]} approvals={[]} snapshot={snapshot} />);
+    expect(screen.getByText(`Inspected · ${label}`)).toBeVisible();
+    expect(screen.queryByText(/^Completed/)).not.toBeInTheDocument();
+  });
+
 });

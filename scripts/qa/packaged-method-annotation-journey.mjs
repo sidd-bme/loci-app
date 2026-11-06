@@ -209,7 +209,9 @@ elif mode=='exports':
         np.testing.assert_array_equal(arrays['labels'],labels)
         if name=='method':
             np.testing.assert_array_equal(arrays['method_raw'],np.stack([raw[0,1,1],raw[0,0,1]]))
-            assert arrays['method_output'].astype(np.uint8).tobytes()==(root/'external-output.bin').read_bytes()
+            expected=struct.pack('<8sIIIdd',b'LOCIMO01',1,2,1,64.0,0.375)
+            assert arrays['method_output'].astype(np.uint8).tobytes()==expected
+            assert (root/'external-output.bin').read_bytes()==expected+b'\x00'
         else:
             np.testing.assert_array_equal(arrays['reference_labels'],labels)
             report=json.loads((directory/'annotation-evaluation.json').read_text()); metrics=report['metrics']
@@ -251,13 +253,14 @@ import asyncio,json,sys,time
 from pathlib import Path
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters,stdio_client
+from mcp.types import Implementation
 c=json.loads(Path(sys.argv[1]).read_text()); root=Path(c['output']); transcript=[]
 async def main():
     config=json.loads(Path(c['config']).read_text())['mcpServers']['loci-research']
     assert Path(config['command']).resolve()==Path(c['worker']).resolve(),config
     with (root/'mcp-stderr.log').open('w') as log:
         parameters=StdioServerParameters(command=config['command'],args=config['args'],env=config.get('env'),cwd=config.get('cwd'))
-        async with stdio_client(parameters,errlog=log) as (read,write),ClientSession(read,write) as client:
+        async with stdio_client(parameters,errlog=log) as (read,write),ClientSession(read,write,client_info=Implementation(name='Loci method QA',version='1.0.0')) as client:
             initialized=await client.initialize(); transcript.append({'initialize':initialized.model_dump(mode='json')})
             async def call(name,args,deny=False):
                 result=await client.call_tool(name,args)
@@ -413,7 +416,7 @@ try {
     actions: ['method_query', 'annotation_evaluation_run', 'annotation_evaluation_get'],
     source_scope: { mode: 'study-sources', sources: [{ id: src.id, sha256: src.sha256 }] },
     disclosures: ['geometry', 'source_names', 'previews', 'measurements', 'provenance', 'agent_metadata'],
-    limits: { cpu_seconds: 30, memory_bytes: 128 * 1024**2, concurrency: 1 } }]);
+    limits: { cpu_seconds: 30, memory_bytes: 512 * 1024**2, concurrency: 1 } }]);
   receipt.agent_access = access;
   const mcpConfig = path.join(output, 'mcp-client-input.json');
   await writeJson(mcpConfig, { output, worker, config: path.join(picker.agentBundle, access.config_filename),
@@ -442,8 +445,8 @@ try {
   await selectWorkbenchTool(page, 'Analyze');
   const disclosure = page.locator('details.external-labels-disclosure').filter({ has: page.locator('summary').filter({ hasText: /^Reusable methods$/u }) });
   await disclosure.locator(':scope > summary').click();
-  await page.getByRole('region', { name: 'Controlled reusable methods', exact: true }).waitFor(); await shot('01-packaged-reusable-methods');
-  await selectWorkbenchTool(page, 'Annotate'); await page.getByRole('region', { name: 'Annotation agreement', exact: true }).waitFor();
+  await page.getByRole('region', { name: 'Controlled reusable methods', exact: true }).scrollIntoViewIfNeeded(); await shot('01-packaged-reusable-methods');
+  await selectWorkbenchTool(page, 'Annotate'); await page.getByRole('region', { name: 'Annotation agreement', exact: true }).scrollIntoViewIfNeeded();
   await shot('02-packaged-annotation-agreement-panel');
   await chooseResult(agreement); await selectWorkbenchTool(page, 'Info'); await selectResultSection(page, 'Review');
   await page.getByRole('region', { name: 'Saved annotation agreement', exact: true }).waitFor(); await shot('03-packaged-saved-agreement');
@@ -451,6 +454,11 @@ try {
   await page.getByLabel('Agent session and approvals', { exact: true }).waitFor();
   const connected = await wait(snapshot, s => s.agent_sessions?.connected_count > 0, 'actual connected MCP session');
   receipt.agent_drawer_snapshot = connected.agent_sessions;
+  const drawer = page.getByLabel('Agent session and approvals', { exact: true });
+  await drawer.getByText('Completed · annotation agreement', { exact: true }).waitFor();
+  await drawer.getByRole('button', { name: `Open result ${receipt.mcp.result.result_id}`, exact: true }).first().click();
+  await page.locator(`button[data-result-id="${receipt.mcp.result.result_id}"][aria-pressed="true"]`).waitFor();
+  receipt.checks.push('completed-agent-job-opens-exact-published-output');
   await shot('04-actual-agent-drawer');
   await page.getByRole('button', { name: 'Close agent session drawer', exact: true }).click();
   await fs.writeFile(path.join(output, 'mcp-stop'), 'stop\n');
