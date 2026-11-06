@@ -37,11 +37,19 @@ const readJson = async file => JSON.parse(await fs.readFile(file, 'utf8'));
 const writeJson = (file, value) => fs.writeFile(file, JSON.stringify(value, null, 2) + '\n');
 const id = () => randomUUID().replaceAll('-', '');
 const bound = value => ({ result_id: value.id, revision_hash: value.revision_hash });
+// Portable import preserves exact records, not SQLite insertion/rowid order.
+// Keep duplicate identities a failure and compare every field of every record.
+const recordsById = values => {
+  assert.ok(values.every(value => typeof value.id === 'string' && value.id.length > 0));
+  assert.equal(new Set(values.map(value => value.id)).size, values.length, 'Duplicate retained record identity');
+  return [...values].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+};
 const stable = value => JSON.stringify(value, (_key, item) => item && !Array.isArray(item) && typeof item === 'object'
   ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item)
   .replace(/[\u007f-\uffff]/gu, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const receipt = {
   schema: 'loci.workflow-graph-expansion-packaged-qa/v1', status: 'running', output,
+  harness_sha256: await sha(path.join(import.meta.dirname, 'workflow-graph-expansion.qa.mjs')),
   started_at: new Date().toISOString(), source_commit: env.LOCI_QA_SOURCE_COMMIT,
   scientific_qualification: 'not-established', human_scientific_review: false,
   limits: ['All path picker selections are harness simulations; no real native dialog acceptance.',
@@ -400,16 +408,19 @@ try {
     pickers.source = importedSource.id === src.id ? source : path.join(output, 'TRAINING004.tif');
     await installPickers(); await api('relinkSource', [importedSource.id, 'file']);
   }
-  assert.deepEqual(await graphRuns(), beforeGraphs); assert.deepEqual((await execute('workflow_graph_list')).workflows, beforeDefinitions);
-  const afterImport = await snapshot(); assert.deepEqual(afterImport.results, beforeImport.results);
-  assert.deepEqual(afterImport.jobs.map(item => ({ id: item.id, operation: item.operation, result_ids: item.result_ids })),
-    beforeImport.jobs.map(item => ({ id: item.id, operation: item.operation, result_ids: item.result_ids })));
+  assert.deepEqual(recordsById(await graphRuns()), recordsById(beforeGraphs));
+  assert.deepEqual(recordsById((await execute('workflow_graph_list')).workflows), recordsById(beforeDefinitions));
+  const afterImport = await snapshot(); assert.deepEqual(recordsById(afterImport.results), recordsById(beforeImport.results));
+  assert.deepEqual(recordsById(afterImport.jobs.map(item => ({ id: item.id, operation: item.operation, result_ids: item.result_ids }))),
+    recordsById(beforeImport.jobs.map(item => ({ id: item.id, operation: item.operation, result_ids: item.result_ids }))));
   pickers.openStudy = restored; await installPickers();
   receipt.retained_before_cold = { graphs: beforeGraphs, definitions: beforeDefinitions, results: afterImport.results, jobs: afterImport.jobs };
   await close(); await launch(); await page.getByRole('button', { name: 'Open study', exact: true }).click();
   await wait(snapshot, value => value?.results.length === beforeImport.results.length, 'fresh-profile portable study reopen');
-  assert.deepEqual(await graphRuns(), beforeGraphs); assert.deepEqual((await execute('workflow_graph_list')).workflows, beforeDefinitions);
-  const cold = await snapshot(); assert.deepEqual(cold.results, afterImport.results); assert.deepEqual(cold.jobs, afterImport.jobs);
+  assert.deepEqual(recordsById(await graphRuns()), recordsById(beforeGraphs));
+  assert.deepEqual(recordsById((await execute('workflow_graph_list')).workflows), recordsById(beforeDefinitions));
+  const cold = await snapshot(); assert.deepEqual(recordsById(cold.results), recordsById(afterImport.results));
+  assert.deepEqual(recordsById(cold.jobs), recordsById(afterImport.jobs));
   assert.deepEqual((await inspected(report)).provenance, receipt.synthetic.report_record.provenance);
   receipt.cold_oracle = await oracle('synthetic', { study: restored, results: { prediction, reference, report } });
   if (receipt.optional_tissue.status === 'passed') receipt.optional_tissue.cold_oracle = await oracle('tissue', { study: restored,
