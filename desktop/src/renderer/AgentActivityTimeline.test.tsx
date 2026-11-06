@@ -31,6 +31,18 @@ function event(overrides: Partial<ResearchAgentEventRecord> = {}): ResearchAgent
 }
 
 describe("Agent activity targets", () => {
+  it("verifies job evidence against its stable request hash while the job state changes", () => {
+    const onOpenJob = vi.fn();
+    const jobTarget: ResearchAgentTargetReference = { kind: "job", id: "job-1", sha256: snapshot.jobs[0].request_hash };
+    const { rerender } = render(<AgentTargetLinks targets={[jobTarget]} snapshot={snapshot} navigation={{ onOpenJob }} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open job job-1" }));
+    expect(onOpenJob).toHaveBeenCalledWith(jobTarget);
+    rerender(<AgentTargetLinks targets={[jobTarget]} snapshot={{ ...snapshot, jobs: [{ ...snapshot.jobs[0], state: "failed" }] }} navigation={{ onOpenJob }} />);
+    expect(screen.getByRole("button", { name: "Open job job-1" })).toBeEnabled();
+    rerender(<AgentTargetLinks targets={[{ ...jobTarget, sha256: "f".repeat(64) }]} snapshot={snapshot} navigation={{ onOpenJob }} />);
+    expect(screen.getByRole("button", { name: "Open job job-1" })).toBeDisabled();
+    expect(screen.getByText(/Stale ·/)).toBeVisible();
+  });
   it("opens exact source, result revision and job references without substituting current selections", () => {
     const onOpenSource = vi.fn();
     const onOpenResult = vi.fn();
@@ -91,6 +103,16 @@ describe("Agent activity targets", () => {
 });
 
 describe("AgentActivityTimeline", () => {
+  it("uses the initial detail preference but preserves manual collapse through refreshes", () => {
+    const props = { events: [event()], approvals: [], snapshot };
+    const view = render(<AgentActivityTimeline {...props} defaultExpanded />);
+    const record = screen.getByText(/Recorded activity/).closest("details")!;
+    expect(record.open).toBe(true);
+    record.open = false; fireEvent(record, new Event("toggle"));
+    view.rerender(<AgentActivityTimeline {...props} events={[event({ summary: "Refreshed event" }), event({ id: "new-event" })]} defaultExpanded />);
+    const records = screen.getAllByText(/Recorded activity/).map(item => item.closest("details")!);
+    expect(records[0].open).toBe(false); expect(records[1].open).toBe(true);
+  });
   it("bounds events at 12 and preserves recorded actor, time and status without inferring success", () => {
     const events = Array.from({ length: 14 }, (_, index) => event({ id: String(index), summary: `Activity ${index}`, actor: index ? "agent" : "human", kind: "approval_denied" }));
     render(<AgentActivityTimeline events={events} approvals={[]} snapshot={snapshot} />);

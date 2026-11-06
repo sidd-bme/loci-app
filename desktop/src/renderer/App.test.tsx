@@ -1782,6 +1782,17 @@ describe("Loci renderer", () => {
     expect(window.localStorage.getItem("loci.preferences.v1")).toContain('"figureDpi":600');
   });
 
+  it("opens the contextual agent guide from Settings and returns to Welcome through F1", async () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    fireEvent.click(screen.getByRole("tab", { name: "External agents" }));
+    fireEvent.click(screen.getByRole("button", { name: "Read the agent workflow" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "Work with external agents" })).toBeVisible();
+    fireEvent.keyDown(window, { key: "F1" });
+    expect(await screen.findByRole("heading", { level: 2, name: "Welcome" })).toBeVisible();
+  });
+
   it("suspends workspace shortcuts while Settings is modal", async () => {
     const api = window.loci;
     render(<App />);

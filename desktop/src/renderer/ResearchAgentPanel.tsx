@@ -174,6 +174,7 @@ export function ResearchAgentPanel({
   const [exportMode, setExportMode] = useState<"listed" | "directory">("listed");
   const [allowRun, setAllowRun] = useState(false);
   const [allowWorkflowGraph, setAllowWorkflowGraph] = useState(false);
+  const [allowTaskRecords, setAllowTaskRecords] = useState(false);
   const [allowExport, setAllowExport] = useState(false);
   const [allowReview, setAllowReview] = useState(false);
   const [resultScope, setResultScope] = useState<"pinned-recipes" | "granted-sources">("pinned-recipes");
@@ -210,7 +211,7 @@ export function ResearchAgentPanel({
   const hasReferences = Boolean(agentRecipe.references && Object.keys(agentRecipe.references).length);
   const validationFingerprint = JSON.stringify([source.id, source.sha256, selection, agentRecipe]);
   const grantFingerprint = JSON.stringify([
-    validationFingerprint, allowPreview, allowRun, allowWorkflowGraph, allowExport, disclosures,
+    validationFingerprint, allowPreview, allowRun, allowWorkflowGraph, allowTaskRecords, allowExport, disclosures,
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
     allowReview, resultScope, expiryHours, client, permissionMode,
@@ -235,6 +236,7 @@ export function ResearchAgentPanel({
     setPreset("custom"); setPermissionMode("default"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
     setAllowRun(false);
     setAllowWorkflowGraph(false);
+    setAllowTaskRecords(false);
     setAllowExport(false);
     setAllowReview(false); setResultScope("pinned-recipes"); setExpiryHours("0");
     setAllowImage(false); setAllowDisplay(false); setAllowHandoff(false);
@@ -252,10 +254,10 @@ export function ResearchAgentPanel({
   const names = exportNames(exportNameText);
   const hasExportDisclosures = EXPORT_DISCLOSURES.every((item) => disclosures.includes(item));
   const limitsValid = cpu !== null && memory !== null && memory * MIB >= agentRecipe.working_bytes && workers !== null;
-  const delegated = allowWorkflowGraph || allowReview || resultScope === "granted-sources" || actionMode !== "none" || sourceMode === "study";
+  const delegated = allowWorkflowGraph || allowTaskRecords || allowReview || resultScope === "granted-sources" || actionMode !== "none" || sourceMode === "study";
   const exportValid = !allowExport || ((allowRun || delegated) && (exportMode === "directory" || names !== null) && hasExportDisclosures);
   const delegationValid = (!delegated || disclosures.includes("agent_metadata")) &&
-    (!allowWorkflowGraph || (resultScope === "granted-sources" && DISCLOSURES.every(item => disclosures.includes(item.id)))) &&
+    (!(allowWorkflowGraph || allowTaskRecords) || (resultScope === "granted-sources" && DISCLOSURES.every(item => disclosures.includes(item.id)))) &&
     (actionMode === "none" || (actions.length > 0 && resultScope === "granted-sources" && DISCLOSURES.every(item => disclosures.includes(item.id)) && (actionMode !== "analyze" || allowRun)));
   const operationValid = !allowPreview || disclosures.includes("previews");
   const imageScope = allowImage || allowDisplay || allowHandoff;
@@ -290,6 +292,7 @@ export function ResearchAgentPanel({
     ...(allowPreview ? ["preview_recipe"] : []),
     ...(allowRun ? ["submit_recipe", "job_status", "cancel_job", "result"] : []),
     ...(allowWorkflowGraph ? ["workflow_graph_inspect", ...(allowRun ? ["workflow_graph_control"] : [])] : []),
+    ...(allowTaskRecords ? ["agent_task_read", "agent_task_write"] : []),
     ...(allowRun && disclosures.includes("previews") ? ["result_view"] : []),
     ...(allowExport ? ["export_result"] : []),
     ...(allowImage ? ["source_image"] : []),
@@ -362,6 +365,7 @@ export function ResearchAgentPanel({
       allow_preview: allowPreview,
       allow_run: allowRun,
       ...(allowWorkflowGraph ? { allow_workflow_graph: true } : {}),
+      ...(allowTaskRecords ? { allow_task_records: true } : {}),
       allow_export: allowExport,
       export_names: allowExport && exportMode === "listed" ? names! : [],
       disclosures,
@@ -472,6 +476,9 @@ export function ResearchAgentPanel({
         <label className="research-check"><input type="checkbox" checked={allowWorkflowGraph} onChange={(event) => setAllowWorkflowGraph(event.target.checked)} /> Compose reusable workflows from granted actions</label>
         {allowWorkflowGraph && <p>Each workflow step keeps its existing source and action permissions. Workflow changes and execution also require run access.</p>}
         {allowWorkflowGraph && (resultScope !== "granted-sources" || !DISCLOSURES.every(item => disclosures.includes(item.id))) && <p role="alert">Workflow access requires source-scoped results and every response disclosure below.</p>}
+        <label className="research-check"><input type="checkbox" checked={allowTaskRecords} onChange={(event) => setAllowTaskRecords(event.target.checked)} /> Share plans and assessments</label>
+        {allowTaskRecords && <p>Let the external agent record editable plans and evidence-linked assessments. This does not run jobs or review results.</p>}
+        {allowTaskRecords && (resultScope !== "granted-sources" || !DISCLOSURES.every(item => disclosures.includes(item.id))) && <p role="alert">Plans and assessments require source-scoped results and every response disclosure below.</p>}
         <label className="research-check"><input type="checkbox" checked={allowExport} disabled={!allowRun && !delegated} onChange={(event) => setAllowExport(event.target.checked)} /> Allow exact reviewed-result export</label>
         <p><strong>Resulting tool scope:</strong> catalog and recipe_guide (static), {anticipatedOperations.join(", ")}</p>
         {allowPreview && !disclosures.includes("previews") && <p role="alert">Preview execution also requires the previews response disclosure.</p>}

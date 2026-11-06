@@ -1863,6 +1863,8 @@ export class ResearchBridge {
         throw new Error("Invalid agent session control request.");
       const request = structuredClone(value) as Record<string, unknown>;
       const validActions = new Set([
+        "edit_task",
+        "cancel_task",
         "approve_request",
         "deny_request",
         "set_permission_mode",

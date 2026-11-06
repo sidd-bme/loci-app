@@ -219,7 +219,7 @@ export function ResearchAnnotationEvaluationPanel({ api, snapshot, source, selec
   const disabled = busy || pending || !active;
   const saved = selectedResult?.kind === "annotation-agreement" && selectedResult.source_id === source.id && selectedResult.source_sha256 === source.sha256 ? selectedResult : null;
   const options = candidates.map((r) => <option key={key(r)} value={key(r)}>{resultTitle(r)} · {r.id.slice(0, 8)} · rev {r.revision_hash.slice(0, 8)}</option>);
-  return <section className="research-annotation-evaluation" aria-label="Annotation agreement">
+  return <section className="research-panel research-annotation-evaluation" aria-label="Annotation agreement">
     <h2>Annotation agreement</h2><p>Compare two saved masks on the same source, crop and plane. Choose what the labels mean and declare the reference coverage.</p>
     <label>Prediction mask<select aria-label="Prediction mask" value={prediction ? predictionKey : ""} disabled={disabled} onChange={(e) => { setPrediction(e.target.value); setDiscovery(null); setAnnotationIds([]); setError(""); }}><option value="">Choose a saved prediction…</option>{options}</select></label>
     <label>Label meaning<select value={semantics} disabled={disabled} onChange={(e) => setSemantics(e.target.value as Semantics)}><option value="instances">Object instances</option><option value="foreground-region">Foreground region</option></select></label>

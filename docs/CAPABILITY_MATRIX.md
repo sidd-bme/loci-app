@@ -13,9 +13,12 @@ density, not anatomical boundary inference or tissue thickness. See
 Current source also adds compact [donor-density reports](SPATIAL_DONOR_DENSITY.md),
 bounded [native workflow composition](WORKFLOWS.md#composed-workflows), retained
 spatial mask inspection, and explicit verified Cellpose checkpoint downloads.
-The new composition supports five declared native adapters; learned-model
-chaining and arbitrary method execution are not included. These source additions
-do not change the published beta or establish scientific validation.
+The composition supports eight declared native adapters, including prepared
+tissue-model adoption, qualified controlled-method execution and terminal
+annotation-agreement reports. Tissue inputs require a fresh exact preview;
+method runtime and rights requirements remain in force. Arbitrary code execution
+is not included. These source additions do not change the published beta or
+establish scientific validation.
 
 Current source adds [object shape, filled-wound closure and observed
 trajectory measurements](ASSAY_MEASUREMENTS.md), donor-density plots and editable
@@ -39,6 +42,15 @@ rights review; macOS execution and automatic remote transport are unavailable.
 or compares saved masks on an identical grid, with explicit instance/region
 semantics, original-ID match tables and undefined scores kept undefined. These
 capabilities use existing Analyze/Annotate tools and shared agent actions.
+
+External assistants can publish editable plans and evidence-linked assessments
+in the existing agent drawer. Actual execution, agent interpretation and human
+review remain separate. Successful composed runs can save reusable definitions;
+stopped work requires explicit continuation with current grants and exact retained
+checkpoints. These shared interfaces serve the supported life-science image and
+volume routes; fluorescence and histology are test examples, not platform limits.
+Existing bounded 3D operations remain available, while comprehensive Imaris/FIJI
+feature parity and additional 3D workflows are not claimed.
 
 This matrix covers the current source implementation.
 

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowUpRight, Check, CircleAlert, Clock3 } from "lucide-react";
 import type {
   ResearchAgentApprovalRecord,
@@ -13,6 +13,7 @@ export interface AgentActivityNavigation {
   currentTargets?: ResearchAgentTargetReference[];
   onOpenSource?: (target: ResearchAgentTargetReference) => void;
   onOpenResult?: (target: ResearchAgentTargetReference) => void;
+  onReviewResult?: (target: ResearchAgentTargetReference) => void;
   onOpenJob?: (target: ResearchAgentTargetReference) => void;
   onOpenWorkflow?: (target: ResearchAgentTargetReference) => void;
   onInspectPreview?: (target: ResearchAgentTargetReference) => void;
@@ -31,7 +32,7 @@ export function RecordedTime({ value }: { value: string }): React.JSX.Element {
     : <span>Time unavailable</span>;
 }
 
-function targetState(target: ResearchAgentTargetReference, snapshot: ResearchSnapshot,
+export function agentTargetState(target: ResearchAgentTargetReference, snapshot: ResearchSnapshot,
   currentTargets?: ResearchAgentTargetReference[]): "current" | "stale" | "unavailable" {
   let current: ResearchAgentTargetReference | undefined;
   if (target.kind === "source") {
@@ -44,7 +45,7 @@ function targetState(target: ResearchAgentTargetReference, snapshot: ResearchSna
       source_id: result.source_id, source_sha256: result.source_sha256 };
   } else if (target.kind === "job") {
     const job = snapshot.jobs.find((item) => item.id === target.id);
-    if (job) current = { kind: "job", id: job.id,
+    if (job) current = { kind: "job", id: job.id, sha256: job.request_hash,
       source_id: typeof job.request.source_id === "string" ? job.request.source_id : undefined,
       source_sha256: typeof job.request.source_sha256 === "string" ? job.request.source_sha256 : undefined };
   } else {
@@ -63,16 +64,17 @@ function targetState(target: ResearchAgentTargetReference, snapshot: ResearchSna
   return "current";
 }
 
-export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailable = false }: {
+export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailable = false, allowReview = false }: {
   targets?: ResearchAgentTargetReference[];
   snapshot: ResearchSnapshot;
   navigation?: AgentActivityNavigation;
   unavailable?: boolean;
+  allowReview?: boolean;
 }): React.JSX.Element {
   if (!targets?.length) return <p className="agent-activity-note">No target recorded.</p>;
   return <ul className="agent-target-list" aria-label="Recorded targets">
     {targets.map((target, index) => {
-      const state = unavailable ? "unavailable" : targetState(target, snapshot, navigation.currentTargets);
+      const state = unavailable ? "unavailable" : agentTargetState(target, snapshot, navigation.currentTargets);
       const callback = target.kind === "source" ? navigation.onOpenSource
         : target.kind === "result" ? navigation.onOpenResult
           : target.kind === "job" ? navigation.onOpenJob
@@ -95,6 +97,11 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
           {result ? `Open ${resultTitle(result)}` : <>Open {targetName(target)} {sourceName && `${sourceName} · `}<span>{target.id.slice(0, 8)}</span></>}
         </button>
         {reason && <span className="agent-target-reason">{reason}</span>}
+        {state === "current" && job && <span className="agent-activity-note">Recorded job state · {job.state}{job.cancel_requested ? " · stop requested" : ""}</span>}
+        {allowReview && target.kind === "result" && navigation.onReviewResult && <button type="button" className="agent-target-link"
+          disabled={state !== "current"} aria-label={`Review result ${target.id}`}
+          title={state !== "current" ? reason ?? undefined : "Open human review for this exact result revision"}
+          onClick={() => navigation.onReviewResult?.(target)}>Review result</button>}
         {previewAvailable && <button type="button" className="agent-target-link"
           aria-label={`Inspect preview ${target.id}`} onClick={() => navigation.onInspectPreview?.(target)}>Inspect preview</button>}
         <details className="agent-target-identity">
@@ -265,12 +272,18 @@ export function AgentApprovalDetails({ approval, snapshot, navigation, unavailab
   </div>;
 }
 
-export function AgentActivityTimeline({ events, approvals, snapshot, navigation, unavailable = false }: {
+function ActivityRecord({ defaultExpanded, children }: { defaultExpanded: boolean; children: ReactNode }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  return <details className="agent-activity-record" open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>{children}</details>;
+}
+
+export function AgentActivityTimeline({ events, approvals, snapshot, navigation, unavailable = false, defaultExpanded = false }: {
   events: ResearchAgentEventRecord[];
   approvals: ResearchAgentApprovalRecord[];
   snapshot: ResearchSnapshot;
   navigation?: AgentActivityNavigation;
   unavailable?: boolean;
+  defaultExpanded?: boolean;
 }): React.JSX.Element {
   return <section className="agent-session-section agent-activity" aria-label="Agent activity timeline">
     <h3>Recent work</h3>
@@ -291,7 +304,7 @@ export function AgentActivityTimeline({ events, approvals, snapshot, navigation,
           {!primary && Boolean(event.targets?.length)
             ? <p className="agent-activity-note">Inspect recorded activity for the exact targets.</p>
             : <AgentTargetLinks targets={primary ? [primary] : undefined} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
-          <details className="agent-activity-record">
+          <ActivityRecord defaultExpanded={defaultExpanded}>
             <summary>Recorded activity <span>· <RecordedTime value={event.timestamp} /></span></summary>
             {eventHeadline(event) !== event.summary && <p className="agent-activity-note">{event.summary}</p>}
             <dl className="agent-approval-meta">
@@ -304,7 +317,7 @@ export function AgentActivityTimeline({ events, approvals, snapshot, navigation,
               {event.policy_sha256 && <><dt>Policy SHA-256</dt><dd>{event.policy_sha256}</dd></>}
             </dl>
             {Boolean(otherTargets?.length) && <AgentTargetLinks targets={otherTargets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
-          </details>
+          </ActivityRecord>
           {approval && <details className="agent-activity-request">
             <summary>Inspect request · {readable(approval.state)}</summary>
             <p className="agent-activity-summary">{approval.summary}</p>

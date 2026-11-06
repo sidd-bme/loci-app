@@ -450,6 +450,26 @@ for _name, _mutates, _summary in (
     ("workflow_graph_advance", True, "Advance a bounded v2 workflow graph coordinator"),
     ("workflow_graph_status", False, "Inspect an exact bounded v2 workflow graph coordinator"),
     ("workflow_graph_cancel", True, "Cancel future scheduling for a bounded v2 workflow graph"),
+    (
+        "workflow_graph_save_from_run",
+        True,
+        "Save the exact definition of a successful workflow run",
+    ),
+    (
+        "workflow_graph_continuation",
+        False,
+        "Inspect proven completed work and remaining workflow steps",
+    ),
+    (
+        "workflow_graph_continue",
+        True,
+        "Continue unfinished steps with fresh authority and exact approval",
+    ),
+    (
+        "workflow_graph_prepared_previews",
+        False,
+        "List exact prepared tissue previews for workflow inputs",
+    ),
 ):
     OPERATION_CATALOG[_name] = {"mutates": _mutates, "summary": _summary}
 

@@ -6,6 +6,7 @@ import ResearchWorkbench from "./ResearchWorkbench";
 import type { ResearchAgentSessionsSnapshot, ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
 import engineFixture from "./__fixtures__/agent-sessions-snapshot.json";
 import type { SharedTaskPreview } from "./AgentPreviewComparison";
+import { DEFAULT_PREFERENCES } from "./preferences";
 
 const wire = engineFixture as ResearchAgentSessionsSnapshot;
 const ID_A = "a".repeat(32), ID_B = "b".repeat(32), SHA_A = "c".repeat(64), SHA_B = "d".repeat(64);
@@ -136,6 +137,19 @@ async function poll() {
 function viewer() { return screen.getByLabelText(/^Image viewer:/); }
 
 describe("Agent navigation integration", () => {
+  it("initializes following from preferences and preserves an explicit user choice on later preference changes", async () => {
+    const state = harness();
+    const preferences = { ...DEFAULT_PREFERENCES, agent: { followByDefault: true, expandActivityDetails: true } };
+    const view = render(<ResearchWorkbench api={state.api} preferences={preferences} onBack={vi.fn()} />);
+    await screen.findByRole("checkbox", { name: "Channel 1 visible" });
+    userClick(screen.getByRole("button", { name: "Agent session status" }));
+    expect(screen.getByRole("checkbox", { name: "Follow agent" })).toBeChecked();
+    userClick(screen.getByRole("checkbox", { name: "Follow agent" }));
+    view.rerender(<ResearchWorkbench api={state.api}
+      preferences={{ ...preferences, textSize: "large" }} onBack={vi.fn()} />);
+    expect(screen.getByRole("checkbox", { name: "Follow agent" })).not.toBeChecked();
+  });
+
   it("fits followed regions to the live viewport and shows the inspected scalar channel with local display settings", async () => {
     const state = harness(); await startFollowing(state);
     state.publishSource(); await poll();

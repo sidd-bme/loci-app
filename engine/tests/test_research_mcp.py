@@ -434,6 +434,8 @@ def test_terminal_job_reports_owned_worker_cleanup_and_preserves_capacity(tmp_pa
     status = agent.job_status(job["id"])["job"]
     assert status["state"] == "succeeded"
     assert status["owned_worker_active"] is True
+    assert status["request_hash"] == job["request_hash"]
+    assert "request" not in status and "request_key" not in status
     assert "pid" not in status and str(process.pid) not in json.dumps(status)
     with pytest.raises(PermissionError, match="concurrency"):
         agent.supervisor.preview(workbench, request)

@@ -76,6 +76,7 @@ READ_ONLY_TOOLS = frozenset(
         "validate_action",
         "inspect_action",
         "workflow_graph_inspect",
+        "agent_task_read",
         "remote_status",
     }
 )
@@ -96,6 +97,7 @@ APPROVAL_GATED_TOOLS = frozenset(
         "remote_attach",
     }
 )
+METADATA_TOOLS = frozenset({"agent_task_write"})
 
 DEFAULT_HEARTBEAT_TTL_SECONDS = 30.0
 DEFAULT_APPROVAL_TTL_SECONDS = 900.0
@@ -142,10 +144,15 @@ for _graph_name in (
     "start",
     "advance",
     "cancel",
+    "save_from_run",
+    "continuation",
+    "continue",
+    "prepared_previews",
 ):
     _GRANTED_MCP_MAPPING[f"workflow_graph_{_graph_name}"] = (
         "workflow_graph_inspect"
-        if _graph_name in {"validate", "get", "list", "preflight", "status"}
+        if _graph_name
+        in {"validate", "get", "list", "preflight", "status", "continuation", "prepared_previews"}
         else "workflow_graph_control",
         "Requires the explicit graph tool grant and every native node's independent action "
         "and source grants.",
@@ -351,6 +358,19 @@ def capability_map() -> dict[str, Any]:
             )
 
     for mcp_only_name, summary, mutates, grant_note in (
+        (
+            "agent_task_read",
+            "Read source-linked agent plans and assessments",
+            False,
+            "Requires explicit plan permission, exact policy scope and all response disclosures.",
+        ),
+        (
+            "agent_task_write",
+            "Publish agent-authored plans and assessments",
+            True,
+            "Requires explicit plan permission. Does not execute jobs, approve requests, "
+            "or create human review.",
+        ),
         (
             "source_display",
             "Read granted channel display settings and saved view revision",
@@ -815,6 +835,7 @@ def _cancel_session_approvals(
     policy_sha256: str | None = None,
     reason: str,
     new_state: str = "cancelled",
+    preserve_explicit: bool = False,
 ) -> None:
     now = timestamp()
     rows = connection.execute(
@@ -823,6 +844,8 @@ def _cancel_session_approvals(
     for key, raw in rows:
         approval = parse_json(raw)
         if approval.get("state") not in {"pending", "approved"}:
+            continue
+        if preserve_explicit and approval.get("explicit_approval_required"):
             continue
         if session_id is not None and approval.get("session_id") != session_id:
             continue
@@ -1073,9 +1096,15 @@ def _extract_binding(
     """Extract renderer-safe target bindings and current revisions for an operation."""
     action_name = operation
     inner = request_payload
-    if operation in {"submit_action", "validate_action", "inspect_action"} and isinstance(
-        request_payload.get("operation"), str
-    ):
+    if operation in {
+        "submit_action",
+        "validate_action",
+        "inspect_action",
+        "workflow_graph_control",
+        "workflow_graph_inspect",
+        "agent_task_read",
+        "agent_task_write",
+    } and isinstance(request_payload.get("operation"), str):
         action_name = str(request_payload["operation"])
         if isinstance(request_payload.get("request"), dict):
             inner = request_payload["request"]
@@ -1256,6 +1285,8 @@ def check_or_await_approval(
     workbench: Workbench,
     operation: str,
     request_payload: dict[str, Any],
+    *,
+    force_approval: bool = False,
 ) -> dict[str, Any] | None:
     """Enforce session pause/revocation, permission_mode, and single-use human approvals."""
     project = workbench.project
@@ -1269,6 +1300,8 @@ def check_or_await_approval(
         or is_policy_registered(project, policy.content_sha256)
     )
     if not tracked:
+        if force_approval:
+            raise AgentSessionApprovalError("Explicit continuation requires a registered session.")
         return None
 
     if operation == "job_status":
@@ -1311,7 +1344,9 @@ def check_or_await_approval(
             last_operation=binding["action_name"],
         )
 
-    if operation in READ_ONLY_TOOLS:
+    # A separately granted plan/assessment write only records agent-authored prose.
+    # It cannot execute analyses, approve requests, or create scientific reviews.
+    if operation in READ_ONLY_TOOLS | METADATA_TOOLS:
         return None
 
     if mode == "inspect_only":
@@ -1339,7 +1374,7 @@ def check_or_await_approval(
             "Switch the session mode to Ask for approval or Full access in Loci to allow changes."
         )
 
-    if mode == "full_access":
+    if mode == "full_access" and not force_approval:
         with project.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             require_session_authority(
@@ -1476,6 +1511,7 @@ def check_or_await_approval(
                 "consumed_at": None,
                 "decision_reason": None,
                 "decided_by": None,
+                "explicit_approval_required": force_approval,
             }
             connection.execute(
                 "INSERT OR REPLACE INTO metadata VALUES(?,?)",
@@ -1567,11 +1603,15 @@ def check_or_await_approval(
                     "inspect the updated state and request approval again."
                 )
 
-            if live_mode == "full_access" and (
-                app_rec["state"] == "pending"
-                or (
-                    app_rec["state"] == "cancelled"
-                    and app_rec.get("decision_reason") == "Policy switched to Full access mode"
+            if (
+                live_mode == "full_access"
+                and not force_approval
+                and (
+                    app_rec["state"] == "pending"
+                    or (
+                        app_rec["state"] == "cancelled"
+                        and app_rec.get("decision_reason") == "Policy switched to Full access mode"
+                    )
                 )
             ):
                 app_rec["state"] = "consumed"
@@ -1670,6 +1710,11 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
     project = workbench.project
     reconcile_agent_sessions(project)
     now = timestamp()
+
+    if action in {"edit_task", "cancel_task"}:
+        from .agent_tasks import control_task
+
+        return control_task(workbench, request)
 
     if action in {"approve_request", "deny_request"}:
         exact_keys(request, {"action", "approval_id", "reason"}, "agent approval decision")
@@ -1780,6 +1825,7 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                     connection,
                     policy_sha256=policy_sha,
                     reason="Policy switched to Full access mode",
+                    preserve_explicit=True,
                 )
             if mode == "inspect_only":
                 _cancel_session_approvals(
@@ -1949,12 +1995,13 @@ def record_agent_activity(agent, operation, arguments, response, *, failed=False
     if agent.session_id is None or operation == "job_status":
         return
     project = ResearchProject(agent.policy.project_path)
-    if operation not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS:
+    if operation not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS | METADATA_TOOLS:
         return
     action = arguments.get("operation", operation) if isinstance(arguments, dict) else operation
     # Operation names come from the registered tool/action inventory, never free-form prose.
     if not isinstance(action, str) or (
-        action not in ACTION_NAMES and action not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS
+        action not in ACTION_NAMES
+        and action not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS | METADATA_TOOLS
     ):
         action = operation
     targets = []
@@ -2069,6 +2116,8 @@ def agent_sessions_snapshot(project: ResearchProject) -> dict[str, Any]:
     """Return the renderer-safe snapshot of agent policies, live sessions, approvals, and events."""
     reconcile_agent_sessions(project)
     reconcile_agent_activity(project)
+    from .agent_tasks import task_snapshot
+
     with project.connection() as connection:
         policies = [
             _public_policy(parse_json(row[0]))
@@ -2167,4 +2216,5 @@ def agent_sessions_snapshot(project: ResearchProject) -> dict[str, Any]:
         "approvals": approvals,
         "events": events,
         "capability_map": capability_map(),
+        "tasks": task_snapshot(project),
     }

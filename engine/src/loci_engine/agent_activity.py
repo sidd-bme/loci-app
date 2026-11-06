@@ -104,7 +104,11 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
         if _id(run_id):
             docs = project.documents("workflow_run", document_id=run_id)
             if docs:
-                add({"kind": "job", "id": run_id})
+                # v2 coordinators are documents, not native jobs. Their exact run
+                # revision/hash is bound by the action request; expose the saved
+                # workflow and immutable input identities for approval staleness.
+                if docs[0]["data"].get("schema") != "loci.workflow-run/v2":
+                    add({"kind": "job", "id": run_id})
                 visit(docs[0]["data"], depth + 1)
         job_id = value.get("job_id")
         if _id(job_id):
@@ -175,6 +179,13 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
             "channels",
             "task_request",
             "workflow_context",
+            "continuation_approval",
+            "proposal",
+            "preview_replacements",
+            "plan",
+            "node_scopes",
+            "nodes",
+            "outputs",
             "regions",
             "nucleus",
             "nuclei",
@@ -195,6 +206,11 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
                 "intensity_bindings",
                 "label_inputs",
                 "association_inputs",
+                "bindings",
+                "node_scopes",
+                "nodes",
+                "outputs",
+                "preview_replacements",
             }:
                 for nested in item.values():
                     visit(nested, depth + 1)
@@ -259,6 +275,7 @@ def response_targets(project, body):
         ("job", "job_id"),
         ("result", "result_id"),
         ("workflow", "workflow_id"),
+        ("run", "run_id"),
         ("comparison", "comparison_id"),
         ("group", "group_id"),
     ):

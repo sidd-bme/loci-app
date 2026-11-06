@@ -946,6 +946,13 @@ class ResearchProject:
                     raise ValueError("Job was cancelled or stopped before publication")
                 if job["request"].get("source_id") != source_id:
                     raise ValueError("Publication job belongs to a different source")
+                # Inner native checks may reuse exact-job immutable method
+                # identities; this mandatory transaction-local full check never
+                # does, and also covers callers without a graph guard callback.
+                from .research_workflow_graph import guard_node_publication
+
+                if guard_node_publication(self, job) and publication_guard is not None:
+                    publication_guard()
                 job.update(
                     state="succeeded",
                     progress=1.0,

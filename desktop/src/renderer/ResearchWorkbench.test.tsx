@@ -424,6 +424,85 @@ async function openAdvancedTool(tool: string) {
   fireEvent.click(await options.findByRole("option", { name: new RegExp(tool.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) }));
 }
 describe("ResearchWorkbench", () => {
+  it("ends source preparation after a load failure even when its error is dismissed", async () => {
+    const bridge = api();
+    const execute = bridge.execute;
+    let rejectLoad!: (reason: Error) => void;
+    const load = new Promise<never>((_resolve, reject) => { rejectLoad = reject; });
+    bridge.execute = vi.fn((operation, request) => operation === "viewer_defaults" ? load : execute(operation, request));
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    expect(await screen.findByRole("heading", { name: "Preparing image…" })).toBeVisible();
+    await act(async () => { rejectLoad(new Error("Native image is inaccessible.")); });
+    expect(await screen.findByRole("heading", { name: "Image unavailable" })).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent("Native image is inaccessible.");
+    expect(screen.queryByText("Loading the selected source.")).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("alert")).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Image unavailable" })).toBeVisible();
+    await selectHistoryResult();
+    await waitFor(() => expect(document.querySelector(`[data-result-id="${snapshot.results[0].id}"]`)).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.queryByRole("heading", { name: "Image unavailable" })).not.toBeInTheDocument();
+  });
+
+  it("clears a source preparation failure when switching sources and retrying the original", async () => {
+    const second = { ...snapshot.sources[0], id: "e".repeat(32), sha256: "f".repeat(64), name: "Second" };
+    const bridge = api({ getSnapshot: async () => ({ ...snapshot, sources: [...snapshot.sources, second] }) });
+    const execute = bridge.execute;
+    let fail = true;
+    let finishRetry!: () => void;
+    const retry = new Promise<void>((resolve) => { finishRetry = resolve; });
+    bridge.execute = vi.fn(async (operation, request) => {
+      if (operation === "viewer_defaults" && request.source_id === snapshot.sources[0].id) {
+        if (fail) throw new Error("Native image is inaccessible.");
+        await retry;
+      }
+      return execute(operation, request);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await screen.findByRole("heading", { name: "Image unavailable" });
+    fireEvent.click(screen.getByRole("button", { name: /Second/ }));
+    await screen.findByLabelText("Image viewer: Second");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: /Specimen/ }));
+    expect(await screen.findByRole("heading", { name: "Preparing image…" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await act(async () => { finishRetry(); });
+    expect(await screen.findByLabelText("Image viewer: Specimen")).toBeVisible();
+  });
+
+  it("does not mistake an unrelated action error for a pending source load failure", async () => {
+    const bridge = api({ sessionState: vi.fn().mockRejectedValue(new Error("Session recovery could not be inspected.")) });
+    const execute = bridge.execute;
+    let finishLoad!: () => void;
+    const load = new Promise<void>((resolve) => { finishLoad = resolve; });
+    bridge.execute = vi.fn(async (operation, request) => {
+      if (operation === "viewer_defaults") await load;
+      return execute(operation, request);
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Session recovery could not be inspected.");
+    expect(await screen.findByRole("heading", { name: "Preparing image…" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Image unavailable" })).not.toBeInTheDocument();
+    await act(async () => { finishLoad(); });
+    await screen.findByLabelText("Image viewer: Specimen");
+    expect(screen.getByRole("alert")).toHaveTextContent("Session recovery could not be inspected.");
+  });
+
+  it("does not claim loading after preparation finishes without display channels", async () => {
+    const bridge = api();
+    const execute = bridge.execute;
+    bridge.execute = vi.fn(async (operation, request) => operation === "viewer_defaults"
+      ? { source_id: snapshot.sources[0].id, source_sha256: snapshot.sources[0].sha256, channels: [] }
+      : execute(operation, request));
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("source_view", { source_id: snapshot.sources[0].id }));
+    expect(await screen.findByRole("heading", { name: "Image unavailable" })).toBeVisible();
+    expect(screen.getByText("No image view is available for this source.")).toBeVisible();
+    expect(screen.queryByText("Loading the selected source.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("keeps one complete channel editor and provides a model prerequisite route without changing scientific settings", async () => {
     const bridge = api({ importModel: vi.fn() });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);

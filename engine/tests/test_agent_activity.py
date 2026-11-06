@@ -32,6 +32,53 @@ from loci_engine.research_mcp import PolicyAgent
 from loci_engine.research_project import ResearchProject, canonical_json
 
 
+def test_v2_coordinator_approval_binds_workflow_and_nested_inputs_without_fictitious_job(tmp_path):
+    from test_research_workflow_graph import definition as graph_definition
+
+    _, wb, result, _, request, _, _ = session_fixture(tmp_path)
+    graph = wb.execute(
+        "workflow_graph_save",
+        {
+            "workflow_id": "b" * 32,
+            "expected_revision": 0,
+            "definition": graph_definition(),
+        },
+    )["workflow"]
+    source = wb.project.source(request["source_id"])
+    native = {
+        "schema": "loci.workflow-run/v2",
+        "workflow_id": graph["id"],
+        "workflow_revision": graph["revision"],
+        "definition_sha256": graph["data"]["definition_sha256"],
+        "plan": {
+            "bindings": {
+                "image": {
+                    "source_id": source["id"],
+                    "source_sha256": source["sha256"],
+                    "selection": request["selection"],
+                },
+                "reference": {"result_id": result["id"], "revision_hash": result["revision_hash"]},
+            }
+        },
+    }
+    wb.project.put_document("workflow_run", "c" * 32, native, expected_revision=0)
+    targets = collect_targets(wb.project, {"run_id": "c" * 32})
+    assert not any(t["kind"] == "job" for t in targets)
+    assert any(t["kind"] == "workflow" and t["revision"] == 1 for t in targets)
+    assert any(t["kind"] == "source" and t["sha256"] == source["sha256"] for t in targets)
+    assert any(
+        t["kind"] == "result" and t["revision_hash"] == result["revision_hash"] for t in targets
+    )
+    assert not targets_stale(wb.project, targets, verify_sources=True)
+    changed = graph_definition()
+    changed["name"] = "New exact revision"
+    wb.execute(
+        "workflow_graph_save",
+        {"workflow_id": graph["id"], "expected_revision": 1, "definition": changed},
+    )
+    assert targets_stale(wb.project, targets)
+
+
 def test_actual_stdio_call_records_one_inspection_and_failed_call_without_private_payload(tmp_path):
     policy, wb, result, path, request, _, _ = session_fixture(tmp_path)
 

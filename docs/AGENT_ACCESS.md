@@ -549,6 +549,34 @@ namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them
   immediately; revoke ends access for the policy. Both preserve unrelated human
   and other-policy jobs. Reconnection creates a distinct session.
   Expired approvals cannot be consumed, even before the next desktop refresh.
+- **Visible plans and assessments**: The optional **Share plans and assessments**
+  access grant adds `agent_task_read` and `agent_task_write`. It requires delegated
+  source access and all response disclosures. External assistants can publish a
+  short goal, ordered steps and observations with exact source/result/job links.
+  These are attributed agent statements, separate from native execution state,
+  measurements and human scientific review. The drawer shows actual job state
+  alongside reported progress and opens the existing result review controls.
+  Researchers can edit the goal and step titles/order at an exact revision;
+  conflicting agent writes refuse and preserve the edit. Changing a completed
+  plan reopens it, without running work. Cancelling a plan does not cancel jobs;
+  the separate Stop job control targets an exact session-owned job.
+  Historical assessments remain immutable and visibly stale when their evidence
+  changes. Local study save/reopen retains the records. This grant does not add
+  arbitrary code execution, export or review authority.
+  Write assessments for the researcher: a short summary of the finding and review
+  status, then distinct observations with relevant quantities, units and scope.
+  Use readable result names in prose and keep exact IDs/hashes in structured
+  evidence targets. Link complete reports instead of repeating them. Preserve
+  material limitations, including missing calibration, unobserved regions,
+  reference quality, authored or unexecuted methods, and human-review status.
+  These are writing preferences; Loci preserves submitted text without truncation.
+- **Deliberate continuation**: A new client session may explicitly resume a plan
+  from a stopped session under the same exact policy, with current evidence and
+  grants checked again. This transfers the plan, not jobs or approvals. Composed
+  workflows use their separate exact checkpoint receipt: proven finished nodes
+  are retained, unfinished nodes enter a fresh run, and a native human approval
+  is required even in Full access mode. No step starts merely by reconnecting or
+  preparing that run. See [workflow continuation](WORKFLOWS.md).
 - **Capability map (`loci.agent-capability-map/v1`)**: Derived from
   `OPERATION_CATALOG` and `ACTION_NAMES`, reporting each operation as
   `supported_via_mcp`, `supported_with_grant`, or `gui_only_gap`.

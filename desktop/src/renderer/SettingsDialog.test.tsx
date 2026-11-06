@@ -10,7 +10,7 @@ import SettingsDialog from "./SettingsDialog";
 afterEach(cleanup);
 
 function show(overrides: Partial<UserPreferences> = {}, callbacks: {
-  onChange?: (value: UserPreferences) => void; onClose?: () => void; onOpenGuide?: () => void;
+  onChange?: (value: UserPreferences) => void; onClose?: () => void; onOpenGuide?: (sectionId?: string) => void;
 } = {}) {
   const preferences: UserPreferences = {
     ...structuredClone(DEFAULT_PREFERENCES),
@@ -22,6 +22,50 @@ function show(overrides: Partial<UserPreferences> = {}, callbacks: {
 }
 
 describe("SettingsDialog", () => {
+  it("searches real settings, opens the category and focuses the exact control", () => {
+    const onChange = vi.fn(); show({}, { onChange });
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "activity provenance" } });
+    expect(screen.getByRole("status")).toHaveTextContent("1 matching setting");
+    fireEvent.click(screen.getByRole("button", { name: /Expand activity records/ }));
+    expect(screen.getByRole("tab", { name: "External agents" })).toHaveAttribute("aria-selected", "true");
+    const activity = screen.getByRole("checkbox", { name: /Expand activity records/ });
+    expect(activity).toHaveFocus();
+    fireEvent.click(activity);
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { followByDefault: false, expandActivityDetails: true } }));
+    fireEvent.change(search, { target: { value: "guidance" } });
+    fireEvent.click(screen.getByRole("button", { name: /Contextual guidance/ }));
+    expect(screen.getByRole("checkbox", { name: /Contextual guidance/ })).toHaveFocus();
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+
+  it("clears an empty-result search with Escape before closing and supports category keyboard selection", () => {
+    const onClose = vi.fn(); show({}, { onClose });
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    search.focus(); fireEvent.change(search, { target: { value: "missingqueryxyz" } });
+    expect(screen.getByRole("status")).toHaveTextContent("No matching settings");
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(search).toHaveValue(""); expect(onClose).not.toHaveBeenCalled();
+    const appearance = screen.getByRole("tab", { name: "Appearance" });
+    appearance.focus(); fireEvent.keyDown(appearance, { key: "ArrowDown" });
+    expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(window, { key: "Escape" }); expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("opens contextual manual topics without changing agent permissions or preferences", () => {
+    const onChange = vi.fn(), onOpenGuide = vi.fn(); show({}, { onChange, onOpenGuide });
+    fireEvent.click(screen.getByRole("tab", { name: "External agents" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /Follow agent by default/ }));
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { followByDefault: true, expandActivityDetails: false } }));
+    fireEvent.click(screen.getByRole("button", { name: "Read the agent workflow" }));
+    expect(onOpenGuide).toHaveBeenLastCalledWith("work-with-external-agents");
+    fireEvent.click(screen.getByRole("tab", { name: "User guide" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reuse and continue workflows" }));
+    expect(onOpenGuide).toHaveBeenLastCalledWith("compose-and-reuse-workflows");
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+
   it("presents concise current categories, themes, and capability boundaries", () => {
     show();
     const navigation = screen.getByRole("tablist", { name: "Settings categories" });

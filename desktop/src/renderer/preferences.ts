@@ -15,6 +15,7 @@ export interface UserPreferences {
   font?: "system" | "arial" | "verdana";
   motion: "system" | "reduced";
   viewer: { showScaleBar: boolean; showNavigator: boolean; contextualHelp: boolean };
+  agent: { followByDefault: boolean; expandActivityDetails: boolean };
   figureDpi: number;
   export: ExportPreferences;
 }
@@ -25,6 +26,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   font: "system",
   motion: "system",
   viewer: { showScaleBar: true, showNavigator: true, contextualHelp: true },
+  agent: { followByDefault: false, expandActivityDetails: false },
   figureDpi: 300,
   export: {
     overlay: true,
@@ -49,6 +51,8 @@ export function normalizePreferences(value: unknown): UserPreferences {
     : {};
   const rawViewer = candidate.viewer && typeof candidate.viewer === "object" && !Array.isArray(candidate.viewer)
     ? candidate.viewer as Record<string, unknown> : {};
+  const rawAgent = candidate.agent && typeof candidate.agent === "object" && !Array.isArray(candidate.agent)
+    ? candidate.agent as Record<string, unknown> : {};
   const exportPreferences: ExportPreferences = {
     overlay: typeof rawExport.overlay === "boolean"
       ? rawExport.overlay
@@ -84,6 +88,10 @@ export function normalizePreferences(value: unknown): UserPreferences {
       showScaleBar: typeof rawViewer.showScaleBar === "boolean" ? rawViewer.showScaleBar : true,
       showNavigator: typeof rawViewer.showNavigator === "boolean" ? rawViewer.showNavigator : true,
       contextualHelp: typeof rawViewer.contextualHelp === "boolean" ? rawViewer.contextualHelp : true,
+    },
+    agent: {
+      followByDefault: typeof rawAgent.followByDefault === "boolean" ? rawAgent.followByDefault : false,
+      expandActivityDetails: typeof rawAgent.expandActivityDetails === "boolean" ? rawAgent.expandActivityDetails : false,
     },
     figureDpi: typeof candidate.figureDpi === "number" && Number.isInteger(candidate.figureDpi) && candidate.figureDpi >= 72 && candidate.figureDpi <= 1200
       ? candidate.figureDpi : 300,

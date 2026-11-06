@@ -102,6 +102,19 @@ function makeApi(
 }
 
 describe("AgentSessionIndicator", () => {
+  it("keeps retained tasks accessible when no client or access bundle remains", () => {
+    const snapshot = makeSnapshot({ status: "none", policies: [], sessions: [], approvals: [], events: [], tasks: [{
+      id: "retained-task", revision: 1, policy_sha256: "d".repeat(64), session_id: "old-session", client_id: "Codex",
+      created_at: "2026-11-06T00:00:00Z", updated_at: "2026-11-06T00:00:00Z", updated_by: "agent", goal: "Inspect retained source",
+      state: "active", stale: false, steps: [{ id: "inspect", title: "Inspect the image", state: "planned", note: "", targets: [] }], targets: [], assessments: [],
+    }] });
+    const api = makeApi();
+    render(<AgentSessionIndicator api={api} snapshot={snapshot} followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+    expect(screen.getByText("Inspect retained source")).toBeVisible();
+    expect(screen.getByText(/Continuing requires an explicit resume/)).toBeVisible();
+    expect(api.controlAgentSession).not.toHaveBeenCalled();
+  });
   it("renders a real engine snapshot, its approval target, event log and capability map", async () => {
     const control = vi.fn().mockResolvedValue(null);
     render(<AgentSessionIndicator api={makeApi(control)} snapshot={makeSnapshot(wire)}

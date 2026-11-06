@@ -297,15 +297,18 @@ def run_job(
 ) -> dict[str, Any]:
     project = workbench.project
     job = project.job(job_id)
-    from .research_workflow_graph import KEY_PREFIX, guard_node_job
+    from .research_workflow_graph import KEY_PREFIX, node_job_inner_guard
 
     if job.get("request_key", "").startswith(KEY_PREFIX):
         outer_guard = publication_guard
+        if outer_guard is not None:
+            outer_guard()
+        graph_check = node_job_inner_guard(workbench, job)
 
         def guard_graph_job() -> None:
             if outer_guard is not None:
                 outer_guard()
-            guard_node_job(workbench, job)
+            graph_check()
 
         publication_guard = guard_graph_job
         publication_guard()

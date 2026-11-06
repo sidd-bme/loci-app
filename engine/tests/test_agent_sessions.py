@@ -18,6 +18,7 @@ from loci_engine.agent_policy import SESSION_POLICY_SCHEMA, load_policy, write_p
 from loci_engine.agent_sessions import (
     AgentSessionApprovalError,
     capability_map,
+    check_or_await_approval,
     control_agent_session,
     reconcile_agent_sessions,
     register_policy,
@@ -28,6 +29,41 @@ from loci_engine.research_agent_setup import create_agent_access
 from loci_engine.research_mcp import PolicyAgent
 from loci_engine.research_operations import OPERATION_CATALOG
 from loci_engine.workbench import Workbench
+
+
+def test_explicit_continuation_requires_single_use_human_approval_even_in_full_access(tmp_path):
+    policy, workbench, _, _, request, _, _ = session_fixture(
+        tmp_path, permission_mode="full_access"
+    )
+    session = start_session(workbench.project, policy)
+    agent = PolicyAgent(policy, session_id=session["session_id"], approval_wait_seconds=0)
+    proposed = {"operation": "workflow_graph_continue", "request": request}
+    with pytest.raises(AgentSessionApprovalError, match="requires human approval"):
+        check_or_await_approval(
+            agent, workbench, "workflow_graph_control", proposed, force_approval=True
+        )
+    approval = workbench.snapshot()["agent_sessions"]["approvals"][0]
+    assert approval["action_name"] == "workflow_graph_continue"
+    assert approval["explicit_approval_required"] is True
+    control_agent_session(
+        workbench,
+        {
+            "action": "set_permission_mode",
+            "policy_sha256": policy.content_sha256,
+            "permission_mode": "full_access",
+        },
+    )
+    assert workbench.snapshot()["agent_sessions"]["approvals"][0]["state"] == "pending"
+    control_agent_session(workbench, {"action": "approve_request", "approval_id": approval["id"]})
+    consumed = check_or_await_approval(
+        agent, workbench, "workflow_graph_control", proposed, force_approval=True
+    )
+    assert consumed["state"] == "consumed" and consumed["decided_by"] == "human"
+    with pytest.raises(AgentSessionApprovalError, match="requires human approval"):
+        check_or_await_approval(
+            agent, workbench, "workflow_graph_control", proposed, force_approval=True
+        )
+    assert not workbench.project.list_jobs()
 
 
 def session_fixture(tmp_path, *, permission_mode="full_access"):

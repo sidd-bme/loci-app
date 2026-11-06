@@ -323,3 +323,87 @@ def test_inspect_only_session_reads_graph_metadata_and_blocks_control(graph_agen
         workflow_graph_control(agent, "workflow_graph_start", request)
     assert not wb.project.list_jobs() and not wb.project.documents("workflow_run")
     assert not supervisor.submissions
+
+
+def test_continuation_receipt_and_capture_do_not_disclose_foreign_runs(graph_agent):
+    agent, wb, request, supervisor, *_ = graph_agent
+    supervisor.execute = True
+    run = workflow_graph_control(agent, "workflow_graph_start", request)["run"]
+    for _ in range(3):
+        run = workflow_graph_control(agent, "workflow_graph_advance", {"run_id": run["id"]})["run"]
+    run = workflow_graph_inspect(agent, "workflow_graph_status", {"run_id": run["id"]})["run"]
+    receipt = workflow_graph_inspect(agent, "workflow_graph_continuation", {"run_id": run["id"]})
+    assert receipt["continuation"]["proposal"] is None
+    assert not receipt["continuation"]["can_start_fresh"]
+    capture = {
+        "run_id": run["id"],
+        "run_revision": run["revision"],
+        "run_sha256": run["data"]["run_sha256"],
+        "workflow_id": uuid4().hex,
+        "expected_revision": 0,
+        "name": "Exact successful definition",
+    }
+    saved = workflow_graph_control(agent, "workflow_graph_save_from_run", capture)["workflow"]
+    assert saved["data"]["definition"]["name"] == capture["name"]
+    from loci_engine.agent_sessions import start_session
+
+    session = start_session(wb.project, agent.policy, client_id="replacement-client")
+    agent.session_id = session["session_id"]
+    with pytest.raises(PermissionError, match="another policy or session"):
+        workflow_graph_inspect(agent, "workflow_graph_continuation", {"run_id": run["id"]})
+    capture["workflow_id"] = uuid4().hex
+    with pytest.raises(PermissionError, match="another policy or session"):
+        workflow_graph_control(agent, "workflow_graph_save_from_run", capture)
+
+
+def test_fresh_graph_owner_requires_forced_single_use_native_approval(graph_agent):
+    agent, wb, request, supervisor, *_ = graph_agent
+    supervisor.execute = True
+    run = workflow_graph_control(agent, "workflow_graph_start", request)["run"]
+    run = workflow_graph_control(agent, "workflow_graph_advance", {"run_id": run["id"]})["run"]
+    run = workflow_graph_inspect(agent, "workflow_graph_status", {"run_id": run["id"]})["run"]
+    run = workflow_graph_control(agent, "workflow_graph_cancel", {"run_id": run["id"]})["run"]
+    receipt = workflow_graph_inspect(agent, "workflow_graph_continuation", {"run_id": run["id"]})[
+        "continuation"
+    ]
+    from loci_engine.agent_sessions import (
+        AgentSessionApprovalError,
+        control_agent_session,
+        start_session,
+    )
+
+    session = start_session(wb.project, agent.policy, client_id="new-approved-host")
+    agent.session_id = session["session_id"]
+    agent.approval_wait_seconds = 0
+    control_agent_session(
+        wb,
+        {
+            "action": "set_permission_mode",
+            "policy_sha256": agent.policy.content_sha256,
+            "permission_mode": "full_access",
+        },
+    )
+    req = {
+        "run_id": run["id"],
+        "run_revision": run["revision"],
+        "run_sha256": run["data"]["run_sha256"],
+        "continuation_sha256": receipt["continuation_sha256"],
+        "workflow_id": uuid4().hex,
+        "request_key": "new-host-approved-graph",
+    }
+    before = len(wb.project.documents("workflow_run"))
+    with pytest.raises(AgentSessionApprovalError, match="requires human approval"):
+        workflow_graph_control(agent, "workflow_graph_continue", req)
+    assert len(wb.project.documents("workflow_run")) == before
+    approvals = wb.snapshot()["agent_sessions"]["approvals"]
+    pending = [approval for approval in approvals if approval["state"] == "pending"]
+    assert len(pending) == 1
+    control_agent_session(wb, {"action": "approve_request", "approval_id": pending[0]["id"]})
+    fresh = workflow_graph_control(agent, "workflow_graph_continue", req)["run"]
+    assert fresh["data"]["owner"] == agent.job_owner
+    assert fresh["data"]["owner"] != run["data"]["owner"]
+    assert fresh["data"]["continuation"]["run_id"] == run["id"]
+    assert fresh["data"]["state"] == "prepared"
+    assert len(supervisor.submissions) == 1
+    approvals = wb.snapshot()["agent_sessions"]["approvals"]
+    assert next(item for item in approvals if item["id"] == pending[0]["id"])["state"] == "consumed"

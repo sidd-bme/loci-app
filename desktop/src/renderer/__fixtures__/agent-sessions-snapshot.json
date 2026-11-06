@@ -137,7 +137,8 @@
       "source_sha256": "aad8264c944417d471d5b8b3bd7c15a0e466067be4c03449d78b3c015a9738e5",
       "state": "pending",
       "summary": "review_result on source d8bdc648, result fe651121@b742f992",
-      "updated_at": "2026-10-26T06:10:57.577753+00:00"
+      "updated_at": "2026-10-26T06:10:57.577753+00:00",
+      "explicit_approval_required": false
     }
   ],
   "events": [
@@ -1238,5 +1239,6 @@
         "reason": "Visual node workflows are authored in the desktop workflow builder."
       }
     ]
-  }
+  },
+  "tasks": []
 }
