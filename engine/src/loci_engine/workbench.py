@@ -1631,6 +1631,7 @@ class Workbench:
                 request,
                 authorize=lambda *_: None,
                 authorize_binding=lambda *_: None,
+                approve_continuation=lambda _: True,
                 publication_guard=publication_guard,
             )
         if operation.startswith("intensity_"):

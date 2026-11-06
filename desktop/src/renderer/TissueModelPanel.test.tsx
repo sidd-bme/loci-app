@@ -50,6 +50,23 @@ async function makePreview() { await declare(); fireEvent.click(screen.getByRole
   await waitFor(() => expect(screen.getByRole("button", { name: "Create result from preview" })).toBeEnabled()); }
 
 describe("PUMA tissue candidate workflow", () => {
+  it("keeps acquisition scope visible and sample-handling details available", async () => {
+    const view = setup();
+    const rgba = structuredClone(source);
+    rgba.metadata.sample_semantics = "RGBA";
+    rgba.metadata.dimensions!.s = 4;
+    view.rerender(<TissueModelPanel {...view.props} source={rgba} />);
+    await screen.findByText("Exact file identities verified");
+    expect(screen.getByRole("region", { name: "Epidermis tissue model" })).toHaveClass("research-panel");
+    expect(screen.getByText("Full native image · 12 × 10 pixels")).toBeVisible();
+    expect(screen.getByText("6 × 5 pixels at x 2, y 1")).toBeVisible();
+    const disclosure = screen.getByText("Normalization & sample handling").closest("details")!;
+    expect(disclosure).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("Normalization & sample handling"));
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByText(/Alpha is discarded without compositing/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Preview candidate mask" })).toBeDisabled();
+  });
   it("requires declared preparation and keeps the full normalization context separate from output", async () => {
     const view = setup(); await screen.findByText("Exact file identities verified");
     expect(screen.getByRole("button", { name: "Preview candidate mask" })).toBeDisabled();

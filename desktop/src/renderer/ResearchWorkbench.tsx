@@ -990,7 +990,7 @@ export default function ResearchWorkbench({
   const [assistantFollowBusy, setAssistantFollowBusy] = useState(false);
   const assistantFollower = useRef<SourceDisplayFollower | null>(null);
   const assistantFollowGeneration = useRef(0);
-  const [followAgent, setFollowAgent] = useState(false);
+  const [followAgent, setFollowAgent] = useState(() => preferences.agent.followByDefault);
   const agentResultTracker = useRef(new AgentResultTracker());
   const agentSourceTracker = useRef(new AgentSourceActivityTracker());
   const [pendingAgentSource, setPendingAgentSource] = useState<{
@@ -4361,6 +4361,7 @@ export default function ResearchWorkbench({
           snapshot={snapshot}
           refreshError={agentRefreshError}
           followAgent={followAgent}
+          expandActivityDetails={preferences.agent.expandActivityDetails}
           onFollowAgentChange={setFollowAgent}
           onSnapshot={(next) => {
             if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
@@ -4371,6 +4372,17 @@ export default function ResearchWorkbench({
             ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map((job) => job.id)}
           onInspectPreview={(target) => void inspectAgentPreview(target)}
           onOpenSource={openAgentSource}
+          onReviewResult={(target) => {
+            if (!agentTargetNavigationReady || documentSwitch.current) {
+              setError("Finish the current edit or operation before reviewing an agent result."); return;
+            }
+            try {
+              const exact = agentResultTarget(snapshot, target);
+              setSharedPreview(null);
+              void navigateExactResult(exact, exportDraftStudy, "review").then(() => openWorkbenchTab("Info"));
+            }
+            catch (caught) { setError(message(caught, "The recorded agent result is unavailable.")); }
+          }}
           onOpenResult={(target) => {
             if (!agentTargetNavigationReady || documentSwitch.current) {
               setError("Finish the current edit or operation before opening an agent result."); return;

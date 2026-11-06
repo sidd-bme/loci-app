@@ -81,6 +81,31 @@ function renderPanel(
 }
 
 describe("ResearchAgentPanel", () => {
+  it("requires explicit task sharing and all disclosures without granting execution", async () => {
+    const createAgentAccess = vi.fn().mockResolvedValue(null);
+    const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
+    const share = screen.getByLabelText("Share plans and assessments");
+    expect(share).not.toBeChecked();
+    fireEvent.click(share);
+    expect(screen.getByText(/Plans and assessments require source-scoped results/)).toBeVisible();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
+    fireEvent.click(screen.getByText("Customize permissions"));
+    expect(screen.getByLabelText("Share plans and assessments")).toBeChecked();
+    expect(screen.getByLabelText("Allow durable recipe runs and result reads")).not.toBeChecked();
+    expect(screen.getByText(/Resulting tool scope:/).closest("p")).toHaveTextContent("agent_task_read, agent_task_write");
+    fireEvent.click(screen.getByLabelText("Disclose measurements"));
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Disclose measurements"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      allow_task_records: true, allow_run: false, allow_export: false,
+      delegation: expect.objectContaining({ result_scope: "granted-sources", allow_review: false }),
+    })));
+    rerender(<ResearchAgentPanel {...props} source={{ ...source, id: "f".repeat(32) }} />);
+    expect(screen.getByLabelText("Share plans and assessments")).not.toBeChecked();
+  });
   it("requires explicit graph access and retains existing native action grants", async () => {
     // Native destination cancellation still exposes the exact requested scope.
     const createAgentAccess = vi.fn().mockResolvedValue(null);

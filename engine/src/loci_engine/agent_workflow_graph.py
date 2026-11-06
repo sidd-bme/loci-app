@@ -29,13 +29,19 @@ from .workflow_graph import ADAPTERS, NAME, validate_definition
 CONTROL_TOOL = "workflow_graph_control"
 INSPECT_TOOL = "workflow_graph_inspect"
 CONTROL_OPERATIONS = frozenset(
-    f"workflow_graph_{name}" for name in ("save", "start", "advance", "cancel")
+    f"workflow_graph_{name}"
+    for name in ("save", "save_from_run", "start", "advance", "cancel", "continue")
 )
 INSPECT_OPERATIONS = OPERATIONS - CONTROL_OPERATIONS
 MAX_PAYLOAD_BYTES = 1024**2
 
 GraphControlOperation = Literal[
-    "workflow_graph_save", "workflow_graph_start", "workflow_graph_advance", "workflow_graph_cancel"
+    "workflow_graph_save",
+    "workflow_graph_save_from_run",
+    "workflow_graph_start",
+    "workflow_graph_advance",
+    "workflow_graph_cancel",
+    "workflow_graph_continue",
 ]
 GraphInspectOperation = Literal[
     "workflow_graph_validate",
@@ -43,6 +49,8 @@ GraphInspectOperation = Literal[
     "workflow_graph_list",
     "workflow_graph_preflight",
     "workflow_graph_status",
+    "workflow_graph_continuation",
+    "workflow_graph_prepared_previews",
 ]
 
 
@@ -65,7 +73,9 @@ def _definition_schema():
     }
     nodes = []
     for operation, ports in ADAPTERS.items():
-        if operation == "run_recipe":
+        if operation == "tissue_model_run":
+            settings = _object({})
+        elif operation == "run_recipe":
             settings = _object({"recipe": REQUESTS[operation]["properties"]["recipe"]})
         else:
             fields = set(REQUESTS[operation]["properties"]) - {
@@ -74,11 +84,14 @@ def _definition_schema():
                 "result_id",
                 "revision_hash",
                 *ports,
+                *({"preflight_hash", "output_grant_id"} if operation == "method_run" else set()),
             }
             settings = _object(
                 {key: REQUESTS[operation]["properties"][key] for key in sorted(fields)},
                 sorted(set(REQUESTS[operation]["required"]) & fields - {"working_bytes"}),
             )
+        if operation == "method_run":
+            settings["properties"]["mode"] = {"const": "execute"}
         nodes.append(
             _object(
                 {
@@ -99,7 +112,9 @@ def _definition_schema():
                 "minProperties": 1,
                 "maxProperties": 64,
                 "propertyNames": identity,
-                "additionalProperties": {"enum": ["source-selection", "label-result"]},
+                "additionalProperties": {
+                    "enum": ["source-selection", "label-result", "tissue-preview"]
+                },
             },
             "nodes": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"oneOf": nodes}},
             "outputs": {
@@ -123,6 +138,7 @@ BINDINGS = {
     "additionalProperties": {
         "oneOf": [
             _object({"result_id": ID, "revision_hash": SHA}),
+            _object({"preview_id": ID, "preview_hash": SHA, "receipt": {"type": "object"}}),
             _object(
                 {
                     "source_id": ID,
@@ -148,6 +164,42 @@ REQUEST_SCHEMAS = {
             "definition": _definition_schema(),
         }
     ),
+    "workflow_graph_save_from_run": _object(
+        {
+            "run_id": ID,
+            "run_revision": {"type": "integer", "minimum": 1},
+            "run_sha256": SHA,
+            "workflow_id": ID,
+            "expected_revision": {"type": "integer", "minimum": 0},
+            "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        }
+    ),
+    "workflow_graph_continue": _object(
+        {
+            "run_id": ID,
+            "run_revision": {"type": "integer", "minimum": 1},
+            "run_sha256": SHA,
+            "continuation_sha256": SHA,
+            "workflow_id": ID,
+            "request_key": {"type": "string", "minLength": 1, "maxLength": 160},
+            "preview_replacements": {
+                "type": "object",
+                "maxProperties": 32,
+                "additionalProperties": _object(
+                    {"preview_id": ID, "preview_hash": SHA, "receipt": {"type": "object"}}
+                ),
+            },
+        },
+        [
+            "run_id",
+            "run_revision",
+            "run_sha256",
+            "continuation_sha256",
+            "workflow_id",
+            "request_key",
+        ],
+    ),
+    "workflow_graph_prepared_previews": _object({"source_id": ID}),
     "workflow_graph_get": _object({"workflow_id": ID}),
     "workflow_graph_list": _object({}),
     "workflow_graph_preflight": _object(BINDING_PROPERTIES),
@@ -160,7 +212,12 @@ REQUEST_SCHEMAS = {
     ),
     **{
         name: _object({"run_id": ID})
-        for name in ("workflow_graph_advance", "workflow_graph_status", "workflow_graph_cancel")
+        for name in (
+            "workflow_graph_advance",
+            "workflow_graph_status",
+            "workflow_graph_cancel",
+            "workflow_graph_continuation",
+        )
     },
 }
 # The operation-specific exact request check remains in the native coordinator.
@@ -198,7 +255,21 @@ def _definition_scope(agent, definition):
 
 def _authorize_binding(agent, workbench, kind, binding):
     _recheck(agent)
-    if kind == "source-selection":
+    if kind == "tissue-preview":
+        from .research_tissue_integration import policy_runtime
+        from .tissue_model_profiles import puma_profile
+        from .workflow_graph import _tissue_preview
+
+        binding = _tissue_preview(workbench, binding, agent.policy.memory_bytes)
+        request = binding["receipt"]["request"]
+        agent.policy.require_tissue_output(request)
+        agent.policy.require_runtime(policy_runtime())
+        agent.policy.require_model(puma_profile()["model"])
+        for selection in (request["context_selection"], request["output_selection"]):
+            grant = agent.policy.source_grant(workbench.project, request["source_id"])
+            if grant.sha256 != request["source_sha256"] or not grant.allows(selection, []):
+                raise PermissionError("Prepared tissue context or output exceeds its source grant")
+    elif kind == "source-selection":
         _exact(binding, {"source_id", "source_sha256", "selection"}, "graph source binding")
         grant = agent.policy.source_grant(workbench.project, binding.get("source_id"))
         if grant.sha256 != binding.get("source_sha256"):
@@ -248,6 +319,13 @@ def _invoke(agent, tool, operation, request):
     workbench = agent._workbench(tool)
     try:
         _recheck(agent)
+        if operation == "workflow_graph_prepared_previews":
+            if "tissue_model_run" not in agent.policy.actions:
+                raise PermissionError(
+                    "Prepared tissue discovery requires its native run action grant"
+                )
+            agent.policy.source_grant(workbench.project, request["source_id"])
+            workbench._graph_memory_bytes = agent.policy.memory_bytes
         if operation in {"workflow_graph_save", "workflow_graph_validate"}:
             _definition_scope(agent, request.get("definition"))
         elif operation in {
@@ -261,6 +339,8 @@ def _invoke(agent, tool, operation, request):
             "workflow_graph_advance",
             "workflow_graph_status",
             "workflow_graph_cancel",
+            "workflow_graph_continuation",
+            "workflow_graph_save_from_run",
         }:
             run = _run(workbench, request.get("run_id"))
             if run["data"]["owner"] != agent.job_owner:
@@ -282,9 +362,24 @@ def _invoke(agent, tool, operation, request):
                 visible.append(_get(workbench, doc["id"]))
             output = {"workflows": visible}
         else:
-            check_or_await_approval(
-                agent, workbench, tool, {"operation": operation, "request": request}
-            )
+            if operation != "workflow_graph_continue":
+                check_or_await_approval(
+                    agent, workbench, tool, {"operation": operation, "request": request}
+                )
+
+            def approve_continuation(payload):
+                # Request schemas contain no caller-supplied approval field. The
+                # native single-use approval is bound to the exact continuation,
+                # including fresh owner/session, proof, input grants and plan.
+                approval = check_or_await_approval(
+                    agent,
+                    workbench,
+                    tool,
+                    {"operation": operation, "request": request, "continuation_approval": payload},
+                    force_approval=True,
+                )
+                _recheck(agent)
+                return bool(approval and approval.get("state") == "consumed")
 
             def submit(native_workbench, native_operation, body, key):
                 _authorize_leaf(agent, native_workbench, native_operation, body)
@@ -324,6 +419,7 @@ def _invoke(agent, tool, operation, request):
                 cancel=cancel,
                 owner=agent.job_owner,
                 publication_guard=lambda: _recheck(agent),
+                approve_continuation=approve_continuation,
             )
         _recheck(agent)
         if len(canonical_json(output).encode()) > min(8 * 1024**2, agent.policy.memory_bytes // 8):

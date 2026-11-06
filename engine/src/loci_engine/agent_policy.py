@@ -64,6 +64,8 @@ STUDY_OPERATIONS = frozenset(
         "submit_action",
         "workflow_graph_inspect",
         "workflow_graph_control",
+        "agent_task_read",
+        "agent_task_write",
     }
 )
 _TOP_LEVEL_KEYS = {

@@ -17,9 +17,11 @@ from .research_jobs import cancel_job, submit_job
 from .research_project import canonical_json, checked_id, checked_text, parse_json, timestamp
 from .workflow_graph import (
     ADAPTER_VERSIONS,
+    OUTPUT_TYPES,
     PLAN_SCHEMA,
     _lineage_scopes,
     _record_scope,
+    _resolve_node,
     _result,
     _sha,
     build_plan,
@@ -37,6 +39,10 @@ OPERATIONS = frozenset(
     for name in (
         "validate",
         "save",
+        "save_from_run",
+        "continuation",
+        "prepared_previews",
+        "continue",
         "get",
         "list",
         "preflight",
@@ -106,7 +112,8 @@ def _run(workbench, identity):
             "created_at",
             "updated_at",
             "run_sha256",
-        },
+        }
+        | ({"continuation"} if "continuation" in data else set()),
         "graph run",
     )
     if data["schema"] != RUN_SCHEMA or data["project_id"] != workbench.project.meta["project_id"]:
@@ -129,6 +136,55 @@ def _run(workbench, identity):
     request.update(bindings=data["plan"]["bindings"], plan_sha256=data["plan"]["plan_sha256"])
     if expected_id != doc["id"] or _hash(request) != data["request_sha256"]:
         raise ValueError("Graph run submission identity changed")
+    if "continuation" in data:
+        receipt = data["continuation"]
+        if not isinstance(receipt, dict) or _hash(
+            {key: value for key, value in receipt.items() if key != "continuation_sha256"}
+        ) != receipt.get("continuation_sha256"):
+            raise ValueError("Retained graph continuation proof integrity failed")
+        original = _document(workbench.project, "workflow_run", receipt["run_id"])
+        original_data = original["data"]
+        if (
+            original["id"] == doc["id"]
+            or original["revision"] != receipt["run_revision"]
+            or original_data.get("run_sha256") != receipt["run_sha256"]
+            or _hash({k: v for k, v in original_data.items() if k != "run_sha256"})
+            != receipt["run_sha256"]
+            or not receipt["can_start_fresh"]
+            or original_data.get("owner") != receipt["owner"]
+            or original_data.get("state") not in {"failed", "cancelled"}
+            or data["workflow_id"] == receipt["workflow_id"]
+            or data["request_key"] == receipt["request_key"]
+            or data["plan"]["definition"] != receipt["proposal"]["definition"]
+            or data["plan"]["bindings"] != receipt["proposal"]["bindings"]
+        ):
+            raise ValueError("Retained graph continuation no longer binds its exact original run")
+        verified = _copy(original_data)
+        completed = _reconcile(workbench, verified, lambda *_: None, lambda *_: None)
+        expected_receipt = _continuation_from_completed(workbench, original, verified, completed)
+        if "original_continuation_sha256" in receipt:
+            if expected_receipt["continuation_sha256"] != receipt["original_continuation_sha256"]:
+                raise ValueError("Continuation original checkpoint proof changed")
+            replacements = {
+                name: bound
+                for name, bound in receipt["proposal"]["bindings"].items()
+                if receipt["proposal"]["definition"]["inputs"][name] == "tissue-preview"
+            }
+            for name, bound in replacements.items():
+                prior = expected_receipt["proposal"]["bindings"][name]
+                if bound["receipt"]["request"] != prior["receipt"]["request"]:
+                    raise ValueError(
+                        "Continuation tissue replacement changed its exact source scope"
+                    )
+            expected_receipt["original_continuation_sha256"] = expected_receipt[
+                "continuation_sha256"
+            ]
+            expected_receipt["proposal"]["bindings"].update(replacements)
+            expected_receipt["continuation_sha256"] = _hash(
+                {k: v for k, v in expected_receipt.items() if k != "continuation_sha256"}
+            )
+        if receipt != expected_receipt:
+            raise ValueError("Retained continuation does not prove exactly its reused native work")
     for node_id, entry in data["nodes"].items():
         _exact(entry, {"state", "intent", "output"}, "graph node state")
         if entry["state"] not in {
@@ -212,6 +268,14 @@ def _prepare(workbench, request, authorize, authorize_binding):
     _exact(request["bindings"], set(definition["inputs"]), "graph bindings")
     for name, binding in request["bindings"].items():
         authorize_binding(workbench, definition["inputs"][name], _copy(binding))
+        if definition["inputs"][name] == "tissue-preview":
+            from .research_tissue_models import peek_preview
+
+            cached = peek_preview(
+                workbench.project, {key: binding[key] for key in ("preview_id", "preview_hash")}
+            )
+            if cached["receipt"] != binding["receipt"]:
+                raise ValueError("Prepared tissue preview differs from its live cached receipt")
     plan = build_plan(workbench, definition, request["bindings"])
     for node in plan["definition"]["nodes"]:
         if all("input" in ref for ref in node["inputs"].values()):
@@ -246,17 +310,27 @@ def _validate_plan(workbench, data, owner, authorize, authorize_binding):
 
 
 def _by_key(project, key):
+    if hasattr(project, "_workflow_jobs_by_key"):
+        return project._workflow_jobs_by_key.get(key)
     with project.connection() as connection:
         row = connection.execute("SELECT record FROM jobs WHERE request_key=?", (key,)).fetchone()
     return None if row is None else parse_json(row[0])
 
 
-def _job_request(workbench, operation, request):
+def _job_request(workbench, operation, request, *, source_id=None):
     if operation == "run_recipe":
         return request
-    if operation == "associate_results":
+    if operation == "tissue_model_run":
+        if source_id is None:
+            raise ValueError("Graph tissue job requires its persisted exact source envelope")
+    elif operation == "associate_results":
         source_id = workbench.project.result(request["cells"]["result_id"])["source_id"]
-    elif operation in {"spatial_distance_run", "morphometrics_run"}:
+    elif operation in {
+        "spatial_distance_run",
+        "morphometrics_run",
+        "annotation_evaluation_run",
+        "method_run",
+    }:
         source_id = workbench.project.result(request["result_id"])["source_id"]
     else:
         source_id = request["source_id"]
@@ -264,7 +338,9 @@ def _job_request(workbench, operation, request):
 
 
 def _check_job(workbench, intent, job, owner):
-    normalized = _job_request(workbench, intent["operation"], intent["request"])
+    normalized = _job_request(
+        workbench, intent["operation"], intent["request"], source_id=intent.get("source_id")
+    )
     if (
         job["request_key"] != intent["request_key"]
         or job["operation"] != intent["operation"]
@@ -284,15 +360,33 @@ def _check_output(workbench, plan, node_id, intent, job):
         workbench,
         {"result_id": result["id"], "revision_hash": result["revision_hash"]},
         plan["definition"]["working_bytes"],
+        port_type=OUTPUT_TYPES[intent["operation"]],
     )
     if canonical_json(_record_scope(result)) != canonical_json(plan["node_scopes"][node_id]):
         raise ValueError("Graph child result belongs to a different source, selection or grid")
     provenance, operation, request = result["provenance"], intent["operation"], intent["request"]
-    if provenance.get("runtime") != plan["runtime"]:
+    if operation != "tissue_model_run" and provenance.get("runtime") != plan["runtime"]:
         raise ValueError("Graph child result runtime does not match its immutable plan")
     if operation != "spatial_distance_run" and provenance.get("job_id") != job["id"]:
         raise ValueError("Graph child result does not name its own durable publication job")
-    if operation == "run_recipe":
+    if operation == "tissue_model_run":
+        from .research_tissue_models import validate_record
+
+        validate_record(result)
+        if provenance["host_runtime"] != plan["tissue_runtime"]:
+            raise ValueError("Graph tissue host runtime differs from its prepared plan")
+        prepared = next(
+            binding
+            for name, binding in plan["bindings"].items()
+            if plan["definition"]["inputs"][name] == "tissue-preview"
+            and {key: binding[key] for key in ("preview_id", "preview_hash")} == request
+        )
+        if (
+            provenance["tissue_model"]["preview"] != request
+            or provenance["tissue_model"]["receipt"] != prepared["receipt"]
+        ):
+            raise ValueError("Graph tissue result does not match its exact prepared preview")
+    elif operation == "run_recipe":
         if provenance.get("recipe") != request["recipe"] or provenance.get(
             "recipe_sha256"
         ) != _hash(request["recipe"]):
@@ -301,17 +395,49 @@ def _check_output(workbench, plan, node_id, intent, job):
         accepted = provenance.get("accepted_request", {})
         if any(accepted.get(key) != value for key, value in request.items()):
             raise ValueError("Graph classical result request provenance is mismatched")
+    elif operation == "method_run":
+        from .research_methods import validate_parents
+
+        if provenance.get("accepted_request") != request:
+            raise ValueError("Graph controlled method result request is mismatched")
+        validate_parents(
+            result,
+            {
+                binding["result_id"]: workbench.project.result(binding["result_id"])
+                for binding in provenance["controlled_method"]["parent_chain"]
+            },
+        )
+    elif operation == "annotation_evaluation_run":
+        from .research_annotation_evaluation import validate_parents
+
+        if provenance.get("accepted_request") != request or provenance.get(
+            "annotation_evaluation", {}
+        ).get("software") != plan.get("method_identities", {}).get(operation):
+            raise ValueError("Graph annotation request or method identity is mismatched")
+        validate_parents(
+            result,
+            {
+                binding["result_id"]: workbench.project.result(binding["result_id"])
+                for binding in (
+                    {k: request[k] for k in ("result_id", "revision_hash")},
+                    request["reference"],
+                )
+            },
+        )
     elif operation == "morphometrics_run":
         from .research_morphometrics import validate_parents
 
-        if provenance.get("accepted_request") != request or provenance.get(
-            "morphometrics", {}
-        ).get("software") != plan.get("method_identities", {}).get(operation):
+        if provenance.get("accepted_request") != request or provenance.get("morphometrics", {}).get(
+            "software"
+        ) != plan.get("method_identities", {}).get(operation):
             raise ValueError("Graph morphology request or method identity is mismatched")
-        validate_parents(result, {
-            binding["result_id"]: workbench.project.result(binding["result_id"])
-            for binding in provenance["morphometrics"]["parent_chain"]
-        })
+        validate_parents(
+            result,
+            {
+                binding["result_id"]: workbench.project.result(binding["result_id"])
+                for binding in provenance["morphometrics"]["parent_chain"]
+            },
+        )
     elif operation == "spatial_distance_run":
         if provenance.get("accepted_request") != request:
             raise ValueError("Graph spatial result request provenance is mismatched")
@@ -329,19 +455,36 @@ def _check_output(workbench, plan, node_id, intent, job):
     return {"result_id": result["id"], "revision_hash": result["revision_hash"]}
 
 
-def _reconcile(workbench, data, authorize, authorize_binding, *, job_lookup=None):
+def _reconcile(
+    workbench, data, authorize, authorize_binding, *, job_lookup=None, validated_context=None
+):
     """Recover state from the native atomically completed child job/result records."""
     plan, completed = data["plan"], {}
+    if validated_context is None:
+        bindings, scopes = validate_bindings(
+            workbench, plan["definition"], plan["bindings"], _with_scopes=True
+        )
+    else:
+        bindings, scopes = validated_context
     for node in plan["definition"]["nodes"]:
         identity, entry = node["id"], data["nodes"][node["id"]]
         if entry["state"] == "pending" or entry.get("intent") is None:
             continue
-        native = resolve_node(workbench, plan["definition"], plan["bindings"], completed, identity)
+        native = _resolve_node(
+            workbench,
+            plan["definition"],
+            bindings,
+            scopes,
+            completed,
+            identity,
+            retained_request=entry["intent"]["request"],
+        )
         body = _native_request(workbench, native["operation"], native["request"])
         intent = entry["intent"]
         _exact(
             intent,
-            {"operation", "request", "request_sha256", "request_key", "job_id"},
+            {"operation", "request", "request_sha256", "request_key", "job_id"}
+            | ({"source_id"} if native["operation"] == "tissue_model_run" else set()),
             "node intent",
         )
         if (
@@ -350,16 +493,23 @@ def _reconcile(workbench, data, authorize, authorize_binding, *, job_lookup=None
             or intent["request_sha256"] != _hash(body)
         ):
             raise ValueError("Graph node intent differs from the exact planned request")
-        _authorize(workbench, native["operation"], body, authorize)
+        if (
+            native["operation"] == "tissue_model_run"
+            and intent["source_id"] != plan["node_scopes"][identity]["source_id"]
+        ):
+            raise ValueError("Graph tissue intent source differs from its prepared preview")
         job = (
             _by_key(workbench.project, intent["request_key"])
             if job_lookup is None
             else job_lookup(intent["request_key"])
         )
         if job is None:
+            _authorize(workbench, native["operation"], body, authorize)
             if entry["state"] not in {"intent", "cancelled"}:
                 raise ValueError("Graph child job is missing")
             continue
+        if native["operation"] != "tissue_model_run" or job["state"] != "succeeded":
+            _authorize(workbench, native["operation"], body, authorize)
         _check_job(workbench, intent, job, data["owner"])
         intent["job_id"] = job["id"]
         entry["state"] = job["state"]
@@ -400,7 +550,323 @@ def _status(workbench, doc):
         for identity, entry in data["nodes"].items()
         if entry.get("output") is not None
     ]
-    return {"run": doc, "partial_results": results, "state": data["state"]}
+    return {
+        "run": doc,
+        "partial_results": results,
+        "state": data["state"],
+        "continuation_policy": {
+            "owner": data["owner"],
+            "ownership_transfer": False,
+            "same_owner_may_advance": data["state"] not in TERMINAL
+            and not data["cancel_requested"],
+            "different_session_requires_native_approval": True,
+            "interrupted_nodes_require_fresh_run": True,
+        },
+    }
+
+
+def prepared_tissue_previews(workbench, source_id, *, authorize_binding, budget):
+    """Discover only existing unused source-bound previews; no inference or grants."""
+    from .research_tissue_models import MAX_PREVIEW_BYTES, PREVIEW_PREFIX, peek_preview
+    from .workflow_graph import _tissue_preview
+
+    source = workbench.project.source(checked_id(source_id), verify=True)
+    used = set()
+    runs = workbench.project.documents("workflow_run")
+    if len(runs) > MAX_WORKFLOWS:
+        raise ValueError("Study exceeds bounded prepared-preview discovery")
+    for run in runs:
+        plan = run["data"].get("plan", {})
+        for name, binding in plan.get("bindings", {}).items():
+            if plan.get("definition", {}).get("inputs", {}).get(name) == "tissue-preview":
+                used.add(binding["preview_id"])
+    with workbench.project.connection() as connection:
+        rows = connection.execute(
+            "SELECT value FROM metadata WHERE key LIKE ?", (PREVIEW_PREFIX + "%",)
+        ).fetchall()
+    if len(rows) > 64:
+        raise ValueError("Prepared tissue preview cache exceeds its bounded entry count")
+    ready, unavailable = [], 0
+    for (encoded,) in rows:
+        if len(encoded.encode()) > MAX_PREVIEW_BYTES + 1024:
+            raise ValueError("Prepared tissue preview exceeds its bounded metadata size")
+        stored = parse_json(encoded)
+        request = stored.get("receipt", {}).get("request", {})
+        if request.get("source_id") != source["id"]:
+            continue
+        if stored.get("preview_id") in used:
+            unavailable += 1
+            continue
+        try:
+            cached = peek_preview(
+                workbench.project, {key: stored[key] for key in ("preview_id", "preview_hash")}
+            )
+            binding = {key: cached[key] for key in ("preview_id", "preview_hash", "receipt")}
+            binding = _tissue_preview(workbench, binding, budget)
+        except (KeyError, ValueError):
+            unavailable += 1
+            continue
+        authorize_binding(workbench, "tissue-preview", _copy(binding))
+        ready.append(binding)
+    return {
+        "previews": sorted(ready, key=lambda item: item["preview_id"]),
+        "unavailable_count": unavailable,
+    }
+
+
+def continuation_receipt(workbench, doc, *, authorize, authorize_binding):
+    """Inspect proven checkpoints without publishing, transferring or granting authority.
+
+    A replacement graph retains only unfinished nodes. Completed output bindings
+    become explicit inputs; their native job/request proof remains in this receipt.
+    A source run must be stopped before a new owner may execute the replacement.
+    """
+    data = _copy(doc["data"])
+    _validate_plan(workbench, data, data["owner"], authorize, authorize_binding)
+    completed = _reconcile(workbench, data, authorize, authorize_binding)
+    return _continuation_from_completed(workbench, doc, data, completed)
+
+
+def _continuation_from_completed(workbench, doc, data, completed):
+    """Pure derivation from already verified native job publications."""
+    plan = data["plan"]
+    definition = _copy(plan["definition"])
+    pending = [node for node in definition["nodes"] if node["id"] not in completed]
+    replacement_inputs, bindings, reused = {}, {}, {}
+    for node in pending:
+        for port, ref in node["inputs"].items():
+            if "node" in ref and ref["node"] in completed:
+                identity = ref["node"]
+                if identity not in reused:
+                    index = len(reused)
+                    name = f"reused_{index}"
+                    while name in definition["inputs"] or name in replacement_inputs:
+                        index += 1
+                        name = f"reused_{index}"
+                    reused[identity] = name
+                    replacement_inputs[name] = "label-result"
+                    bindings[name] = completed[identity]
+                node["inputs"][port] = {"input": reused[identity]}
+            elif "input" in ref:
+                name = ref["input"]
+                replacement_inputs[name] = definition["inputs"][name]
+                bindings[name] = plan["bindings"][name]
+    definition.update(
+        inputs=replacement_inputs,
+        nodes=pending,
+        outputs={
+            name: ref for name, ref in definition["outputs"].items() if ref["node"] not in completed
+        },
+    )
+    proposal = None
+    if pending:
+        validated = validate_definition(definition)
+        proposal = {**validated, "bindings": validate_bindings(workbench, definition, bindings)}
+    proofs = []
+    for identity, binding in completed.items():
+        intent = data["nodes"][identity]["intent"]
+        job = _by_key(workbench.project, intent["request_key"])
+        proofs.append(
+            {
+                "node_id": identity,
+                "operation": intent["operation"],
+                "request_key": intent["request_key"],
+                "request_sha256": intent["request_sha256"],
+                "job_id": job["id"],
+                "job_owner": job.get("owner"),
+                "output": binding,
+            }
+        )
+    payload = {
+        "schema": "loci.workflow-continuation/v1",
+        "run_id": doc["id"],
+        "run_revision": doc["revision"],
+        "run_sha256": doc["data"]["run_sha256"],
+        "owner": data["owner"],
+        "workflow_id": data["workflow_id"],
+        "workflow_revision": data["workflow_revision"],
+        "definition_sha256": data["definition_sha256"],
+        "plan_sha256": plan["plan_sha256"],
+        "request_key": data["request_key"],
+        "state": data["state"],
+        "completed_nodes": proofs,
+        "completed_outputs": {
+            name: completed[ref["node"]]
+            for name, ref in plan["definition"]["outputs"].items()
+            if ref["node"] in completed
+        },
+        "uncompleted_nodes": [node["id"] for node in pending],
+        "proposal": proposal,
+        "can_start_fresh": bool(pending) and doc["data"]["state"] in {"failed", "cancelled"},
+        "required_fresh_previews": [
+            name for name, kind in replacement_inputs.items() if kind == "tissue-preview"
+        ],
+        "unavailable_reason": (
+            "All workflow nodes are already complete"
+            if not pending
+            else "Refresh run status to retain the terminal state before continuing"
+            if data["state"] in {"failed", "cancelled"}
+            and doc["data"]["state"] not in {"failed", "cancelled"}
+            else "Stop the original run before requesting fresh continuation"
+            if doc["data"]["state"] not in {"failed", "cancelled"}
+            else None
+        ),
+        "native_approval_required": True,
+        "authority": "Fresh session, source/action grants and native human approval; no transfer",
+    }
+    return _copy({**payload, "continuation_sha256": _hash(payload)})
+
+
+def continue_workflow_graph(
+    workbench,
+    request,
+    *,
+    owner,
+    authorize,
+    authorize_binding,
+    approve_continuation,
+    publication_guard=None,
+):
+    """Native-only fresh run from an exact, human-approved continuation receipt.
+
+    The approver must validate native approval for this complete receipt, new owner,
+    workflow ID and request key and return True. Agents cannot provide this callback.
+    Every input and native operation is independently reauthorized for the new owner.
+    An interrupted save/start may leave an inert saved definition, never a false run.
+    """
+    _exact(
+        request,
+        {
+            "run_id",
+            "run_revision",
+            "run_sha256",
+            "continuation_sha256",
+            "workflow_id",
+            "request_key",
+        }
+        | ({"preview_replacements"} if "preview_replacements" in request else set()),
+        "graph continuation",
+    )
+    _validate_owner(owner)
+    _callbacks(authorize, authorize_binding)
+    if not callable(approve_continuation):
+        raise PermissionError("Fresh graph continuation requires native human approval")
+    doc = _run(workbench, request["run_id"])
+    if (
+        doc["revision"] != request["run_revision"]
+        or doc["data"]["run_sha256"] != request["run_sha256"]
+    ):
+        raise ValueError("Continuation source run changed; inspect a fresh receipt")
+    receipt = continuation_receipt(
+        workbench,
+        doc,
+        authorize=authorize,
+        authorize_binding=authorize_binding,
+    )
+    if receipt["continuation_sha256"] != _sha(request["continuation_sha256"], "Continuation"):
+        raise ValueError("Continuation proof or completed work changed")
+    if not receipt["can_start_fresh"]:
+        raise ValueError("Stop the original run before continuing unfinished work")
+    identity = checked_id(request["workflow_id"])
+    if identity == doc["data"]["workflow_id"]:
+        raise ValueError("Continuation requires a distinct saved workflow identity")
+    key = checked_text(request["request_key"], "New continuation request key", 160)
+    if key == doc["data"]["request_key"]:
+        raise ValueError("Continuation requires a fresh run submission key")
+    proposal = receipt["proposal"]
+    preview_names = {
+        name for name, kind in proposal["definition"]["inputs"].items() if kind == "tissue-preview"
+    }
+    replacements = request.get("preview_replacements", {})
+    _exact(replacements, preview_names, "fresh continuation tissue previews")
+    if replacements:
+        for name, bound in replacements.items():
+            if bound["receipt"]["request"] != proposal["bindings"][name]["receipt"]["request"]:
+                raise ValueError(
+                    "Fresh continuation preview changed its exact original source scope"
+                )
+        receipt["original_continuation_sha256"] = receipt["continuation_sha256"]
+        proposal["bindings"].update(_copy(replacements))
+        receipt["continuation_sha256"] = _hash(
+            {key: value for key, value in receipt.items() if key != "continuation_sha256"}
+        )
+    # Validate fresh source scope and all presently resolvable native requests
+    # before any native approval or persistent write.
+    for name, binding in proposal["bindings"].items():
+        authorize_binding(workbench, proposal["definition"]["inputs"][name], _copy(binding))
+    fresh_plan = build_plan(workbench, proposal["definition"], proposal["bindings"])
+    for node in fresh_plan["definition"]["nodes"]:
+        if all("input" in ref for ref in node["inputs"].values()):
+            native = resolve_node(
+                workbench, proposal["definition"], proposal["bindings"], {}, node["id"]
+            )
+            _authorize(
+                workbench,
+                native["operation"],
+                _native_request(workbench, native["operation"], native["request"]),
+                authorize,
+            )
+    approval = {
+        "receipt": receipt,
+        "new_owner": owner,
+        "workflow_id": identity,
+        "request_key": key,
+        "plan_sha256": fresh_plan["plan_sha256"],
+    }
+    if approve_continuation(_copy(approval)) is not True:
+        raise PermissionError("Native approval does not authorize this exact continuation")
+
+    def guard():
+        if publication_guard is not None:
+            publication_guard()
+        current = _run(workbench, doc["id"])
+        if current != doc:
+            raise ValueError("Original run changed during continuation approval")
+        for proof in receipt["completed_nodes"]:
+            intent = doc["data"]["nodes"][proof["node_id"]]["intent"]
+            job = _by_key(workbench.project, proof["request_key"])
+            if job is None or job["state"] != "succeeded":
+                raise ValueError("Completed continuation job changed after approval")
+            _check_job(workbench, intent, job, doc["data"]["owner"])
+            output = _check_output(workbench, doc["data"]["plan"], proof["node_id"], intent, job)
+            if output != proof["output"]:
+                raise ValueError("Completed continuation output changed after approval")
+
+    guard()
+    existing = workbench.project.documents("workflow", document_id=identity)
+    if existing:
+        saved = _get(workbench, identity)
+        if saved["revision"] != 1 or saved["data"]["definition"] != proposal["definition"]:
+            raise ValueError("Continuation workflow identity already contains other work")
+    else:
+        saved = execute_workflow_graph(
+            workbench,
+            "workflow_graph_save",
+            {
+                "workflow_id": identity,
+                "expected_revision": 0,
+                "definition": proposal["definition"],
+            },
+            publication_guard=guard,
+        )["workflow"]
+    response = execute_workflow_graph(
+        workbench,
+        "workflow_graph_start",
+        {
+            "workflow_id": identity,
+            "workflow_revision": saved["revision"],
+            "definition_sha256": saved["data"]["definition_sha256"],
+            "bindings": proposal["bindings"],
+            "plan_sha256": fresh_plan["plan_sha256"],
+            "request_key": key,
+        },
+        owner=owner,
+        authorize=authorize,
+        authorize_binding=authorize_binding,
+        publication_guard=guard,
+        continuation=receipt,
+    )
+    return {**response, "continuation": receipt}
 
 
 def guard_node_job(workbench, job):
@@ -428,14 +894,28 @@ def guard_node_job(workbench, job):
         return None
 
     plan = _validate_plan(workbench, data, data["owner"], already_authorized, already_authorized)
-    completed = _reconcile(workbench, data, already_authorized, already_authorized)
+    completed = _reconcile(
+        workbench,
+        data,
+        already_authorized,
+        already_authorized,
+        validated_context=(plan["bindings"], plan["node_scopes"]),
+    )
     entry = data["nodes"].get(node_id, {})
     intent = entry.get("intent")
     if not isinstance(intent, dict):
         raise ValueError("Native graph job has no persisted node intent")
     _check_job(workbench, intent, job, data["owner"])
     completed.pop(node_id, None)
-    native = resolve_node(workbench, plan["definition"], plan["bindings"], completed, node_id)
+    native = _resolve_node(
+        workbench,
+        plan["definition"],
+        plan["bindings"],
+        plan["node_scopes"],
+        completed,
+        node_id,
+        retained_request=intent["request"],
+    )
     if (
         native["operation"] != intent["operation"]
         or _native_request(workbench, native["operation"], native["request"]) != intent["request"]
@@ -454,6 +934,8 @@ def execute_workflow_graph(
     cancel=None,
     owner=None,
     publication_guard=None,
+    approve_continuation=None,
+    continuation=None,
 ):
     """Dispatch workflow_graph_* operations without creating a parent native job.
 
@@ -467,6 +949,26 @@ def execute_workflow_graph(
     if operation not in OPERATIONS:
         raise ValueError("Unsupported workflow graph operation")
     suffix = operation.removeprefix("workflow_graph_")
+    if suffix == "prepared_previews":
+        _exact(request, {"source_id"}, operation)
+        if not callable(authorize_binding):
+            raise PermissionError("Prepared preview discovery requires current source authority")
+        return prepared_tissue_previews(
+            workbench,
+            request["source_id"],
+            authorize_binding=authorize_binding,
+            budget=getattr(workbench, "_graph_memory_bytes", 8 * 1024**3),
+        )
+    if suffix == "continue":
+        return continue_workflow_graph(
+            workbench,
+            request,
+            owner=owner,
+            authorize=authorize,
+            authorize_binding=authorize_binding,
+            approve_continuation=approve_continuation,
+            publication_guard=publication_guard,
+        )
     if suffix == "validate":
         _exact(request, {"definition"}, operation)
         return validate_definition(request["definition"])
@@ -496,6 +998,50 @@ def execute_workflow_graph(
                 publication_guard=publication_guard,
             )
         }
+    if suffix == "save_from_run":
+        _exact(
+            request,
+            {"run_id", "run_revision", "run_sha256", "workflow_id", "expected_revision", "name"},
+            operation,
+        )
+        doc = _run(workbench, request["run_id"])
+        _owner(doc["data"], owner)
+        if (
+            doc["revision"] != request["run_revision"]
+            or doc["data"]["run_sha256"] != request["run_sha256"]
+        ):
+            raise ValueError("Successful run changed before definition capture")
+        data = _copy(doc["data"])
+        _validate_plan(workbench, data, owner, authorize, authorize_binding)
+        _reconcile(workbench, data, authorize, authorize_binding)
+        if data["state"] != "succeeded":
+            raise ValueError("Capture requires a fully successful native workflow run")
+        if request["workflow_id"] == data["workflow_id"]:
+            raise ValueError("Capture requires a distinct saved workflow identity")
+        definition = _copy(data["plan"]["definition"])
+        definition["name"] = checked_text(request["name"], "Workflow name", 256)
+        return execute_workflow_graph(
+            workbench,
+            "workflow_graph_save",
+            {
+                "workflow_id": request["workflow_id"],
+                "expected_revision": request["expected_revision"],
+                "definition": definition,
+            },
+            publication_guard=publication_guard,
+        )
+    if suffix == "continuation":
+        _exact(request, {"run_id"}, operation)
+        doc = _run(workbench, request["run_id"])
+        _owner(doc["data"], owner)
+        return {
+            "continuation": continuation_receipt(
+                workbench,
+                doc,
+                authorize=authorize,
+                authorize_binding=authorize_binding,
+            )
+        }
     if suffix == "get":
         _exact(request, {"workflow_id"}, operation)
         return {"workflow": _get(workbench, request["workflow_id"])}
@@ -517,20 +1063,54 @@ def execute_workflow_graph(
     if suffix == "start":
         _exact(request, BINDING_KEYS | {"plan_sha256", "request_key"}, operation)
         _validate_owner(owner)
+        key = checked_text(request["request_key"], "Graph submission key", 160)
+        run_id = _hash([RUN_SCHEMA, workbench.project.meta["project_id"], key])[:32]
+        existing = workbench.project.documents("workflow_run", document_id=run_id)
+        if existing:
+            doc = _run(workbench, run_id)
+            _owner(doc["data"], owner)
+            if (
+                doc["data"]["request_sha256"] != _hash(request)
+                or doc["data"].get("continuation") != continuation
+            ):
+                raise ValueError(
+                    "Graph request changed: submission key already binds different parameters"
+                )
+            # Idempotent recovery checks the retained exact plan/input authority;
+            # completed tissue history does not depend on an evictable token cache.
+            _validate_plan(workbench, doc["data"], owner, authorize, authorize_binding)
+            return _status(workbench, doc)
         body = {key: request[key] for key in BINDING_KEYS}
         workflow, plan = _prepare(workbench, body, authorize, authorize_binding)
         if plan["plan_sha256"] != _sha(request["plan_sha256"], "Plan"):
             raise ValueError("Graph preflight plan changed before start")
-        key = checked_text(request["request_key"], "Graph submission key", 160)
-        run_id = _hash([RUN_SCHEMA, workbench.project.meta["project_id"], key])[:32]
-        existing = workbench.project.documents("workflow_run", document_id=run_id)
-        fingerprint = _hash(request)
-        if existing:
-            doc = _run(workbench, run_id)
-            _owner(doc["data"], owner)
-            if doc["data"]["request_sha256"] != fingerprint or doc["data"]["plan"] != plan:
-                raise ValueError("Graph submission key already binds different parameters")
-            return _status(workbench, doc)
+        preview_ids = {
+            bound["preview_id"]
+            for name, bound in plan["bindings"].items()
+            if plan["definition"]["inputs"][name] == "tissue-preview"
+        }
+
+        def start_guard():
+            if publication_guard is not None:
+                publication_guard()
+            if not preview_ids:
+                return
+            # put_document invokes this under BEGIN IMMEDIATE: competing starts
+            # serialize before checking all committed run bindings.
+            runs = workbench.project.documents("workflow_run")
+            if len(runs) >= MAX_WORKFLOWS:
+                raise ValueError("Study exceeds bounded preview-use inspection")
+            for retained in runs:
+                if retained["id"] == run_id:
+                    continue
+                prior = retained["data"].get("plan", {})
+                for name, bound in prior.get("bindings", {}).items():
+                    if (
+                        prior.get("definition", {}).get("inputs", {}).get(name) == "tissue-preview"
+                        and bound["preview_id"] in preview_ids
+                    ):
+                        raise ValueError("Tissue preview is single-use; prepare a fresh preview")
+
         now = timestamp()
         data = {
             "schema": RUN_SCHEMA,
@@ -539,7 +1119,7 @@ def execute_workflow_graph(
             "workflow_revision": workflow["revision"],
             "definition_sha256": workflow["data"]["definition_sha256"],
             "request_key": key,
-            "request_sha256": fingerprint,
+            "request_sha256": _hash(request),
             "plan": plan,
             "owner": owner,
             "state": "prepared",
@@ -552,7 +1132,9 @@ def execute_workflow_graph(
             "created_at": now,
             "updated_at": now,
         }
-        return _status(workbench, _commit(workbench, run_id, data, 0, publication_guard))
+        if continuation is not None:
+            data["continuation"] = _copy(continuation)
+        return _status(workbench, _commit(workbench, run_id, data, 0, start_guard))
     _exact(request, {"run_id"}, operation)
     doc = _run(workbench, request["run_id"])
     data = _copy(doc["data"])
@@ -615,6 +1197,8 @@ def execute_workflow_graph(
             "request_key": f"{KEY_PREFIX}{doc['id']}:{identity}",
             "job_id": None,
         }
+        if native["operation"] == "tissue_model_run":
+            entry["intent"]["source_id"] = plan["node_scopes"][identity]["source_id"]
         entry["state"], data["state"] = "intent", "running"
         doc = _commit(workbench, doc["id"], data, doc["revision"], publication_guard)
     # Re-read cancellation after persisting the intent. The native publication
@@ -669,7 +1253,7 @@ class _SnapshotProject:
             raise ValueError("Graph snapshot source metadata identity differs")
         return source
 
-    def result(self, identity):
+    def result(self, identity, **_kwargs):
         result = self.results.get(checked_id(identity))
         if result is None or result.get("id") != identity:
             raise ValueError("Graph snapshot result is unavailable")
@@ -694,7 +1278,7 @@ def _namespace(value):
 
     if isinstance(value, dict):
         return SimpleNamespace(**{key: _namespace(item) for key, item in value.items()})
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_namespace(item) for item in value]
     return value
 
@@ -795,6 +1379,7 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
         mapping(sources), mapping(results), all_documents, data.get("project_id")
     )
     workbench = _SnapshotWorkbench(project)
+    project._workflow_jobs_by_key = {job["request_key"]: job for job in mapping(jobs).values()}
     if document["kind"] == "workflow":
         _get(workbench, document["id"])
         return
@@ -806,8 +1391,10 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
     if not isinstance(plan, dict):
         raise ValueError("Portable graph plan must be an object")
     validated = validate_definition(plan.get("definition"))
-    has_morphology = any(node["operation"] == "morphometrics_run"
-                         for node in validated["definition"]["nodes"])
+    method_operations = {node["operation"] for node in validated["definition"]["nodes"]} & {
+        "morphometrics_run",
+        "annotation_evaluation_run",
+    }
     _exact(
         plan,
         {
@@ -821,7 +1408,15 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
             "node_scopes",
             "runtime",
             "plan_sha256",
-        } | ({"method_identities"} if has_morphology else set()),
+        }
+        | ({"method_identities"} if method_operations else set())
+        | (
+            {"tissue_runtime"}
+            if any(
+                node["operation"] == "tissue_model_run" for node in validated["definition"]["nodes"]
+            )
+            else set()
+        ),
         "portable graph plan",
     )
     if (
@@ -830,14 +1425,19 @@ def validate_workflow_graph_document(document, sources, results, documents=(), j
         != plan["plan_sha256"]
     ):
         raise ValueError("Graph snapshot plan integrity failed")
+    if "tissue_runtime" in plan:
+        from .research_tissue_integration import validate_host_runtime
+
+        validate_host_runtime(plan["tissue_runtime"], engine_version=plan["runtime"]["engine"])
     if "method_identities" in plan:
-        _exact(plan["method_identities"], {"morphometrics_run"}, "portable graph methods")
-        method = plan["method_identities"]["morphometrics_run"]
-        _exact(method, {"engine", "kernel_sha256", "dispatcher_sha256"},
-               "portable morphology method")
-        checked_text(method["engine"], "Morphology engine identity", 64)
-        for key in ("kernel_sha256", "dispatcher_sha256"):
-            _sha(method[key], "Morphology method")
+        _exact(plan["method_identities"], method_operations, "portable graph methods")
+        for method in plan["method_identities"].values():
+            _exact(
+                method, {"engine", "kernel_sha256", "dispatcher_sha256"}, "portable graph method"
+            )
+            checked_text(method["engine"], "Graph method engine identity", 64)
+            for key in ("kernel_sha256", "dispatcher_sha256"):
+                _sha(method[key], "Graph method")
     bindings = validate_bindings(workbench, validated["definition"], plan["bindings"])
     if (
         validated["definition"] != plan["definition"]

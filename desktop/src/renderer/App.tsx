@@ -579,8 +579,9 @@ export default function App(): React.JSX.Element {
   );
   const [preferences, setPreferences] = useState<UserPreferences>(() => loadPreferences());
   const [manualOpen, setManualOpen] = useState(false);
+  const [manualSection, setManualSection] = useState<string | undefined>();
   useEffect(() => {
-    const help = (event: KeyboardEvent) => { if (event.key === "F1") { event.preventDefault(); setManualOpen(true); setSettingsOpen(false); } };
+    const help = (event: KeyboardEvent) => { if (event.key === "F1") { event.preventDefault(); setManualSection(undefined); setManualOpen(true); setSettingsOpen(false); } };
     window.addEventListener("keydown", help);
     return () => window.removeEventListener("keydown", help);
   }, []);
@@ -2337,7 +2338,7 @@ export default function App(): React.JSX.Element {
   }, [api]);
 
   useEffect(() => api?.onGuideRequested?.(() => {
-    setSettingsOpen(false); setManualOpen(true);
+    setSettingsOpen(false); setManualSection(undefined); setManualOpen(true);
   }), [api]);
 
   useEffect(() => api?.onWorkspaceRequested?.(() => {
@@ -2753,9 +2754,9 @@ export default function App(): React.JSX.Element {
       onChange={setPreferences}
       onClose={() => { setSettingsOpen(false); setSettingsCompute(false); }}
       onQuit={() => api?.requestQuit()}
-      onOpenGuide={() => { setSettingsOpen(false); setManualOpen(true); }}
+      onOpenGuide={(sectionId) => { setSettingsOpen(false); setManualSection(sectionId); setManualOpen(true); }}
     />
-  ) : null}{manualOpen && <UserGuideDialog onClose={() => setManualOpen(false)} />}</>;
+  ) : null}{manualOpen && <UserGuideDialog initialSection={manualSection} onClose={() => setManualOpen(false)} />}</>;
 
   if (researchOpen && window.lociResearch && window.lociImageWindows && imageWindowsState?.views.length) {
     return <>{nativeErrorBanner}<DetachedControlPanel api={window.lociImageWindows} researchApi={window.lociResearch}

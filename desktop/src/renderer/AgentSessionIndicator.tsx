@@ -12,6 +12,7 @@ import type {
 } from "../shared/research-contracts";
 import { sourceLabelForId } from "./source-browser";
 import { AgentActivityTimeline, AgentApprovalDetails, RecordedTime, type AgentActivityNavigation } from "./AgentActivityTimeline";
+import { AgentTaskPanel } from "./AgentTaskPanel";
 import "./AgentSessionIndicator.css";
 
 const LIVE_SESSION_STATES = new Set<ResearchAgentSessionState>([
@@ -102,9 +103,11 @@ export function AgentSessionIndicator({
   onSnapshot,
   onError,
   refreshError = null,
+  expandActivityDetails = false,
   currentTargets,
   onOpenSource,
   onOpenResult,
+  onReviewResult,
   onOpenJob,
   onOpenWorkflow,
   onInspectPreview,
@@ -117,6 +120,7 @@ export function AgentSessionIndicator({
   onSnapshot: (next: ResearchSnapshot) => void;
   onError: (message: string) => void;
   refreshError?: string | null;
+  expandActivityDetails?: boolean;
 }): React.JSX.Element | null {
   const [open, setOpen] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
@@ -161,7 +165,8 @@ export function AgentSessionIndicator({
   const hasHistory =
     agentSessions.policies.length > 0 ||
     agentSessions.sessions.length > 0 ||
-    agentSessions.approvals.length > 0;
+    agentSessions.approvals.length > 0 ||
+    (agentSessions.tasks?.length ?? 0) > 0;
   if (!hasHistory && agentSessions.status === "none") return null;
 
   const overallState = agentSessions.status;
@@ -186,26 +191,28 @@ export function AgentSessionIndicator({
     activeOperation,
   );
 
-  const dispatchControl = async (request: ResearchAgentControlRequest) => {
-    if (!api.controlAgentSession || controlPending.current) return;
+  const dispatchControl = async (request: ResearchAgentControlRequest): Promise<boolean> => {
+    if (!api.controlAgentSession || controlPending.current) return false;
     controlPending.current = true;
     setControlBusy(true);
     try {
       const next = await api.controlAgentSession(request);
       if (next && mounted.current) onSnapshot(next);
+      return Boolean(next);
     } catch (caught) {
       if (mounted.current) onError(
         caught instanceof Error
           ? caught.message
           : "Could not update the agent session.",
       );
+      return false;
     } finally {
       controlPending.current = false;
       if (mounted.current) setControlBusy(false);
     }
   };
 
-  const navigation: AgentActivityNavigation = { currentTargets, onOpenSource, onOpenResult, onOpenJob, onOpenWorkflow, onInspectPreview, inspectablePreviewJobIds };
+  const navigation: AgentActivityNavigation = { currentTargets, onOpenSource, onOpenResult, onReviewResult, onOpenJob, onOpenWorkflow, onInspectPreview, inspectablePreviewJobIds };
 
   const renderApproval = (approval: ResearchAgentApprovalRecord) => {
     const sourceLabel = approval.source_id
@@ -317,7 +324,7 @@ export function AgentSessionIndicator({
         >
           <header className="agent-session-drawer__header">
             <div>
-              <h2>{primarySession?.client_id ?? "Research agent"}</h2>
+              <h2>{primarySession?.client_id ?? "External agent"}</h2>
               <p className={`agent-session-drawer__status tone-${tone}`}><span className="agent-session-pill__dot" aria-hidden="true" />{label}</p>
               <p className="agent-session-drawer__subtitle">
                 {agentSessions.connected_count > 0
@@ -368,8 +375,12 @@ export function AgentSessionIndicator({
               </section>
             )}
 
+            <AgentTaskPanel tasks={agentSessions.tasks ?? []} sessionId={primarySession?.session_id}
+              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)}
+              busy={controlBusy} canControl={Boolean(api.controlAgentSession)} onControl={dispatchControl} />
+
             <AgentActivityTimeline events={agentSessions.events} approvals={agentSessions.approvals}
-              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
+              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} defaultExpanded={expandActivityDetails} />
 
             <details className="agent-session-disclosure">
               <summary>Connection and permissions</summary>

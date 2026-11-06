@@ -1,5 +1,11 @@
 # Visual workflows
 
+Workflows compose Loci's general life-science imaging operations. Fluorescence,
+histology and other assay examples do not define the platform's scope. Existing
+scalar-recipe and morphology contracts retain explicit YX/ZYX support; adapters
+limited to one plane continue to refuse volumes. This milestone does not add a
+3D renderer or extend tissue inference beyond its declared 2D context/output grid.
+
 Choose **Analyze → Workflow builder**. The workspace gives the connected analysis
 plan and its settings more room while keeping the actual image visible. Choose
 **View** to return to ordinary image inspection. Existing image detachment remains
@@ -67,9 +73,11 @@ yet provide a graphical editor for authoring every connection.
 
 Version 2 supports acyclic graphs of at most 32 nodes. Its typed adapters are
 `run_recipe`, `classical_run`, `associate_results`, `spatial_distance_run` and
-`morphometrics_run`. The morphology adapter consumes one exact `objects`
+`morphometrics_run`, `annotation_evaluation_run`, `method_run` and
+`tissue_model_run`. The morphology adapter consumes one exact `objects`
 label-result and retains its raw measurements; see [the assay definitions](ASSAY_MEASUREMENTS.md).
-Nodes accept declared source selections or exact label-result revisions. A join
+Nodes accept declared source selections, exact label-result revisions, or an
+explicit prepared tissue preview. A join
 can consume outputs from separate upstream nodes; arbitrary operation names,
 scripts, loops and JSON-path wiring are refused. The saved definition, its
 revision/hash, resolved plan and exact input identities remain bound to each run.
@@ -87,6 +95,77 @@ for every native operation and source dependency. Inspect permission does not
 authorize execution. Native UI inspection of an agent-owned run does not transfer
 its ownership or execute its pending jobs. Completion does not review results.
 Linear version 1 definitions and their execution semantics remain supported.
+
+### References, methods and prepared tissue
+
+`annotation_evaluation_run` takes exact `prediction` and `reference` label results
+on the same source, C/Z/T selection and calibrated grid. Settings declare instance
+or foreground-region semantics, thresholds and the reference's intended coverage.
+Its `agreement-report` output is terminal: it cannot feed a segmentation/measurement
+port. Annotation agreement is not biological ground truth, accuracy validation or
+human review. Freeze source annotations explicitly with the existing annotation
+reference operation before binding that immutable result into a graph.
+
+`method_run` takes `objects` and pins the method package ID, manifest/module hashes,
+ordered raw channel indices, working-memory limit and `mode: execute`. Every live
+run resolves its native ABI input/preflight hash from those exact source bytes.
+This adapter's bounded native preflight prepares raw arrays; the other graph
+adapters retain their metadata-only planning boundary. No compilation or method
+execution occurs during graph preflight. Native rights review and current qualified
+runtime gates remain mandatory during execution. macOS method execution remains
+unavailable under the current confinement contract; a graph cannot grant or fake
+that qualification. External output adoption stays an explicit native operation
+with a fresh output grant, rather than a reusable node setting.
+
+`tissue_model_run` takes a `preview` port bound to a `tissue-preview` input with
+exact `preview_id`, `preview_hash` and the complete validated native `receipt`.
+Its settings are empty. Prepare the preview explicitly with the existing native
+preview operation; the graph never creates or approves it. The source context,
+output grid, model/weights/runtime and declared stain remain bound to that receipt.
+`workflow_graph_prepared_previews` lists currently cached unused previews for one
+explicit `source_id`, with an `unavailable_count` for retained unusable entries.
+Discovery performs no inference or source-pixel decoding. A preview may feed only
+one tissue node and one graph run; preparing another run requires a fresh preview.
+The existing exclusive disposable worker, model provisioning, runtime and grants
+remain mandatory. A completed tissue node is recovered from its exact durable job,
+retained preview receipt and published result even if the preview cache was evicted.
+A tissue output can feed annotation agreement on an explicitly supplied reference;
+the native morphology operation still refuses tissue-region parents.
+
+### Capture and interruption
+
+`workflow_graph_save_from_run` captures a successful graph's **definition**, under
+a new workflow ID and chosen name. It requires the exact run document revision/hash
+and destination CAS revision. It does not infer a workflow from arbitrary activity,
+copy results, approve review or copy execution grants. Changed sources, stale
+revisions and incomplete/failed runs are refused.
+
+`workflow_graph_continuation` returns an inspectable receipt without dispatch or
+ownership transfer. It binds the exact run revision/hash, original owner, plan,
+completed node job/request/output proofs and unfinished nodes. Original-owner
+inspection remains scoped to that session; possession of a run ID never grants
+another session its metadata. Native application inspection is a separate trusted
+boundary. Same-owner ordinary advance remains possible only with current grants.
+
+A stopped failed/cancelled run can be continued through `workflow_graph_continue`
+with explicit native human approval. The operation saves a new graph and prepares
+a new run under the caller's current owner. Only proven successful nodes are
+removed; their exact immutable outputs become explicit inputs to unfinished nodes.
+Failed/interrupted/cancelled nodes are executed afresh. Existing jobs, ownership,
+requests and results remain unchanged, and the new run durably retains its original
+continuation receipt. Completed named outputs remain inspectable in that receipt.
+The operation never advances the prepared run or grants scientific review.
+
+Approval binds the original run revision/hash, continuation proof, new workflow ID,
+fresh request key, new owner and newly preflighted plan. It is required even for
+external sessions in Full access mode; Inspect-only cannot continue. Fresh source,
+result, native-action, model and runtime grants are checked independently. Any
+unfinished tissue node requires a fresh exact prepared preview, supplied by input
+name in `preview_replacements`. Source/job/output drift after approval refuses
+publication. An interrupted save/start can leave an inert saved definition;
+retrying the exact approved identities reuses that definition/run rather than
+silently creating another submission. Saving and starting are separate durable
+transactions; an incomplete transition does not claim successful execution.
 
 ## Scope and design basis
 

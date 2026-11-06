@@ -1,22 +1,25 @@
-.tissue-model-panel { min-width: 0; }
+.tissue-model-panel { min-width: 0; box-sizing: border-box; }
 .tissue-model-panel h2, .tissue-model-panel h3 { text-wrap: balance; }
 .tissue-model-panel p { max-width: 70ch; text-wrap: pretty; }
-.tissue-model-panel h3 { margin-block: 0 8px; font-size: 1rem; }
+.tissue-model-panel h3 { margin-block: 0 8px; font-size: var(--type-md); }
 .tissue-model-setup, .tissue-model-saved { margin-block: 24px; padding-block-start: 16px; border-top: 1px solid var(--line); }
 .tissue-model-panel label { display: grid; gap: 6px; margin-block: 16px 8px; }
 .tissue-model-panel select { width: 100%; min-width: 0; }
 .tissue-model-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
 .tissue-model-actions button { min-height: 40px; }
-.tissue-model-note { color: var(--muted); font-size: .92em; }
+.tissue-model-note { color: var(--ink-secondary); font-size: var(--type-sm); }
 .tissue-model-panel details { margin-block-start: 16px; }
-.tissue-model-panel summary { cursor: pointer; min-height: 32px; }
+.tissue-model-panel summary { cursor: pointer; min-height: 32px; align-content: center; color: var(--ink-secondary); font-size: var(--type-sm); }
+.tissue-model-panel summary:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.tissue-model-input-details { padding-block: 4px; }
+.tissue-model-input-details p { margin-block: 8px; }
 .tissue-model-panel dd { margin-inline-start: 0; overflow-wrap: anywhere; }
 .tissue-model-scope { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 8px 16px; margin-block: 16px; font-variant-numeric: tabular-nums; }
-.tissue-model-scope dt { color: var(--muted); }
+.tissue-model-scope dt { color: var(--ink-secondary); }
 .tissue-model-scope dd { margin: 0; }
 .tissue-model-preview { margin: 16px 0 24px; }
-.tissue-model-preview img { display: block; max-width: 100%; max-height: 512px; width: auto; height: auto; object-fit: contain; background: var(--surface); border: 1px solid var(--line); }
-.tissue-model-preview figcaption { margin-block-start: 8px; max-width: 70ch; font-size: .92em; line-height: 1.5; text-wrap: pretty; }
+.tissue-model-preview img { display: block; max-width: 100%; max-height: 512px; width: auto; height: auto; object-fit: contain; background: var(--graphite-850); border: 1px solid var(--line); }
+.tissue-model-preview figcaption { margin-block-start: 8px; max-width: 70ch; font-size: var(--type-sm); line-height: 1.5; text-wrap: pretty; }
 @media (max-width: 700px) {
   .tissue-model-scope { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .tissue-model-scope dd { margin-block-end: 8px; }

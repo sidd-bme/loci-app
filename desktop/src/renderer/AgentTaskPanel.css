@@ -1,0 +1,43 @@
+.agent-task-panel, .agent-task, .agent-task-editor { min-width: 0; }
+.agent-task { display: grid; gap: 12px; }
+.agent-task-heading, .agent-task-step-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.agent-task-heading h3, .agent-task-heading h4, .agent-task h5 { margin: 0; color: var(--ink); font-size: var(--type-md); font-weight: 600; }
+.agent-task-heading > span, .agent-task-step-heading > span { flex-shrink: 0; color: var(--ink-secondary); font-size: var(--type-xs); }
+.agent-task-heading > .agent-session-badge { max-width: 45%; }
+.agent-task-goal { margin: 0; color: var(--ink); font-size: var(--type-md); line-height: 1.5; font-weight: 550; overflow-wrap: anywhere; text-wrap: pretty; }
+.agent-task-note { margin: 0; color: var(--ink-secondary); font-size: var(--type-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.agent-task-steps { margin: 0; padding-left: 24px; color: var(--ink-secondary); font-size: var(--type-sm); }
+.agent-task-steps > li { padding: 8px 0 8px 4px; }
+.agent-task-steps > li + li { border-top: 1px solid var(--line); }
+.agent-task-step-heading { flex-wrap: wrap; gap: 4px 12px; }
+.agent-task-step-heading strong { color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+.agent-task-steps .agent-task-note { margin-top: 4px; }
+.agent-task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-task-actions button, .agent-task-editor > button, .agent-task-reorder button { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: var(--type-sm); }
+.agent-task-assessment { display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
+.agent-task-prose, .agent-task-observations, .agent-task-limitations p, .agent-task-limitations ul { margin: 0; font-size: var(--type-sm); line-height: 1.55; color: var(--ink); overflow-wrap: anywhere; text-wrap: pretty; }
+.agent-task-observations, .agent-task-limitations ul { padding-left: 20px; }
+.agent-task-observations li + li, .agent-task-limitations li + li { margin-top: 6px; }
+.agent-task-limitations, .agent-task-evidence { display: grid; gap: 8px; }
+.agent-task-limitations p, .agent-task-limitations ul { color: var(--ink-secondary); }
+.agent-task-editor, .agent-task-editor label, .agent-task-selector { display: grid; gap: 8px; color: var(--ink-secondary); font-size: var(--type-sm); }
+.agent-task-editor { gap: 12px; }
+.agent-task-editor textarea, .agent-task-editor input, .agent-task-selector select { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: var(--ink); background: var(--graphite-850); border: 1px solid var(--line-strong); border-radius: 6px; padding: 8px; }
+.agent-task-editor textarea { min-height: 80px; resize: vertical; line-height: 1.5; }
+.agent-task-editor input, .agent-task-selector select { min-height: 40px; }
+.agent-task-edit-steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.agent-task-edit-steps > li { min-width: 0; display: grid; gap: 4px; }
+.agent-task-reorder { display: flex; gap: 4px; justify-content: flex-end; }
+.agent-task-reorder button { min-width: 40px; padding: 6px; }
+.agent-task-editor > button { justify-self: start; }
+.agent-task-warning { margin: 0; color: var(--warning); background: var(--warning-wash); padding: 8px 10px; border-radius: 6px; font-size: var(--type-sm); line-height: 1.5; overflow-wrap: anywhere; }
+.agent-task-selector { margin-bottom: 16px; }
+.agent-task details > .agent-approval-meta { margin-top: 8px; }
+.agent-task-history .agent-task-assessment + .agent-task-assessment { margin-top: 16px; }
+.agent-task :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+
+.agent-task-jobs { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.agent-task-jobs h4 { margin: 0; color: var(--ink); font-size: var(--type-sm); font-weight: 600; }
+.agent-task-job { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--ink-secondary); font-size: var(--type-xs); }
+.agent-task-job > span { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.agent-task-job button { min-height: 40px; flex-shrink: 0; }

@@ -277,9 +277,9 @@ export function TissueModelPanel({ api, snapshot, source, selection, selectedRes
       : "Runtime package metadata matches; compatibility and accuracy remain unqualified.";
   const modeTitle = inspectionMode === "tissue_classes" ? "Original tissue classes" : inspectionMode === "score" ? "Original epidermis score"
     : saved?.tissue_model?.label_semantics === "edited_selected_compartment" ? "Edited compartment regions" : "Original epidermis regions";
-  return <section className="tissue-model-panel" aria-label="Epidermis tissue model">
+  return <section className="research-panel tissue-model-panel" aria-label="Epidermis tissue model">
     <h2>Epidermis tissue model</h2>
-    <p>Preview a candidate epidermis mask on declared H&amp;E histology, then inspect and correct its tissue regions.</p>
+    <p>Preview, inspect and correct candidate epidermis regions in declared H&amp;E histology.</p>
     <section className="tissue-model-setup" aria-label="PUMA model setup">
       <h3>PUMA · research candidate</h3>
       <p role="status">{loading && !profile ? "Checking local model files…" : storeText}</p>
@@ -303,17 +303,19 @@ export function TissueModelPanel({ api, snapshot, source, selection, selectedRes
       <label>Declared preparation<select aria-label="Tissue preparation" value={stain} disabled={disabled} onChange={event => setDeclaration({ sourceKey, stain: event.target.value })}>
         <option value="">Choose the known preparation…</option><option value="hematoxylin-eosin">Hematoxylin &amp; eosin (H&amp;E)</option>
       </select></label>
-      <p className="tissue-model-note">Declare preparation from acquisition records. RGB components do not identify stains.</p>
+      <p className="tissue-model-note">Use acquisition records. RGB components do not identify stains.</p>
       {problem ? <p role="note">{problem}</p> : <dl className="tissue-model-scope">
         <dt>Normalization context</dt><dd>Full native image · {d?.x} × {d?.y} pixels</dd>
         <dt>Output region</dt><dd>{selection.width} × {selection.height} pixels at x {selection.x}, y {selection.y}</dd>
         <dt>Plane</dt><dd>Z {selection.z + 1} · T {selection.t + 1}</dd>
       </dl>}
-      {source.metadata.sample_semantics === "RGBA" && <p className="tissue-model-note">The first three samples are used as RGB. Alpha is discarded without compositing.</p>}
       <label>Memory allowance<select aria-label="Tissue model memory allowance" value={workingBytes} disabled={disabled} onChange={event => setWorkingBytes(Number(event.target.value))}>
         {[2, 4, 8].map(size => <option key={size} value={size * GiB}>{size} GiB</option>)}
       </select></label>
-      <p className="tissue-model-note">Local CPU execution uses the complete image for normalization. Selecting an output region does not change that context.</p>
+      <details className="tissue-model-input-details"><summary>Normalization &amp; sample handling</summary>
+        <p className="tissue-model-note">Local CPU execution normalizes the full native image, including when the output is a smaller region.</p>
+        {source.metadata.sample_semantics === "RGBA" && <p className="tissue-model-note">The first three samples are used as RGB. Alpha is discarded without compositing.</p>}
+      </details>
     </div>
     <div className="tissue-model-actions">
       <button type="button" className="research-primary" disabled={disabled || !request || !canExecute} onClick={() => void execute("preview")}>{pending === "preview" ? "Computing preview…" : "Preview candidate mask"}</button>

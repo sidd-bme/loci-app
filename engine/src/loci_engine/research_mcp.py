@@ -40,6 +40,15 @@ from .agent_sessions import (
     require_session_authority,
     start_session,
 )
+from .agent_tasks import (
+    TaskReadOperation,
+    TaskReadRequest,
+    TaskRevisionConflict,
+    TaskWriteOperation,
+    TaskWriteRequest,
+    task_read,
+    task_write,
+)
 from .agent_workflow_graph import (
     GraphControlOperation,
     GraphControlRequest,
@@ -120,6 +129,18 @@ _VISION_TOOL_CATALOG = (
     ),
 )
 _STUDY_TOOL_CATALOG = (
+    (
+        "agent_task_read",
+        "Read this policy's durable plans and source-linked assessments. Agent-authored "
+        "progress is separate from executed jobs and human scientific review.",
+    ),
+    (
+        "agent_task_write",
+        "Publish a bounded plan or evidence-linked assessment at its exact revision, or "
+        "explicitly resume a stopped session's plan. Requires separate plan permission. "
+        "This never runs jobs, approves execution, or records human review; cancelled "
+        "plans cannot be restarted. Re-read after revision conflicts.",
+    ),
     (
         "workflow_graph_inspect",
         "Validate or inspect a typed workflow/v2 graph, exact preflight or owned run. Each "
@@ -1348,6 +1369,7 @@ class PolicyAgent:
             "state",
             "progress",
             "cancel_requested",
+            "request_hash",
             "result_ids",
             "error",
             "created_at",
@@ -2083,6 +2105,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "validate_action",
             "inspect_action",
             "workflow_graph_inspect",
+            "agent_task_read",
         }
         return ToolAnnotations(
             read_only_hint=read_only,
@@ -2094,6 +2117,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "export_vision_handoff",
                 "set_source_display",
                 "review_result",
+                "agent_task_write",
             },
             open_world_hint=name
             in {
@@ -2135,6 +2159,8 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "inspect_action": ({"operation", "request"}, {"operation", "request"}),
                 "workflow_graph_inspect": ({"operation", "request"}, {"operation", "request"}),
                 "workflow_graph_control": ({"operation", "request"}, {"operation", "request"}),
+                "agent_task_read": ({"operation", "request"}, {"operation", "request"}),
+                "agent_task_write": ({"operation", "request"}, {"operation", "request"}),
                 "submit_action": (
                     {"operation", "request", "request_key"},
                     {"operation", "request", "request_key"},
@@ -2308,7 +2334,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                         last_error=None,
                     )
             return result
-        except AgentSessionApprovalError as exc:
+        except (AgentSessionApprovalError, TaskRevisionConflict) as exc:
             if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
@@ -2601,6 +2627,24 @@ def build_server(policy_path: str | Path) -> MCPServer:
             operation: str, request: dict[str, Any], request_key: str
         ) -> dict[str, Any]:
             return invoke(lambda: agent.submit_action(operation, request, request_key))
+
+        @server.tool(
+            name="agent_task_read",
+            structured_output=True,
+            description=descriptions["agent_task_read"],
+            annotations=annotations("agent_task_read"),
+        )
+        def read_task(operation: TaskReadOperation, request: TaskReadRequest) -> dict[str, Any]:
+            return invoke(lambda: task_read(agent, operation, request))
+
+        @server.tool(
+            name="agent_task_write",
+            structured_output=True,
+            description=descriptions["agent_task_write"],
+            annotations=annotations("agent_task_write"),
+        )
+        def write_task(operation: TaskWriteOperation, request: TaskWriteRequest) -> dict[str, Any]:
+            return invoke(lambda: task_write(agent, operation, request))
 
         @server.tool(
             name="workflow_graph_inspect",

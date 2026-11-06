@@ -188,6 +188,7 @@ def create_agent_access(
         "export_scope",
         "permission_mode",
         "allow_workflow_graph",
+        "allow_task_records",
     }
     exact_keys(request, expected | optional, "agent access")
     if set(request) - optional != expected:
@@ -230,6 +231,17 @@ def create_agent_access(
             raise ValueError("Delegation requires analysis context disclosure")
     actions = request.get("actions", [])
     allow_graph = request.get("allow_workflow_graph", False)
+    allow_tasks = request.get("allow_task_records", False)
+    if type(allow_tasks) is not bool:
+        raise ValueError("Plan and assessment permission must be boolean")
+    if allow_tasks and (
+        delegation is None
+        or delegation["result_scope"] != "granted-sources"
+        or not set(disclosures) >= DISCLOSURES
+    ):
+        raise ValueError(
+            "Plans and assessments require source-scoped delegation and all response disclosures"
+        )
     if type(allow_graph) is not bool:
         raise ValueError("Workflow graph permission must be boolean")
     if allow_graph and (
@@ -316,6 +328,8 @@ def create_agent_access(
         operations.append("workflow_graph_inspect")
         if request["allow_run"]:
             operations.append("workflow_graph_control")
+    if allow_tasks:
+        operations.extend(["agent_task_read", "agent_task_write"])
     operations = sorted(set(operations))
     runtime = runtime_record()
     specification = {

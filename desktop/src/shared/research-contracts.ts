@@ -274,6 +274,7 @@ export type ResearchAgentSessionState =
   | "failed";
 export interface ResearchAgentAccessRequest {
   allow_workflow_graph?: boolean;
+  allow_task_records?: boolean;
   source_id: string;
   selection: ResearchSelection;
   recipe: ResearchRecipe;
@@ -372,6 +373,7 @@ export interface ResearchAgentTargetReference {
   selection?: ResearchSelection;
 }
 export interface ResearchAgentApprovalRecord {
+  explicit_approval_required?: boolean;
   targets?: ResearchAgentTargetReference[];
   id: string;
   session_id: string | null;
@@ -440,8 +442,46 @@ export interface ResearchAgentSessionsSnapshot {
   approvals: ResearchAgentApprovalRecord[];
   events: ResearchAgentEventRecord[];
   capability_map: ResearchAgentCapabilityMap;
+  tasks?: ResearchAgentTaskRecord[];
+}
+export interface ResearchAgentTaskStep {
+  id: string;
+  title: string;
+  state: "planned" | "in_progress" | "complete" | "blocked";
+  note: string;
+  targets: ResearchAgentTargetReference[];
+}
+export interface ResearchAgentAssessment {
+  id: string;
+  summary: string;
+  observations: string[];
+  limitations: string[];
+  targets: ResearchAgentTargetReference[];
+  created_at: string;
+  session_id: string;
+  client_id: string;
+  stale: boolean;
+}
+/** Agent-authored interpretation; never a job receipt or human scientific review. */
+export interface ResearchAgentTaskRecord {
+  id: string;
+  revision: number;
+  policy_sha256: string;
+  session_id: string;
+  client_id: string;
+  created_at: string;
+  updated_at: string;
+  updated_by: "agent" | "human";
+  goal: string;
+  steps: ResearchAgentTaskStep[];
+  state: "active" | "awaiting_review" | "complete" | "cancelled";
+  targets: ResearchAgentTargetReference[];
+  assessments: ResearchAgentAssessment[];
+  stale: boolean;
 }
 export type ResearchAgentControlRequest =
+  | { action: "edit_task"; task_id: string; expected_revision: number; goal: string; steps: Array<{ id: string; title: string }> }
+  | { action: "cancel_task"; task_id: string; expected_revision: number }
   | { action: "approve_request" | "deny_request"; approval_id: string; reason?: string }
   | { action: "set_permission_mode"; policy_sha256: string; permission_mode: ResearchAgentPermissionMode }
   | { action: "pause_session" | "resume_session"; policy_sha256: string }

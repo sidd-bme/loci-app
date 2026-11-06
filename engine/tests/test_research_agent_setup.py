@@ -101,6 +101,61 @@ def test_graph_access_is_explicit_and_does_not_add_native_actions(tmp_path, allo
     assert not load_policy(destination / "agent-policy.json").actions
 
 
+@pytest.mark.parametrize("allow_run", [False, True])
+def test_plan_access_is_explicit_and_does_not_grant_execution_or_review(tmp_path, allow_run):
+    from loci_engine.agent_policy import DISCLOSURES
+
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "plan-access"
+    receipt = create_agent_access(
+        workbench,
+        access_request(
+            request,
+            allow_run=allow_run,
+            allow_task_records=True,
+            disclosures=sorted(DISCLOSURES),
+            delegation={
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "granted-sources",
+                "allow_review": False,
+            },
+            actions=[],
+        ),
+        destination,
+    )
+    assert {"agent_task_read", "agent_task_write"} <= set(receipt["operations"])
+    assert "review_result" not in receipt["operations"]
+    assert "workflow_graph_control" not in receipt["operations"]
+    assert ("submit_recipe" in receipt["operations"]) is allow_run
+    assert not load_policy(destination / "agent-policy.json").actions
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"allow_task_records": "yes"},
+        {"allow_task_records": True},
+        {
+            "allow_task_records": True,
+            "delegation": {
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "pinned-recipes",
+                "allow_review": False,
+            },
+            "disclosures": ["agent_metadata"],
+        },
+    ],
+)
+def test_incomplete_plan_scope_does_not_publish_access(tmp_path, changes):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "invalid-plan"
+    with pytest.raises(ValueError):
+        create_agent_access(workbench, access_request(request, **changes), destination)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize(
     "changes",
     [

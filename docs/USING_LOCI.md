@@ -2,7 +2,7 @@
 
 Loci is a local-first workbench for inspecting scientific images and creating traceable derived results. It leaves original image files where they are, and keeps display settings, annotations, results, reviews, and exports as separate work. Loci does not identify a stain or fluorophore from appearance, diagnose a sample, or establish biological or clinical validity.
 
-This manual describes the implemented image-first workspace. It is bundled with the application and opens offline with `F1` or **Settings → User guide → Open user guide**. The manual has a searchable contents pane. The [capability matrix](CAPABILITY_MATRIX.md) defines supported source subsets and limits; [release status](RELEASE_STATUS.md) records published beta status and limitations. Current source can include changes absent from that download; qualification applies to the exact source and app tested.
+This manual describes the implemented image-first workspace. It is bundled with the application and opens offline with `F1` or **Settings → User guide → Open user guide**. Search the manual by topic or control name, then open a matching topic. The contents pane, links within each topic, and Previous/Next controls keep your place. The [capability matrix](CAPABILITY_MATRIX.md) defines supported source subsets and limits; [release status](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) records published beta status and limitations. Current source can include changes absent from that download; qualification applies to the exact source and app tested.
 
 ## Contents
 
@@ -18,7 +18,9 @@ This manual describes the implemented image-first workspace. It is bundled with 
 - [Export rendered figures](#export-rendered-figures)
 - [Medical, temporal, and registration work](#medical-temporal-and-registration-work)
 - [Settings, recovery, and help](#settings-recovery-and-help)
-- [Terminal and assistant workflows](#terminal-and-assistant-workflows)
+- [Work with external agents](#work-with-external-agents)
+- [Compose and reuse workflows](#compose-and-reuse-workflows)
+- [Terminal workflows](#terminal-workflows)
 
 ## Start, save, and return
 
@@ -38,7 +40,7 @@ In **View → Image & channels → Analysis region**, set X/Y = 0 and Width/Heig
 
 Inspect object rows and labels. In **Annotate → Edit labels & ROIs**, delete label 1 for a deliberate two-object revision, then inspect **Undo revision** and **Redo revision**. In **Results → Review & export → Review**, inspect the exact revision yourself and choose **Mark reviewed**, then choose **Export → Export result**. Choose **Save study…** and reopen through **Recent work** or **Open study**. The original pixels remain intact; each correction needs its own review.
 
-The source stays in a separate app-owned directory when its managed study is discarded. Save As preserves the source binding, so keep an exact source copy if removing the whole app profile or moving the study. The [first-study reference](workflows/FIRST_STUDY.md) gives the independent geometry, coordinate conventions and provenance. In current source, the optional **Practice: inspect, measure and export** guide in the inspector links to these tools and keeps expected example results in a disclosure. It does not configure or run analysis, and it never records review automatically. See the [release record](RELEASE_STATUS.md) for downloadable availability.
+The source stays in a separate app-owned directory when its managed study is discarded. Save As preserves the source binding, so keep an exact source copy if removing the whole app profile or moving the study. The [first-study reference](workflows/FIRST_STUDY.md) gives the independent geometry, coordinate conventions and provenance. In current source, the optional **Practice: inspect, measure and export** guide in the inspector links to these tools and keeps expected example results in a disclosure. It does not configure or run analysis, and it never records review automatically. See the [release record](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) for downloadable availability.
 
 ## Read the workspace
 
@@ -64,6 +66,12 @@ Panning or zooming does not crop an analysis. Changing low/high values or a colo
 ### Direct image viewing
 
 Open **View → Image & channels**. **Image info** reports declared dimensions, axes, channel/sample count, depth/time count, and recorded calibration. The **Open as** choice is a presentation choice: Automatic, Generic image, Histology, Fluorescence, Volume, or Medical research. It changes offered workflow shortcuts, never source values or recorded axes.
+
+Print density in an ordinary TIFF, PNG or JPEG does not establish specimen size.
+These images use pixels unless supported acquisition metadata declares physical
+spacing, such as OME-TIFF PhysicalSize values. An older study with unsupported
+saved calibration remains intact; import its unchanged image into a new study
+before making new measurements or exports.
 
 For a direct inspection, select a source, choose **Fit** to show its whole plane, then use the wheel or pinch to zoom around the pointer and drag to pan. The main keyboard controls are:
 
@@ -315,11 +323,45 @@ Numeric display and region fields apply with Enter or when focus leaves the fiel
 
 Drag the left edge of the tools panel to resize it. With that divider focused, use left/right arrows to adjust it, Home/End for its bounds, or double-click to reset. Its width is remembered locally. Contextual tips have a **Close tip** button and can also be dismissed with `Escape`.
 
-Under **Viewing & help**, turn the viewer scale bar, overview navigator, and contextual guidance on or off. A viewer scale bar still appears only when the source declares usable calibration. Under **Saving & export**, set the default rendered-figure DPI and review the distinction between rendered figures, derived results, and recoverable local sessions. Under **User guide**, open this bundled manual. `F1` opens it directly; search its contents for terms such as `histogram`, `batch`, `MPR`, or `recovery`.
+Under **Viewing & help**, turn the viewer scale bar, overview navigator, and contextual guidance on or off. A viewer scale bar still appears only when the source declares usable calibration. Under **Saving & export**, set the default rendered-figure DPI and review the distinction between rendered figures, derived results, and recoverable local sessions. Use **Search settings** to find a control and jump directly to it. Under **External agents**, choose initial view-following and activity-detail preferences; connection permissions remain in the workspace. Under **User guide**, open this bundled manual or choose a specific workflow topic. `F1` opens it directly; search its contents for terms such as `histogram`, `batch`, `MPR`, or `recovery`.
 
-If a control is unavailable, read the inline prerequisite. Common reasons are an unsupported source subset, missing or incompatible geometry/calibration, incomplete analysis scope, absent depth/time dimension, source identity mismatch, missing model/runtime provisioning, or an unreviewed result. Preserve the shown error wording when seeking support, but do not include protected source data or private filesystem paths. Consult the [capability matrix](CAPABILITY_MATRIX.md) for supported formats and resource boundaries and [release status](RELEASE_STATUS.md) for published beta limitations.
+If a control is unavailable, read the inline prerequisite. Common reasons are an unsupported source subset, missing or incompatible geometry/calibration, incomplete analysis scope, absent depth/time dimension, source identity mismatch, missing model/runtime provisioning, or an unreviewed result. Preserve the shown error wording when seeking support, but do not include protected source data or private filesystem paths. Consult the [capability matrix](CAPABILITY_MATRIX.md) for supported formats and resource boundaries and [release status](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) for published beta limitations.
 
-## Terminal and assistant workflows
+## Work with external agents
+
+Open **Analyze → Connect an assistant**. Choose **Inspect**, **Analyze**, or **Full study**, then expand **Customize permissions** to narrow the connection. **Grant selected access** creates the bundle after destination selection. Inspect the selected permissions before granting. Configure the generated local connection in your external host and start it there. A prepared connection is not a connected session; the workspace indicator reports the observed session state. Source access, image disclosure, corrections, compute, review and export remain explicit permissions.
+
+### Follow work and edit a plan
+
+Open the agent indicator in the workspace header to see the connection, task plan, assessments and recent work. **Follow agent** brings inspected views into the workspace; turning it off leaves your current view in place. In **Settings → External agents**, choose the default for new workspaces and whether newly shown activity records start expanded. These are display preferences and grant no access.
+
+When the external agent records a task, its goal and steps appear under **Task plan**. **Edit plan** lets you change the goal, add or remove steps, and reorder them. **Save plan** records the edit without executing it. Changed steps return to Planned. The agent must read the new revision before continuing. If someone changes the plan during your edit, your draft remains visible and saving is blocked; cancel editing to load the latest plan.
+
+Plan and step states are reported by the external agent. Actual jobs and recorded activity provide separate execution evidence. **Cancel plan** cancels the plan record; use **Stop job** to request cancellation of a confirmed running job. A retained plan from a disconnected or interrupted session needs an explicit resume from the external agent.
+
+### Inspect evidence and review results
+
+Open source, result, workflow or job links to inspect the exact recorded target. A changed or unavailable target cannot silently open a replacement. Job links show the recorded execution state. Expand **Recorded activity**, **Step evidence**, or the task record when you need identities and provenance.
+
+An **Agent assessment** contains the agent's interpretation, observations, stated limitations and evidence links. It does not itself review a scientific result. Use **Review result** to inspect and record your decision on that exact result revision. If evidence changed, the assessment remains in history with a warning.
+
+Full study pins the current sources; later imports are excluded. It can delegate approval of exact result revisions and exports to new names in the selected folder. These decisions display **Reviewed by agent** with the stated reason, coverage and delegated authority. Marking the result reviewed in the desktop records a researcher decision while retaining the earlier agent event. A label correction creates a new, unreviewed revision. Inspect review history before exporting. See [agent access](AGENT_ACCESS.md) for supported operations, setup and revocation.
+
+## Compose and reuse workflows
+
+Open **Analyze → Workflow builder**, then expand **Composed workflows** to inspect a saved multi-step definition. An authorized agent connection can create the first definition. Choose its exact source, prepared-preview or result inputs, then select **Check inputs**. Resolve any missing or incompatible binding before **Run composed workflow**. The saved steps and settings remain inspectable. A plan describes intended work; each durable run records actual node states and exact outputs.
+
+### Inspect and save a run
+
+Choose a saved run to inspect its steps, input bindings and result links. **Refresh run** reads the current state. For a desktop-owned run, **Advance workflow** starts the next ready work; **Cancel composed run** requests cancellation. Agent-owned runs remain under their recorded owner. **Open result** requires the exact result revision still to be present in study history.
+
+After a successful run, use **Save as workflow** to retain a reusable definition. This saves the workflow definition, not a claim that another source has compatible inputs or that the result is scientifically valid. Bind and check inputs again for the new run.
+
+### Continue unfinished work
+
+For a failed or cancelled run, choose **Inspect continuation**. Review the remaining steps, completed evidence and any required replacement inputs. **Prepare fresh run** requires native approval and creates a separate continuation with new bindings; it does not restart the old run, transfer the original agent’s permissions or start a step. Select **Advance workflow** when ready. Changed evidence, incompatible replacements or stale continuation records must be resolved before continuing.
+
+## Terminal workflows
 
 Use the [Loci CLI](CLI.md) to create studies, register immutable sources, validate
 explicit requests, inspect durable jobs and export reviewed exact revisions from
@@ -332,5 +374,3 @@ Piped output is JSON; `--json` explicitly selects full machine receipts. `--plai
 and `--no-motion` support control-free output. The welcome animation and optional
 `loci logo --animate` are bounded. Read the CLI guide for study paths, validation,
 stable retry keys, review/export requirements and bash/zsh/fish completion.
-
-Open **Connect an assistant** under Analyze. **Inspect**, **Analyze**, and **Full study** propose explicit permissions; **Grant selected access** creates the bundle after destination selection. Inspect source, image disclosure, correction, compute, review and export permissions before granting. Full study pins current sources and may delegate exact-revision approval and exports to new names in the selected folder. Later imports are excluded. Agent decisions display **Reviewed by agent** and remain in review history when a researcher supersedes them. See [agent access](AGENT_ACCESS.md) for tool boundaries, client setup and revocation.
