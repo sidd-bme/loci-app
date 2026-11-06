@@ -14,8 +14,13 @@ const sections = guide.split(/^## /m).map((text, index) => {
 const plainText = (text: string) => text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/[*`#|]/g, "").replace(/\s+/g, " ").trim();
 const sectionHeadings = (body: string) => [...body.matchAll(/^### (.+)$/gm)].map(match => ({ title: match[1], id: slug(match[1]) }));
 function excerpt(body: string, query: string): string {
-  const text = plainText(body), index = Math.max(0, text.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0]) - 48);
-  return `${index ? "…" : ""}${text.slice(index, index + 170)}${text.length > index + 170 ? "…" : ""}`;
+  const text = plainText(body), start = Math.max(0, text.toLowerCase().indexOf(query.toLowerCase().split(/\s+/)[0]) - 48);
+  const nextWord = start > 0 ? text.indexOf(" ", start) + 1 : 0;
+  const index = nextWord > 0 ? nextWord : start;
+  const limit = Math.min(text.length, index + 170);
+  const lastWord = limit < text.length ? text.lastIndexOf(" ", limit) : limit;
+  const end = lastWord > index ? lastWord : limit;
+  return `${index ? "…" : ""}${text.slice(index, end)}${end < text.length ? "…" : ""}`;
 }
 
 function safeLink(target: string): string | null {

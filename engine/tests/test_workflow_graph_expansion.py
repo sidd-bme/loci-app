@@ -26,7 +26,7 @@ from loci_engine.research_workflow_graph import (
     continue_workflow_graph,
     validate_workflow_graph_document,
 )
-from loci_engine.workflow_graph import resolve_node, validate_definition
+from loci_engine.workflow_graph import build_plan, resolve_node, validate_definition
 
 
 def prepare(wb, definition, bindings, key="expanded"):
@@ -640,3 +640,130 @@ def test_continuation_receipt_survives_actual_portable_export_import(graph_study
     assert len(imported.list_jobs()) == 3 and all(
         job["interchange"]["historical"] for job in imported.list_jobs()
     )
+
+
+def integral_float_wire_copy(value):
+    """The specific JSON.stringify/parse change: native 1.0/0.0 become wire 1/0."""
+    if isinstance(value, dict):
+        return {key: integral_float_wire_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [integral_float_wire_copy(item) for item in value]
+    if type(value) is float and value.is_integer():
+        return int(value)
+    return value
+
+
+def prepared_tissue_graph(case):
+    output = preview(case)
+    prepared = {
+        **token(output),
+        "receipt": tissue.peek_preview(case.project, token(output))["receipt"],
+    }
+    definition = {
+        "schema": "loci.workflow/v2",
+        "name": "Exact prepared preview wire transport",
+        "inputs": {"prepared": "tissue-preview"},
+        "nodes": [
+            {
+                "id": "tissue",
+                "operation": "tissue_model_run",
+                "contract_version": 1,
+                "inputs": {"preview": {"input": "prepared"}},
+                "settings": {},
+            }
+        ],
+        "outputs": {"candidate": {"node": "tissue", "port": "result"}},
+        "working_bytes": case.request["working_bytes"],
+    }
+    return definition, prepared
+
+
+def test_tissue_preview_wire_integral_floats_resolve_native_hash_and_durable_start(make_case):
+    import hashlib
+
+    from loci_engine.research_project import canonical_json
+
+    case = make_case()
+    definition, native = prepared_tissue_graph(case)
+    wire = integral_float_wire_copy(native)
+    assert type(native["receipt"]["geometry"]["affine"][0][0]) is float
+    assert type(wire["receipt"]["geometry"]["affine"][0][0]) is int
+    assert (
+        hashlib.sha256(canonical_json(wire["receipt"]).encode()).hexdigest() != wire["preview_hash"]
+    )
+    before = tissue.peek_preview(case.project, token(native))
+    plan = build_plan(case.wb, definition, {"prepared": wire})
+    assert canonical_json(plan["bindings"]["prepared"]) == canonical_json(native)
+    assert tissue.peek_preview(case.project, token(native)) == before
+    request = prepare(case.wb, definition, {"prepared": wire}, key="native-wire-retry")
+    run = start(case.wb, request)
+    assert run["data"]["state"] == "prepared" and case.project.list_jobs() == []
+    assert canonical_json(run["data"]["plan"]["bindings"]["prepared"]) == canonical_json(native)
+    # Submission identity binds the native normalized plan, not the lossy wire view.
+    assert start(case.wb, request)["id"] == run["id"]
+    with case.project.connection() as connection:
+        connection.execute("DELETE FROM metadata WHERE key LIKE ?", (tissue.PREVIEW_PREFIX + "%",))
+    # A new preflight must not borrow an old run's authority after token eviction.
+    with pytest.raises(ValueError, match="unavailable|evicted"):
+        call(
+            case.wb,
+            "preflight",
+            {
+                key: value
+                for key, value in request.items()
+                if key not in {"plan_sha256", "request_key"}
+            },
+        )
+    with pytest.raises(ValueError, match="unavailable|evicted"):
+        build_plan(case.wb, definition, {"prepared": wire})
+    assert start(case.wb, request)["id"] == run["id"]
+    assert call(case.wb, "status", {"run_id": run["id"]})["state"] == "prepared"
+    packet = {
+        "sources": [case.project.source(case.source["id"])],
+        "results": [],
+        "documents": case.project.documents("workflow") + case.project.documents("workflow_run"),
+        "jobs": [],
+    }
+    validate_workflow_graph_document(run, **packet)
+    changed = copy.deepcopy(request)
+    changed["bindings"]["prepared"]["receipt"]["geometry"]["affine"][0][0] = True
+    with pytest.raises(ValueError, match="binding differs"):
+        start(case.wb, changed)
+    assert case.project.list_jobs() == []
+
+
+@pytest.mark.parametrize(
+    "mutation", ["boolean", "value", "structure", "nonfinite", "token", "cache"]
+)
+def test_tissue_preview_wire_never_repairs_changed_receipt_or_stale_native_cache(
+    make_case, mutation
+):
+    from loci_engine.research_project import canonical_json
+
+    case = make_case()
+    definition, native = prepared_tissue_graph(case)
+    wire = integral_float_wire_copy(native)
+    if mutation == "boolean":
+        wire["receipt"]["geometry"]["affine"][0][0] = True
+    elif mutation == "value":
+        wire["receipt"]["geometry"]["affine"][0][0] = 1.125
+    elif mutation == "structure":
+        wire["receipt"]["unexpected"] = 0
+    elif mutation == "nonfinite":
+        wire["receipt"]["geometry"]["affine"][0][0] = float("inf")
+    elif mutation == "token":
+        wire["preview_hash"] = "0" * 64
+    else:
+        stored = tissue.peek_preview(case.project, token(native))
+        stored["receipt"]["geometry"]["affine"][0][0] = 1.125
+        with case.project.connection() as connection:
+            connection.execute(
+                "UPDATE metadata SET value=? WHERE key=?",
+                (
+                    canonical_json(stored),
+                    tissue.PREVIEW_PREFIX + native["preview_id"],
+                ),
+            )
+    with pytest.raises(ValueError):
+        build_plan(case.wb, definition, {"prepared": wire})
+    assert case.project.list_jobs() == [] and case.project.documents("workflow_run") == []

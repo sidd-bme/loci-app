@@ -6,6 +6,9 @@
 .composed-workflow-panel label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .composed-workflow-panel label > span, .composed-workflow-panel small, .composed-identity { color: var(--ink-secondary); font-size: var(--type-sm); }
 .composed-workflow-panel select { width: 100%; min-width: 0; min-height: 34px; font: inherit; color: var(--ink); background: var(--graphite-950); border: 1px solid var(--line-strong); border-radius: 6px; padding: 6px 8px; }
+.composed-input-heading { display: grid; gap: 4px; }
+.composed-input-heading h4 { margin: 0; font-size: var(--type-md); font-weight: 600; }
+.composed-input-heading p { font-size: var(--type-sm); }
 .composed-inputs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 12px; }
 .composed-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .composed-workflow-panel button { min-height: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--graphite-850); color: var(--ink); cursor: pointer; }

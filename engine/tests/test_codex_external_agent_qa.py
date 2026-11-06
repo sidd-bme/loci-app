@@ -195,7 +195,10 @@ def test_graph_advance_enforces_same_native_worker_gate():
         {
             "run": {
                 "data": {
-                    "nodes": {"morphology": {"state": "running", "intent": {"job_id": "job-2"}}}
+                    "nodes": {
+                        "morphology": {"state": "running", "intent": {"job_id": "job-2"}},
+                        "agreement": {"state": "pending", "intent": None},
+                    }
                 }
             }
         },
@@ -264,6 +267,8 @@ def test_prepare_human_sync_does_not_launch_codex(tmp_path, monkeypatch):
     assert fixture["wait_for_human_edit"] is True
     prompt = Path(prepared["prompt_path"]).read_text()
     assert QA.HUMAN_EDIT_GOAL in prompt and "expected_revision=3" in prompt
+    assert "expected_revision=4" in prompt and "revision5" in prompt
+    assert "preserved human goal/steps/targets" in prompt
     assert QA.TISSUE.study_sessions(Path(prepared["study"])) == []
 
 

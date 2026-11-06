@@ -87,6 +87,13 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
     {retained && <p className="agent-task-note">Retained plan · {session ? session.state.replaceAll("_", " ") : "session unavailable"}. Continuing requires an explicit resume from the external agent.</p>}
     {task.stale && <p className="agent-task-warning" role="note">A recorded source or result has changed. Inspect the exact evidence before continuing.</p>}
     {draft ? <form className="agent-task-editor" aria-label="Edit agent plan" onSubmit={event => { event.preventDefault(); void save(); }}>
+      <div className="agent-task-editor-header">
+        <div className="agent-task-actions" role="group" aria-label="Plan editing actions"><button type="submit" className="research-primary"
+          disabled={locked || revisionChanged || !draft.goal.trim() || !draft.steps.length || draft.steps.some(step => !step.title.trim())}>Save plan</button>
+          <button type="button" disabled={busy} onClick={finishEdit}>Cancel editing</button></div>
+        {revisionChanged && <p role="alert" className="agent-task-warning">The task changed while you were editing. Your draft is preserved. Cancel editing to load the latest plan.</p>}
+        {saveError && <p role="alert" className="agent-task-warning">{saveError}</p>}
+      </div>
       <label>Goal<textarea autoFocus value={draft.goal} maxLength={2000} disabled={busy}
         onChange={event => setDraft({ ...draft, goal: event.target.value })} /></label>
       <ol className="agent-task-edit-steps">{draft.steps.map((step, index) => <li key={step.id}>
@@ -101,11 +108,6 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
       </li>)}</ol>
       <button type="button" disabled={busy || draft.steps.length >= 20} onClick={() => setDraft({ ...draft, steps: [...draft.steps, { id: `human-${crypto.randomUUID()}`, title: "" }] })}><Plus size={15} aria-hidden="true" />Add step</button>
       <p className="agent-task-note">Changed steps return to planned. Saving does not run the plan.</p>
-      {revisionChanged && <p role="alert" className="agent-task-warning">The task changed while you were editing. Your draft is preserved. Cancel editing to load the latest plan.</p>}
-      {saveError && <p role="alert" className="agent-task-warning">{saveError}</p>}
-      <div className="agent-task-actions"><button type="submit" className="research-primary"
-        disabled={locked || revisionChanged || !draft.goal.trim() || !draft.steps.length || draft.steps.some(step => !step.title.trim())}>Save plan</button>
-        <button type="button" disabled={busy} onClick={finishEdit}>Cancel editing</button></div>
     </form> : <>
       <p className="agent-task-goal">{task.goal}</p>
       <ol className="agent-task-steps" aria-label="Agent-reported steps">{task.steps.map(step => <li key={step.id}>
@@ -126,7 +128,7 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
           {job.cancel_requested ? "Stop requested" : "Stop job"}</button>
       </div>)}
     </section>}
-    <p className="agent-task-note">Plan status is reported by the agent. Job activity below records execution. Cancelling a plan does not stop running jobs.</p>
+    {!draft && <p className="agent-task-note">Cancelling this plan leaves running jobs active. Use Stop job to request cancellation.</p>}
     <details><summary>Task sources &amp; record</summary>
       <AgentTargetLinks targets={task.targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
       <dl className="agent-approval-meta"><dt>Updated</dt><dd><RecordedTime value={task.updated_at} /></dd>

@@ -73,7 +73,7 @@ async function wait(read, accept, label, timeout = 60000) {
   throw new Error(`${label}: timed out; last=${JSON.stringify(last)}`);
 }
 async function shot(name) {
-  const file = path.join(output, name + '.png'); await page.screenshot({ path: file });
+  const file = path.join(output, name + '.png'); await page.screenshot({ path: file, animations: 'disabled' });
   receipt.screenshots.push({ name, sha256: await sha(file) });
 }
 async function processTable() {
@@ -181,6 +181,8 @@ async function openGraph(workflowId, choices, activeSourceId) {
   await page.locator('main.image-first-workbench').waitFor();
   if (activeSourceId) await page.locator(`button[data-source-id="${activeSourceId}"]`).click();
   await selectWorkbenchTool(page, 'Workflow');
+  const disclosure = page.locator('details.composed-workflows');
+  if (!await disclosure.evaluate(element => element.open)) await disclosure.locator('summary').click();
   const panel = page.getByRole('region', { name: 'Composed workflows', exact: true });
   await panel.getByRole('button', { name: 'Refresh composed workflows', exact: true }).click();
   await wait(() => panel.getByLabel('Saved composed workflow', { exact: true }).locator(`option[value="${workflowId}"]`).count(), Boolean, 'saved graph renderer library');
@@ -413,7 +415,11 @@ try {
   if (receipt.optional_tissue.status === 'passed') receipt.optional_tissue.cold_oracle = await oracle('tissue', { study: restored,
     result: receipt.optional_tissue.candidate, classes: receipt.optional_tissue.inputs.reference_classes.path,
     probabilities: receipt.optional_tissue.inputs.reference_probabilities.path });
-  await selectWorkbenchTool(page, 'Workflow'); await shot('06-cold-portable-history');
+  await selectWorkbenchTool(page, 'Workflow');
+  const retainedDisclosure = page.locator('details.composed-workflows');
+  if (!await retainedDisclosure.evaluate(element => element.open)) await retainedDisclosure.locator('summary').click();
+  await page.getByRole('region', { name: 'Composed workflows', exact: true }).waitFor();
+  await shot('06-cold-portable-history');
   receipt.checks.push('actual-native-portable-export-import-and-explicit-source-relink', 'fresh-process-profile-reopen-exact-results-graphs-and-jobs', 'cold-array-hash-and-value-oracles');
   assert.equal(await sha(source), fixture.source_sha256, 'Original authored source changed');
   assert.deepEqual(await identity(), receipt.build); assert.deepEqual(receipt.renderer_errors, []); assert.deepEqual(receipt.network_requests, []);

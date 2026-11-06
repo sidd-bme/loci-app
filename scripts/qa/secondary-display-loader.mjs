@@ -85,19 +85,21 @@ async function protectLaunchedApp(app, selected) {
   const target = actual.filter((display) => display.id === selected.id);
   if (target.length !== 1 || target[0].primary) throw new Error(`Electron did not expose the selected non-primary display id ${selected.id}.`);
   const targetDisplay = target[0];
+  // Electron launch can resolve before the app creates its first window.
+  await app.firstWindow();
   const windows = app.windows();
   if (!windows.length) throw new Error('Electron launched without a BrowserWindow.');
   const chosen = windowBoundsFor({ ...selected, workArea: targetDisplay.workArea });
   await app.evaluate((_electron, bounds) => {
-    const { BrowserWindow } = require('electron');
+    const { BrowserWindow } = _electron;
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error('No BrowserWindow to place on the selected display.');
     window.setBounds(bounds);
     window.show();
     window.focus();
   }, chosen);
-  const state = await app.evaluate(() => {
-    const { BrowserWindow, screen } = require('electron');
+  const state = await app.evaluate((_electron) => {
+    const { BrowserWindow, screen } = _electron;
     const window = BrowserWindow.getAllWindows()[0];
     const bounds = window.getBounds();
     const display = screen.getDisplayMatching(bounds);
@@ -108,7 +110,7 @@ async function protectLaunchedApp(app, selected) {
   }
 
   await app.evaluate((_electron, targetId) => {
-    const { BrowserWindow, screen } = require('electron');
+    const { BrowserWindow, screen, app } = _electron;
     let failed = false;
     const fail = (reason) => {
       if (failed) return;
@@ -118,7 +120,6 @@ async function protectLaunchedApp(app, selected) {
       for (const window of BrowserWindow.getAllWindows()) window.hide();
       app.quit();
     };
-    const { app } = require('electron');
     let adjusting = false;
     const clamp = (window) => {
       if (adjusting || window.isDestroyed()) return;
@@ -142,10 +143,13 @@ async function protectLaunchedApp(app, selected) {
     };
     screen.on('display-removed', validate);
     screen.on('display-metrics-changed', validate);
-    for (const window of BrowserWindow.getAllWindows()) {
+    const guardWindow = (window) => {
       window.on('move', () => clamp(window));
       window.on('resize', () => clamp(window));
-    }
+      clamp(window);
+    };
+    for (const window of BrowserWindow.getAllWindows()) guardWindow(window);
+    app.on('browser-window-created', (_event, window) => guardWindow(window));
   }, selected.id);
   trace('launch-placed', { display: { id: selected.id, name: selected.name }, bounds: state.bounds });
 }
@@ -169,7 +173,7 @@ if (DISPLAY_NAME) {
       return app;
     } catch (error) {
       if (app) {
-        try { await app.evaluate(() => { const { app: electronApp, BrowserWindow } = require('electron'); for (const window of BrowserWindow.getAllWindows()) window.hide(); electronApp.quit(); }); } catch {}
+        try { await app.evaluate(({ app: electronApp, BrowserWindow }) => { for (const window of BrowserWindow.getAllWindows()) window.hide(); electronApp.quit(); }); } catch {}
       }
       throw error;
     }

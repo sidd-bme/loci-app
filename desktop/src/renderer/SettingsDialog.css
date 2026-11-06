@@ -152,6 +152,8 @@
 .settings-search { display: flex; align-items: center; gap: 8px; min-width: 0; width: min(300px, 45%); min-height: 40px; margin-left: auto; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--ink-secondary); background: var(--graphite-925); }
 .settings-search > svg { flex-shrink: 0; }
 .settings-search input { width: 100%; min-width: 0; min-height: 38px; padding: 0; border: 0; outline: none; background: transparent; color: var(--ink); font: inherit; font-size: var(--type-md); }
+.settings-search input:focus-visible { outline: none; box-shadow: none; }
+.settings-search input::-webkit-search-cancel-button { display: none; }
 .settings-search input::placeholder { color: var(--ink-secondary); }
 .settings-search:focus-within { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
 .settings-search button { display: grid; place-items: center; min-width: 28px; min-height: 32px; padding: 0; border: 0; border-radius: 4px; color: var(--ink-secondary); background: transparent; cursor: pointer; }

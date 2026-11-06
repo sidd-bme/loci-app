@@ -63,6 +63,9 @@ describe("Composed workflows", () => {
     expect(app.execute.mock.calls.some(([op]) => op === "workflow_graph_continue")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Prepare fresh run" }));
     await screen.findByText("Fresh continuation prepared. Advance workflow when you are ready; no step has started.");
+    expect(screen.getByRole("heading", { name: "Inputs for a new run" })).toBeVisible();
+    expect(screen.getByText("These choices do not change the saved run below.")).toBeVisible();
+    expect(screen.getByText("Saved run input bindings")).toBeVisible();
     expect(app.execute).toHaveBeenCalledWith("workflow_graph_continue", expect.objectContaining({ run_id: rid, run_revision: 1,
       run_sha256: hash, continuation_sha256: receipt.continuation_sha256, workflow_id: expect.stringMatching(/^[a-f0-9]{32}$/), request_key: expect.any(String) }));
     expect(app.execute.mock.calls.some(([op]) => op === "workflow_graph_advance")).toBe(false);

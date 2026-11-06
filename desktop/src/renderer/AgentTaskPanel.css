@@ -22,6 +22,7 @@
 .agent-task-limitations p, .agent-task-limitations ul { color: var(--ink-secondary); }
 .agent-task-editor, .agent-task-editor label, .agent-task-selector { display: grid; gap: 8px; color: var(--ink-secondary); font-size: var(--type-sm); }
 .agent-task-editor { gap: 12px; }
+.agent-task-editor-header { position: sticky; top: -16px; z-index: 1; display: grid; gap: 8px; padding: 8px 0 12px; border-bottom: 1px solid var(--line); background: var(--graphite-900); }
 .agent-task-editor textarea, .agent-task-editor input, .agent-task-selector select { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; color: var(--ink); background: var(--graphite-850); border: 1px solid var(--line-strong); border-radius: 6px; padding: 8px; }
 .agent-task-editor textarea { min-height: 80px; resize: vertical; line-height: 1.5; }
 .agent-task-editor input, .agent-task-selector select { min-height: 40px; }

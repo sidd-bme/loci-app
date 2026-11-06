@@ -283,7 +283,11 @@ This is the ONLY expected tool error. Do not retry or change that stale request.
 Re-read task, verify human goal and step titles remain, then publish_plan at the current
 expected_revision=2 using ALL goal/steps/state/targets values from that read unchanged.
 Keep human-edited goal and titles exactly; this becomes revision3. Continue step1 context
-inspection. At the end publish_assessment with expected_revision=3 (not 1).
+inspection. At the end publish_assessment with expected_revision=3 (not 1), yielding revision4.
+The human edit intentionally reopened the plan as active. AFTER publishing that
+assessment, publish_plan with expected_revision=4, the preserved human goal/steps/targets
+and state=awaiting_review. This final status-only publication yields revision5.
+Then agent_task_read get verifies the exact final plan and retained assessment.
 """
     return f"""Exercise Loci using ONLY {SERVER} MCP tools, strictly sequentially.
 No shell, files, browsing, other servers, embedded agent, plugins or subagents.
@@ -723,7 +727,8 @@ def host_calls(events, *, expected_stale_request=None):
             running = [
                 n["intent"]["job_id"]
                 for n in run["nodes"].values()
-                if n.get("intent", {}).get("job_id") and n["intent"]["job_id"] not in exited_jobs
+                if (n.get("intent") or {}).get("job_id")
+                and n["intent"]["job_id"] not in exited_jobs
             ]
             require(len(running) <= 1, "Graph scheduled concurrent children")
             if running:
@@ -1141,7 +1146,7 @@ def verify(output):
     require(
         len(tasks) == 1
         and tasks[0]["id"] == fixture["task_id"]
-        and tasks[0]["revision"] == (4 if fixture.get("wait_for_human_edit") else 2),
+        and tasks[0]["revision"] == (5 if fixture.get("wait_for_human_edit") else 2),
         "Task publication/revision mismatch",
     )
     task = tasks[0]
@@ -1190,7 +1195,7 @@ def verify(output):
             "Human goal/step edits were overwritten",
         )
         plans = matching(calls, "agent_task_write", "publish_plan")
-        require(len(plans) == 2, "Expected original and human-preserving plan publications")
+        require(len(plans) == 3, "Expected original, human-preserving and review-ready plans")
         require(
             plans[1]["arguments"]["request"]
             == {
@@ -1199,6 +1204,18 @@ def verify(output):
                 **{key: human_reads[-1][key] for key in ("goal", "steps", "state", "targets")},
             },
             "Agent did not preserve exact human plan edit",
+        )
+        require(
+            plans[2]["arguments"]["request"]
+            == {
+                "task_id": task["id"],
+                "expected_revision": 4,
+                **{key: human_reads[-1][key] for key in ("goal", "steps", "targets")},
+                "state": "awaiting_review",
+            }
+            and calls.index(plans[2])
+            > calls.index(one(calls, "agent_task_write", "publish_assessment")),
+            "Final review-ready status changed human plan or preceded the assessment",
         )
         error_index = calls.index(errors[0])
         expected_read = {"operation": "get", "request": {"task_id": task["id"]}}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchAgentTaskRecord, ResearchAgentTargetReference, ResearchSnapshot } from "../shared/research-contracts";
 import { AgentTaskPanel } from "./AgentTaskPanel";
@@ -28,6 +28,20 @@ function setup(record = task(), control = vi.fn().mockResolvedValue(true)) {
 }
 
 describe("External agent task presentation", () => {
+  it("keeps save and cancel before a long plan and cancels editing without changing the task", () => {
+    const steps = Array.from({ length: 20 }, (_, index) => ({ id: `step-${index}`, title: `Inspect region ${index + 1}`, state: "planned" as const, note: "", targets: [] }));
+    const { control } = setup(task({ steps }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit plan" }));
+    const actions = screen.getByRole("group", { name: "Plan editing actions" });
+    expect(within(actions).getByRole("button", { name: "Save plan" })).toBeEnabled();
+    const goal = screen.getByRole("textbox", { name: "Goal" });
+    expect(actions.compareDocumentPosition(goal) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.change(goal, { target: { value: "Unsaved replacement" } });
+    fireEvent.click(within(actions).getByRole("button", { name: "Cancel editing" }));
+    expect(screen.getByText("Inspect generated nuclei")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Edit plan" })).toHaveFocus();
+    expect(control).not.toHaveBeenCalled();
+  });
   it("offers stopping only an evidence-linked job with the exact task owner", async () => {
     const record = task();
     record.targets.push({ kind: "job", id: "job-1", sha256: "f".repeat(64) });
@@ -85,7 +99,7 @@ describe("External agent task presentation", () => {
   it("cancels only the exact plan and describes retained disconnected work without resuming it", () => {
     const { control } = setup();
     expect(screen.getByText(/Continuing requires an explicit resume/)).toBeVisible();
-    expect(screen.getByText(/Cancelling a plan does not stop running jobs/)).toBeVisible();
+    expect(screen.getByText(/Cancelling this plan leaves running jobs active/)).toBeVisible();
     expect(control).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Cancel plan" }));
     expect(control).toHaveBeenCalledExactlyOnceWith({ action: "cancel_task", task_id: "task-1", expected_revision: 3 });

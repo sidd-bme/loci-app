@@ -1,7 +1,8 @@
 /** Packaged renderer + actual Codex-host task acceptance.
  *
  * Lead-only execution, Node 24, with LOCI_PACKAGED_APP, LOCI_QA_PYTHON,
- * LOCI_EXTERNAL_HOST_ROOT (unused synthetic preparation --wait-for-human-edit),
+ * LOCI_EXTERNAL_HOST_ROOT (unused synthetic preparation --wait-for-human-edit,
+ * or fluorescence preparation without human-edit synchronization),
  * LOCI_QA_OUTPUT_ROOT and LOCI_QA_SECONDARY_DISPLAY. NODE_OPTIONS must import
  * scripts/qa/secondary-display-loader.mjs before this script runs.
  * Open-study picker responses are simulated and recorded. Human plan editing,
@@ -39,19 +40,27 @@ await fs.access(python, constants.X_OK);
 const hostRoot = await fs.realpath(env.LOCI_EXTERNAL_HOST_ROOT);
 const prepared = JSON.parse(await fs.readFile(path.join(hostRoot, 'prepared-fixture.json'), 'utf8'));
 const fixture = prepared.fixture;
-assert.equal(prepared.case, 'synthetic', 'This interactive journey owns the prepared synthetic case');
-assert.equal(fixture.wait_for_human_edit, true, 'Prepare with --wait-for-human-edit');
+assert.ok(['synthetic', 'fluorescence'].includes(prepared.case), 'Unsupported prepared image example');
+assert.equal(fixture.case, prepared.case, 'Prepared fixture case identity differs');
+const humanSync = prepared.case === 'synthetic';
+assert.equal(fixture.wait_for_human_edit, humanSync,
+  'Synthetic requires human-edit synchronization; fluorescence must leave it disabled');
 assert.equal(prepared.output, hostRoot, 'Prepared root identity differs');
 const HUMAN_EDIT_GOAL = 'Human-edited goal: inspect exact labels and preserve annotation limits';
-assert.equal(fixture.human_edit_goal, HUMAN_EDIT_GOAL);
 const humanTitles = ['Human edit: inspect images and exact measurements', 'Human edit: compare labels with explicit limits'];
-assert.equal(fixture.plan_request.steps.length, humanTitles.length);
+if (humanSync) {
+  assert.equal(fixture.human_edit_goal, HUMAN_EDIT_GOAL);
+  assert.equal(fixture.plan_request.steps.length, humanTitles.length);
+}
+const expectedGoal = humanSync ? HUMAN_EDIT_GOAL : fixture.plan_request.goal;
+const expectedTitles = humanSync ? humanTitles : fixture.plan_request.steps.map(step => step.title);
+const expectedRevision = humanSync ? 5 : 2;
 const executable = path.join(bundle, 'Contents/MacOS/Loci');
 const worker = path.join(bundle, 'Contents/Resources/loci-engine/loci-engine');
 assert.equal(await fs.realpath(prepared.worker.worker_path), await fs.realpath(worker),
   'The host and renderer must use the exact same packaged worker');
 const harness = path.join(repo, 'scripts/qa/codex-external-agent.py');
-const output = await fs.mkdtemp(path.join(env.LOCI_QA_OUTPUT_ROOT, 'agent-task-workspace-'));
+const output = await fs.mkdtemp(path.join(env.LOCI_QA_OUTPUT_ROOT, `agent-task-workspace-${prepared.case}-`));
 const receiptPath = path.join(output, 'receipt.json');
 const sha = async file => {
   assert.equal((await fs.lstat(file)).isFile(), true, `Expected plain file: ${file}`);
@@ -67,6 +76,7 @@ const absent = async file => {
 };
 const receipt = {
   schema: 'loci.packaged-agent-task-workspace-qa/v1', status: 'running', output,
+  case: prepared.case, human_plan_edit_requested: humanSync, human_plan_edit_exercised: false,
   host_root: hostRoot, started_at: new Date().toISOString(), human_review: false,
   biological_validation: false, model_observed: null,
   limits: [
@@ -112,7 +122,7 @@ async function remember() {
 async function nonprimary(label) {
   assert.ok(app, `App absent during ${label}`);
   const state = await app.evaluate((_electron) => {
-    const { BrowserWindow, screen } = require('electron');
+    const { BrowserWindow, screen } = _electron;
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error('No main window');
     const bounds = window.getBounds(), display = screen.getDisplayMatching(bounds);
@@ -145,13 +155,13 @@ async function wait(read, accept, label, milliseconds = 60000) {
 async function shot(name) {
   await nonprimary(name);
   const file = path.join(output, `${name}.png`);
-  await page.screenshot({ path: file });
+  await page.screenshot({ path: file, animations: 'disabled' });
   receipt.screenshots.push({ name, path: file, sha256: await sha(file) });
 }
 
 async function installPicker() {
   await app.evaluate((_electron, study) => {
-    const { dialog } = require('electron');
+    const { dialog } = _electron;
     globalThis.__agentTaskDialogs = [];
     dialog.showOpenDialog = async (...args) => {
       const title = args.at(-1)?.title;
@@ -224,7 +234,7 @@ async function closeApp() {
   const current = app;
   const closed = current.waitForEvent('close', { timeout: 30000 });
   let error;
-  try { await current.evaluate((_electron) => { require('electron').app.quit(); }); await closed; }
+  try { await current.evaluate((_electron) => { _electron.app.quit(); }); await closed; }
   catch (caught) { error = caught; await current.close().catch(() => {}); }
   finally { app = undefined; page = undefined; }
   if (error) throw error;
@@ -302,31 +312,61 @@ try {
   await startHost();
   const initial = await openStudy();
   receipt.project_id = initial.project.project_id;
-  stage = 'real-human-plan-edit';
-  const first = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id && t.revision === 1), 'initial external plan');
+  stage = humanSync ? 'real-human-plan-edit' : 'visible-external-plan';
+  const first = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id &&
+    (humanSync ? t.revision === 1 : t.revision >= 1 && t.revision <= expectedRevision)), 'visible external plan');
   const originalPlan = tasks(first).find(t => t.id === fixture.task_id);
   assert.equal(originalPlan.goal, fixture.plan_request.goal);
+  assert.deepEqual(originalPlan.steps, fixture.plan_request.steps);
+  assert.deepEqual(originalPlan.targets, fixture.plan_request.targets);
+  let retainedPlan = originalPlan;
   const panel = await drawer();
   await panel.getByRole('heading', { name: 'Task plan', exact: true }).waitFor();
   assert.equal(await panel.locator('.agent-task-goal').innerText(), originalPlan.goal);
   await writeJson(path.join(output, 'plan-before.json'), originalPlan);
   await shot('01-visible-external-plan');
-  await panel.getByRole('button', { name: 'Edit plan', exact: true }).click();
-  const editor = panel.getByRole('form', { name: 'Edit agent plan', exact: true });
-  await editor.getByLabel('Goal', { exact: true }).fill(HUMAN_EDIT_GOAL);
-  for (let index = 0; index < humanTitles.length; index++)
-    await editor.getByLabel(`Step ${index + 1}`, { exact: true }).fill(humanTitles[index]);
-  await shot('02-human-plan-draft');
-  await editor.getByRole('button', { name: 'Save plan', exact: true }).click();
-  await editor.waitFor({ state: 'hidden' });
-  await wait(async () => panel.locator('.agent-task-goal').innerText(), text => text === HUMAN_EDIT_GOAL,
-    'visible saved human goal');
-  const edited = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id && t.revision >= 2), 'saved human revision');
-  const editedPlan = tasks(edited).find(t => t.id === fixture.task_id);
-  assert.equal(editedPlan.goal, HUMAN_EDIT_GOAL);
-  assert.deepEqual(editedPlan.steps.map(step => step.title), humanTitles);
-  await writeJson(path.join(output, 'plan-after-ui-save.json'), editedPlan);
-  await shot('03-visible-human-edited-plan');
+  if (humanSync) {
+    await panel.getByRole('button', { name: 'Edit plan', exact: true }).click();
+    const editor = panel.getByRole('form', { name: 'Edit agent plan', exact: true });
+    await editor.getByRole('textbox', { name: 'Goal', exact: true }).fill(HUMAN_EDIT_GOAL);
+    for (let index = 0; index < humanTitles.length; index++)
+      await editor.getByRole('textbox', { name: `Step ${index + 1}`, exact: true }).fill(humanTitles[index]);
+    await shot('02-human-plan-draft');
+    await editor.getByRole('button', { name: 'Save plan', exact: true }).click();
+    await editor.waitFor({ state: 'hidden' });
+    await wait(async () => panel.locator('.agent-task-goal').innerText(), text => text === HUMAN_EDIT_GOAL,
+      'visible saved human goal');
+    const edited = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id && t.revision >= 2), 'saved human revision');
+    const editedPlan = tasks(edited).find(t => t.id === fixture.task_id);
+    assert.equal(editedPlan.goal, HUMAN_EDIT_GOAL);
+    assert.deepEqual(editedPlan.steps.map(step => step.title), humanTitles);
+    retainedPlan = editedPlan;
+    await writeJson(path.join(output, 'plan-after-ui-save.json'), editedPlan);
+    await shot('03-visible-human-edited-plan');
+    receipt.human_plan_edit_exercised = true;
+  } else {
+    stage = 'fluorescence-source-and-result-views';
+    await page.getByRole('button', { name: 'Close agent session drawer', exact: true }).click();
+    const original = page.getByRole('button', { name: 'Original image', exact: true });
+    await original.click();
+    await wait(() => original.getAttribute('aria-pressed'), pressed => pressed === 'true', 'original source selection');
+    await page.locator(`.image-viewport[data-viewer-source="${fixture.source_id}"][data-prepared="true"]`).waitFor();
+    await shot('02-fluorescence-fixed-plane-source');
+    const baseline = page.locator(`button[data-result-id="${fixture.baseline.result_id}"]`);
+    await baseline.click();
+    await wait(() => baseline.getAttribute('aria-pressed'), pressed => pressed === 'true', 'exact fixed-baseline result selection');
+    await wait(() => page.locator('#research-image-stage').evaluate(element =>
+      Boolean(element.querySelector('.image-viewport[data-result-overlay][data-prepared="true"]')) ||
+      [...element.querySelectorAll('img[alt="Exact selected result revision"]')].some(image => image.complete && image.naturalWidth > 0)),
+    ready => ready, 'rendered fluorescence baseline');
+    await shot('03-fluorescence-fixed-baseline-result');
+    receipt.checks.push({ check: 'public-fluorescence-view-artifacts', source_id: fixture.source_id,
+      source_sha256: fixture.source_sha256, baseline: fixture.baseline,
+      original_zero_based_z: prepared.provenance.zero_based_z, derived_axes: prepared.provenance.derived_axes,
+      physical_calibration: prepared.provenance.physical_calibration,
+      interpretation: 'Source-backed screenshots for independent visual interpretation; no accuracy claim' });
+    await drawer();
+  }
 
   stage = 'waiting-for-actual-host';
   await wait(async () => hostResult, value => value !== undefined, 'actual host completion', 1850000);
@@ -336,6 +376,7 @@ try {
   const verification = await json(path.join(hostRoot, 'verification.json'));
   assert.equal(hostReceipt.status, 'passed-codex-host-engineering-qa');
   assert.equal(verification.execution_mode, 'codex-host');
+  assert.equal(verification.case, prepared.case);
   assert.equal(verification.model_requested, 'gpt-6.1-sol');
   assert.equal(verification.model_observed, null);
   assert.equal(verification.human_review, false);
@@ -345,11 +386,14 @@ try {
     session_id: verification.session_id, shutdown: verification.shutdown };
 
   stage = 'visible-assessment-and-evidence';
-  const completed = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id && t.revision === 4 && t.assessments.length === 1), 'saved assessment');
+  const completed = await wait(snapshot, s => tasks(s).some(t => t.id === fixture.task_id && t.revision === expectedRevision && t.assessments.length === 1), 'saved assessment');
   const finalTask = tasks(completed).find(t => t.id === fixture.task_id);
   assert.deepEqual(finalTask, verification.task);
-  assert.equal(finalTask.goal, HUMAN_EDIT_GOAL);
-  assert.deepEqual(finalTask.steps.map(step => step.title), humanTitles);
+  assert.equal(finalTask.goal, expectedGoal);
+  assert.deepEqual(finalTask.steps.map(step => step.title), expectedTitles);
+  assert.deepEqual(finalTask.steps, retainedPlan.steps, 'Final plan must preserve exact retained steps');
+  assert.deepEqual(finalTask.targets, retainedPlan.targets, 'Final plan must preserve exact retained evidence');
+  assert.equal(finalTask.state, 'awaiting_review');
   assert.ok(completed.results.every(result => result.review == null), 'No result may acquire review authority');
   await drawer();
   const assessment = panel.getByRole('region', { name: 'Agent assessment', exact: true });
@@ -374,8 +418,10 @@ try {
   assert.ok(reportText.includes(`${verification.oracle.intersection_pixels.toLocaleString()} shared`));
   assert.ok(reportText.includes('does not establish biological ground truth or accuracy'));
   await shot('05-exact-agreement-evidence-navigation');
-  receipt.checks.push({ check: 'real-renderer-human-edit-stale-host-rejection-and-assessment', task_id: finalTask.id,
-    revision: finalTask.revision, human_goal: finalTask.goal, human_titles: humanTitles, report: binding(report) });
+  receipt.checks.push({ check: humanSync ? 'real-renderer-human-edit-stale-host-rejection-and-assessment'
+    : 'real-renderer-authored-plan-and-assessment', task_id: finalTask.id,
+    revision: finalTask.revision, plan_goal: finalTask.goal, step_titles: expectedTitles,
+    human_plan_edit_exercised: humanSync, report: binding(report) });
   const reportRequest = { ...binding(report), table: 'summary' };
   const warmReport = await execute('annotation_evaluation_get', reportRequest);
   const warmJobs = completed.jobs.map(job => ({ id: job.id, operation: job.operation, state: job.state, result_ids: job.result_ids }));
@@ -403,7 +449,7 @@ try {
   assert.deepEqual(coldTask, finalTask, 'Cold task/assessment must retain exact authored provenance');
   const coldPanel = await drawer();
   await coldPanel.getByRole('region', { name: 'Agent assessment', exact: true }).waitFor();
-  assert.equal(await coldPanel.locator('.agent-task-goal').innerText(), HUMAN_EDIT_GOAL);
+  assert.equal(await coldPanel.locator('.agent-task-goal').innerText(), expectedGoal);
   assert.equal(await coldPanel.locator('.agent-task-assessment .agent-task-prose').innerText(), finalTask.assessments[0].summary);
   assert.deepEqual(await execute('annotation_evaluation_get', reportRequest), warmReport,
     'Cold exact report differs with prepared source absent');

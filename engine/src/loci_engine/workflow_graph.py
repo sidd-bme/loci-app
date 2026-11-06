@@ -417,16 +417,49 @@ def _result(workbench, binding, budget, *, port_type="label-result"):
     return record
 
 
+def _preview_wire_equal(value, native):
+    """Only integral int/float spelling may differ across a JSON number boundary.
+
+    This compares a wire view to an independently hash-verified native receipt;
+    it never changes the receipt's canonical bytes or accepts boolean numbers.
+    """
+    if type(value) is not type(native):
+        if {type(value), type(native)} != {int, float}:
+            return False
+        number = value if type(value) is float else native
+        return math.isfinite(number) and number.is_integer() and value == native
+    if type(native) is dict:
+        return set(value) == set(native) and all(
+            _preview_wire_equal(value[key], native[key]) for key in native
+        )
+    if type(native) is list:
+        return len(value) == len(native) and all(
+            _preview_wire_equal(a, b) for a, b in zip(value, native, strict=True)
+        )
+    if type(native) is float:
+        return math.isfinite(value) and math.isfinite(native) and value == native
+    return value == native
+
+
 def _tissue_preview(workbench, binding, budget):
     """Validate an inert exact preview receipt, never mint/run/approve a preview."""
-    from .research_tissue_models import _validate_receipt, _validate_source_request
+    from .research_tissue_models import _validate_receipt, _validate_source_request, peek_preview
 
     _exact(binding, {"preview_id", "preview_hash", "receipt"}, "prepared tissue preview")
     checked_id(binding["preview_id"])
-    if _sha(binding["preview_hash"], "Tissue preview") != _hash(binding["receipt"]):
-        raise ValueError("Tissue preview receipt hash changed")
-    _validate_receipt(binding["receipt"])
-    request = binding["receipt"]["request"]
+    receipt = binding["receipt"]
+    if _sha(binding["preview_hash"], "Tissue preview") != _hash(receipt):
+        # JavaScript JSON numbers omit an integral float's trailing '.0'.
+        # Resolve only this transport spelling difference against the exact
+        # trusted native cache. peek_preview retains its strict self-hash check.
+        stored = peek_preview(
+            workbench.project, {key: binding[key] for key in ("preview_id", "preview_hash")}
+        )
+        if not _preview_wire_equal(receipt, stored["receipt"]):
+            raise ValueError("Tissue preview receipt hash changed")
+        receipt = stored["receipt"]
+    _validate_receipt(receipt)
+    request = receipt["request"]
     if request["working_bytes"] > budget:
         raise ValueError("Tissue preview exceeds graph working-memory budget")
     source = workbench.project.source(request["source_id"], verify=True)
@@ -436,9 +469,9 @@ def _tissue_preview(workbench, binding, budget):
     for name in ("context_selection", "output_selection"):
         _selection(workbench, source["id"], request[name])
     geometry = _geometry(workbench, source["id"], request["output_selection"]).to_dict()
-    if canonical_json(geometry) != canonical_json(binding["receipt"]["geometry"]):
+    if canonical_json(geometry) != canonical_json(receipt["geometry"]):
         raise ValueError("Tissue preview grid differs from its exact source")
-    return _copy(binding)
+    return _copy({**binding, "receipt": receipt})
 
 
 def validate_bindings(workbench, definition, bindings, *, _with_scopes=False):

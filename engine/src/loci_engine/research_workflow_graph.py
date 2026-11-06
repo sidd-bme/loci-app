@@ -20,6 +20,7 @@ from .workflow_graph import (
     OUTPUT_TYPES,
     PLAN_SCHEMA,
     _lineage_scopes,
+    _preview_wire_equal,
     _record_scope,
     _resolve_node,
     _result,
@@ -1069,8 +1070,25 @@ def execute_workflow_graph(
         if existing:
             doc = _run(workbench, run_id)
             _owner(doc["data"], owner)
+            normalized_request = _copy(request)
+            retained = doc["data"]["plan"]
+            _exact(
+                normalized_request["bindings"],
+                set(retained["definition"]["inputs"]),
+                "graph bindings",
+            )
+            for name, kind in retained["definition"]["inputs"].items():
+                if kind == "tissue-preview":
+                    # An idempotent retry may outlive the preview cache. Its
+                    # retained exact run is already integrity/owner checked;
+                    # normalize only a semantically identical wire receipt.
+                    if not _preview_wire_equal(
+                        normalized_request["bindings"][name], retained["bindings"][name]
+                    ):
+                        raise ValueError("Graph request changed: tissue preview binding differs")
+                    normalized_request["bindings"][name] = retained["bindings"][name]
             if (
-                doc["data"]["request_sha256"] != _hash(request)
+                doc["data"]["request_sha256"] != _hash(normalized_request)
                 or doc["data"].get("continuation") != continuation
             ):
                 raise ValueError(
@@ -1119,7 +1137,7 @@ def execute_workflow_graph(
             "workflow_revision": workflow["revision"],
             "definition_sha256": workflow["data"]["definition_sha256"],
             "request_key": key,
-            "request_sha256": _hash(request),
+            "request_sha256": _hash({**request, "bindings": plan["bindings"]}),
             "plan": plan,
             "owner": owner,
             "state": "prepared",

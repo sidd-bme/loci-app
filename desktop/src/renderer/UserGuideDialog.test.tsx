@@ -48,6 +48,9 @@ describe("bundled user manual", () => {
     expect(search).toHaveValue("");
     expect(screen.getByRole("heading", { level: 2, name: "Work with external agents" })).toHaveFocus();
     expect(screen.queryByRole("heading", { name: "First study with synthetic shapes" })).not.toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "continue unfinished" } });
+    const continuation = within(article).getByRole("button", { name: /Compose and reuse workflows/ });
+    expect(continuation).toHaveTextContent("…Bind and check inputs again for the new run. Continue unfinished work");
   });
 
   it("falls back for an unknown topic and restores focus to its opener", () => {
