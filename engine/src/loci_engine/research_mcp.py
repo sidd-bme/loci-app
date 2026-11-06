@@ -139,7 +139,11 @@ _STUDY_TOOL_CATALOG = (
         "Publish a bounded plan or evidence-linked assessment at its exact revision, or "
         "explicitly resume a stopped session's plan. Requires separate plan permission. "
         "This never runs jobs, approves execution, or records human review; cancelled "
-        "plans cannot be restarted. Re-read after revision conflicts.",
+        "plans cannot be restarted. Re-read after revision conflicts. Write short, "
+        "researcher-facing summaries and distinct observations with relevant quantities, "
+        "units and scope. Keep exact IDs/hashes in evidence targets; use readable names "
+        "in prose. Link full reports and preserve every material limitation and review "
+        "status. These are writing preferences, not truncation rules.",
     ),
     (
         "workflow_graph_inspect",

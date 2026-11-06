@@ -563,6 +563,13 @@ namespaced records in the `metadata` table of `study.sqlite3`, and surfaces them
   Historical assessments remain immutable and visibly stale when their evidence
   changes. Local study save/reopen retains the records. This grant does not add
   arbitrary code execution, export or review authority.
+  Write assessments for the researcher: a short summary of the finding and review
+  status, then distinct observations with relevant quantities, units and scope.
+  Use readable result names in prose and keep exact IDs/hashes in structured
+  evidence targets. Link complete reports instead of repeating them. Preserve
+  material limitations, including missing calibration, unobserved regions,
+  reference quality, authored or unexecuted methods, and human-review status.
+  These are writing preferences; Loci preserves submitted text without truncation.
 - **Deliberate continuation**: A new client session may explicitly resume a plan
   from a stopped session under the same exact policy, with current evidence and
   grants checked again. This transfers the plan, not jobs or approvals. Composed

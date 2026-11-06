@@ -406,6 +406,8 @@ try {
   assert.equal(report?.kind, 'annotation-agreement');
   assert.ok(finalTask.assessments[0].targets.some(t => t.kind === 'result' && t.id === report.id && t.revision_hash === report.revision_hash));
   await shot('04-visible-evidence-linked-assessment');
+  await assessment.locator('.agent-task-evidence').scrollIntoViewIfNeeded();
+  await shot('04b-assessment-limitations-and-evidence');
   await assessment.getByRole('button', { name: `Open result ${report.id}`, exact: true }).click();
   await page.locator(`button[data-result-id="${report.id}"][aria-pressed="true"]`).waitFor();
   if (await page.getByRole('button', { name: 'Close agent session drawer', exact: true }).isVisible())
@@ -458,6 +460,8 @@ try {
   const afterCold = await snapshot();
   assert.deepEqual(afterCold.jobs.map(job => job.id), completed.jobs.map(job => job.id));
   assert.ok(afterCold.results.every(result => result.review == null));
+  await page.getByRole('heading', { name: 'Image unavailable', exact: true }).waitFor();
+  assert.equal(await page.getByText('Loading the selected source.', { exact: true }).count(), 0);
   await shot('06-cold-retained-plan-and-assessment');
   receipt.checks.push({ check: 'cold-retained-copy', source_absent: true, model_home_empty: true,
     decoder_instrumented: false, original_study_unmodified_by_cold_phase: true, task_id: finalTask.id,

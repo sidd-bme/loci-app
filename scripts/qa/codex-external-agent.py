@@ -322,6 +322,15 @@ expected_revision=0,name="Captured morphology and agreement". No re-execution.
 5. result on terminal agreement output and morphology output. result_view on terminal
 agreement result; examine returned image. inspect_action annotation_evaluation_get
 with exact terminal result_id,revision_hash,table="summary".
+Keep the assessment concise and evidence-linked. Summarize the finding and pending
+review in one or two sentences. Give each observation one distinct finding with
+relevant quantities, units, thresholds and inspected scope. Use readable result
+names; keep exact IDs/hashes in the required evidence targets instead of repeating
+them in prose. Describe replay/completed-run checks briefly and link full reports.
+Preserve all distinct limitations: undeclared biological channel identity, absent
+physical calibration, fixed-plane agreement scope, the separate authored rectangle,
+authored/adopted method values without execution, and no human review or biological
+validation. Do not shorten by dropping uncertainty or changing numerical meaning.
 6. agent_task_write publish_assessment with task_id={fixture["task_id"]},
 expected_revision={3 if fixture.get("wait_for_human_edit") else 1}, a concise summary,
 observations string list, nonempty limitations string list, and targets including

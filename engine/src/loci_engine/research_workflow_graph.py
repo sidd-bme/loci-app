@@ -11,6 +11,9 @@ execution/publication guard, including workers restarted after a lost response.
 from __future__ import annotations
 
 import hashlib
+import stat
+import sys
+from pathlib import Path
 
 from .quantitative import exact_keys, integer
 from .research_jobs import cancel_job, submit_job
@@ -922,6 +925,235 @@ def guard_node_job(workbench, job):
         or _native_request(workbench, native["operation"], native["request"]) != intent["request"]
     ):
         raise ValueError("Native graph job no longer resolves to its persisted request")
+
+    return _copy(plan.get("method_identities", {}))
+
+
+def _node_file_identity(path):
+    """Cheap invalidation only; the atomic full guard still verifies byte hashes."""
+    try:
+        value = path.lstat()
+        if not stat.S_ISREG(value.st_mode) or path.resolve(strict=True) != path:
+            raise ValueError("Graph dependency path is no longer a canonical regular file")
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+            value.st_mode,
+            value.st_uid,
+            value.st_gid,
+        )
+    except FileNotFoundError:
+        return None
+
+
+def _node_watch_spec(workbench, job):
+    """Bound the exact persisted dependency closure; unfamiliar shapes stay full."""
+    project = workbench.project
+    run_id = job["request_key"][len(KEY_PREFIX) :].split(":")[0]
+    doc = _run(workbench, run_id)
+    plan = doc["data"]["plan"]
+    # Controlled execution has additional mutable package/rights documents.
+    # Preserve its full path until that native authority closure is modelled.
+    if any(node["operation"] == "method_run" for node in plan["definition"]["nodes"]):
+        return None
+    sources = {scope["source_id"] for scope in plan["node_scopes"].values()}
+    results = set()
+
+    def references(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"result_id", "parent_id"} and item is not None:
+                    results.add(checked_id(item))
+                if key == "source_id":
+                    sources.add(checked_id(item))
+                references(item)
+        elif isinstance(value, list):
+            for item in value:
+                references(item)
+
+    references(plan["bindings"])
+    for entry in doc["data"]["nodes"].values():
+        references(entry.get("output"))
+    files = set()
+    inspected = set()
+    try:
+        with project.connection() as connection:
+            while results - inspected:
+                if len(results) > 2048:
+                    return None
+                identity = next(iter(results - inspected))
+                inspected.add(identity)
+                row = connection.execute(
+                    "SELECT record FROM results WHERE id=?", (identity,)
+                ).fetchone()
+                if row is None:
+                    return None
+                record = parse_json(row[0])
+                if record.get("schema") != "loci.research-result/v1":
+                    return None
+                references(record)
+                for artifact in record.get("arrays", {}).values():
+                    files.add(project.arrays / (_sha(artifact["sha256"], "Artifact") + ".npy"))
+            if len(sources) > 256:
+                return None
+            for identity in sources:
+                row = connection.execute(
+                    "SELECT record FROM sources WHERE id=?", (checked_id(identity),)
+                ).fetchone()
+                if row is None:
+                    return None
+                source = parse_json(row[0])
+                if source.get("source_kind") not in {"native", "whole_slide"}:
+                    return None
+                path = source.get("private_path")
+                if not isinstance(path, str) or not Path(path).is_absolute():
+                    return None
+                files.add(Path(path))
+        methods = set(plan.get("method_identities", {}))
+        if methods - {"morphometrics_run", "annotation_evaluation_run"}:
+            return None
+        if methods and getattr(sys, "frozen", False):
+            files.add(Path(sys.executable))
+        else:
+            if "morphometrics_run" in methods:
+                from . import morphometrics, research_morphometrics
+
+                files.update(
+                    Path(module.__file__) for module in (morphometrics, research_morphometrics)
+                )
+            if "annotation_evaluation_run" in methods:
+                from . import annotation_evaluation, research_annotation_evaluation
+
+                files.update(
+                    Path(module.__file__)
+                    for module in (annotation_evaluation, research_annotation_evaluation)
+                )
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "run_id": run_id,
+        "workflow_id": doc["data"]["workflow_id"],
+        "results": sorted(results),
+        "sources": sorted(sources),
+        "files": sorted(files),
+        "job_sha256": _hash(
+            {
+                key: job.get(key)
+                for key in ("id", "operation", "owner", "request_key", "request_hash", "request")
+            }
+        ),
+    }
+
+
+def _node_watch_snapshot(workbench, job, spec):
+    """Read volatile rows and file identities without reparsing scientific payloads."""
+    from .research_tissue_integration import policy_runtime
+    from .workbench import runtime_record
+
+    records = []
+    with workbench.project.connection() as connection:
+        row = connection.execute("SELECT record FROM jobs WHERE id=?", (job["id"],)).fetchone()
+        if row is None:
+            raise ValueError("Native graph job disappeared")
+        current = parse_json(row[0])
+        if current.get("cancel_requested") is not False or current.get("state") not in {
+            "queued",
+            "running",
+        }:
+            raise PermissionError("Native graph job was cancelled or stopped")
+        if (
+            _hash(
+                {
+                    key: current.get(key)
+                    for key in (
+                        "id",
+                        "operation",
+                        "owner",
+                        "request_key",
+                        "request_hash",
+                        "request",
+                    )
+                }
+            )
+            != spec["job_sha256"]
+        ):
+            raise PermissionError("Native graph job ownership or exact request changed")
+        for kind, identity in (("workflow_run", spec["run_id"]), ("workflow", spec["workflow_id"])):
+            row = connection.execute(
+                "SELECT record FROM documents WHERE kind=? AND id=?", (kind, identity)
+            ).fetchone()
+            records.append(None if row is None else row[0])
+        for table, identities in (("sources", spec["sources"]), ("results", spec["results"])):
+            for identity in identities:
+                row = connection.execute(
+                    f"SELECT record FROM {table} WHERE id=?", (identity,)
+                ).fetchone()
+                records.append(None if row is None else row[0])
+    return (
+        tuple(records),
+        tuple(_node_file_identity(path) for path in spec["files"]),
+        runtime_record(),
+        policy_runtime(),
+    )
+
+
+def node_job_inner_guard(workbench, job):
+    """Pin one stable validated snapshot, never a global/time-based trust cache.
+
+    Each callback rereads exact persisted run/workflow/source/result rows, job
+    ownership/request/cancellation, runtime and canonical dependency-file stat
+    identities. Any change forces full validation. Source/result/scientific and
+    method byte hashes are always repeated independently inside atomic publication.
+    Byte tampering that preserves all watched stat identities can therefore be
+    detected at final publication rather than every chunk; it cannot be published.
+    Native leaf and current outer policy/session guards remain independent.
+    Unrecognised dependency/source shapes retain the original full callback.
+    """
+
+    def validated_watch():
+        for _ in range(2):
+            spec = _node_watch_spec(workbench, job)
+            before = _node_watch_snapshot(workbench, job, spec) if spec is not None else None
+            guard_node_job(workbench, job)
+            if spec is None:
+                return None
+            after = _node_watch_snapshot(workbench, job, spec)
+            if before == after:
+                return spec, after
+        raise ValueError("Graph dependencies changed during exact-job validation")
+
+    watch = validated_watch()
+
+    def check():
+        nonlocal watch
+        if watch is None:
+            guard_node_job(workbench, job)
+        elif _node_watch_snapshot(workbench, job, watch[0]) != watch[1]:
+            watch = validated_watch()
+
+    return check
+
+
+def guard_node_publication(project, job):
+    """Full exact-job graph check at publication, including direct native callers.
+
+    Create an independent metadata workbench rather than relying on an execution
+    instance or a callback attribute surviving native scientific guard wrappers.
+    Non-graph jobs pay no workbench/graph cost. The caller holds BEGIN IMMEDIATE.
+    """
+    if not job.get("request_key", "").startswith(KEY_PREFIX):
+        return False
+    from .workbench import Workbench
+
+    workbench = Workbench(project)
+    try:
+        guard_node_job(workbench, job)
+    finally:
+        workbench.close()
+    return True
 
 
 def execute_workflow_graph(

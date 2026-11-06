@@ -984,6 +984,9 @@ export default function ResearchWorkbench({
   const [abCompareMode, setAbCompareMode] = useState(false);
   const [drawingAnalysisRegion, setDrawingAnalysisRegion] = useState(false);
   const [viewSettingsReady, setViewSettingsReady] = useState(false);
+  const [sourcePreparation, setSourcePreparation] = useState<{
+    key: string; phase: "loading" | "ready" | "failed"; error: string | null;
+  } | null>(null);
   const viewStore = useRef<SourceViewStore | null>(null);
   const viewStoreFailure = useRef<{ store: SourceViewStore; error: unknown } | null>(null);
   const [assistantFollowing, setAssistantFollowing] = useState(false);
@@ -1150,6 +1153,13 @@ export default function ResearchWorkbench({
   }), [desktopApi, switchDocument]);
   const source =
     snapshot?.sources.find((entry) => entry.id === sourceId) ?? null;
+  const sourcePreparationKey = JSON.stringify([documentEpoch, source?.id, source?.sha256, source?.locator_state]);
+  const currentSourcePreparation = sourcePreparation?.key === sourcePreparationKey ? sourcePreparation : null;
+  const displayedError = error ?? currentSourcePreparation?.error;
+  const dismissDisplayedError = () => {
+    if (error) setError(null);
+    else setSourcePreparation((previous) => previous ? { ...previous, error: null } : null);
+  };
   const sourceResults = useMemo(() => snapshot?.results.filter((item) => item.source_id === sourceId) ?? [], [snapshot?.results, sourceId]);
   useLayoutEffect(() => {
     const header = toolHeaderRef.current;
@@ -1609,6 +1619,7 @@ export default function ResearchWorkbench({
     if (!dimensions) return;
     const currentLocatorState = source.locator_state ?? "ok";
     if (source.locator_state === "relink-required") {
+      setSourcePreparation(null);
       projectionSourceId.current = source.id;
       projectionSourceSha256.current = source.sha256;
       projectionSourceLocatorState.current = "relink-required";
@@ -1658,6 +1669,7 @@ export default function ResearchWorkbench({
     setSourceAnnotations([]);
     setRawVolumeOpen(false); setRawVolume(null); setVolumeDisplay({ renderMode: "blend", quality: 50 }); rawVolumeToken.current++;
     const token = ++displayToken.current;
+    setSourcePreparation({ key: sourcePreparationKey, phase: "loading", error: null });
     void viewDrain.current.then(() => Promise.all([api.execute("viewer_defaults", { source_id: source.id, t: 0, z: 0, auto: false }),
       api.execute("source_view", { source_id: source.id })])).then(async ([value, saved]) => {
       if (displayToken.current !== token) return;
@@ -1685,8 +1697,12 @@ export default function ResearchWorkbench({
       }, view.state ?? null);
       viewStore.current = store;
       setViewSettingsReady(true);
+      setSourcePreparation({ key: sourcePreparationKey, phase: "ready", error: null });
       setDisplayBasis(exampleChannels ? "Authored example display" : typeof defaults.basis === "string" ? defaults.basis : "Source defaults");
-    }).catch((caught) => { if (displayToken.current === token) setError(message(caught, "Could not prepare source display settings.")); });
+    }).catch((caught) => {
+      if (displayToken.current === token) setSourcePreparation({ key: sourcePreparationKey, phase: "failed",
+        error: message(caught, "Could not prepare source display settings.") });
+    });
     setImage(null);
     setVolume(null);
     setResultId(null);
@@ -3051,8 +3067,8 @@ export default function ResearchWorkbench({
           </button>
         )}
       </header>
-      {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
-      <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
+      {displayedError && <ResearchError error={displayedError} onDismiss={dismissDisplayedError} />}
+      <ContextHelp enabled={preferences.viewer.contextualHelp && !displayedError} />
       <div className="research-sources-pane">
         <aside className="research-sources">
           <div className="research-sources-header">
@@ -3545,8 +3561,12 @@ export default function ResearchWorkbench({
         ) : (
           <div className="research-image-frame research-image-frame-empty">
             <div className="research-empty-canvas-content" role={source ? "status" : undefined}>
-              <h2>{source ? "Preparing image…" : "Open an image to begin"}</h2>
-              <p>{source ? "Loading the selected source." : "Explore images, annotate structures, and measure with traceable results."}</p>
+              <h2>{!source ? "Open an image to begin" : currentSourcePreparation?.phase === "loading"
+                ? "Preparing image…" : "Image unavailable"}</h2>
+              <p>{!source ? "Explore images, annotate structures, and measure with traceable results."
+                : currentSourcePreparation?.phase === "loading" ? "Loading the selected source."
+                : currentSourcePreparation?.phase === "failed" ? "The selected source could not be loaded."
+                : "No image view is available for this source."}</p>
               {!source && (
                 <p className="empty-formats">
                   TIFF · OME-TIFF · IMS · OME-Zarr · CZI · ND2 · LIF · DICOM · PNG · JPEG
