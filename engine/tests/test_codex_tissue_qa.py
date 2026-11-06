@@ -17,13 +17,14 @@ from typing import Any
 import numpy as np
 import pytest
 import test_research_tissue_models as fixtures
+from PIL import Image
+from test_tissue_model_integration import run_job, submit_job
+
 from loci_engine.agent_policy import load_policy, write_policy
 from loci_engine.agent_sessions import finish_session, register_policy, start_session
 from loci_engine.research_project import ResearchProject
 from loci_engine.tissue_model_profiles import puma_profile
 from loci_engine.workbench import Workbench, display_scalar
-from PIL import Image
-from test_tissue_model_integration import run_job, submit_job
 
 pytest_plugins = ["test_tissue_model_integration"]
 
