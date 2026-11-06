@@ -98,6 +98,8 @@ def methods_text(result: dict[str, Any]) -> str:
                 "stain_separation": provenance.get("stain_separation"),
                 "tissue_mask": provenance.get("tissue_mask"),
                 "tissue_mask_status": provenance.get("tissue_mask_status"),
+                "tissue_model": provenance.get("tissue_model"),
+                "host_runtime": provenance.get("host_runtime"),
                 "references": provenance.get("references"),
                 "model": provenance.get("model"),
                 "model_preview": provenance.get("model_preview"),
@@ -114,7 +116,8 @@ def methods_text(result: dict[str, Any]) -> str:
                 "spatial": provenance.get("spatial"),
                 "morphometrics": provenance.get("morphometrics"),
                 "morphometrics_request": provenance.get("accepted_request")
-                if "morphometrics" in provenance else None,
+                if "morphometrics" in provenance
+                else None,
                 "spatial_request": provenance.get("accepted_request")
                 if "spatial" in provenance
                 else None,
@@ -315,8 +318,10 @@ def _export_extended_records(
             measurements_csv(flat_measurements(trajectory_rows)), encoding="utf-8"
         )
         files = []
-        for table, filename in (("tracks", "track-summaries.csv"),
-                                ("intervals", "track-intervals.csv")):
+        for table, filename in (
+            ("tracks", "track-summaries.csv"),
+            ("intervals", "track-intervals.csv"),
+        ):
             (stage / filename).write_text(
                 measurements_csv(trajectory_csv_rows(metrics, table)), encoding="utf-8"
             )
@@ -364,6 +369,15 @@ def export_research_result(
         from .research_morphometrics import validate_arrays
 
         validate_arrays(result, arrays)
+    if "tissue_model" in result["provenance"]:
+        from .research_tissue_models import validate_arrays
+
+        validate_arrays(
+            result,
+            arrays,
+            parent=project.result(result["parent_id"]) if result["parent_id"] else None,
+            check=lambda: None,
+        )
     if "perinuclear" in result["provenance"]:
         from .research_perinuclear import validate_arrays
 
@@ -417,9 +431,13 @@ def export_research_result(
                     metadata[f"PhysicalSize{axis}"] = step
                     metadata[f"PhysicalSize{axis}Unit"] = unit
             for name, array in arrays.items():
-                if name not in {"image", "labels", "probabilities"} and not (
-                    "perinuclear" in result["provenance"]
-                    and name in {"ring_labels", "ring_ambiguous"}
+                if (
+                    name not in {"image", "labels", "probabilities"}
+                    and not ("tissue_model" in result["provenance"] and name == "class_labels")
+                    and not (
+                        "perinuclear" in result["provenance"]
+                        and name in {"ring_labels", "ring_ambiguous"}
+                    )
                 ):
                     continue
                 array_metadata = dict(metadata)

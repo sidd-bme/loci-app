@@ -7,6 +7,7 @@ import contextlib
 import copy
 import hashlib
 import os
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -299,38 +300,57 @@ class JobSupervisor:
             ]
         )
 
-    def _reap(self, project: ResearchProject) -> None:
+    def _reap(
+        self,
+        project: ResearchProject,
+        *,
+        write_timeout: float | None = None,
+        reconcile_other_jobs: bool = True,
+    ) -> None:
         with self._lock:
             finished = [
                 (job_id, process)
                 for job_id, process in self._children.items()
                 if process.poll() is not None
             ]
-            for job_id, _process in finished:
-                del self._children[job_id]
         for job_id, process in finished:
-            job = project.job(job_id)
-            if job["state"] == "queued":
-                project.update_job(
-                    job_id,
-                    expected_state="queued",
-                    state="failed",
-                    error="Owned execution process stopped before claiming the durable job.",
-                    finished_at=timestamp(),
-                )
-            elif job["state"] == "running" and job.get("pid") == process.pid:
-                project.update_job(
-                    job_id,
-                    expected_state="running",
-                    state="cancelled" if job["cancel_requested"] else "failed",
-                    error=(
-                        "Owned execution process was cancelled before publication."
-                        if job["cancel_requested"]
-                        else "Owned execution process stopped before publication."
-                    ),
-                    finished_at=timestamp(),
-                )
-        reconcile_jobs(project)
+            try:
+                job = project.job(job_id)
+                if job["state"] == "queued":
+                    project.update_job(
+                        job_id,
+                        expected_state="queued",
+                        state="failed",
+                        error="Owned execution process stopped before claiming the durable job.",
+                        finished_at=timestamp(),
+                        connection_timeout=write_timeout,
+                    )
+                elif job["state"] == "running":
+                    if job.get("pid") != process.pid:
+                        raise ValueError("Owned job no longer matches its stopped process")
+                    project.update_job(
+                        job_id,
+                        expected_state="running",
+                        state="cancelled" if job["cancel_requested"] else "failed",
+                        error=(
+                            "Owned execution process was cancelled before publication."
+                            if job["cancel_requested"]
+                            else "Owned execution process stopped before publication."
+                        ),
+                        finished_at=timestamp(),
+                        connection_timeout=write_timeout,
+                    )
+            except ValueError:
+                # Another reaper/publication may have committed since the read.
+                if project.job(job_id)["state"] in {"queued", "running"}:
+                    raise
+            # Keep the exact handle until terminal bookkeeping commits. Never
+            # hold the supervisor lock while waiting for the database writer.
+            with self._lock:
+                if self._children.get(job_id) is process:
+                    del self._children[job_id]
+        if reconcile_other_jobs:
+            reconcile_jobs(project)
 
     def _terminate_owned(self, project: ResearchProject, job_id: str) -> bool:
         with self._lock:
@@ -359,11 +379,22 @@ class JobSupervisor:
                     pass
                 break
             time.sleep(0.05)
-        try:
-            project = ResearchProject(self.policy.project_path)
-            self._reap(project)
-        except (ValueError, OSError):
-            pass
+        while True:
+            try:
+                project = ResearchProject(self.policy.project_path)
+                self._reap(project, write_timeout=0.0, reconcile_other_jobs=False)
+                return
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, "sqlite_errorcode", 0) & 0xFF not in {
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                }:
+                    raise
+                # Only dead-child bookkeeping is retried, never scientific
+                # execution. A live publication writer can release normally.
+                time.sleep(0.05)
+            except (ValueError, OSError):
+                return
 
     def start(
         self,
@@ -696,6 +727,9 @@ class PolicyAgent:
 
     def _provenance(self, original: dict[str, Any]) -> dict[str, Any]:
         value = dict(original)
+        if "tissue_model" in value and not self.policy.disclosures >= DISCLOSURES:
+            value.pop("tissue_model", None)
+            value.pop("host_runtime", None)
         if "perinuclear" in value and not self.policy.disclosures >= DISCLOSURES:
             # These bounded scientific snapshots combine counts, channel
             # declarations, geometry and parent identities. A narrower reader
@@ -828,6 +862,10 @@ class PolicyAgent:
 
             return authorize_result(self.policy, workbench, result_id)
         result = workbench.project.result(checked_id(result_id), verify_scientific_arrays=False)
+        if "tissue_model" in result["provenance"]:
+            from .agent_study import authorize_result
+
+            return authorize_result(self.policy, workbench, result_id)
         self.policy.source_grant(workbench.project, result["source_id"])
         provenance = result.get("provenance")
         if not isinstance(provenance, dict):
@@ -1288,8 +1326,11 @@ class PolicyAgent:
     def job_status(self, job_id: str) -> dict[str, Any]:
         workbench = self._workbench("job_status")
         try:
-            self.supervisor._reap(workbench.project)
+            # The owned watcher and recovery paths reconcile stopped workers.
+            # Observation must never wait to mutate this or an unrelated job
+            # while another worker holds the atomic publication transaction.
             job = self._authorize_job(workbench, job_id)
+            self._recheck_session()
             return {
                 "job": {
                     **self._safe_job(job),
@@ -1346,6 +1387,8 @@ class PolicyAgent:
                     },
                 )
             output: dict[str, Any] = {"result": safe_summary}
+            if "tissue_model" in summary and self.policy.disclosures >= DISCLOSURES:
+                safe_summary["tissue_model"] = summary["tissue_model"]
             if "measurements" in self.policy.disclosures:
                 output.update(
                     measurements=self._measurements(value["measurements"]),
@@ -1364,7 +1407,15 @@ class PolicyAgent:
         index: int | None = None,
         labels: bool = True,
         label_field: Literal[
-            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+            "nuclei",
+            "rings",
+            "ambiguous",
+            "objects",
+            "compartment",
+            "boundary",
+            "bands",
+            "tissue_classes",
+            "compartments",
         ]
         | None = None,
     ) -> dict[str, Any]:
@@ -1384,6 +1435,7 @@ class PolicyAgent:
                     if "label_field" in value
                     else {}
                 ),
+                **({key: value[key] for key in ("field", "basis")} if "field" in value else {}),
                 "image": value["image"],
                 "result_id": value["result_id"],
                 "revision_hash": value["revision_hash"],
@@ -1934,7 +1986,12 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 with suppress(Exception):
                     if agent.session_id is not None:
                         heartbeat_session(
-                            ResearchProject(agent.policy.project_path), agent.session_id
+                            ResearchProject(agent.policy.project_path),
+                            agent.session_id,
+                            # This synchronous lifecycle tick runs on the MCP
+                            # event loop. A busy publication writer must not
+                            # stall independent read-only status requests.
+                            write_timeout=0.0,
                         )
 
         hb_task = asyncio.create_task(_heartbeat_loop())
@@ -1981,6 +2038,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "analysis_context",
             "inspect_source",
             "validate_recipe",
+            "job_status",
             "result",
             "result_view",
             "source_image",
@@ -2191,7 +2249,9 @@ def build_server(policy_path: str | Path) -> MCPServer:
 
     server.middleware.append(activity_arguments)
 
-    def invoke(action: Callable[[], Any], *, resource: bool = False) -> Any:
+    def invoke(
+        action: Callable[[], Any], *, resource: bool = False, observation_only: bool = False
+    ) -> Any:
         from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 
         boundary_error = ResourceError if resource else ToolError
@@ -2202,7 +2262,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
             # Revocation during a long read prevents a late response from
             # disclosing previously authorized image or metadata content.
             agent._recheck_session()
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2215,7 +2275,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                     )
             return result
         except AgentSessionApprovalError as exc:
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2230,7 +2290,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "Another analysis or inspection is using this policy's concurrency allowance. "
                 "Wait for it to finish, then retry this same request."
             )
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2240,7 +2300,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                     )
             raise boundary_error(message) from None
         except PermissionError:
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2256,7 +2316,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "is not authorized by the active policy."
             ) from None
         except (ValueError, OSError, RuntimeError, TypeError, KeyError):
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2274,7 +2334,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "Inspect the source and settings in Loci."
             ) from None
         except Exception:
-            if agent.session_id is not None:
+            if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
                         ResearchProject(agent.policy.project_path),
@@ -2398,7 +2458,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
         annotations=annotations("job_status"),
     )
     def job_status(job_id: str) -> dict[str, Any]:
-        return invoke(lambda: agent.job_status(job_id))
+        return invoke(lambda: agent.job_status(job_id), observation_only=True)
 
     @server.tool(
         name="cancel_job",
@@ -2430,7 +2490,15 @@ def build_server(policy_path: str | Path) -> MCPServer:
         index: int | None = None,
         labels: bool = True,
         label_field: Literal[
-            "nuclei", "rings", "ambiguous", "objects", "compartment", "boundary", "bands"
+            "nuclei",
+            "rings",
+            "ambiguous",
+            "objects",
+            "compartment",
+            "boundary",
+            "bands",
+            "tissue_classes",
+            "compartments",
         ]
         | None = None,
     ) -> dict[str, Any]:

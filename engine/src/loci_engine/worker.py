@@ -67,6 +67,16 @@ def _correction_receipt(result: Any, evicted_result_ids: list[str]) -> dict[str,
 
 
 def dispatch(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    if method == "tissue_model_profiles":
+        from .research_tissue_integration import profiles
+
+        if params:
+            raise ValueError("Tissue profiles do not accept parameters")
+        return profiles()
+    if method == "tissue_model_import":
+        from .research_tissue_integration import native_import
+
+        return native_import(params)
     if method.startswith("research_"):
         from .research_rpc import dispatch_research
 

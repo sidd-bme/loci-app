@@ -685,9 +685,13 @@ def heartbeat_session(
     increment_calls: bool = False,
     last_operation: str | None | object = ...,
     last_error: str | None | object = ...,
+    write_timeout: float | None = None,
 ) -> dict[str, Any] | None:
     now = timestamp()
-    with project.connection() as connection:
+    transaction = (
+        project.connection() if write_timeout is None else project.connection(timeout=write_timeout)
+    )
+    with transaction as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             "SELECT value FROM metadata WHERE key=?",
@@ -1265,6 +1269,13 @@ def check_or_await_approval(
         or is_policy_registered(project, policy.content_sha256)
     )
     if not tracked:
+        return None
+
+    if operation == "job_status":
+        # Polling must remain available while scientific publication owns the
+        # writer. Authority is freshly read; registration, heartbeat and audit
+        # writes belong to lifecycle/execution paths, never a status observation.
+        require_session_authority(project, policy.content_sha256, session_id)
         return None
 
     policy_record = ensure_policy_registered(project, policy)
@@ -1934,8 +1945,8 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
 
 
 def record_agent_activity(agent, operation, arguments, response, *, failed=False):
-    """Record one actual MCP call outcome; raw arguments and error text are never saved."""
-    if agent.session_id is None:
+    """Audit MCP outcomes except read-only status polls; never save raw arguments/errors."""
+    if agent.session_id is None or operation == "job_status":
         return
     project = ResearchProject(agent.policy.project_path)
     if operation not in READ_ONLY_TOOLS | APPROVAL_GATED_TOOLS:

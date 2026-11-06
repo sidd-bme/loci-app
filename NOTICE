@@ -10,3 +10,9 @@ checkpoints are user-provided official artifacts obtained separately; neither is
 bundled or silently downloaded by Loci. Neither the Cellpose runtime nor its
 model artifacts are relicensed by the Apache-2.0 licence for Loci. See
 THIRD_PARTY_NOTICES.md for the applicable attribution and provenance notes.
+
+The optional PUMA tissue integration includes fixed adaptations of PUMA
+preprocessing/tiling (Copyright 2025 Medical Image Analysis Group Eindhoven,
+MIT) and dynamic-network-architectures (Copyright 2022 Division of Medical Image
+Computing, German Cancer Research Center, Apache-2.0). The full attribution,
+modification and model/data boundaries are in THIRD_PARTY_NOTICES.md.

@@ -259,9 +259,9 @@ class ResearchProject:
             raise ValueError("Study database is missing")
 
     @contextmanager
-    def connection(self):
+    def connection(self, *, timeout: float = 10.0):
         self._check_layout()
-        connection = sqlite3.connect(self.database, timeout=10)
+        connection = sqlite3.connect(self.database, timeout=timeout)
         try:
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA foreign_keys=ON")
@@ -881,6 +881,14 @@ class ResearchProject:
             from .research_temporal import project_inputs
 
             project_inputs(self, record, verify_arrays=True)
+        if kind == "tissue-model-regions" or "tissue_model" in provenance:
+            from .research_tissue_models import validate_arrays, validate_source
+
+            validate_source(record, source)
+            tissue_parent = self.result(parent_id) if parent_id is not None else None
+            validate_arrays(
+                record, arrays, parent=tissue_parent, check=publication_guard or (lambda: None)
+            )
         if kind == "morphometrics" or "morphometrics" in provenance:
             from .research_morphometrics import (
                 project_parents,
@@ -911,6 +919,10 @@ class ResearchProject:
             connection.execute("BEGIN IMMEDIATE")
             if publication_guard is not None:
                 publication_guard()
+            if kind == "tissue-model-regions" or "tissue_model" in provenance:
+                from .research_tissue_integration import project_records
+
+                project_records(self, record, arrays=True, check=publication_guard)
             if job_id is not None:
                 job_row = connection.execute(
                     "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)
@@ -1168,6 +1180,12 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
+            if record.get("kind") == "tissue-model-regions" or "tissue_model" in record.get(
+                "provenance", {}
+            ):
+                from .research_tissue_models import validate_source
+
+                validate_source(record, self.source(record["source_id"]))
             if record.get("kind") in {"temporal-tracking", "tracking"} or "tracking" in record.get(
                 "provenance", {}
             ):
@@ -1226,6 +1244,10 @@ class ResearchProject:
     def validate_result_arrays(self, record, *, check=None, working_bytes=None):
         """Numerically check one exact record after its source access is authorized."""
         provenance = record.get("provenance", {})
+        if record.get("kind") == "tissue-model-regions" or "tissue_model" in provenance:
+            from .research_tissue_integration import project_records
+
+            project_records(self, record, check=check, arrays=True, working_bytes=working_bytes)
         if record.get("kind") == "morphometrics" or "morphometrics" in provenance:
             from .research_morphometrics import validate_project_arrays
 
@@ -1454,7 +1476,13 @@ class ResearchProject:
             ]
 
     def update_job(
-        self, job_id: str, *, expected_state: str, max_running: int | None = None, **changes: Any
+        self,
+        job_id: str,
+        *,
+        expected_state: str,
+        max_running: int | None = None,
+        connection_timeout: float | None = None,
+        **changes: Any,
     ) -> dict[str, Any]:
         if max_running is not None and (
             isinstance(max_running, bool)
@@ -1503,7 +1531,12 @@ class ResearchProject:
             "cancelled": set(),
             "interrupted": set(),
         }
-        with self.connection() as connection:
+        transaction = (
+            self.connection()
+            if connection_timeout is None
+            else self.connection(timeout=connection_timeout)
+        )
+        with transaction as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)

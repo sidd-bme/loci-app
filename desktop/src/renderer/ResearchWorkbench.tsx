@@ -3,6 +3,7 @@ import { ResearchWorkflowGraphPanel } from "./ResearchWorkflowGraphPanel";
 import { SpatialDensityPanel } from "./SpatialDensityPanel";
 import { WoundClosureTool } from "./WoundClosureTool";
 import { ResearchMorphometricsPanel } from "./ResearchMorphometricsPanel";
+import { TissueModelPanel } from "./TissueModelPanel";
 import { ExperimentIntensityPanel } from "./ExperimentIntensityPanel";
 import { SampleSheetPanel } from "./SampleSheetPanel";
 import { resolveStudyResult, resolveStudySource } from "./study-sample-navigation";
@@ -833,6 +834,7 @@ export default function ResearchWorkbench({
   const [densityOpened, setDensityOpened] = useState(false);
   const [woundOpened, setWoundOpened] = useState(false);
   const [morphologyOpened, setMorphologyOpened] = useState(false);
+  const [tissueModelOpened, setTissueModelOpened] = useState(false);
   const [quantificationEntryKey, setQuantificationEntryKey] = useState(0);
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
   const [populationOpened, setPopulationOpened] = useState(false);
@@ -1668,7 +1670,7 @@ export default function ResearchWorkbench({
       const store = new SourceViewStore(api, source.id, source.sha256, view.revision, (caught) => {
         viewStoreFailure.current = { store, error: caught };
         setError(message(caught, "Could not save display settings."));
-      });
+      }, view.state ?? null);
       viewStore.current = store;
       setViewSettingsReady(true);
       setDisplayBasis(exampleChannels ? "Authored example display" : typeof defaults.basis === "string" ? defaults.basis : "Source defaults");
@@ -1990,7 +1992,7 @@ export default function ResearchWorkbench({
     }
   };
   const hasPendingJobs = Boolean(
-    busy === "run" || busy === "Large image segmentation" || busy === "Removing object" ||
+    busy === "run" || busy === "tissue-model" || busy === "Large image segmentation" || busy === "Removing object" ||
     busy === "Importing remote result" || busy === "Export" ||
     snapshot?.jobs.some((job) => job.state === "queued" || job.state === "running"),
   );
@@ -2870,6 +2872,7 @@ export default function ResearchWorkbench({
     if (next === "Density") setDensityOpened(true);
     if (next === "Wound") setWoundOpened(true);
     if (next === "Morphology") setMorphologyOpened(true);
+    if (next === "Tissue model") setTissueModelOpened(true);
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
@@ -4137,6 +4140,25 @@ export default function ResearchWorkbench({
             onBusyChange={(value) => setBusy((current) => value ? (current ?? "morphometrics") : current === "morphometrics" ? null : current)}
             onPublished={publishGeneratedResult}
             onExplore={(target) => { void navigateExactResult(target); openWorkbenchTab("Population"); }}
+            onReview={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
+        </div>}
+        {tissueModelOpened && source && <div hidden={tab !== "Tissue model"}>
+          <TissueModelPanel key={`tissue-model:${exportDraftStudy}:${source.id}`} api={api} snapshot={snapshot}
+            source={source} selection={shownSelection} selectedResult={selectedResult} active={tab === "Tissue model"}
+            busy={busy !== null || documentSwitching}
+            onBusyChange={(value) => {
+              setBusy((current) => value ? (current ?? "tissue-model") : current === "tissue-model" ? null : current);
+              if (!value && !documentSwitch.current && snapshot) {
+                const expectedScope = exportDraftStudy, expected = snapshot;
+                void api.getSnapshot().then((next) => {
+                  if (!documentSwitch.current && currentStudyScope.current === expectedScope && next?.project.project_id === expected.project.project_id)
+                    setSnapshot((current) => current === expected ? next : current);
+                }).catch(() => {});
+              }
+            }}
+            onPublished={publishGeneratedResult}
+            onInspect={(target) => { void navigateExactResult(target); }}
+            onCorrect={(target) => { void navigateExactResult(target); openWorkbenchTab("Correction"); }}
             onReview={(target) => { void navigateExactResult(target); openWorkbenchTab("Info"); }} />
         </div>}
         <StudyWorkspace active={tab === "Study"} section={studySection} onSection={setStudySection}

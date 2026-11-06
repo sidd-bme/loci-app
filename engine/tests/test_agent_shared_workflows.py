@@ -82,9 +82,16 @@ def gate():
 
 def test_execution_contract_distinguishes_preview_from_mutation():
     assert ACTION_NAMES == READ_ACTIONS | TASK_ACTIONS == set(EXECUTION_KINDS)
-    assert {"workflow_preview", "exploration_preview", "exploration_compare"} == PREVIEW_ACTIONS
+    assert {
+        "workflow_preview",
+        "exploration_preview",
+        "exploration_compare",
+        "tissue_model_preview",
+    } == PREVIEW_ACTIONS
     guide = {item["operation"]: item for item in action_guide()["actions"]}
     assert guide["workflow_preview"]["execution_kind"] == "preview-task"
+    assert guide["tissue_model_preview"]["execution_kind"] == "preview-task"
+    assert guide["tissue_model_run"]["execution_kind"] == "publication-task"
     assert guide["exploration_compare"]["side_effects"] == "saved-comparison-receipt"
     assert guide["workflow_run"]["execution_kind"] == "publication-task"
     assert guide["study_summary"]["execution_kind"] == "inspection"

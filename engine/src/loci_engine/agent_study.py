@@ -45,6 +45,10 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
         visiting.add(identity)
         record = workbench.project.result(identity, verify_scientific_arrays=False)
         provenance = record["provenance"]
+        if "tissue_model" in provenance:
+            from .research_tissue_integration import authorize_retained
+
+            authorize_retained(policy, workbench, record)
         recipe = provenance.get("recipe", {})
         if not isinstance(recipe, dict):
             raise PermissionError("Result recipe is invalid")

@@ -2122,6 +2122,83 @@ def read_native_region(path: str | Path, selection: NativeSelection) -> NativeRe
     return region
 
 
+def native_geometry(
+    levels: tuple[NativeLevel, ...], selection: dict[str, Any], volume: bool
+) -> Geometry:
+    """Pure native voxel-center geometry from registered level metadata; no file I/O."""
+    from .quantitative import Geometry
+
+    if not isinstance(selection, dict):
+        raise NativeImageError("Native geometry selection must be a mapping.")
+    if not isinstance(volume, bool):
+        raise NativeImageError("volume must be a boolean.")
+
+    indices: dict[str, int] = {}
+    for name in ("level", "x", "y", "z"):
+        value = selection.get(name, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise NativeImageError(f"{name} must be a non-negative integer.")
+        indices[name] = value
+    if indices["level"] >= len(levels):
+        raise NativeImageError(f"Pyramid level {indices['level']} is outside 0..{len(levels) - 1}.")
+    level = levels[indices["level"]]
+    for name in ("x", "y", "z"):
+        upper = getattr(level.dimensions, name)
+        if indices[name] >= upper:
+            raise NativeImageError(f"{name.upper()} index is outside 0..{upper - 1}.")
+
+    calibration = level.calibration
+    if calibration is None:
+        spacing_xyz = (1.0, 1.0, 1.0)
+        origin_xyz = (0.0, 0.0, 0.0)
+        unit = "pixel"
+        has_z_spacing = volume
+    else:
+        unit_aliases = {
+            "µm": "um",
+            "μm": "um",
+            "um": "um",
+            "micrometer": "um",
+            "micrometers": "um",
+            "nm": "nm",
+            "mm": "mm",
+            "m": "m",
+            "pixel": "pixel",
+        }
+        unit = unit_aliases.get(calibration.unit)
+        if unit is None:
+            raise NativeImageError(
+                f"Native geometry uses unsupported calibration unit {calibration.unit!r}."
+            )
+        spacing_by_axis = dict(zip(calibration.axes, calibration.spacing, strict=True))
+        if "X" not in spacing_by_axis or "Y" not in spacing_by_axis:
+            raise NativeImageError("Native geometry requires complete X and Y calibration.")
+        if volume and "Z" not in spacing_by_axis:
+            raise NativeImageError(
+                "Volume geometry requires declared Z spacing in the same physical unit."
+            )
+        spacing_xyz = (
+            spacing_by_axis["X"],
+            spacing_by_axis["Y"],
+            spacing_by_axis.get("Z", 1.0),
+        )
+        origin_xyz = level.origin_xyz or (0.0, 0.0, 0.0)
+        has_z_spacing = "Z" in spacing_by_axis
+
+    affine = np.eye(4, dtype=np.float64)
+    axes_to_resolve = ((0, "x"), (1, "y"))
+    if has_z_spacing:
+        axes_to_resolve = (*axes_to_resolve, (2, "z"))
+    for xyz, axis in axes_to_resolve:
+        affine[xyz, xyz] = spacing_xyz[xyz]
+        affine[xyz, 3] = origin_xyz[xyz] + spacing_xyz[xyz] * indices[axis]
+    return Geometry(
+        "ZYX" if volume else "YX",
+        tuple(tuple(float(value) for value in row) for row in affine),
+        unit,
+    )
+
+
 class NativeImageSession:
     """Reuse one inspected source while detecting ordinary edits and replacement.
 
@@ -2253,81 +2330,8 @@ class NativeImageSession:
 
     def geometry(self, selection: dict[str, Any], volume: bool) -> Geometry:
         """Resolve a crop's voxel-center geometry at its selected native level."""
-
-        from .quantitative import Geometry
-
         self._ensure_open()
-        if not isinstance(selection, dict):
-            raise NativeImageError("Native geometry selection must be a mapping.")
-        if not isinstance(volume, bool):
-            raise NativeImageError("volume must be a boolean.")
-
-        indices: dict[str, int] = {}
-        for name in ("level", "x", "y", "z"):
-            value = selection.get(name, 0)
-            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-                raise NativeImageError(f"{name} must be a non-negative integer.")
-            indices[name] = value
-        if indices["level"] >= len(self.metadata.levels):
-            raise NativeImageError(
-                f"Pyramid level {indices['level']} is outside 0..{len(self.metadata.levels) - 1}."
-            )
-        level = self.metadata.levels[indices["level"]]
-        for name in ("x", "y", "z"):
-            upper = getattr(level.dimensions, name)
-            if indices[name] >= upper:
-                raise NativeImageError(f"{name.upper()} index is outside 0..{upper - 1}.")
-
-        calibration = level.calibration
-        if calibration is None:
-            spacing_xyz = (1.0, 1.0, 1.0)
-            origin_xyz = (0.0, 0.0, 0.0)
-            unit = "pixel"
-            has_z_spacing = volume
-        else:
-            unit_aliases = {
-                "µm": "um",
-                "μm": "um",
-                "um": "um",
-                "micrometer": "um",
-                "micrometers": "um",
-                "nm": "nm",
-                "mm": "mm",
-                "m": "m",
-                "pixel": "pixel",
-            }
-            unit = unit_aliases.get(calibration.unit)
-            if unit is None:
-                raise NativeImageError(
-                    f"Native geometry uses unsupported calibration unit {calibration.unit!r}."
-                )
-            spacing_by_axis = dict(zip(calibration.axes, calibration.spacing, strict=True))
-            if "X" not in spacing_by_axis or "Y" not in spacing_by_axis:
-                raise NativeImageError("Native geometry requires complete X and Y calibration.")
-            if volume and "Z" not in spacing_by_axis:
-                raise NativeImageError(
-                    "Volume geometry requires declared Z spacing in the same physical unit."
-                )
-            spacing_xyz = (
-                spacing_by_axis["X"],
-                spacing_by_axis["Y"],
-                spacing_by_axis.get("Z", 1.0),
-            )
-            origin_xyz = level.origin_xyz or (0.0, 0.0, 0.0)
-            has_z_spacing = "Z" in spacing_by_axis
-
-        affine = np.eye(4, dtype=np.float64)
-        axes_to_resolve = ((0, "x"), (1, "y"))
-        if has_z_spacing:
-            axes_to_resolve = (*axes_to_resolve, (2, "z"))
-        for xyz, axis in axes_to_resolve:
-            affine[xyz, xyz] = spacing_xyz[xyz]
-            affine[xyz, 3] = origin_xyz[xyz] + spacing_xyz[xyz] * indices[axis]
-        return Geometry(
-            "ZYX" if volume else "YX",
-            tuple(tuple(float(value) for value in row) for row in affine),
-            unit,
-        )
+        return native_geometry(self.metadata.levels, selection, volume)
 
     def verify_strict(self, check: Callable[[], None] | None = None) -> NativeIntegrityReceipt:
         """Rehash the source and confirm it still matches the opening SHA-256."""

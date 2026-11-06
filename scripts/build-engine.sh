@@ -44,6 +44,8 @@ onnxruntime_root="$("${uv_run[@]}" python -c 'from importlib.util import find_sp
   --collect-all yaml \
   --collect-all roifile \
   --copy-metadata cellpose \
+  --copy-metadata torch \
+  --copy-metadata scipy \
   --copy-metadata h5py \
   --copy-metadata SimpleITK \
   --copy-metadata openslide-python \

@@ -82,6 +82,29 @@ invocation, terminal launchers and machine output, and [agent access](AGENT_ACCE
 for explicit grants and revocation. A CLI smoke check does not qualify MCP client
 interoperability; retain separate protocol and packaged-worker evidence.
 
+## Proportionate verification
+
+During a repair, run the affected test files and lint checks first. Run the
+applicable full suites once the integrated change is ready; repeat them when a
+later change or failure invalidates that evidence. Documentation-only changes
+need content, link and diff checks. A change to scientific state, permissions,
+persistence or exports still needs its numerical/integration checks and affected
+packaged journey. Renderer, worker, native-picker and actual agent-host checks
+exercise different boundaries and are not interchangeable.
+
+The source regression runner defaults to both desktop and engine checks. For an
+explicitly scoped iteration, select one with
+`node scripts/run-core-regressions.mjs --mode=source --checks=desktop-checks`
+or `--checks=engine-checks`. A successful subset is recorded as partial, with
+omitted checks listed as not run; it is not full regression qualification.
+The runner defaults to one Vitest worker, preserves an explicit
+`VITEST_MAX_WORKERS` override, and records the effective value and command times.
+Pytest reports its slowest checks to guide targeted optimization. Use those
+measurements before removing tests or introducing shared fixtures or caches.
+The runner reuses the prepared Python environment with `uv run --frozen
+--no-sync`; it never installs dependencies or removes optional runtime extras.
+Provision the intended locked environment separately before running checks.
+
 ## Local macOS package
 
 Build and smoke-test the isolated worker, then bundle the Apple-silicon app.

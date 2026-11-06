@@ -45,6 +45,8 @@ import type {
   ResearchJob,
   ResearchResult,
   ResearchSnapshot,
+  ResearchTissueImportPhase,
+  ResearchTissueProfiles,
 } from "../shared/research-contracts";
 
 import {
@@ -66,6 +68,22 @@ interface SourceAnnotationBinding {
   source_id: string;
   source_sha256: string;
   expected_revision: number;
+}
+
+interface TissueSetupOperation {
+  id: string;
+  profileId: "puma-tissue-cpu";
+  project: string;
+  epoch: number;
+  phase: Exclude<ResearchTissueImportPhase["phase"], "idle">;
+  cancelled: boolean;
+  finished: Promise<void>;
+  finish: () => void;
+}
+
+function requireTissueProfile(value: unknown): "puma-tissue-cpu" {
+  if (value !== "puma-tissue-cpu") throw new Error("Choose the registered PUMA tissue profile.");
+  return value;
 }
 
 interface PickedResearchSources {
@@ -208,6 +226,7 @@ export class ResearchBridge {
   private sessionId: string | null = null;
   private running: { id: string; project: string; graphRunId?: string } | null = null;
   private switching = false;
+  private tissueSetup: TissueSetupOperation | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
   private readonly viewDocumentListeners = new Set<() => void>();
@@ -545,6 +564,71 @@ export class ResearchBridge {
     }, 0);
   }
 
+  private tissueImportPhase(profileValue: unknown): ResearchTissueImportPhase {
+    const profileId = requireTissueProfile(profileValue), active = this.tissueSetup;
+    return { profile_id: profileId, operation_id: active?.profileId === profileId ? active.id : null,
+      phase: active?.profileId === profileId ? active.phase : "idle",
+      cancel_requested: active?.profileId === profileId ? active.cancelled : false };
+  }
+
+  private cancelTissueImport(profileValue: unknown): { cancelled: boolean; phase: ResearchTissueImportPhase["phase"] } {
+    const profileId = requireTissueProfile(profileValue), active = this.tissueSetup;
+    if (!active || active.profileId !== profileId) return { cancelled: false, phase: "idle" };
+    if (active.phase === "importing") return { cancelled: false, phase: "importing" };
+    active.cancelled = true;
+    return { cancelled: true, phase: active.phase };
+  }
+
+  private async importTissueModel(profileValue: unknown): Promise<ResearchTissueProfiles | null> {
+    const profileId = requireTissueProfile(profileValue);
+    if (this.tissueSetup || this.running || this.switching)
+      throw new Error("Finish the active study operation or model setup first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const active: TissueSetupOperation = { id: randomUUID(), profileId, project, epoch,
+      phase: "choosing-weights", cancelled: false, finished, finish };
+    this.tissueSetup = active;
+    let reservation: { id: string; project: string } | null = null;
+    const current = () => this.tissueSetup === active && this.project === project && this.viewDocumentEpoch === epoch;
+    try {
+      const weights = await dialog.showOpenDialog({ title: "Import exact PUMA network weights",
+        properties: ["openFile"], filters: [{ name: "Converted PUMA network weights", extensions: ["pth"] }] });
+      if (active.cancelled || weights.canceled || !weights.filePaths[0]) return null;
+      if (!current()) throw new Error("The study changed while choosing tissue-model files. Start import again.");
+      if (weights.filePaths.length !== 1 || !path.isAbsolute(weights.filePaths[0]))
+        throw new Error("Choose one exact local network-weights file.");
+      active.phase = "choosing-receipt";
+      const receipt = await dialog.showOpenDialog({ title: "Select the exact PUMA conversion receipt",
+        properties: ["openFile"], filters: [{ name: "PUMA conversion receipt", extensions: ["json"] }] });
+      if (active.cancelled || receipt.canceled || !receipt.filePaths[0]) return null;
+      if (!current()) throw new Error("The study changed while choosing tissue-model files. Start import again.");
+      if (receipt.filePaths.length !== 1 || !path.isAbsolute(receipt.filePaths[0]))
+        throw new Error("Choose one exact local conversion receipt.");
+      if (this.running || this.switching) throw new Error("Finish the active study operation before importing the model.");
+      reservation = { id: "tissue-model-import", project };
+      this.running = reservation;
+      active.phase = "importing";
+      // This is an explicit local import, not an interruptible HTTP download.
+      // Drain it on ordinary shutdown; never kill the worker and claim rollback.
+      await this.worker.request("research_execute", { project, operation: "tissue_model_import",
+        request: { profile_id: profileId, weights_path: weights.filePaths[0], receipt_path: receipt.filePaths[0] } }, 0);
+      const output = await this.control.request<ResearchTissueProfiles>("research_execute", {
+        project, operation: "tissue_model_profiles", request: {},
+      });
+      if (!current()) throw new Error("The study changed during model import. Refresh model status in the current study.");
+      if (!output || !Array.isArray(output.profiles) || output.profiles.length !== 1 ||
+          output.profiles[0]?.profile?.id !== profileId || output.profiles[0]?.store?.profile_id !== profileId ||
+          !output.profiles[0].store.provisioned)
+        throw new Error("Tissue-model import did not return its exact managed profile. Refresh model status.");
+      return output;
+    } finally {
+      if (this.tissueSetup === active) this.tissueSetup = null;
+      if (reservation && this.running === reservation) this.running = null;
+      active.finish();
+    }
+  }
+
   private async execute(
     operation: unknown,
     request: unknown,
@@ -583,6 +667,10 @@ export class ResearchBridge {
       }
     }
     assertResearchRequestBound(operation, request);
+    if (operation === "tissue_model_import")
+      throw new Error("Tissue model import requires the native file pickers.");
+    if (operation === "tissue_model_profiles" && Object.keys(request).length !== 0)
+      throw new Error("Tissue model profiles do not accept paths or settings.");
     if (operation.startsWith("workflow_graph_")) {
       const epoch = this.viewDocumentEpoch;
       const current = () => this.project === project && this.viewDocumentEpoch === epoch;
@@ -667,6 +755,8 @@ export class ResearchBridge {
       "histology_preview",
       "tissue_preview",
       "tissue_run",
+      "tissue_model_preview",
+      "tissue_model_run",
       "model_run",
       "model_preview",
       "classical_run",
@@ -1812,6 +1902,18 @@ export class ResearchBridge {
         0,
       );
     });
+    handle("import-tissue-model", async (profileId, ...extra) => {
+      if (extra.length) throw new Error("Tissue model setup accepts only a registered profile.");
+      return this.importTissueModel(profileId);
+    });
+    handle("tissue-model-import-status", async (profileId, ...extra) => {
+      if (extra.length) throw new Error("Tissue model setup accepts only a registered profile.");
+      return this.tissueImportPhase(profileId);
+    });
+    handle("cancel-tissue-model-import", async (profileId, ...extra) => {
+      if (extra.length) throw new Error("Tissue model setup accepts only a registered profile.");
+      return this.cancelTissueImport(profileId);
+    });
     handle("execute", (operation, request, options) => this.execute(operation, request, options));
     handle("labels-import-preview", async (binding) => {
       const project = this.requireProject();
@@ -2049,6 +2151,11 @@ export class ResearchBridge {
 
   async dispose(): Promise<void> {
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
+    const setup = this.tissueSetup;
+    if (setup) {
+      if (setup.phase !== "importing") setup.cancelled = true;
+      await setup.finished;
+    }
     const active = this.dataExportActive;
     if (active) {
       await this.cancelDataExport(active.key);
