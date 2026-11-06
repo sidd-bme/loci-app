@@ -479,6 +479,10 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
     exact_keys(params, fields[method], method)
     workbench = _open(params["project"])
     if method == "research_execute":
+        if params["operation"] == "tissue_model_import":
+            from .research_tissue_integration import native_import
+
+            return native_import(params["request"])
         if params["operation"] in TASK_OPERATIONS:
             raise ValueError("Submit a durable task before execution")
         return workbench.execute(params["operation"], params["request"])

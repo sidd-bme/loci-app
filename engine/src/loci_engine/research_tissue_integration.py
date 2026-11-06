@@ -99,6 +99,7 @@ def preflight(workbench, operation, request, *, policy=None):
     source = workbench.project.source(value["source_id"])
     tissue._validate_source_request(source, value)
     if policy is not None:
+        policy.require_tissue_output(value)
         if value["working_bytes"] > policy.memory_bytes:
             raise PermissionError("Tissue working-memory budget exceeds the policy")
         for binding in tissue.source_bindings(workbench.project, operation, request):
@@ -165,6 +166,7 @@ def execute(workbench, operation, request, *, job_id=None, publication_guard=Non
 def authorize_retained(policy, workbench, result):
     tissue.validate_record(result)
     value = result["provenance"]["tissue_model"]["receipt"]["request"]
+    policy.require_tissue_output(value)
     tissue._validate_source_request(workbench.project.source(value["source_id"]), value)
     for selection in (value["context_selection"], value["output_selection"]):
         grant = policy.source_grant(workbench.project, value["source_id"])

@@ -259,9 +259,9 @@ class ResearchProject:
             raise ValueError("Study database is missing")
 
     @contextmanager
-    def connection(self):
+    def connection(self, *, timeout: float = 10.0):
         self._check_layout()
-        connection = sqlite3.connect(self.database, timeout=10)
+        connection = sqlite3.connect(self.database, timeout=timeout)
         try:
             connection.execute("PRAGMA trusted_schema=OFF")
             connection.execute("PRAGMA foreign_keys=ON")
@@ -1476,7 +1476,13 @@ class ResearchProject:
             ]
 
     def update_job(
-        self, job_id: str, *, expected_state: str, max_running: int | None = None, **changes: Any
+        self,
+        job_id: str,
+        *,
+        expected_state: str,
+        max_running: int | None = None,
+        connection_timeout: float | None = None,
+        **changes: Any,
     ) -> dict[str, Any]:
         if max_running is not None and (
             isinstance(max_running, bool)
@@ -1525,7 +1531,12 @@ class ResearchProject:
             "cancelled": set(),
             "interrupted": set(),
         }
-        with self.connection() as connection:
+        transaction = (
+            self.connection()
+            if connection_timeout is None
+            else self.connection(timeout=connection_timeout)
+        )
+        with transaction as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT record FROM jobs WHERE id=?", (checked_id(job_id),)

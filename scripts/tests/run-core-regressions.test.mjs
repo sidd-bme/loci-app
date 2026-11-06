@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -35,6 +35,115 @@ test("parseArgs parses modes and flags correctly", () => {
   assert.equal(parseArgs(["--help"]).help, true);
   assert.equal(parseArgs(["-h"]).help, true);
 });
+
+test("parseArgs accepts explicit source checks and rejects invalid selections and typos", () => {
+  assert.deepEqual(parseArgs(["--mode=source", "--checks=desktop-checks"]).checks, ["desktop-checks"]);
+  assert.deepEqual(parseArgs(["--checks", "engine-checks,desktop-checks", "--mode", "source"]).checks,
+    ["engine-checks", "desktop-checks"]);
+  for (const args of [
+    ["--checks="], ["--checks"], ["--checks=desktop-checks,"],
+    ["--checks=desktop-check"], ["--checks=desktop-checks,desktop-checks"],
+    ["--checks=desktop-checks", "--checks=engine-checks"],
+    ["--cheks=engine-checks"], ["--output-root"],
+  ]) {
+    assert.throws(() => parseArgs(["--mode=source", ...args]));
+  }
+  assert.throws(() => parseArgs(["--mode=packaged", "--checks=desktop-checks"]), /only supported/);
+});
+
+test("runCoreRegressions rejects invalid selections even when called without the parser", async (t) => {
+  const tmp = await createTempDir();
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  for (const options of [
+    { mode: "source", checks: [] },
+    { mode: "source", checks: ["unknown"] },
+    { mode: "source", checks: ["engine-checks", "engine-checks"] },
+    { mode: "source", checks: "engine-checks" },
+    { mode: "packaged", checks: ["desktop-checks"] },
+  ]) {
+    const report = await runCoreRegressions({ ...options, outputRoot: tmp }, {
+      executor: async () => { assert.fail("Invalid selections must not execute commands"); },
+    });
+    assert.equal(report.overall_status, "failed");
+    assert.equal(report.prerequisites.checks.status, "missing");
+  }
+});
+
+for (const selected of ["desktop-checks", "engine-checks"]) {
+  test(`source subset ${selected} records omissions and partial success in the persisted receipt`, async (t) => {
+    const tmp = await createTempDir();
+    t.after(() => rm(tmp, { recursive: true, force: true }));
+    const executed = [];
+    const report = await runCoreRegressions({ mode: "source", checks: [selected], outputRoot: tmp }, {
+      env: { PATH: "/test/path", CUSTOM_SETTING: "preserved" },
+      executor: async (command, args, options) => {
+        executed.push({ command, args, ...options });
+        return { code: 0, stdout: "Passed", stderr: "", durationMs: 7 };
+      },
+    });
+    assert.equal(report.overall_status, "partial-passed");
+    assert.equal(report.scope, "partial");
+    assert.deepEqual(report.requested_checks, [selected]);
+    assert.deepEqual(report.summary, { total: 2, passed: 1, failed: 0, skipped: 0, not_run: 1 });
+    assert.deepEqual(report.checks.find(check => check.id !== selected).reason, "not-requested");
+    assert.equal(report.checks.find(check => check.id !== selected).status, "not-run");
+    assert.equal(executed.length, selected === "desktop-checks" ? 1 : 2);
+    assert.ok(executed.every(call => path.basename(call.cwd) === (selected === "desktop-checks" ? "desktop" : "engine")));
+    assert.ok(executed.every(call => call.env.PATH === "/test/path" && call.env.CUSTOM_SETTING === "preserved"));
+    assert.ok(executed.every(call => call.env.VITEST_MAX_WORKERS === "1"));
+    const result = report.checks.find(check => check.id === selected);
+    assert.equal(result.duration_ms, executed.length * 7);
+    assert.equal(result.commands.length, executed.length);
+    if (selected === "desktop-checks") assert.equal(result.vitest_max_workers, "1");
+    else {
+      assert.deepEqual(executed.map(call => call.args), [
+        ["run", "--frozen", "--no-sync", "ruff", "check", "."],
+        ["run", "--frozen", "--no-sync", "pytest", "--durations=15"],
+      ]);
+      assert.deepEqual(result.commands.map(command => command.phase), ["pre-command", "command"]);
+      assert.deepEqual(result.commands.map(command => command.duration_ms), [7, 7]);
+    }
+    const receipt = JSON.parse(await readFile(report.receipt_path, "utf8"));
+    assert.equal(receipt.overall_status, "partial-passed");
+    assert.equal(receipt.summary.not_run, 1);
+  });
+}
+
+test("source runner preserves explicit worker override and reports the effective value", async (t) => {
+  const tmp = await createTempDir();
+  t.after(() => rm(tmp, { recursive: true, force: true }));
+  const env = { VITEST_MAX_WORKERS: "3", CUSTOM_SETTING: "keep" };
+  const report = await runCoreRegressions({ mode: "source", checks: ["desktop-checks"], outputRoot: tmp }, {
+    env,
+    executor: async (command, args, options) => {
+      assert.deepEqual(options.env, env);
+      return { code: 0, stdout: "", stderr: "", durationMs: 3 };
+    },
+  });
+  assert.equal(report.checks[0].vitest_max_workers, "3");
+  assert.deepEqual(env, { VITEST_MAX_WORKERS: "3", CUSTOM_SETTING: "keep" });
+});
+
+for (const failPrecommand of [true, false]) {
+  test(`partial engine failure records ${failPrecommand ? "pre-command" : "pytest"} timing and fails closed`, async (t) => {
+    const tmp = await createTempDir();
+    t.after(() => rm(tmp, { recursive: true, force: true }));
+    let calls = 0;
+    const report = await runCoreRegressions({ mode: "source", checks: ["engine-checks"], outputRoot: tmp }, {
+      executor: async () => {
+        calls++;
+        return { code: failPrecommand || calls === 2 ? 1 : 0, stdout: "", stderr: "failure", durationMs: calls * 5 };
+      },
+    });
+    assert.equal(report.overall_status, "failed");
+    assert.equal(report.checks[1].status, "failed");
+    assert.equal(report.checks[1].duration_ms, failPrecommand ? 5 : 15);
+    assert.equal(report.checks[1].commands.length, failPrecommand ? 1 : 2);
+    assert.equal(calls, failPrecommand ? 1 : 2);
+    assert.equal(report.summary.failed, 1);
+    assert.equal(report.summary.not_run, 1);
+  });
+}
 
 test("runCoreRegressions rejects invalid or missing mode", async (t) => {
   const tmp = await createTempDir();
@@ -264,6 +373,9 @@ test("runCoreRegressions in source mode passes when all commands exit 0", async 
   assert.equal(report.summary.failed, 0);
   assert.equal(report.summary.not_run, 0);
   assert.equal(executed.length, 3); // 1 desktop check + 1 precommand + 1 engine test
+  assert.equal(report.scope, "full");
+  assert.deepEqual(report.requested_checks, ["desktop-checks", "engine-checks"]);
+  assert.equal(report.checks[1].duration_ms, 30); // Ruff and Pytest both count
 });
 
 test("runCoreRegressions in packaged mode passes when all journeys generate matching receipts", async (t) => {

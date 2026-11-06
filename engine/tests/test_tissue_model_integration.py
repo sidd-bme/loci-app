@@ -371,6 +371,22 @@ def test_global_native_status_and_import_are_path_free_no_inference(ready, monke
     )
     assert len(calls) == 1 and calls[0][0] == ("/native/weights", "/native/receipt")
     assert "/native" not in canonical_json(output)
+    from loci_engine.research_rpc import dispatch_research
+
+    bridged = dispatch_research(
+        "research_execute",
+        {
+            "project": str(ready.project.root),
+            "operation": "tissue_model_import",
+            "request": {
+                "profile_id": tissue.PUMA_PROFILE_ID,
+                "weights_path": "/native/weights",
+                "receipt_path": "/native/receipt",
+            },
+        },
+    )
+    assert len(calls) == 2 and calls[1][0] == ("/native/weights", "/native/receipt")
+    assert "/native" not in canonical_json(bridged)
     with pytest.raises(ValueError):
         ready.wb.execute("tissue_model_import", {})
 

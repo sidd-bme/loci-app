@@ -67,6 +67,19 @@ export async function fileSha256(filePath) {
   return hash.digest("hex");
 }
 
+const SOURCE_CHECKS = ["desktop-checks", "engine-checks"];
+
+function selectedSourceChecks(options) {
+  if (options.checks === undefined) return SOURCE_CHECKS;
+  if (options.mode !== "source") throw new Error("--checks is only supported with --mode=source");
+  if (!Array.isArray(options.checks) || options.checks.length === 0 ||
+      options.checks.some((id) => !SOURCE_CHECKS.includes(id)) ||
+      new Set(options.checks).size !== options.checks.length) {
+    throw new Error(`--checks must contain unique, nonempty check names: ${SOURCE_CHECKS.join(",")}`);
+  }
+  return options.checks;
+}
+
 export function parseArgs(args) {
   const options = {
     mode: null,
@@ -93,8 +106,16 @@ export function parseArgs(args) {
       options.outputRoot = args[++i];
     } else if (arg === "--continue-on-error") {
       options.continueOnError = true;
+    } else if (arg.startsWith("--checks=") || arg === "--checks") {
+      if (options.checks !== undefined) throw new Error("--checks may only be specified once");
+      const value = arg === "--checks" ? args[++i] : arg.slice(9);
+      if (!value || value.startsWith("--")) throw new Error("--checks requires a comma-separated list of check names");
+      options.checks = value.split(",");
+    } else {
+      throw new Error(`Unknown or incomplete argument: ${arg}`);
     }
   }
+  selectedSourceChecks(options);
   return options;
 }
 
@@ -270,8 +291,19 @@ export async function runCoreRegressions(options, dependencies = {}) {
     );
   }
 
+  let selectedChecks;
+  try {
+    selectedChecks = selectedSourceChecks(options);
+  } catch (err) {
+    return failRunner(err.message, "checks");
+  }
+
   if (options.mode === "source") {
     report.prerequisites.mode = { status: "valid", mode: "source" };
+    report.requested_checks = [...selectedChecks];
+    report.scope = selectedChecks.length === SOURCE_CHECKS.length ? "full" : "partial";
+    const sourceEnv = { ...(dependencies.env ?? process.env) };
+    sourceEnv.VITEST_MAX_WORKERS ??= "1";
 
     const checks = [
       {
@@ -287,9 +319,9 @@ export async function runCoreRegressions(options, dependencies = {}) {
         name: "Python Engine Verification (Ruff lint & Pytest)",
         cwd: path.join(projectRoot, "engine"),
         command: "uv",
-        args: ["run", "pytest"],
+        args: ["run", "--frozen", "--no-sync", "pytest", "--durations=15"],
         preCommands: [
-          { command: "uv", args: ["run", "ruff", "check", "."] },
+          { command: "uv", args: ["run", "--frozen", "--no-sync", "ruff", "check", "."] },
         ],
         obligations: CONTRACT_MAPPINGS["engine-checks"].obligations,
       },
@@ -299,11 +331,12 @@ export async function runCoreRegressions(options, dependencies = {}) {
     let shouldHalt = false;
 
     for (const check of checks) {
-      if (shouldHalt) {
+      if (!selectedChecks.includes(check.id) || shouldHalt) {
         report.checks.push({
           id: check.id,
           name: check.name,
           status: "not-run",
+          reason: selectedChecks.includes(check.id) ? "halted-after-failure" : "not-requested",
           obligations: check.obligations,
         });
         report.summary.not_run++;
@@ -317,14 +350,28 @@ export async function runCoreRegressions(options, dependencies = {}) {
         status: "running",
         obligations: check.obligations,
         started_at: new Date().toISOString(),
+        duration_ms: 0,
+        commands: [],
       };
+      if (check.id === "desktop-checks") {
+        checkResult.vitest_max_workers = sourceEnv.VITEST_MAX_WORKERS;
+        console.log(`Vitest max workers: ${sourceEnv.VITEST_MAX_WORKERS}`);
+      }
 
       let failed = false;
       let checkLog = "";
+      const runCommand = async (command, args, phase) => {
+        const commandStart = Date.now();
+        const res = await executor(command, args, { cwd: check.cwd, env: sourceEnv, live: true });
+        const duration = res.durationMs ?? Date.now() - commandStart;
+        checkResult.commands.push({ command, args, phase, exit_code: res.code, duration_ms: duration });
+        checkResult.duration_ms += duration;
+        return res;
+      };
 
       if (check.preCommands) {
         for (const pre of check.preCommands) {
-          const res = await executor(pre.command, pre.args, { cwd: check.cwd, live: true });
+          const res = await runCommand(pre.command, pre.args, "pre-command");
           checkLog += `\n--- PRE-COMMAND: ${pre.command} ${pre.args.join(" ")} (exit ${res.code}) ---\n${res.stdout}\n${res.stderr}\n`;
           if (res.code !== 0) {
             failed = true;
@@ -335,9 +382,8 @@ export async function runCoreRegressions(options, dependencies = {}) {
       }
 
       if (!failed) {
-        const res = await executor(check.command, check.args, { cwd: check.cwd, live: true });
+        const res = await runCommand(check.command, check.args, "command");
         checkLog += `\n--- COMMAND: ${check.command} ${check.args.join(" ")} (exit ${res.code}) ---\n${res.stdout}\n${res.stderr}\n`;
-        checkResult.duration_ms = res.durationMs;
         if (res.code !== 0) {
           failed = true;
           checkResult.error = `Command ${check.command} ${check.args.join(" ")} failed with exit code ${res.code}`;
@@ -560,7 +606,9 @@ export async function runCoreRegressions(options, dependencies = {}) {
   report.duration_ms = Date.now() - startTime;
   report.overall_status = (report.summary.failed === 0 && report.summary.total > 0 && report.summary.passed === report.summary.total)
     ? "passed"
-    : "failed";
+    : report.scope === "partial" && report.summary.failed === 0 && report.summary.passed === report.requested_checks.length
+      ? "partial-passed"
+      : "failed";
 
   const receiptPath = path.join(outputRoot, "core-regression-receipt.json");
   await fs.writeFile(receiptPath, JSON.stringify(report, null, 2) + "\n");
@@ -576,9 +624,10 @@ export async function runCoreRegressions(options, dependencies = {}) {
 }
 
 export async function main(cliArgs = process.argv.slice(2)) {
-  const options = parseArgs(cliArgs);
-  if (options.help) {
-    console.log(`Usage: node scripts/run-core-regressions.mjs --mode=[source|packaged] [options]
+  try {
+    const options = parseArgs(cliArgs);
+    if (options.help) {
+      console.log(`Usage: node scripts/run-core-regressions.mjs --mode=[source|packaged] [options]
 
 Modes:
   --mode=source        Run desktop typecheck/tests and python engine lint/tests
@@ -586,16 +635,17 @@ Modes:
 
 Options:
   --app=/path/to/app   Required for --mode=packaged. Path to Loci.app bundle
+  --checks=LIST       Source only: desktop-checks,engine-checks (default: both)
+                      A passing subset is partial-passed, not full qualification
   --output-root=DIR    Directory to store test receipts and logs
   --continue-on-error  Continue remaining checks if a check fails (overall status still fails)
   --help, -h           Show this help message
 `);
-    process.exit(0);
-  }
+      process.exit(0);
+    }
 
-  try {
     const report = await runCoreRegressions(options);
-    process.exit(report.overall_status === "passed" ? 0 : 1);
+    process.exit(["passed", "partial-passed"].includes(report.overall_status) ? 0 : 1);
   } catch (err) {
     console.error("Fatal error executing core regressions:", err);
     process.exit(1);

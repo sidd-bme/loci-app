@@ -56,4 +56,32 @@ describe("source view persistence", () => {
     await store.flush();
     expect(execute).not.toHaveBeenCalled();
   });
+  it("deduplicates identical state and flushes cleanly when idle", async () => {
+    const execute = vi.fn().mockResolvedValue({ source_id: "a", source_sha256: "hash", revision: 1 });
+    const store = new SourceViewStore({ execute } as unknown as ResearchDesktopApi, "a", "hash", 0, vi.fn(), state(1));
+    expect(store.hasPending()).toBe(false);
+    expect(await store.flush()).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+
+    // Identical to initialState -> no-op
+    store.save(state(1));
+    expect(store.hasPending()).toBe(false);
+    expect(await store.flush()).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+
+    // Changed state -> triggers write
+    store.save(state(2));
+    expect(store.hasPending()).toBe(true);
+    // Redundant save while pending -> ignored
+    store.save(state(2));
+    expect(await store.flush()).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(store.hasPending()).toBe(false);
+
+    // Save identical to newly saved state -> ignored
+    store.save(state(2));
+    expect(store.hasPending()).toBe(false);
+    expect(await store.flush()).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });

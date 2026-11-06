@@ -25,9 +25,10 @@ REMOTE_POLICY_SCHEMA = "loci.agent-policy/v2"
 VISION_POLICY_SCHEMA = "loci.agent-policy/v3"
 STUDY_POLICY_SCHEMA = "loci.agent-policy/v4"
 SESSION_POLICY_SCHEMA = "loci.agent-policy/v5"
-STUDY_POLICY_SCHEMAS = frozenset({STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA})
+TISSUE_POLICY_SCHEMA = "loci.agent-policy/v6"
+STUDY_POLICY_SCHEMAS = frozenset({STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA})
 VISION_POLICY_SCHEMAS = frozenset(
-    {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA}
+    {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA}
 )
 PERMISSION_MODES = frozenset({"inspect_only", "ask_approval", "full_access"})
 MAX_POLICY_BYTES = 1024 * 1024
@@ -279,6 +280,7 @@ class AgentPolicy:
     actions: frozenset[str] = field(default_factory=frozenset)
     export_new_names: bool = False
     permission_mode: str | None = None
+    tissue_outputs: tuple[dict[str, Any], ...] | None = None
 
     def recheck(self) -> None:
         if self.delegation is not None:
@@ -350,6 +352,53 @@ class AgentPolicy:
             raise PermissionError("The source identity is outside the pinned policy")
         return grant
 
+    def require_tissue_output(self, request: dict[str, Any]) -> None:
+        # Earlier policies intentionally grant outputs within their source crop.
+        # A v6 output list is separate authority from the full-context read grant.
+        if self.tissue_outputs is not None and not any(
+            request["source_id"] == grant["source_id"]
+            and request["source_sha256"] == grant["source_sha256"]
+            and request["output_selection"] == grant["output_selection"]
+            for grant in self.tissue_outputs
+        ):
+            raise PermissionError("The exact tissue output selection is outside the pinned policy")
+
+
+def _validate_tissue_outputs(document, project, sources):
+    from .research_tissue_models import _selection
+
+    outputs = document["tissue_outputs"]
+    if not isinstance(outputs, list):
+        raise ValueError("Tissue outputs must be an explicit list")
+    identities = set()
+    for item in outputs:
+        value = _exact_keys(
+            item, {"source_id", "source_sha256", "output_selection"}, "tissue output grant"
+        )
+        source_id = checked_id(value["source_id"])
+        digest = _sha256(value["source_sha256"], "tissue output source SHA-256")
+        selection = _selection(value["output_selection"])
+        grant = sources.get(source_id)
+        if grant is None or digest != grant.sha256 or not grant.allows(selection, []):
+            raise ValueError("Tissue output grant is outside its exact source grant")
+        source = project.source(source_id)
+        metadata = source.get("metadata", {})
+        dimensions = metadata.get("dimensions", {})
+        if (
+            source.get("source_kind") != "native"
+            or metadata.get("sample_semantics") not in {"RGB", "RGBA"}
+            or any(type(dimensions.get(axis)) is not int for axis in ("x", "y", "z", "t"))
+            or selection["x"] + selection["width"] > dimensions["x"]
+            or selection["y"] + selection["height"] > dimensions["y"]
+            or selection["z"] >= dimensions["z"]
+            or selection["t"] >= dimensions["t"]
+        ):
+            raise ValueError("Tissue output grant exceeds its registered native RGB source")
+        identity = canonical_json(value)
+        if identity in identities:
+            raise ValueError("Tissue output grants must be unique")
+        identities.add(identity)
+
 
 def _validated_document(
     document: Any,
@@ -362,13 +411,16 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    v5 = isinstance(document, dict) and document.get("schema") == SESSION_POLICY_SCHEMA
+    v6 = isinstance(document, dict) and document.get("schema") == TISSUE_POLICY_SCHEMA
+    v5 = isinstance(document, dict) and (
+        document.get("schema") == SESSION_POLICY_SCHEMA or (v6 and "permission_mode" in document)
+    )
     v4 = isinstance(document, dict) and (
-        document.get("schema") == STUDY_POLICY_SCHEMA or (v5 and "delegation" in document)
+        document.get("schema") == STUDY_POLICY_SCHEMA or ((v5 or v6) and "delegation" in document)
     )
     v3 = isinstance(document, dict) and (
         document.get("schema") in {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA}
-        or (v5 and ("experimental_recipes" in document or v4))
+        or ((v5 or v6) and ("experimental_recipes" in document or v4))
     )
     v2 = isinstance(document, dict) and (
         document.get("schema")
@@ -377,13 +429,14 @@ def _validated_document(
             VISION_POLICY_SCHEMA,
             STUDY_POLICY_SCHEMA,
         }
-        or (v5 and ("remote_grants" in document or v3))
+        or ((v5 or v6) and ("remote_grants" in document or v3))
     )
     extra = (
         ({"remote_grants"} if v2 else set())
         | ({"experimental_recipes"} if v3 else set())
         | ({"delegation", "actions"} if v4 else set())
         | ({"permission_mode"} if v5 else set())
+        | ({"tissue_outputs"} if v6 else set())
     )
     root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
     if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, *VISION_POLICY_SCHEMAS}:
@@ -542,6 +595,8 @@ def _validated_document(
         from .agent_experiments import validate_templates
 
         validate_templates(project, root, sources)
+    if v6:
+        _validate_tissue_outputs(root, project, sources)
     return (
         sources,
         recipes,
@@ -606,6 +661,9 @@ def load_policy(path: str | Path) -> AgentPolicy:
         export_new_names=document["export"] is not None
         and document["export"].get("filename_mode") == "directory",
         permission_mode=document.get("permission_mode"),
+        tissue_outputs=tuple(document["tissue_outputs"])
+        if document["schema"] == TISSUE_POLICY_SCHEMA
+        else None,
     )
 
 
@@ -614,6 +672,7 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
+    v6 = isinstance(specification, dict) and "tissue_outputs" in specification
     v5 = isinstance(specification, dict) and "permission_mode" in specification
     v4 = isinstance(specification, dict) and "delegation" in specification
     v3 = isinstance(specification, dict) and ("experimental_recipes" in specification or v4)
@@ -625,10 +684,13 @@ def write_policy(
         | ({"delegation"} if v4 else set())
         | ({"actions"} if v4 and "actions" in specification else set())
         | ({"permission_mode"} if v5 else set())
+        | ({"tissue_outputs"} if v6 else set())
     )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": SESSION_POLICY_SCHEMA
+        "schema": TISSUE_POLICY_SCHEMA
+        if v6
+        else SESSION_POLICY_SCHEMA
         if v5
         else STUDY_POLICY_SCHEMA
         if v4

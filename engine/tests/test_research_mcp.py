@@ -190,7 +190,7 @@ def test_context_and_guide_resources_use_same_permissions_and_sanitized_errors(
             assert tools[name].annotations.open_world_hint is False
         assert tools["preview_recipe"].annotations.read_only_hint is False
         assert tools["preview_recipe"].annotations.idempotent_hint is False
-        assert tools["job_status"].annotations.read_only_hint is False
+        assert tools["job_status"].annotations.read_only_hint is True
         assert tools["submit_recipe"].annotations.idempotent_hint is True
         assert tools["cancel_job"].annotations.destructive_hint is True
         assert tools["export_result"].annotations.read_only_hint is False
@@ -510,6 +510,49 @@ def test_owned_child_failure_before_claim_is_durable_not_left_queued(tmp_path):
         state = workbench.project.job(job_id)["state"]
     assert state == "failed"
     assert "before claiming" in workbench.project.job(job_id)["error"]
+
+
+def test_dead_owned_child_recovers_after_publication_writer_without_status_mutation(
+    tmp_path, monkeypatch
+):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from loci_engine.research_project import ResearchProject
+
+    agent, workbench, _, request, _, _ = make_agent(tmp_path)
+    process = ExitedProcess([])
+    job = workbench.project.submit("run_recipe", request, "dead-owned", owner=agent.job_owner)
+    workbench.project.update_job(
+        job["id"], expected_state="queued", state="running", pid=process.pid
+    )
+    agent.supervisor._children[job["id"]] = process
+    attempted = threading.Event()
+    original_update = ResearchProject.update_job
+
+    def observed_update(project, job_id, **kwargs):
+        try:
+            return original_update(project, job_id, **kwargs)
+        finally:
+            attempted.set()
+
+    monkeypatch.setattr(ResearchProject, "update_job", observed_update)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with workbench.project.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            watcher = pool.submit(agent.supervisor._watch, job["id"], process)
+            assert attempted.wait(2), "Watcher did not attempt terminal bookkeeping"
+            with agent.supervisor._lock:
+                assert agent.supervisor._children[job["id"]] is process
+            status = agent.job_status(job["id"])["job"]
+            assert status["state"] == "running" and status["owned_worker_active"] is False
+        watcher.result(timeout=3)
+    # No new submission/native action is needed for durable recovery.
+    status = agent.job_status(job["id"])["job"]
+    assert status["state"] == "failed" and status["owned_worker_active"] is False
+    assert status["result_ids"] == []
+    with agent.supervisor._lock:
+        assert job["id"] not in agent.supervisor._children
 
 
 def test_policy_revocation_cancels_and_signals_matching_owned_child(tmp_path):

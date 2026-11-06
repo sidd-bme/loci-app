@@ -71,6 +71,14 @@ Agent grants must cover both the full normalization context and output region,
 plus the exact model/runtime and the requested operation. A small output ROI
 does not narrow the pixels read for normalization.
 
+An opt-in version 6 agent policy can further pin exact tissue output selections
+with `tissue_outputs`. Each entry binds a source ID and fingerprint to the full
+output selection, including channel, time, depth and pyramid level. The existing
+source grant still authorizes the normalization context. Preview, token adoption
+and access to retained tissue results must satisfy both grants. Earlier policy
+versions retain their documented source-region authority; they do not promise
+this additional exact-output restriction.
+
 The source profile records pinned upstream code, checkpoint and dataset
 identities and their declared licences. Model weights are not bundled or
 downloaded by this feature; redistribution review remains incomplete. The

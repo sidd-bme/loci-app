@@ -66,6 +66,15 @@ async function wait(read, accept, label, timeout = 180000) {
     const failed = state?.jobs.find(job => ['failed', 'cancelled', 'interrupted'].includes(job.state) &&
       !(job.state === 'cancelled' && expectedCancelledJobs.has(job.id)));
     assert.ok(!failed, `${label}: ${JSON.stringify(failed)}`);
+    if (page) {
+      const alert = page.locator('.research-alert.recoverable-error').filter({ visible: true }).first();
+      if (await alert.count() > 0) {
+        const summary = alert.locator('summary');
+        if (await summary.count() > 0) await summary.click().catch(() => {});
+        const alertText = await alert.innerText().catch(() => 'alert text unavailable');
+        throw new Error(`Encountered research alert while waiting for ${label}: ${alertText}`);
+      }
+    }
     await page.waitForTimeout(100);
   }
   throw new Error(`Timed out: ${label}`);
@@ -75,6 +84,8 @@ async function launch(session) {
   const profile = path.join(output, 'profile-' + session);
   app = await electron.launch({ executablePath, args: ['--user-data-dir=' + profile], cwd: path.join(repo, 'desktop'), timeout: 120000,
     env: { ...env, LOCI_MODEL_HOME: path.join(profile, 'models') } });
+  if (app.process().stdout) app.process().stdout.pipe(process.stdout);
+  if (app.process().stderr) app.process().stderr.pipe(process.stderr);
   await remember();
   processTimer = setInterval(() => { processScan = processScan.then(remember).catch(error => { receipt.process_tracking_error = error.message; }); }, 500);
   page = await app.firstWindow(); page.setDefaultTimeout(30000);
@@ -279,6 +290,8 @@ try {
   assert.equal(reference.request.source_sha256, SOURCE);
   await fs.copyFile(env.LOCI_QA_TISSUE_SOURCE, source); assert.equal(await sha(source), SOURCE);
   await launch(1); await createEmptyStudy(page);
+  // Study creation is asynchronous: wait for the header action instead of racing into the File menu.
+  await page.getByRole('button', { name: 'Add images…', exact: true }).filter({ visible: true }).first().waitFor();
   await fileMenuAction(page, 'Add images…');
   const imported = await wait(snapshot, value => value?.sources.length === 1, 'native public source import');
   const sourceRecord = imported.sources[0]; assert.equal(sourceRecord.sha256, SOURCE);
@@ -366,7 +379,13 @@ try {
   receipt.status = 'passed-packaged-engineering-qa-only';
 } catch (error) {
   failure = error; receipt.status = 'failed'; receipt.error = { message: error.message, stack: error.stack, stdout: error.stdout, stderr: error.stderr };
-  if (page) { await shot('failure').catch(() => {}); await fs.writeFile(path.join(output, 'failure-ui.txt'), await page.locator('body').innerText().catch(() => 'unavailable')); }
+  if (page) {
+    await shot('failure').catch(() => {});
+    await page.evaluate(() => {
+      document.querySelectorAll('details').forEach(d => { d.open = true; });
+    }).catch(() => {});
+    await fs.writeFile(path.join(output, 'failure-ui.txt'), await page.locator('body').innerText().catch(() => 'unavailable'));
+  }
 } finally {
   await close().catch(error => { receipt.cleanup_error = error.message; receipt.status = 'failed'; failure ??= error; });
   receipt.finished_at = new Date().toISOString(); await fs.writeFile(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
