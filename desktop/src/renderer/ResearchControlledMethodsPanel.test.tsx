@@ -19,7 +19,7 @@ function flight(channels = [1]) { return { preflight_hash: hash("4"), preflight:
 const grant = { output_grant_id: identity("6"), output_sha256: hash("7"), preflight_hash: hash("4") };
 function saved(): ResearchResult { return { ...parent, id: identity("8"), revision_hash: hash("9"), parent_id: parent.id, kind: "controlled-method", controlled_method: { schema: "loci.controlled-method-derivative/v1", method_id: method.method_id, manifest_sha256: method.manifest_sha256, module_sha256: method.module_sha256,
   input_sha256: hash("5"), output_sha256: grant.output_sha256, preflight_hash: grant.preflight_hash, origin: "adopted-external", total_rows: 2, raw_channels: [1], metrics: method.manifest.metrics } }; }
-function runResponse() { const result = saved(); return { result, job: { id: identity("0"), operation: "method_run", state: "succeeded", request: { ...binding(), preflight_hash: hash("4"), mode: "adopt-external", output_grant_id: grant.output_grant_id }, result_ids: [result.id] } }; }
+function runResponse() { const result = saved(); return { result, job: { id: identity("0"), operation: "method_run", state: "succeeded", request: { source_id: source.id, task_request: { ...binding(), preflight_hash: hash("4"), mode: "adopt-external", output_grant_id: grant.output_grant_id } }, result_ids: [result.id] } }; }
 function setup(initialList?: Promise<unknown>) {
   const execute = vi.fn().mockImplementation(async (operation: string) => operation === "method_list" ? initialList ?? { methods: [method], next_offset: null } : operation === "method_preflight" ? flight() : runResponse());
   const api = { execute, importControlledMethod: vi.fn().mockResolvedValue(null), chooseControlledMethodOutput: vi.fn().mockResolvedValue(grant), exportControlledMethodInput: vi.fn().mockResolvedValue(null) } as unknown as ResearchDesktopApi;
@@ -75,12 +75,19 @@ describe("Controlled method researcher workflow", () => {
   it("adopts only a completed exact external job with retained input and output identity", async () => {
     const v = setup(); await choose(); fireEvent.click(await external());
     await waitFor(() => expect(v.props.onPublished).toHaveBeenCalledExactlyOnceWith(saved()));
-    expect(v.api.chooseControlledMethodOutput).toHaveBeenCalledExactlyOnceWith({ ...binding(), preflight_hash: hash("4") }); expect(v.execute).toHaveBeenLastCalledWith("method_run", runResponse().job.request);
+    expect(v.api.chooseControlledMethodOutput).toHaveBeenCalledExactlyOnceWith({ ...binding(), preflight_hash: hash("4") }); expect(v.execute).toHaveBeenLastCalledWith("method_run", runResponse().job.request.task_request);
     expect(screen.getByText(/their production remains unverified/)).toBeVisible();
   });
-  it("rejects a completed result whose durable job records a different request", async () => {
-    const v = setup(); await choose(); const adopt = await external(); const response = runResponse(); response.job.request.raw_channels = [0]; v.execute.mockResolvedValueOnce(response); fireEvent.click(adopt);
+  it.each(["nested request", "source", "flat request", "missing source", "extra envelope key"])("rejects a completed job with an incorrect %s envelope", async (change) => {
+    const v = setup(); await choose(); const adopt = await external(); const response = runResponse();
+    if (change === "nested request") response.job.request.task_request.raw_channels = [0];
+    if (change === "source") response.job.request.source_id = identity("1");
+    if (change === "flat request") Object.assign(response.job, { request: response.job.request.task_request });
+    if (change === "missing source") Object.assign(response.job, { request: { task_request: response.job.request.task_request } });
+    if (change === "extra envelope key") Object.assign(response.job.request, { unexpected: true });
+    v.execute.mockResolvedValueOnce(response); fireEvent.click(adopt);
     expect(await screen.findByRole("alert")).toHaveTextContent("completed job and exact input"); expect(v.props.onPublished).not.toHaveBeenCalled();
+    expect(v.props.onBusyChange).toHaveBeenLastCalledWith(false);
   });
   it("rejects method output bound to a different preflight input buffer", async () => {
     const v = setup(); await choose(); const adopt = await external(); const response = runResponse(); response.result.controlled_method = { ...response.result.controlled_method as object, input_sha256: hash("a") }; v.execute.mockResolvedValueOnce(response); fireEvent.click(adopt);

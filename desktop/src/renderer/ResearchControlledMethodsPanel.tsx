@@ -177,7 +177,7 @@ export function ResearchControlledMethodsPanel({ api, snapshot, source, selected
       if (!result || !id(result.id) || !sha(result.revision_hash) || result.id === parent.id || result.kind !== "controlled-method" || result.parent_id !== parent.id || result.source_id !== source.id || result.source_sha256 !== source.sha256 ||
           result.arrays?.image?.sha256 !== parent.arrays?.image?.sha256 || result.arrays?.labels?.sha256 !== parent.arrays?.labels?.sha256 ||
           !same(result.selection, parent.selection) || !same(result.geometry, parent.geometry) ||
-          !job || !id(job.id) || !same(job.request, request) || job.operation !== "method_run" || job.state !== "succeeded" || job.owner || !Array.isArray(job.result_ids) || job.result_ids.length !== 1 || job.result_ids[0] !== result.id)
+          !job || !id(job.id) || !same(job.request, { source_id: source.id, task_request: request }) || job.operation !== "method_run" || job.state !== "succeeded" || job.owner || !Array.isArray(job.result_ids) || job.result_ids.length !== 1 || job.result_ids[0] !== result.id)
         throw new Error("The returned method result does not match its completed job and exact input. Inspect Jobs before retrying.");
       const saved = checkedSummary(result);
       if (saved.method_id !== input.method_id || saved.manifest_sha256 !== input.manifest_sha256 || saved.module_sha256 !== input.module_sha256 || saved.preflight_hash !== input.preflight_hash ||

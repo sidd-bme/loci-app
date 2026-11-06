@@ -20,7 +20,7 @@ function agreement() { return { schema: "loci.annotation-agreement/v1", semantic
       scores: [{ iou_threshold: 0.5, true_positive: 2, false_positive: 0, false_negative: 0, precision: 1 as number | null, recall: 1 as number | null, f1: 1 as number | null, mean_matched_iou: 1 as number | null, undefined_reasons: {} as Record<string, string>, matches_count: 2, unmatched_reference_count: 0, unmatched_prediction_count: 0 }] } } }; }
 function saved(record = agreement()): ResearchResult & { annotation_evaluation: ReturnType<typeof agreement> } { return { ...parent, id: "4".repeat(32), revision_hash: "5".repeat(64), parent_id: parent.id, kind: "annotation-agreement", arrays: { ...parent.arrays, reference_labels: reference.arrays!.labels }, annotation_evaluation: record }; }
 function response() { const result = saved(); return { result, annotation_evaluation: result.annotation_evaluation,
-  job: { id: "6".repeat(32), operation: "annotation_evaluation_run", state: "succeeded", request, result_ids: [result.id] } }; }
+  job: { id: "6".repeat(32), operation: "annotation_evaluation_run", state: "succeeded", request: { source_id: source.id, task_request: request }, result_ids: [result.id] } }; }
 function setup() {
   const execute = vi.fn().mockResolvedValue(response());
   const props = { api: { execute } as unknown as ResearchDesktopApi, snapshot: { project: { project_id: "7".repeat(32) }, results: [parent, reference], sources: [source] } as ResearchSnapshot,
@@ -39,11 +39,15 @@ describe("Exact saved annotation comparison", () => {
     const v = setup(), run = screen.getByRole("button", { name: "Compare saved annotations" }); expect(run).toBeDisabled(); choose(); fireEvent.click(run);
     await waitFor(() => expect(v.props.onPublished).toHaveBeenCalledWith(response().result)); expect(v.execute).toHaveBeenCalledExactlyOnceWith("annotation_evaluation_run", request); expect(v.props.onBusyChange.mock.calls).toEqual([[true], [false]]);
   });
-  it.each(["unfinished", "revision", "request", "source", "result list"])("refuses incorrect %s bindings", async (change) => {
+  it.each(["unfinished", "revision", "request", "source", "result list", "job source", "flat request", "missing source", "extra envelope key"])("refuses incorrect %s bindings", async (change) => {
     const v = setup(), value = response();
     if (change === "unfinished") value.job.state = "running";
     if (change === "revision") value.result.annotation_evaluation.inputs.reference.revision_hash = "9".repeat(64);
-    if (change === "request") value.job.request = { ...request, working_bytes: 1024 ** 2 };
+    if (change === "request") value.job.request.task_request = { ...request, working_bytes: 1024 ** 2 };
+    if (change === "job source") value.job.request.source_id = "9".repeat(32);
+    if (change === "flat request") Object.assign(value.job, { request });
+    if (change === "missing source") Object.assign(value.job, { request: { task_request: request } });
+    if (change === "extra envelope key") Object.assign(value.job.request, { unexpected: true });
     if (change === "source") value.result.source_id = "9".repeat(32);
     if (change === "result list") value.job.result_ids = [parent.id];
     v.execute.mockResolvedValueOnce(value); choose(); fireEvent.click(screen.getByRole("button", { name: "Compare saved annotations" })); expect(await screen.findByRole("alert")).toBeVisible(); expect(v.props.onPublished).not.toHaveBeenCalled();
@@ -63,14 +67,26 @@ describe("Exact saved annotation comparison", () => {
   it("retains actionable backend budget errors without publishing", async () => {
     const v = setup(); v.execute.mockRejectedValueOnce(new Error("Annotation operation exceeds aggregate working-memory budget before decode")); choose(); fireEvent.click(screen.getByRole("button", { name: "Compare saved annotations" })); expect(await screen.findByRole("alert")).toHaveTextContent("working-memory budget"); expect(v.props.onPublished).not.toHaveBeenCalled();
   });
-  it("freezes explicit annotations with the discovered revision and coverage", async () => {
+  it.each(["exact", "wrong source", "tampered nested request", "flat request", "missing source", "extra envelope key"])("validates the %s job envelope when freezing explicit source annotations", async (change) => {
     const v = setup(); choose(); fireEvent.click(screen.getByText("Freeze source annotations as a reference")); v.execute.mockResolvedValueOnce(discovery()); fireEvent.click(screen.getByRole("button", { name: "Find eligible source annotations" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "polygon · 88888888" })); fireEvent.change(screen.getByLabelText("Frozen reference coverage"), { target: { value: declaration } });
     const req = { result_id: parent.id, revision_hash: parent.revision_hash, source_annotations_revision: 3, annotation_ids: ["8".repeat(32)], semantics: "instances", coverage_declaration: declaration, working_bytes: 16 * 1024 ** 2 };
     const record = { schema: "loci.annotation-reference/v1", semantics: "instances", source_annotations_revision: 3, coverage_declaration: declaration, labels_sha256: "9".repeat(64), snapshot_sha256: "0".repeat(64), annotation_count: 1 };
     const result = { ...parent, id: "0".repeat(32), revision_hash: "1".repeat(64), parent_id: parent.id, kind: "annotation-reference", arrays: { ...parent.arrays, labels: { ...parent.arrays!.labels, sha256: record.labels_sha256 } }, annotation_reference: record };
-    v.execute.mockResolvedValueOnce({ result, annotation_reference: record, job: { id: "2".repeat(32), operation: "annotation_reference_run", state: "succeeded", request: req, result_ids: [result.id] } }); fireEvent.click(screen.getByRole("button", { name: "Freeze selected reference" }));
-    await waitFor(() => expect(v.props.onPublished).toHaveBeenCalledWith(result)); expect(v.execute).toHaveBeenNthCalledWith(1, "annotation_reference_candidates", { result_id: parent.id, revision_hash: parent.revision_hash, offset: 0, limit: 100 }); expect(v.execute).toHaveBeenNthCalledWith(2, "annotation_reference_run", req);
+    const job = { id: "2".repeat(32), operation: "annotation_reference_run", state: "succeeded", request: { source_id: source.id, task_request: req }, result_ids: [result.id] };
+    if (change === "wrong source") job.request.source_id = "9".repeat(32);
+    if (change === "tampered nested request") job.request.task_request = { ...req, source_annotations_revision: 4 };
+    if (change === "flat request") Object.assign(job, { request: req });
+    if (change === "missing source") Object.assign(job, { request: { task_request: req } });
+    if (change === "extra envelope key") Object.assign(job.request, { unexpected: true });
+    v.execute.mockResolvedValueOnce({ result, annotation_reference: record, job }); fireEvent.click(screen.getByRole("button", { name: "Freeze selected reference" }));
+    if (change === "exact") await waitFor(() => expect(v.props.onPublished).toHaveBeenCalledExactlyOnceWith(result));
+    else {
+      expect(await screen.findByRole("alert")).toHaveTextContent("exact completed job and input revision");
+      expect(v.props.onPublished).not.toHaveBeenCalled();
+    }
+    expect(v.props.onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(v.execute).toHaveBeenNthCalledWith(1, "annotation_reference_candidates", { result_id: parent.id, revision_hash: parent.revision_hash, offset: 0, limit: 100 }); expect(v.execute).toHaveBeenNthCalledWith(2, "annotation_reference_run", req);
   });
   it("refuses unbound discovery and shows a useful empty source state", async () => {
     const v = setup(); choose(); fireEvent.click(screen.getByText("Freeze source annotations as a reference")); v.execute.mockResolvedValueOnce({ ...discovery(), revision_hash: "9".repeat(64) }); fireEvent.click(screen.getByRole("button", { name: "Find eligible source annotations" })); expect(await screen.findByRole("alert")).toHaveTextContent("does not match"); expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();

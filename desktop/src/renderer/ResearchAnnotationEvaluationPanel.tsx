@@ -198,7 +198,7 @@ export function ResearchAnnotationEvaluationPanel({ api, snapshot, source, selec
       if (!r || !isId(r.id) || !isSha(r.revision_hash) || r.id === parent.id || r.kind !== (operation === "annotation_evaluation_run" ? "annotation-agreement" : "annotation-reference") ||
           r.parent_id !== parent.id || r.source_id !== source.id || r.source_sha256 !== source.sha256 || !same(r.selection, parent.selection) || !same(r.geometry, parent.geometry) ||
           r.arrays?.image?.sha256 !== parent.arrays?.image?.sha256 || !job || !isId(job.id) || job.operation !== operation || job.state !== "succeeded" || job.owner ||
-          !same(job.request, request) || !same(job.result_ids, [r.id])) throw new Error("The operation did not return the exact completed job and input revision. Inspect Jobs before retrying.");
+          !same(job.request, { source_id: source.id, task_request: request }) || !same(job.result_ids, [r.id])) throw new Error("The operation did not return the exact completed job and input revision. Inspect Jobs before retrying.");
       if (operation === "annotation_evaluation_run") {
         const summary = checkedAgreement(r.annotation_evaluation, r);
         if (!same(summary, responseRecord.annotation_evaluation) || summary.inputs.prediction.result_id !== parent.id || summary.inputs.prediction.revision_hash !== parent.revision_hash ||
