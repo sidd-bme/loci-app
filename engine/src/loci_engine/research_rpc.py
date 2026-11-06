@@ -149,6 +149,46 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         workbench = _open(params["project"])
         reorder_sources(workbench.project, params["request"])
         return workbench.snapshot()
+    if method in {
+        "research_method_import",
+        "research_method_rights_review",
+        "research_method_output_grant",
+        "research_method_input_export",
+    }:
+        from .research_methods import (
+            NATIVE_AUTHORITY,
+            create_output_grant,
+            export_input,
+            import_package,
+            review_rights,
+        )
+
+        fields = (
+            {"project", "path"}
+            if method == "research_method_import"
+            else (
+                {"project", "request"}
+                if method == "research_method_rights_review"
+                else {"project", "request", "destination"}
+                if method == "research_method_input_export"
+                else {"project", "request", "path"}
+            )
+        )
+        exact_keys(params, fields, method)
+        if set(params) != fields:
+            raise ValueError("Native controlled-method request is incomplete")
+        workbench = _open(params["project"])
+        if method == "research_method_import":
+            return import_package(workbench, params["path"], authority=NATIVE_AUTHORITY)
+        if method == "research_method_rights_review":
+            return review_rights(workbench, params["request"], authority=NATIVE_AUTHORITY)
+        if method == "research_method_input_export":
+            return export_input(
+                workbench, params["destination"], params["request"], authority=NATIVE_AUTHORITY
+            )
+        return create_output_grant(
+            workbench, params["path"], params["request"], authority=NATIVE_AUTHORITY
+        )
     if method == "research_labels_import_grant":
         from .research_labels_import import create_import_grant
 

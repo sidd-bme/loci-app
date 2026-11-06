@@ -39,6 +39,14 @@ def _array(items, minimum=0, maximum=1000):
 
 
 BOUND = {"result_id": ID, "revision_hash": SHA}
+METHOD_BOUND = {
+    **BOUND,
+    "method_id": ID,
+    "manifest_sha256": SHA,
+    "module_sha256": SHA,
+    "raw_channels": _array(INDEX, 1, 8),
+    "working_bytes": MEMORY,
+}
 POINT = _object({"u": NUMBER, "v": NUMBER})
 POINTS = _array(POINT, 3, 4096)
 RECIPE = recipe_guide()["request_schema"]
@@ -126,6 +134,61 @@ REQUESTS = {
     ),
     "describe_result": _object(BOUND),
     "morphometrics_run": _object({**BOUND, "working_bytes": MEMORY}),
+    "method_list": _object(
+        {"offset": INDEX, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}
+    ),
+    "method_get": _object({"method_id": ID}),
+    "method_runtime": _object({}),
+    "method_preflight": _object(METHOD_BOUND),
+    "method_run": _object(
+        {
+            **METHOD_BOUND,
+            "preflight_hash": SHA,
+            "mode": {"enum": ["execute", "adopt-external"]},
+            "output_grant_id": ID,
+        },
+        [*METHOD_BOUND, "preflight_hash", "mode"],
+    ),
+    "method_result": _object(BOUND),
+    "method_query": _object(
+        {**BOUND, "offset": INDEX, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+    ),
+    "annotation_reference_candidates": _object(
+        {**BOUND, "offset": INDEX, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+        list(BOUND),
+    ),
+    "annotation_evaluation_run": _object(
+        {
+            **BOUND,
+            "reference": _object(BOUND),
+            "semantics": {"enum": ["instances", "foreground-region"]},
+            "iou_thresholds": _array({"type": "number", "exclusiveMinimum": 0, "maximum": 1}, 0, 8),
+            "reference_declaration": TEXT,
+            "working_bytes": MEMORY,
+        }
+    ),
+    "annotation_reference_run": _object(
+        {
+            **BOUND,
+            "source_annotations_revision": INDEX,
+            "annotation_ids": _array(ID, 1, 1000),
+            "semantics": {"enum": ["instances", "foreground-region"]},
+            "coverage_declaration": TEXT,
+            "working_bytes": MEMORY,
+        }
+    ),
+    "annotation_evaluation_get": _object(
+        {
+            **BOUND,
+            "table": {
+                "enum": ["summary", "matches", "unmatched_reference", "unmatched_prediction"]
+            },
+            "threshold_index": INDEX,
+            "offset": INDEX,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        list(BOUND),
+    ),
     "spatial_distance_run": _object(
         {
             **BOUND,
@@ -605,6 +668,14 @@ READ_ACTIONS = frozenset(
         "tissue_model_profiles",
         "tissue_model_status",
         "describe_result",
+        "annotation_evaluation_get",
+        "annotation_reference_candidates",
+        "method_list",
+        "method_get",
+        "method_runtime",
+        "method_preflight",
+        "method_result",
+        "method_query",
         "correction_info",
         "tracking_result",
         "population_locate",
@@ -649,6 +720,9 @@ PUBLICATION_ACTIONS = frozenset(
         "perinuclear_run",
         "spatial_distance_run",
         "morphometrics_run",
+        "annotation_evaluation_run",
+        "annotation_reference_run",
+        "method_run",
         "spatial_density_save",
         "wound_closure_save",
         "correct_result",

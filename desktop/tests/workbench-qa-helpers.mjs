@@ -84,7 +84,8 @@ export async function revealAnalysisRegion(page) {
 }
 
 export async function revealExternalLabels(page) {
-  const details = page.locator("details.external-labels-disclosure");
+  const details = page.locator("details.external-labels-disclosure")
+    .filter({ has: page.getByText("Import existing labels", { exact: true }) });
   if (!(await details.evaluate((element) => element.open))) await details.locator(":scope > summary").click();
 }
 

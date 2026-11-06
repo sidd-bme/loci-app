@@ -300,6 +300,13 @@ def result_working_bytes(result: dict[str, Any]) -> int:
     return DEFAULT_WORKING_BYTES
 
 
+def _derived_result_summary(result):
+    from .research_result_extensions import validator
+
+    extension = validator(result)
+    return extension.public_summary(result) if extension is not None else {}
+
+
 def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None) -> dict[str, Any]:
     from .research_perinuclear import nucleus_result_eligible
     from .research_result_context import method_label
@@ -328,6 +335,7 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         **({"perinuclear": provenance["perinuclear"]} if "perinuclear" in provenance else {}),
         **({"spatial": provenance["spatial"]} if "spatial" in provenance else {}),
         **({"morphometrics": provenance["morphometrics"]} if "morphometrics" in provenance else {}),
+        **_derived_result_summary(result),
         **(
             {
                 "tissue_model": {
@@ -1749,6 +1757,43 @@ class Workbench:
 
             return execute_spatial(
                 self, request, job_id=job_id, publication_guard=publication_guard
+            )
+        if operation in {
+            "annotation_evaluation_run",
+            "annotation_reference_run",
+            "annotation_evaluation_get",
+            "annotation_reference_candidates",
+        }:
+            from .research_annotation_evaluation import (
+                execute_annotation_evaluation,
+                execute_annotation_reference,
+                reference_candidates,
+                report_get,
+            )
+
+            if operation == "annotation_reference_candidates":
+                return reference_candidates(self, request)
+            if operation == "annotation_evaluation_get":
+                return report_get(self, request)
+            function = (
+                execute_annotation_evaluation
+                if operation == "annotation_evaluation_run"
+                else execute_annotation_reference
+            )
+            return function(self, request, job_id=job_id, publication_guard=publication_guard)
+        if operation in {
+            "method_list",
+            "method_get",
+            "method_preflight",
+            "method_run",
+            "method_result",
+            "method_query",
+            "method_runtime",
+        }:
+            from .research_methods import execute
+
+            return execute(
+                self, operation, request, job_id=job_id, publication_guard=publication_guard
             )
         if operation == "morphometrics_run":
             from .research_morphometrics import execute_morphometrics

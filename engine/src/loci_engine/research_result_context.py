@@ -141,6 +141,9 @@ _KIND_LABELS = {
     "perinuclear-enrichment": "Perinuclear enrichment",
     "spatial-distance-bands": "Tissue distance bands",
     "morphometrics": "Digital morphometrics",
+    "annotation-agreement": "Annotation agreement",
+    "annotation-reference": "Frozen annotation reference",
+    "controlled-method": "Controlled reusable method",
     "field-assay": "Fluorescence field assay",
     "tracking": "Object tracking",
     "temporal-tracking": "Object tracking",
@@ -525,6 +528,13 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
                 or binding.get("revision_hash") != parent["revision_hash"]
             ):
                 raise ValueError("Association parent revision binding is missing or mismatched")
+            bound = True
+        elif current["kind"] in {
+            "controlled-method", "annotation-reference", "annotation-agreement"
+        }:
+            from .research_result_extensions import validate_project
+
+            validate_project(workbench.project, current)
             bound = True
         elif current["kind"] == "morphometrics":
             from .research_morphometrics import project_parents

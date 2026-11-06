@@ -6,10 +6,10 @@
 }
 
 .agent-activity-list > li {
-  padding: 10px 0;
+  padding: 14px 0;
   border-top: 1px solid var(--line);
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .agent-activity-meta {
@@ -28,7 +28,7 @@
 .agent-activity-summary {
   margin: 0;
   color: var(--ink);
-  font-size: var(--type-sm);
+  font-size: var(--type-md);
   overflow-wrap: anywhere;
 }
 
@@ -50,13 +50,13 @@
 .agent-target-list > li,
 .agent-approval-inspection {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
 }
 
 .agent-target-link {
   justify-self: start;
-  min-height: 28px;
+  min-height: 40px;
   padding: 3px 7px;
   color: var(--mineral-bright);
   font-size: var(--type-xs);
@@ -82,7 +82,7 @@
 
 .agent-target-identity summary,
 .agent-activity-request summary {
-  min-height: 24px;
+  min-height: 32px;
   cursor: pointer;
 }
 
@@ -97,3 +97,17 @@
   outline: 2px solid var(--mineral);
   outline-offset: 2px;
 }
+
+.agent-activity-heading { display: flex; align-items: flex-start; gap: 8px; }
+.agent-activity-heading > svg { margin-top: 3px; flex-shrink: 0; color: var(--ink-secondary); }
+.agent-activity-summary { line-height: 1.5; font-weight: 550; text-wrap: pretty; }
+.agent-activity-context { margin: 0; color: var(--ink-secondary); font-size: var(--type-xs); overflow-wrap: anywhere; line-height: 1.5; }
+.agent-activity-record { min-width: 0; }
+.agent-activity-record > summary { color: var(--ink-secondary); }
+.agent-activity-record > summary span { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.agent-activity-record[open] > :not(summary),
+.agent-approval-provenance[open] > :not(summary) { margin-top: 8px; }
+.agent-approval-expiry { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0; color: var(--ink-secondary); font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
+.agent-target-link { display: inline-flex; align-items: center; gap: 4px; background: transparent; }
+.agent-activity-list > li:first-child { border-top: 0; padding-top: 0; }
+.agent-approval-provenance { border-top: 1px solid var(--line); padding-top: 4px; }

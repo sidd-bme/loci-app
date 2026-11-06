@@ -96,6 +96,7 @@ describe("AgentActivityTimeline", () => {
     render(<AgentActivityTimeline events={events} approvals={[]} snapshot={snapshot} />);
     expect(screen.getByText("Showing the latest 12 of 14 recorded events.")).toBeVisible();
     expect(screen.queryByText("Activity 12")).not.toBeInTheDocument();
+    fireEvent.click(screen.getAllByText(/Recorded activity/)[0]);
     expect(screen.getByText("human")).toBeVisible();
     expect(screen.getAllByText("approval denied")).toHaveLength(12);
     expect(document.querySelector("time")).toHaveAttribute("datetime", "2026-10-27T00:00:00Z");
@@ -105,7 +106,7 @@ describe("AgentActivityTimeline", () => {
     render(<AgentActivityTimeline events={[event({ targets: undefined, approval_id: "removed-request", timestamp: "invalid" })]} approvals={[]} snapshot={snapshot} />);
     expect(screen.getByText("Exact source inspected")).toBeVisible();
     expect(screen.getByText("No target recorded.")).toBeVisible();
-    expect(screen.getByText("Time unavailable")).toBeVisible();
+    expect(screen.getAllByText("Time unavailable")[0]).toBeVisible();
     expect(screen.getByText("Request details unavailable · removed-request")).toBeVisible();
   });
 
@@ -113,6 +114,7 @@ describe("AgentActivityTimeline", () => {
     const approval = { ...wire.approvals[0], state, decision_reason: "The selected revision changed", decided_by: "human" };
     render(<AgentActivityTimeline events={[event({ approval_id: approval.id })]} approvals={[approval]} snapshot={snapshot} />);
     fireEvent.click(screen.getByText(`Inspect request · ${state}`));
+    fireEvent.click(screen.getByText("Exact request and provenance"));
     expect(screen.getByText("The selected revision changed")).toBeVisible();
     fireEvent.click(screen.getByText("Request identity and parameters"));
     expect(screen.getByText(approval.request_hash)).toBeVisible();
@@ -123,10 +125,43 @@ describe("AgentActivityTimeline", () => {
     const approval = { ...wire.approvals[0], display_revision: 7 };
     render(<AgentApprovalDetails approval={approval} snapshot={snapshot} />);
     expect(screen.getByText(/Approve once authorizes this exact request/)).toBeVisible();
+    fireEvent.click(screen.getByText("Exact request and provenance"));
     fireEvent.click(screen.getByText("Request identity and parameters"));
     const details = screen.getByText("Request identity and parameters").parentElement!;
     expect(within(details).getByText("7")).toBeVisible();
     expect(within(details).getByText(approval.request_hash)).toBeVisible();
     expect(within(details).getByText(/"disposition": "reviewed"/)).toBeVisible();
   });
+
+  it("distinguishes proposal, submission, approval and completion while preserving exact session records", () => {
+    const events = [
+      event({ id: "proposal", kind: "operation_proposed", operation: "submit_recipe", session_id: "session-a", summary: "Validated proposal for submit_recipe." }),
+      event({ id: "submitted", kind: "operation_submitted", operation: "submit_recipe", session_id: "session-b", summary: "Submitted submit_recipe." }),
+      event({ id: "approved", kind: "approval_approved", summary: "Approval recorded." }),
+      event({ id: "call", kind: "operation_completed", operation: "review_result", summary: "Completed call to review_result." }),
+      event({ id: "unknown", kind: "future_event", summary: "Original future summary" }),
+    ];
+    render(<AgentActivityTimeline events={events} approvals={[]} snapshot={snapshot} />);
+    expect(screen.getByText("Proposal validated · analysis")).toBeVisible();
+    expect(screen.getByText("Submitted · analysis")).toBeVisible();
+    expect(screen.getByText("Approved once · awaiting execution")).toBeVisible();
+    expect(screen.getByText("Completed call · result review")).toBeVisible();
+    expect(screen.getByText("Original future summary")).toBeVisible();
+    expect(document.querySelectorAll(".agent-activity-list > li")).toHaveLength(5);
+    fireEvent.click(screen.getAllByText(/Recorded activity/)[0]);
+    expect(screen.getByText("session-a")).toBeVisible();
+    expect(screen.getByText("Validated proposal for submit_recipe.")).toBeVisible();
+  });
+
+  it("places the recorded result first and retains other targets and original provenance in disclosures", () => {
+    const result: ResearchAgentTargetReference = { kind: "result", id: resultId, revision_hash: revision, source_id: sourceId, source_sha256: sourceHash };
+    render(<AgentActivityTimeline events={[event({ kind: "operation_completed", operation: "review_result", targets: [sourceTarget, result] })]} approvals={[]} snapshot={snapshot}
+      navigation={{ onOpenResult: vi.fn(), onOpenSource: vi.fn() }} />);
+    expect(screen.getByRole("button", { name: `Open result ${resultId}` })).toBeVisible();
+    expect(screen.getByRole("button", { name: `Open source ${sourceId}` })).not.toBeVisible();
+    expect(screen.getByText(`Source · result ${resultId.slice(0, 8)} · rev ${revision.slice(0, 8)}`)).toBeVisible();
+    fireEvent.click(screen.getByText(/Recorded activity/));
+    expect(screen.getByRole("button", { name: `Open source ${sourceId}` })).toBeVisible();
+  });
+
 });

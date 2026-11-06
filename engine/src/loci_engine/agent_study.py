@@ -13,7 +13,9 @@ from .research_project import checked_id
 from .workbench import Workbench
 
 
-def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) -> dict[str, Any]:
+def authorize_result(
+    policy: AgentPolicy, workbench: Workbench, result_id: str, *, verify_scientific_arrays=True
+) -> dict[str, Any]:
     from .research_interchange import _validate_result_crossrefs
 
     results: dict[str, dict[str, Any]] = {}
@@ -55,6 +57,16 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
         channels = provenance.get("measurement_channels", recipe.get("measurement_channels", []))
         if provenance.get("stain_separation") or provenance.get("derived_measurement_arrays"):
             channels = []  # These are declared derived coordinates, not raw source channels.
+        if "controlled_method" in provenance:
+            raw_channels = (
+                provenance["controlled_method"]
+                .get("preflight", {})
+                .get("input_binding", {})
+                .get("raw_channels")
+            )
+            if not isinstance(raw_channels, list) or any(type(c) is not int for c in raw_channels):
+                raise PermissionError("Method raw channel authority is invalid")
+            channels = list(dict.fromkeys([*channels, *raw_channels]))
         grant = source_scope(record["source_id"], provenance.get("selection"), channels)
         if record["source_sha256"] != grant.sha256:
             raise PermissionError("Result source fingerprint exceeds the grant")
@@ -70,7 +82,7 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
         bindings.extend(compartment.get("label_inputs", {}).values())
         bindings.extend(
             provenance[key]
-            for key in ("parent_result", "fixed_result", "moving_result")
+            for key in ("parent_result", "reference_result", "fixed_result", "moving_result")
             if key in provenance
         )
         covered_sources = {record["source_id"]}
@@ -111,7 +123,7 @@ def authorize_result(policy: AgentPolicy, workbench: Workbench, result_id: str) 
     # Resolve every dependency/source grant before reading any retained pixels.
     # Validate these exact records, without a second record lookup that could
     # replace the already-authorized source/revision between the two phases.
-    for record in results.values():
+    for record in results.values() if verify_scientific_arrays else ():
         workbench.project.validate_result_arrays(
             record, check=policy.recheck, working_bytes=policy.memory_bytes
         )

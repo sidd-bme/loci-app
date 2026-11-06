@@ -618,6 +618,9 @@ class ResearchProject:
             "large_export_grant",
             "data_export_grant",
             "labels_import_grant",
+            "controlled_method",
+            "controlled_method_authority",
+            "controlled_method_output_grant",
             "workflow",
             "workflow_run",
             "workflow_export",
@@ -632,6 +635,12 @@ class ResearchProject:
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
+        if kind == "controlled_method":
+            from .research_methods import validate_package_document
+
+            method = validate_package_document(record)
+            if expected_revision != 0 or document_id != method.manifest_sha256[:32]:
+                raise ValueError("Controlled method packages are immutable; import a new identity")
         if kind == "intensity_report":
             from .experiment_intensity import validate_report
 
@@ -877,6 +886,9 @@ class ResearchProject:
             "arrays": artifacts,
             "provenance": provenance,
         }
+        from .research_result_extensions import validate_project as validate_extension
+
+        validate_extension(self, record, arrays=arrays, check=publication_guard)
         if kind in {"temporal-tracking", "tracking"} or "tracking" in provenance:
             from .research_temporal import project_inputs
 
@@ -1180,6 +1192,9 @@ class ResearchProject:
             raise ValueError("Result revision record failed integrity verification")
         schema = record.get("schema")
         if schema == "loci.research-result/v1":
+            from .research_result_extensions import validate_project as validate_extension
+
+            validate_extension(self, record, check=check)
             if record.get("kind") == "tissue-model-regions" or "tissue_model" in record.get(
                 "provenance", {}
             ):
@@ -1243,6 +1258,13 @@ class ResearchProject:
 
     def validate_result_arrays(self, record, *, check=None, working_bytes=None):
         """Numerically check one exact record after its source access is authorized."""
+        from .research_result_extensions import validator
+
+        extension = validator(record)
+        if extension is not None:
+            extension.validate_project_arrays(
+                self, record, check=check, working_bytes=working_bytes
+            )
         provenance = record.get("provenance", {})
         if record.get("kind") == "tissue-model-regions" or "tissue_model" in provenance:
             from .research_tissue_integration import project_records

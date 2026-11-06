@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+import { ArrowUpRight, Check, CircleAlert, Clock3 } from "lucide-react";
 import type {
   ResearchAgentApprovalRecord,
   ResearchAgentEventRecord,
@@ -21,7 +23,7 @@ const EVENT_LIMIT = 12;
 const targetName = (target: ResearchAgentTargetReference) => target.kind.replaceAll("_", " ");
 const readable = (value: string) => value.replaceAll("_", " ");
 
-function RecordedTime({ value }: { value: string }): React.JSX.Element {
+export function RecordedTime({ value }: { value: string }): React.JSX.Element {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
     ? <time dateTime={value} title={value}>{date.toLocaleString()}</time>
@@ -113,11 +115,65 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
   </ul>;
 }
 
-export function AgentApprovalDetails({ approval, snapshot, navigation, unavailable }: {
+function operationLabel(operation: string): string {
+  const labels: Record<string, string> = {
+    inspect_source: "source inspection", inspect_result: "result inspection",
+    review_result: "result review", set_source_display: "display update",
+    submit_recipe: "analysis", run_recipe: "analysis", preview_recipe: "analysis preview",
+    workflow_preview: "workflow preview", export_result: "result export",
+    evaluate_annotations: "annotation agreement", run_method: "method execution",
+  };
+  return labels[operation] ?? readable(operation);
+}
+
+/** Audit kinds describe calls and submissions; only the audit record can claim an outcome. */
+function eventHeadline(event: ResearchAgentEventRecord): string {
+  const operation = event.operation ? operationLabel(event.operation) : "operation";
+  const headlines: Record<string, string> = {
+    operation_inspected: `Inspected · ${operation}`,
+    operation_proposed: `Proposal validated · ${operation}`,
+    operation_submitted: `Submitted · ${operation}`,
+    operation_started: `Started · ${operation}`,
+    operation_completed: `Completed call · ${operation}`,
+    operation_failed: `Failed · ${operation}`,
+    operation_blocked: `Blocked · ${operation}`,
+    approval_requested: "Decision requested",
+    approval_approved: "Approved once · awaiting execution",
+    approval_denied: "Request denied",
+    approval_expired: "Request expired",
+    approval_consumed: "Approval consumed",
+    session_connected: "Client connected",
+    session_disconnected: "Client disconnected",
+    session_paused: "Access paused",
+    session_resumed: "Access resumed",
+    policy_revoked: "Access revoked",
+    job_stopped: "Job stop requested",
+  };
+  // Durable job outcomes use an explicit summary; a completed call alone is not a completed job.
+  if ((event.kind === "operation_completed" || event.kind === "operation_failed") &&
+      /^Job [a-f0-9]{8} (succeeded|failed|cancelled|interrupted)\.$/.test(event.summary)) return event.summary;
+  return headlines[event.kind] ?? event.summary;
+}
+
+function targetContext(targets: ResearchAgentTargetReference[] | undefined, snapshot: ResearchSnapshot): string | null {
+  if (!targets?.length) return null;
+  const source = targets.find((target) => target.kind === "source");
+  const bound = targets.find((target) => target.source_id);
+  const sourceId = source?.id ?? bound?.source_id;
+  const sourceHash = source?.sha256 ?? bound?.source_sha256;
+  const current = snapshot.sources.find((item) => item.id === sourceId && sourceHash === item.sha256);
+  const result = targets.find((target) => target.kind === "result");
+  return [sourceId ? (current?.name ?? `Source ${sourceId.slice(0, 8)}`) : null,
+    result ? `result ${result.id.slice(0, 8)}${result.revision_hash ? ` · rev ${result.revision_hash.slice(0, 8)}` : ""}` : null]
+    .filter(Boolean).join(" · ") || null;
+}
+
+export function AgentApprovalDetails({ approval, snapshot, navigation, unavailable, decisionControls }: {
   approval: ResearchAgentApprovalRecord;
   snapshot: ResearchSnapshot;
   navigation?: AgentActivityNavigation;
   unavailable?: boolean;
+  decisionControls?: ReactNode;
 }): React.JSX.Element {
   // Older records still carry explicit source/result identity, even without targets.
   const targets = approval.targets ?? [
@@ -138,32 +194,37 @@ export function AgentApprovalDetails({ approval, snapshot, navigation, unavailab
           ? "Deletes the recorded derived result."
           : "Runs the recorded operation with the request parameters below.";
   return <div className="agent-approval-inspection">
-    <AgentTargetLinks targets={targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
-    <dl className="agent-approval-meta">
-      <dt>Requested by</dt><dd>{approval.client_id} (declared identity)</dd>
-      <dt>State</dt><dd>{readable(approval.state)}</dd>
-      <dt>Created</dt><dd><RecordedTime value={approval.created_at} /></dd>
-      <dt>Expires</dt><dd><RecordedTime value={approval.expires_at} /></dd>
-      {approval.decided_by && <><dt>Decided by</dt><dd>{approval.decided_by}</dd></>}
-      {approval.decided_at && <><dt>Decision time</dt><dd><RecordedTime value={approval.decided_at} /></dd></>}
-      {approval.decision_reason && <><dt>Decision reason</dt><dd>{approval.decision_reason}</dd></>}
-      {approval.consumed_at && <><dt>Consumed</dt><dd><RecordedTime value={approval.consumed_at} /></dd></>}
-    </dl>
-    {approval.state === "pending" && <p className="agent-approval-consequence">
-      {effect} Approve once authorizes this exact request within its access grant. The request must still pass scope and revision checks before execution. Deny blocks this request and keeps the access bundle unchanged.
-    </p>}
-    {approval.state === "approved" && <p className="agent-activity-note">Approval recorded; execution is not confirmed by approval alone.</p>}
-    <details>
-      <summary>Request identity and parameters</summary>
+    {approval.state === "pending" && <>
+      <p className="agent-approval-consequence">{effect} Approve once authorizes this exact request within its access grant. The request must still pass scope and revision checks before execution. Deny blocks this request and keeps the access bundle unchanged.</p>
+      <p className="agent-approval-expiry"><Clock3 size={14} aria-hidden="true" /> Expires <RecordedTime value={approval.expires_at} /></p>
+    </>}
+    {approval.state === "approved" && <p className="agent-activity-note">Approval recorded; awaiting execution. Execution is not confirmed by approval alone.</p>}
+    {decisionControls}
+    <details className="agent-approval-provenance">
+      <summary>Exact request and provenance</summary>
+      <AgentTargetLinks targets={targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
       <dl className="agent-approval-meta">
-        <dt>Request ID</dt><dd>{approval.id}</dd>
-        <dt>Request SHA-256</dt><dd>{approval.request_hash}</dd>
-        <dt>Policy SHA-256</dt><dd>{approval.policy_sha256}</dd>
-        {approval.session_id && <><dt>Session ID</dt><dd>{approval.session_id}</dd></>}
-        <dt>Category</dt><dd>{approval.category}</dd>
-        {approval.display_revision !== null && <><dt>Display revision</dt><dd>{approval.display_revision}</dd></>}
+        <dt>Requested by</dt><dd>{approval.client_id} (declared identity)</dd>
+        <dt>State</dt><dd>{readable(approval.state)}</dd>
+        <dt>Created</dt><dd><RecordedTime value={approval.created_at} /></dd>
+        <dt>Expires</dt><dd><RecordedTime value={approval.expires_at} /></dd>
+        {approval.decided_by && <><dt>Decided by</dt><dd>{approval.decided_by}</dd></>}
+        {approval.decided_at && <><dt>Decision time</dt><dd><RecordedTime value={approval.decided_at} /></dd></>}
+        {approval.decision_reason && <><dt>Decision reason</dt><dd>{approval.decision_reason}</dd></>}
+        {approval.consumed_at && <><dt>Consumed</dt><dd><RecordedTime value={approval.consumed_at} /></dd></>}
       </dl>
-      <pre>{JSON.stringify(approval.parameters_summary, null, 2)}</pre>
+      <details>
+        <summary>Request identity and parameters</summary>
+        <dl className="agent-approval-meta">
+          <dt>Request ID</dt><dd>{approval.id}</dd>
+          <dt>Request SHA-256</dt><dd>{approval.request_hash}</dd>
+          <dt>Policy SHA-256</dt><dd>{approval.policy_sha256}</dd>
+          {approval.session_id && <><dt>Session ID</dt><dd>{approval.session_id}</dd></>}
+          <dt>Category</dt><dd>{approval.category}</dd>
+          {approval.display_revision !== null && <><dt>Display revision</dt><dd>{approval.display_revision}</dd></>}
+        </dl>
+        <pre>{JSON.stringify(approval.parameters_summary, null, 2)}</pre>
+      </details>
     </details>
   </div>;
 }
@@ -176,17 +237,37 @@ export function AgentActivityTimeline({ events, approvals, snapshot, navigation,
   unavailable?: boolean;
 }): React.JSX.Element {
   return <section className="agent-session-section agent-activity" aria-label="Agent activity timeline">
-    <h3>Recent activity</h3>
+    <h3>Recent work</h3>
     {events.length > EVENT_LIMIT && <p className="agent-activity-note">Showing the latest {EVENT_LIMIT} of {events.length} recorded events.</p>}
     {!events.length && <p className="agent-activity-note">No agent activity recorded.</p>}
     <ol className="agent-activity-list">
       {events.slice(0, EVENT_LIMIT).map((event) => {
         const approval = event.approval_id ? approvals.find((item) => item.id === event.approval_id) : undefined;
+        const primary = event.targets?.find((target) => target.kind === "result") ??
+          event.targets?.find((target) => target.kind === "job") ?? event.targets?.[0];
+        const otherTargets = event.targets?.filter((target) => target !== primary);
+        const context = targetContext(event.targets, snapshot);
+        const Icon = event.kind === "operation_failed" || event.kind === "operation_blocked" ? CircleAlert
+          : event.kind === "operation_completed" || event.kind === "operation_inspected" ? Check : ArrowUpRight;
         return <li key={event.id}>
-          <div className="agent-activity-meta"><RecordedTime value={event.timestamp} /><span>{event.actor}</span><span>{readable(event.kind)}</span></div>
-          <p className="agent-activity-summary">{event.summary}</p>
-          {event.operation && <p className="agent-activity-note">Operation: {event.operation}</p>}
-          <AgentTargetLinks targets={event.targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
+          <div className="agent-activity-heading"><Icon size={16} strokeWidth={1.5} aria-hidden="true" />
+            <p className="agent-activity-summary">{eventHeadline(event)}</p></div>
+          {context && <p className="agent-activity-context">{context}</p>}
+          <AgentTargetLinks targets={primary ? [primary] : undefined} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
+          <details className="agent-activity-record">
+            <summary>Recorded activity <span>· <RecordedTime value={event.timestamp} /></span></summary>
+            {eventHeadline(event) !== event.summary && <p className="agent-activity-note">{event.summary}</p>}
+            <dl className="agent-approval-meta">
+              <dt>Actor</dt><dd>{event.actor}</dd>
+              <dt>Event</dt><dd>{readable(event.kind)}</dd>
+              {event.operation && <><dt>Operation</dt><dd>{event.operation}</dd></>}
+              <dt>Recorded</dt><dd><RecordedTime value={event.timestamp} /></dd>
+              <dt>Event ID</dt><dd>{event.id}</dd>
+              {event.session_id && <><dt>Session ID</dt><dd>{event.session_id}</dd></>}
+              {event.policy_sha256 && <><dt>Policy SHA-256</dt><dd>{event.policy_sha256}</dd></>}
+            </dl>
+            {Boolean(otherTargets?.length) && <AgentTargetLinks targets={otherTargets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
+          </details>
           {approval && <details className="agent-activity-request">
             <summary>Inspect request · {readable(approval.state)}</summary>
             <p className="agent-activity-summary">{approval.summary}</p>

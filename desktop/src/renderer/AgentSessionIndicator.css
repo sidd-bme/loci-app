@@ -95,9 +95,9 @@
   position: absolute;
   right: 8px;
   bottom: 37px;
-  width: 460px;
+  width: 480px;
   max-width: calc(100% - 16px);
-  max-height: min(560px, 68vh);
+  max-height: min(680px, 76vh);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -118,9 +118,9 @@
 }
 
 .agent-session-drawer__header h2 {
-  margin: 3px 0 0;
+  margin: 0;
   color: var(--ink);
-  font-size: var(--type-md);
+  font-size: var(--type-lg);
   font-weight: 620;
   overflow-wrap: anywhere;
 }
@@ -136,35 +136,61 @@
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  padding: 10px 14px 14px;
+  padding: 16px;
   display: grid;
+  gap: 20px;
+}
+
+.agent-session-toolbar {
+  display: flex;
+  align-items: center;
   gap: 12px;
+  justify-content: space-between;
+  padding: 8px 16px 0;
 }
 
 .agent-session-follow {
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--graphite-850);
-}
-
-.agent-session-follow label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  min-height: 40px;
   gap: 8px;
-  font-size: var(--type-sm);
   color: var(--ink);
-  font-weight: 550;
+  font-size: var(--type-md);
   cursor: pointer;
 }
 
-.agent-session-follow small {
-  display: block;
-  margin-top: 4px;
-  color: var(--ink-muted);
+.agent-session-follow input { margin: 0; }
+
+.agent-session-pause {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
   font-size: var(--type-xs);
-  line-height: 1.4;
 }
+
+.agent-session-follow-note {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+  line-height: 1.5;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-session-drawer__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+}
+
+.agent-session-drawer__status.tone-connected .agent-session-pill__dot { background: var(--mineral); }
+.agent-session-drawer__status.tone-processing .agent-session-pill__dot { background: var(--processing); }
+.agent-session-drawer__status.tone-warning .agent-session-pill__dot { background: var(--warning); }
+.agent-session-drawer__status.tone-danger .agent-session-pill__dot { background: var(--error); }
 
 .agent-session-section {
   display: grid;
@@ -174,18 +200,26 @@
 .agent-session-section h3 {
   margin: 0;
   color: var(--ink-secondary);
-  font-size: var(--type-xs);
-  font-weight: 640;
+  font-size: var(--type-md);
+  font-weight: 600;
 }
 
 .agent-approval-card,
 .agent-policy-card {
-  padding: 10px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.agent-approval-card {
+  padding: 12px;
   border-radius: 8px;
   border: 1px solid var(--line-strong);
-  background: var(--graphite-850);
-  display: grid;
-  gap: 8px;
+}
+
+.agent-policy-card {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
 }
 
 .agent-approval-card {
@@ -201,7 +235,7 @@
 .agent-approval-card__header,
 .agent-policy-card__header {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
@@ -209,7 +243,8 @@
 .agent-approval-card__header strong,
 .agent-policy-card__header strong {
   color: var(--ink);
-  font-size: var(--type-sm);
+  font-size: var(--type-md);
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
@@ -295,7 +330,8 @@
 }
 
 .agent-session-drawer details > summary {
-  min-height: 24px;
+  min-height: 32px;
+  align-content: center;
   cursor: pointer;
   font-size: var(--type-xs);
   color: var(--ink-secondary);
@@ -314,8 +350,8 @@
 
 .agent-session-actions button {
   font-size: var(--type-xs);
-  min-height: 28px;
-  padding: 4px 9px;
+  min-height: 40px;
+  padding: 6px 12px;
 }
 
 .agent-policy-mode-label {
@@ -356,3 +392,17 @@
   .agent-session-pill.tone-processing .agent-session-pill__dot,
   .agent-session-drawer { animation: none; }
 }
+
+.agent-session-disclosure {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.agent-session-disclosure > .agent-session-section { margin-top: 8px; }
+.agent-approval-card--history { padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.agent-approval-card__header .agent-session-badge { max-width: 110px; flex-shrink: 0; }
+.agent-session-drawer button:focus-visible,
+.agent-session-drawer input:focus-visible,
+.agent-session-drawer select:focus-visible { outline: 2px solid var(--mineral); outline-offset: 2px; }
+.agent-session-drawer__content { scrollbar-color: var(--line-strong) transparent; }
+.agent-session-drawer ::selection { color: var(--ink); background: var(--mineral-wash); }

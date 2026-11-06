@@ -2,8 +2,9 @@
 
 Study archives contain canonical JSON records and content-addressed NPY arrays.
 They never contain raw sources, source locators, managed model packages, remote
-credentials, executable payloads, SQLite files, or pickle data.  Import rebuilds
-the database instead of trusting an archived database.
+credentials, live method authority, SQLite files, or pickle data. Bounded controlled
+method packages are retained as inert, validated bytes; import never executes them.
+Import rebuilds the database instead of trusting an archived database.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ _RECORD_KINDS = frozenset(
         "intensity_report",
         "spatial_density_report",
         "wound_closure_report",
+        "controlled_method",
     }
 )
 _MEMBER_PATTERN = re.compile(
@@ -567,6 +569,8 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             "spatial_density_export_grant",
             "wound_closure_export_grant",
             "labels_import_grant",
+            "controlled_method_authority",
+            "controlled_method_output_grant",
         ):
             continue
         if envelope["kind"] == "workspace":
@@ -979,6 +983,11 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
     _reject_absolute_strings(record, "result record")
+    from .research_result_extensions import validator
+
+    extension = validator(record)
+    if extension is not None:
+        extension.validate_record(record)
     if (
         record.get("kind") in {"temporal-tracking", "tracking"}
         or "tracking" in record["provenance"]
@@ -1049,6 +1058,9 @@ def _validate_result_crossrefs(
     from .research_vendor import verify_result_derivation
 
     provenance = result["provenance"]
+    from .research_result_extensions import validate_crossrefs
+
+    validate_crossrefs(result, sources, results)
     if result.get("kind") == "tissue-model-regions" or "tissue_model" in provenance:
         from .research_tissue_models import validate_portable_references
 
@@ -1171,6 +1183,12 @@ def _validate_document_crossrefs(
         if source is None:
             raise ValueError("Saved view source is missing")
         validate_view_data(data, source)
+    if kind == "controlled_method":
+        from .research_methods import validate_package_document
+
+        method = validate_package_document(data)
+        if document["id"] != method.manifest_sha256[:32] or document["revision"] != 1:
+            raise ValueError("Portable controlled-method identity or revision is invalid")
     if kind == "annotations" and data.get("schema") == "loci.source-annotations/v1":
         from .source_annotations import validate_annotation_data
 
@@ -1697,6 +1715,15 @@ def import_project(
 
                     validate_registration_arrays(
                         result, result_by_id, array_loader=project.load_array
+                    )
+                from .research_result_extensions import validator
+
+                extension = validator(result)
+                if extension is not None:
+                    extension.validate_arrays(
+                        result,
+                        {name: project.load_array(item) for name, item in result["arrays"].items()},
+                        parents=result_by_id,
                     )
                 if "morphometrics" in result["provenance"]:
                     from .research_morphometrics import validate_arrays

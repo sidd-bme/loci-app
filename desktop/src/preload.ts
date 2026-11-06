@@ -270,6 +270,10 @@ const api: LociDesktopApi = {
 contextBridge.exposeInMainWorld("loci", api);
 
 const researchApi: ResearchDesktopApi = {
+  importControlledMethod: () => ipcRenderer.invoke("loci-research:method-import"),
+  reviewControlledMethodRights: (request) => ipcRenderer.invoke("loci-research:method-rights-review", request),
+  chooseControlledMethodOutput: (request) => ipcRenderer.invoke("loci-research:method-output-grant", request),
+  exportControlledMethodInput: (request) => ipcRenderer.invoke("loci-research:method-input-export", request),
   labelsImportPreview: (binding) => ipcRenderer.invoke("loci-research:labels-import-preview", binding),
   recipeResources: () => ipcRenderer.invoke("loci-research:recipe-resources"),
   computeTargets: (operation, request) => ipcRenderer.invoke("loci-research:compute-targets", operation, request),

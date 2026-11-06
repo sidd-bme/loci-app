@@ -68,6 +68,8 @@ def _bound(value: Any, name: str) -> float:
 def _objects(
     rows: Iterable[dict[str, Any]],
     shape: list[int] | None = None,
+    *,
+    method_metrics: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     result: list[dict[str, Any]] = []
     labels: set[int] = set()
@@ -166,6 +168,19 @@ def _objects(
                 },
                 True,
             )
+        if method_metrics is not None:
+            custom = row.get("controlled_method")
+            expected = {
+                metric["id"].removeprefix("controlled_method:") for metric in method_metrics
+            }
+            if not isinstance(custom, dict) or set(custom) != expected:
+                raise ValueError("Method values do not match their exact metric descriptors")
+            for descriptor in method_metrics:
+                field = descriptor["id"].removeprefix("controlled_method:")
+                value = custom[field]
+                if type(value) not in (int, float) or not math.isfinite(value):
+                    raise ValueError("Controlled method values must be finite")
+                add(descriptor["id"], value, descriptor)
         if "morphometrics" in row:
             from .research_morphometrics import population_metrics
 
@@ -341,7 +356,9 @@ def _objects(
     ordered.extend(
         descriptors[key]
         for key in sorted(descriptors)
-        if key.startswith(("intensity:", "compartment:", "spatial:", "morphometrics:"))
+        if key.startswith(
+            ("intensity:", "compartment:", "spatial:", "morphometrics:", "controlled_method:")
+        )
     )
     for row in result:
         row["values"] = {metric["id"]: row["values"].get(metric["id"]) for metric in ordered}
@@ -459,10 +476,11 @@ def query_population(
     *,
     shape: list[int] | None = None,
     _legacy_summary: bool = False,
+    method_metrics: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Pure numeric query; caller must verify the immutable revision and source."""
     exact_keys(request, REQUEST_KEYS, "population query")
-    objects, metrics = _objects(rows, shape)
+    objects, metrics = _objects(rows, shape, method_metrics=method_metrics)
     query = _normalize(request, metrics)
     filtered = []
     filter_missing = 0
@@ -630,7 +648,12 @@ def population_query(project: ResearchProject, request: dict[str, Any]) -> dict[
         }
     ):
         raise ValueError("Population requires a YX or ZYX integer label array")
-    receipt = query_population(rows, request, binding, shape=shape)
+    method_metrics = None
+    if "controlled_method" in result["provenance"]:
+        from .research_methods import metric_descriptors
+
+        method_metrics = metric_descriptors(result)
+    receipt = query_population(rows, request, binding, shape=shape, method_metrics=method_metrics)
     if "object_count" in result and (
         type(result["object_count"]) is not int or result["object_count"] != receipt["total_count"]
     ):

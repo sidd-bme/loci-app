@@ -1,3 +1,5 @@
+import { ResearchControlledMethodsPanel, ControlledMethodSummary } from "./ResearchControlledMethodsPanel";
+import { ResearchAnnotationEvaluationPanel, AnnotationAgreementSummary } from "./ResearchAnnotationEvaluationPanel";
 import { StudyWorkspace, type StudySection } from "./StudyWorkspace";
 import { ResearchWorkflowGraphPanel } from "./ResearchWorkflowGraphPanel";
 import { SpatialDensityPanel } from "./SpatialDensityPanel";
@@ -834,6 +836,7 @@ export default function ResearchWorkbench({
   const [densityOpened, setDensityOpened] = useState(false);
   const [woundOpened, setWoundOpened] = useState(false);
   const [morphologyOpened, setMorphologyOpened] = useState(false);
+  const [methodsOpened, setMethodsOpened] = useState(false);
   const [tissueModelOpened, setTissueModelOpened] = useState(false);
   const [quantificationEntryKey, setQuantificationEntryKey] = useState(0);
   const [quantificationEntry, setQuantificationEntry] = useState<"channels" | "association">("channels");
@@ -1105,6 +1108,14 @@ export default function ResearchWorkbench({
     // caller has already captured the source/plane and navigation intent.
     ...(desktopApi.labelsImportPreview ? { labelsImportPreview: (request) =>
       switchDocument(() => desktopApi.labelsImportPreview!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.importControlledMethod ? { importControlledMethod: () =>
+      switchDocument(() => desktopApi.importControlledMethod!(), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.reviewControlledMethodRights ? { reviewControlledMethodRights: (request) =>
+      switchDocument(() => desktopApi.reviewControlledMethodRights!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.chooseControlledMethodOutput ? { chooseControlledMethodOutput: (request) =>
+      switchDocument(() => desktopApi.chooseControlledMethodOutput!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.exportControlledMethodInput ? { exportControlledMethodInput: (request) =>
+      switchDocument(() => desktopApi.exportControlledMethodInput!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.newSession ? { newSession: () => switchDocument(() => desktopApi.newSession!()) } : {}),
     // Working-list changes take the same main-process lock, but retain this
     // document's camera and the close/clear action's local undo receipt.
@@ -3652,6 +3663,16 @@ export default function ResearchWorkbench({
           }}
           draftControl={annotationState.control}
           points={annotationDraft} onPoints={setAnnotationDraft} onAnnotations={setSourceAnnotations} onError={setError} /></div>}
+        {source && tab === "Annotate" && <ResearchAnnotationEvaluationPanel
+          key={`annotation-evaluation:${exportDraftStudy}:${source.id}`} api={api} snapshot={snapshot} source={source}
+          selectedResult={selectedResult} active={tab === "Annotate"} busy={busy !== null || documentSwitching}
+          workingBytes={recipe.working_bytes ?? 512 * 1024 ** 2}
+          onBusyChange={value => setBusy(current => value ? (current ?? "annotation evaluation") : current === "annotation evaluation" ? null : current)}
+          onPublished={publishGeneratedResult} onInspect={(id, revision) => { void report(async () => {
+            const target = snapshot.results.find(result => result.id === id && result.revision_hash === revision);
+            if (!target) throw new Error("This exact annotation input revision is unavailable. Restore it before inspection.");
+            await navigateExactResult(target); openWorkbenchTab("Info");
+          }, "Could not inspect the annotation input."); }} />}
         {source && dimensions && tab === "Display" && rawVolumeOpen && <section className="volume-inspector" aria-label="Volume workspace information">
           <h2>Volume</h2>
           <dl><dt>Source grid</dt><dd>{dimensions.x} × {dimensions.y} × {dimensions.z}</dd>
@@ -3875,6 +3896,14 @@ export default function ResearchWorkbench({
             onDrawRegion={() => { setDrawingAnalysisRegion(true); setResultId(null); setResultView(null); setImage(null); }}
             onUse={(next, region) => { setRecipe(next); setSelection(region); }}
             onResult={async (target, measurements) => { await persistRevision(target, measurements); await api.getSnapshot().then(adopt); }} /></details>}
+          <details className="external-labels-disclosure" onToggle={event => setMethodsOpened(event.currentTarget.open)}><summary>Reusable methods</summary>
+            {methodsOpened && <ResearchControlledMethodsPanel key={`controlled-method:${exportDraftStudy}:${source.id}`} api={api}
+              snapshot={snapshot} source={source} selectedResult={selectedResult} active={tab === "Analyze" && methodsOpened}
+              busy={busy !== null || documentSwitching || sourceIsChanging || !viewSettingsReady}
+              workingBytes={recipe.working_bytes ?? 512 * 1024 ** 2}
+              onBusyChange={value => setBusy(current => value ? (current ?? "controlled method") : current === "controlled method" ? null : current)}
+              onPublished={publishGeneratedResult} />}
+          </details>
           <details className="external-labels-disclosure"><summary>Import existing labels</summary>
           <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
             navigationIntent={() => largeNavigationIntent.current}
@@ -6623,6 +6652,9 @@ export function Info({
             <button type="button" aria-pressed={section === "export"} onClick={() => changeSection("export")}>Export</button>
           </div>
           {section === "review" && <section aria-label="Review result">
+            {result.kind === "controlled-method" && <ControlledMethodSummary key={`${snapshot.project.project_id}:${result.id}:${result.revision_hash}`} api={api} result={result}/>}
+            {result.kind === "annotation-agreement" && <AnnotationAgreementSummary key={`${snapshot.project.project_id}:${result.id}:${result.revision_hash}`} api={api} result={result}
+              onInspect={onSelectResult ? (id, revision) => { void report(async () => { const exact = snapshot.results.find(item => item.id === id && item.revision_hash === revision); if (!exact) throw new Error("This exact annotation input revision is unavailable. Restore it before inspection."); onSelectResult(exact); }, "Could not inspect the annotation input."); } : undefined} />}
             {result.kind === "spatial-distance-bands" && <SpatialSummary value={result.spatial} api={api} result={result} />}
             {result.kind === "perinuclear-enrichment" && <PerinuclearResultSummary api={api} result={result} rows={rows} />}
             {rows.length > 0 && (

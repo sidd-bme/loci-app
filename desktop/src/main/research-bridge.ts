@@ -1,3 +1,4 @@
+import { checkedMethodInput, checkedMethodRights } from "../shared/controlled-method-contracts";
 import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
 import { app, dialog, ipcMain } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
@@ -778,6 +779,9 @@ export class ResearchBridge {
       "spatial_distance_run",
       "spatial_density_save",
       "morphometrics_run",
+      "annotation_evaluation_run",
+      "annotation_reference_run",
+      "method_run",
       "wound_closure_save",
       "associate_results",
       "colocalisation_run",
@@ -1915,6 +1919,55 @@ export class ResearchBridge {
       return this.cancelTissueImport(profileId);
     });
     handle("execute", (operation, request, options) => this.execute(operation, request, options));
+    for (const operation of ["method-import", "method-rights-review", "method-output-grant", "method-input-export"] as const) {
+      handle(operation, async (value, ...extra) => {
+        if (extra.length || (operation === "method-import" && value !== undefined))
+          throw new Error("Use the native method controls with one exact input binding.");
+        const request = operation === "method-import" ? null : operation === "method-rights-review" ?
+          checkedMethodRights(value) : checkedMethodInput(value);
+        const project = this.requireProject();
+        if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+        const epoch = this.viewDocumentEpoch;
+        const current = () => {
+          if (this.project !== project || this.viewDocumentEpoch !== epoch)
+            throw new Error("The controlled-method study changed during the native operation.");
+        };
+        this.switching = true;
+        try {
+          let output: unknown;
+          if (operation === "method-import") {
+            const picked = await dialog.showOpenDialog({ title: "Import a controlled method", properties: ["openFile"],
+              filters: [{ name: "Loci controlled method package", extensions: ["json"] }] });
+            if (picked.canceled || !picked.filePaths[0]) return null;
+            current();
+            output = await this.control.request("research_method_import", { project, path: picked.filePaths[0] }, 0);
+          } else if (operation === "method-rights-review") {
+            const review = checkedMethodRights(request);
+            const picked = await dialog.showMessageBox({ type: "question",
+              message: review.decision === "approved" ? "Approve rights for this exact method?" : "Revoke this method's execution rights?",
+              detail: `Method ${review.method_id}\nManifest ${review.manifest_sha256}\nModule ${review.module_sha256}\nReviewer: ${review.reviewer}\n\nEvidence: ${review.evidence}\n\nThis records a rights decision. Scientific review remains separate.`,
+              buttons: ["Cancel", review.decision === "approved" ? "Record approval" : "Revoke rights"], defaultId: 0, cancelId: 0 });
+            if (picked.response !== 1) return null;
+            current();
+            output = await this.control.request("research_method_rights_review", { project, request: review }, 0);
+          } else if (operation === "method-output-grant") {
+            const picked = await dialog.showOpenDialog({ title: "Choose external method output", properties: ["openFile"],
+              filters: [{ name: "Method output buffer", extensions: ["bin"] }] });
+            if (picked.canceled || !picked.filePaths[0]) return null;
+            current();
+            output = await this.control.request("research_method_output_grant", { project, request, path: picked.filePaths[0] }, 0);
+          } else {
+            const picked = await dialog.showSaveDialog({ title: "Export exact method inputs", defaultPath: "Method inputs.zip",
+              filters: [{ name: "Controlled method input package", extensions: ["zip"] }] });
+            if (picked.canceled || !picked.filePath) return null;
+            current();
+            output = await this.control.request("research_method_input_export", { project, request, destination: picked.filePath }, 0);
+          }
+          current();
+          return output;
+        } finally { this.switching = false; }
+      });
+    }
     handle("labels-import-preview", async (binding) => {
       const project = this.requireProject();
       if (this.running || this.switching) throw new Error("Finish the active study operation first.");

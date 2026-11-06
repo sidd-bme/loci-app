@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { X } from "lucide-react";
+import { Eye, Pause, Play, X } from "lucide-react";
 import type {
   ResearchAgentApprovalRecord,
   ResearchAgentControlRequest,
@@ -11,7 +11,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import { sourceLabelForId } from "./source-browser";
-import { AgentActivityTimeline, AgentApprovalDetails, type AgentActivityNavigation } from "./AgentActivityTimeline";
+import { AgentActivityTimeline, AgentApprovalDetails, RecordedTime, type AgentActivityNavigation } from "./AgentActivityTimeline";
 import "./AgentSessionIndicator.css";
 
 const LIVE_SESSION_STATES = new Set<ResearchAgentSessionState>([
@@ -171,6 +171,8 @@ export function AgentSessionIndicator({
   const liveSessions = agentSessions.sessions.filter((session) =>
     LIVE_SESSION_STATES.has(session.state),
   );
+  const primarySession = liveSessions.length === 1 ? liveSessions[0] : null;
+  const primaryPolicy = activePolicies.length === 1 ? activePolicies[0] : null;
   const activeOperation =
     liveSessions.find((session) => session.current_operation)?.current_operation ??
     null;
@@ -218,7 +220,7 @@ export function AgentSessionIndicator({
         <div className="agent-approval-card__header">
           <strong>{approval.summary}</strong>
           <span className={`agent-session-badge${approval.state === "pending" ? " tone-warning" : ""}`}>
-            {approval.state === "pending" ? "Single-use approval" : approval.state}
+            {approval.state === "pending" ? "Single-use approval" : approval.state === "approved" ? "Awaiting execution" : approval.state}
           </span>
         </div>
         <dl className="agent-approval-meta">
@@ -243,6 +245,10 @@ export function AgentSessionIndicator({
               </dd>
             </>
           )}
+          {approval.source_id && <><dt>Source identity</dt><dd title={approval.source_sha256 ?? undefined}>
+            {approval.source_id.slice(0, 8)}{approval.source_sha256 ? ` · SHA-256 ${approval.source_sha256.slice(0, 8)}` : " · fingerprint not recorded"}
+          </dd></>}
+          {approval.display_revision !== null && <><dt>Display revision</dt><dd>{approval.display_revision}</dd></>}
           {approval.destination_name && (
             <>
               <dt>Export target</dt>
@@ -250,8 +256,8 @@ export function AgentSessionIndicator({
             </>
           )}
         </dl>
-        <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
-        {approval.state === "pending" && <div className="agent-session-actions">
+        <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)}
+          decisionControls={approval.state === "pending" && <div className="agent-session-actions">
           <button
             type="button"
             className="research-primary"
@@ -279,7 +285,7 @@ export function AgentSessionIndicator({
           >
             Deny
           </button>
-        </div>}
+        </div>} />
       </div>
     );
   };
@@ -311,7 +317,8 @@ export function AgentSessionIndicator({
         >
           <header className="agent-session-drawer__header">
             <div>
-              <h2>{label}</h2>
+              <h2>{primarySession?.client_id ?? "Research agent"}</h2>
+              <p className={`agent-session-drawer__status tone-${tone}`}><span className="agent-session-pill__dot" aria-hidden="true" />{label}</p>
               <p className="agent-session-drawer__subtitle">
                 {agentSessions.connected_count > 0
                   ? `${liveSessions.length} connected ${liveSessions.length === 1 ? "session" : "sessions"}`
@@ -328,26 +335,28 @@ export function AgentSessionIndicator({
               <X size={16} aria-hidden="true" />
             </button>
           </header>
+          <div className="agent-session-toolbar">
+            <label className="agent-session-follow" title={followAgent
+              ? "Inspected sources, planes, regions and completed results open while you are idle. Display colours stay yours; editing and drafts take priority."
+              : "Your source, result, camera and drafts stay undisturbed."}>
+              <Eye size={15} strokeWidth={1.5} aria-hidden="true" />
+              <input type="checkbox" aria-label="Follow agent" checked={followAgent}
+                onChange={(event) => onFollowAgentChange(event.target.checked)} />
+              Follow agent
+            </label>
+            {primaryPolicy && <button type="button" className="agent-session-pause"
+              disabled={controlBusy || !api.controlAgentSession}
+              onClick={() => void dispatchControl({ action: primaryPolicy.paused ? "resume_session" : "pause_session", policy_sha256: primaryPolicy.policy_sha256 })}>
+              {primaryPolicy.paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}
+              {primaryPolicy.paused ? "Resume access" : "Pause access"}
+            </button>}
+          </div>
+          <p className="agent-session-follow-note">{followAgent ? "Following inspected views and completed results. Editing and drafts take priority." : "Your current view stays in place."}</p>
           <div className="agent-session-drawer__content">
             {refreshError && <p className="agent-session-refresh-error" role="alert">
               {refreshError} The details below are the last received state.
             </p>}
-            <div className="agent-session-follow">
-              <label>
-                <input
-                  type="checkbox"
-                  aria-label="Follow agent"
-                  checked={followAgent}
-                  onChange={(event) => onFollowAgentChange(event.target.checked)}
-                />
-                Follow agent views and results
-              </label>
-              <small>
-                {followAgent
-                  ? "New inspected sources, planes and regions, and completed results open while you are idle in Display, Results or Agent. Display colours stay yours; editing and drafts take priority."
-                  : "Your current source, result, viewport camera and drafts stay undisturbed while the agent works."}
-              </small>
-            </div>
+
 
             {pendingApprovals.length > 0 && (
               <section
@@ -359,6 +368,11 @@ export function AgentSessionIndicator({
               </section>
             )}
 
+            <AgentActivityTimeline events={agentSessions.events} approvals={agentSessions.approvals}
+              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
+
+            <details className="agent-session-disclosure">
+              <summary>Connection and permissions</summary>
             <section
               className="agent-session-section"
               aria-label="Active agent sessions and policies"
@@ -398,7 +412,7 @@ export function AgentSessionIndicator({
                         </span>
                       </div>
                       <dl className="agent-policy-meta">
-                        <dt>Client</dt>
+                        <dt>Declared client</dt>
                         <dd>
                           {policyLiveSessions.length > 0
                             ? clientDisplay
@@ -417,7 +431,7 @@ export function AgentSessionIndicator({
                           <dt>Policy SHA-256</dt><dd>{policy.policy_sha256}</dd>
                           {policyLiveSessions.map((session) => <div className="agent-session-technical" key={session.session_id}>
                             <dt>Session</dt><dd>{session.session_id}</dd>
-                            <dt>Last activity</dt><dd>{new Date(session.last_heartbeat_at).toLocaleString()}</dd>
+                            <dt>Last activity</dt><dd><RecordedTime value={session.last_heartbeat_at} /></dd>
                           </div>)}
                         </dl>
                       </details>
@@ -454,7 +468,7 @@ export function AgentSessionIndicator({
                             </select>
                           </label>
                           <div className="agent-session-actions">
-                            <button
+                            {!primaryPolicy && <button
                               type="button"
                               disabled={controlBusy || !api.controlAgentSession}
                               onClick={() => void dispatchControl({
@@ -463,7 +477,7 @@ export function AgentSessionIndicator({
                               })}
                             >
                               {policy.paused ? "Resume access" : "Pause access"}
-                            </button>
+                            </button>}
                             {policyLiveSessions.map((session) => (
                               <span
                                 key={session.session_id}
@@ -520,9 +534,7 @@ export function AgentSessionIndicator({
                 },
               )}
             </section>
-
-            <AgentActivityTimeline events={agentSessions.events} approvals={agentSessions.approvals}
-              snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)} />
+            </details>
 
             {agentSessions.approvals.some((approval) => approval.state !== "pending") && <details>
               <summary>Past approval requests</summary>
