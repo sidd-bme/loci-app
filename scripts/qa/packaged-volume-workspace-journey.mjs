@@ -194,7 +194,9 @@ async function verifyArrays() {
 }
 try {
   assert.equal(await hash(fixture.source.path), fixture.source.sha256); assert.equal(await hash(fixture.labels.path), fixture.labels.sha256);
-  await launch(1); await createEmptyStudy(page); await fileMenuAction(page, 'Open images');
+  await launch(1); await createEmptyStudy(page);
+  await page.locator('main.image-first-workbench').waitFor();
+  await page.getByRole('button', { name: 'Add images…', exact: true }).click();
   const imported = await waitForSnapshot(page, s => s.sources.length === 1, 'native source import', 120000); source = imported.sources[0]; assert.equal(source.sha256, fixture.source.sha256);
   await selectWorkbenchTool(page, 'Display'); await page.getByLabel('Display scope').selectOption('max'); await page.getByLabel('Analysis depth').selectOption('volume');
   for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['Z', 'z'], ['Z stop', 'z_stop'], ['T', 't']]) await setSelectionField(page, label, fixture.selection[key]);

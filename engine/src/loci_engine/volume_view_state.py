@@ -189,8 +189,27 @@ def validate_volume_state(project: ResearchProject, source, state):
             raise ValueError("Parallel camera requires its scale")
         metadata = source["metadata"]
         geometry = metadata.get("geometry") or {}
-        calibration = metadata.get("physical_calibration") or {}
-        unit = geometry.get("unit") or calibration.get("unit") or "pixel"
+        if source.get("source_kind") in {"native", "ome_zarr"}:
+            # Use the same pure geometry oracle as the native renderer. Stored
+            # calibration may spell micrometres as µm while camera coordinates
+            # use canonical um. Reading a retained scene must need no source I/O.
+            from .native_image import (
+                NativeDimensions,
+                NativeLevel,
+                PhysicalCalibration,
+                native_geometry,
+            )
+
+            saved = metadata["levels"][0]
+            calibration = saved["calibration"]
+            level = NativeLevel(
+                index=saved["index"],
+                dimensions=NativeDimensions(**saved["dimensions"]),
+                calibration=PhysicalCalibration(**calibration) if calibration is not None else None,
+                origin_xyz=saved.get("origin_xyz"),
+            )
+            geometry = native_geometry((level,), {}, True).to_dict()
+        unit = geometry.get("unit", "pixel")
         if camera["frame"] != geometry.get("frame", "image") or camera["unit"] != unit:
             raise ValueError("Camera frame and unit disagree with registered source geometry")
     clipping = exact(state["clipping"], {"enabled", "axis", "position_percent"}, "clipping")

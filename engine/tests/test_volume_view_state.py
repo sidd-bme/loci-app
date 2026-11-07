@@ -5,7 +5,9 @@ import base64
 import copy
 import io
 
+import numpy as np
 import pytest
+import tifffile
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client
 from PIL import Image
@@ -185,6 +187,66 @@ def test_roundtrip_save_as_missing_source_and_old_records_unchanged(tmp_path):
     assert (tmp_path / "synthetic.tif").read_bytes() == before
     (tmp_path / "synthetic.tif").unlink()
     assert reopened.execute("volume_view", {"source_id": source["id"]})["state"] == state
+
+
+@pytest.mark.parametrize("declared_unit,to_um", [("µm", 1), ("nm", 0.001), ("mm", 1000)])
+def test_calibrated_native_camera_matches_renderer_and_survives_missing_source(
+    tmp_path, declared_unit, to_um
+):
+    from loci_engine.viewer_volume import build_volume_payload
+
+    wb, _, state, _, _, _, _ = fixture(tmp_path)
+    path = tmp_path / "calibrated.ome.tif"
+    tifffile.imwrite(
+        path,
+        np.zeros((4, 32, 32), dtype=np.uint16),
+        ome=True,
+        photometric="minisblack",
+        metadata={
+            "axes": "ZYX",
+            **{
+                f"PhysicalSize{axis}": size
+                for axis, size in zip("XYZ", [0.5, 1.5, 2.5], strict=True)
+            },
+            **{f"PhysicalSize{axis}Unit": declared_unit for axis in "XYZ"},
+        },
+    )
+    source = wb.import_native(str(path))
+    payload = build_volume_payload(wb._session(source["id"]), source_id=source["id"])
+    assert payload["context"]["unit"] == "um"
+    assert payload["context"]["spacing_xyz"] == pytest.approx(
+        [0.5 * to_um, 1.5 * to_um, 2.5 * to_um]
+    )
+    state["camera"].update(unit=payload["context"]["unit"], frame=payload["context"]["frame"])
+    wb.execute(
+        "save_source_view",
+        {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "expected_revision": 0,
+            "state": _default_view_state_for_source(source),
+        },
+    )
+    request = {
+        "source_id": source["id"],
+        "source_sha256": source["sha256"],
+        "expected_revision": 0,
+        "expected_display_revision": 1,
+        "state": state,
+    }
+    saved = wb.execute("save_volume_view", request)
+    incompatible = copy.deepcopy(request)
+    incompatible["expected_revision"] = saved["revision"]
+    incompatible["state"]["camera"]["unit"] = "pixel"
+    with pytest.raises(ValueError, match="frame and unit"):
+        wb.execute("save_volume_view", incompatible)
+    wb.close()
+    path.unlink()
+    reopened = Workbench(ResearchProject(wb.project.root))
+    try:
+        assert reopened.execute("volume_view", {"source_id": source["id"]}) == saved
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize(
