@@ -121,7 +121,7 @@ import { FirstStudyGuide } from "./FirstStudyGuide";
 import { sourceRelinkKind } from "../shared/source-relink";
 import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
 import type { VolumeLabelPayload } from "./volume-label-display";
-import { VolumeSceneBridge } from "./volume-scene-bridge";
+import { VolumeSceneBridge, VolumeSceneSupersededError } from "./volume-scene-bridge";
 import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import BrandMark from "./BrandMark";
 import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPanel";
@@ -2706,7 +2706,10 @@ export default function ResearchWorkbench({
       void volumeScenePersist.current().catch(caught => {
         if (volumeSceneGeneration.current !== generation) return;
         const now = volumeAdapter.current?.snapshot();
-        if (now?.busy || intent !== agentInteraction.current.generation) queueVolumeSceneChange();
+        // A later local input can supersede either this captured save or the
+        // earlier save it joined. Queue a fresh snapshot; durable CAS conflicts
+        // still require the researcher's explicit acknowledgment.
+        if (caught instanceof VolumeSceneSupersededError || now?.busy || intent !== agentInteraction.current.generation) queueVolumeSceneChange();
         else setVolumeSceneError(message(caught, "The volume view could not be shared."));
       });
     }, 350);

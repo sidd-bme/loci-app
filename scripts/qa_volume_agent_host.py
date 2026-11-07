@@ -46,6 +46,7 @@ TOOLS = {
     "validate_action",
     "submit_action",
     "job_status",
+    "result",
 }
 DEPENDENCIES = (
     "scripts/qa_volume_agent_host.py",
@@ -248,6 +249,9 @@ validate_action(operation="correct_result",request=<EXACT correction_request>).
 submit_action(operation="correct_result", request=<EXACT correction_request>,
 request_key="volume-host-delete-v1"). Poll ONLY job_status for its ID until state=
 succeeded AND owned_worker_active=false, at most 120 reads; then get its ONE child ID.
+Call result(result_id=<that exact child ID>,offset=0,limit=1) ONCE on {MAIN}. Require
+result.id=child ID, source_id=the prepared source, parent_id=the prepared parent ID;
+use the returned revision_hash (job_status supplies IDs, never child revisions).
 inspect_action correction_info for that exact child/revision; require target absent,
 all other labels preserved, and record its new label_sha256. Read volume_view, then
 set_volume_view at the current token with patch={{"result":<child binding plus its
@@ -370,7 +374,13 @@ def prepare(args):
                 "expires_at": (datetime.now(UTC) + timedelta(hours=4)).isoformat(),
             },
         )
-        spec["operations"] += ["validate_action", "inspect_action", "submit_action", "job_status"]
+        spec["operations"] += [
+            "validate_action",
+            "inspect_action",
+            "submit_action",
+            "job_status",
+            "result",
+        ]
     policies = {}
     variants = {MAIN: spec, CROP: copy.deepcopy(spec)}
     variants[CROP]["sources"][0]["crop"]["width"] -= 1
@@ -506,6 +516,166 @@ def error_text(call):
 
 def is_policy_denial(tool, text):
     return text == f"Error executing tool {tool}: {POLICY_DENIAL}"
+
+
+def scene_live_token(view):
+    return {
+        key: view["live"][key]
+        for key in ("view_id", "renderer_generation", "live_epoch", "revision", "display_revision")
+    }
+
+
+def verify_correction_calls(prepared, calls, project, session_id):
+    """Bind the exact child read/inspection to this host's one successful correction."""
+    parent = prepared["result_binding"]
+    parent_request = {key: parent[key] for key in ("result_id", "revision_hash")}
+    submitted = succeeded = child = parent_info = child_info = None
+    validated = False
+    scientific = {"result", "inspect_action", "validate_action", "submit_action", "job_status"}
+    for call in calls:
+        tool = call["tool"]
+        if tool not in scientific:
+            continue
+        require(
+            prepared["allow_correction"] and call["server"] == MAIN and not error_text(call),
+            "Correction evidence came from an unauthorized server or failed call",
+        )
+        arguments, value = call["arguments"], structured(call)
+        if tool == "inspect_action":
+            require(arguments["operation"] == "correction_info", "Unexpected correction inspection")
+            if child is None:
+                require(
+                    parent_info is None
+                    and submitted is None
+                    and arguments["request"] == parent_request
+                    and value["result_id"] == parent["result_id"]
+                    and value["revision_hash"] == parent["revision_hash"]
+                    and value["label_sha256"] == parent["label_sha256"]
+                    and prepared["target_label"] in value["label_ids"],
+                    "Parent correction inspection changed",
+                )
+                parent_info = value
+            else:
+                require(
+                    child_info is None
+                    and arguments["request"]
+                    == {"result_id": child["id"], "revision_hash": child["revision_hash"]}
+                    and value["result_id"] == child["id"]
+                    and value["revision_hash"] == child["revision_hash"]
+                    and value["parent_id"] == parent["result_id"]
+                    and set(value["label_ids"])
+                    == set(parent_info["label_ids"]) - {prepared["target_label"]}
+                    and value["shape"] == parent_info["shape"]
+                    and value["label_sha256"] != parent["label_sha256"],
+                    "Child correction inspection changed",
+                )
+                child_info = value
+        elif tool in {"validate_action", "submit_action"}:
+            require(
+                parent_info is not None
+                and submitted is None
+                and arguments["operation"] == "correct_result"
+                and arguments["request"] == prepared["correction_request"],
+                "Correction request changed or was duplicated",
+            )
+            if tool == "validate_action":
+                require(
+                    not validated
+                    and value["authorized"] is True
+                    and value["operation"] == "correct_result"
+                    and value["request"] == prepared["correction_request"],
+                    "Exact correction validation missing",
+                )
+                validated = True
+            else:
+                require(
+                    validated and arguments["request_key"] == "volume-host-delete-v1",
+                    "Correction submission changed",
+                )
+                submitted = value["job"]
+        elif tool == "job_status":
+            require(
+                submitted is not None and arguments == {"job_id": submitted["id"]},
+                "Unrelated correction job read",
+            )
+            job = value["job"]
+            require(
+                job["id"] == submitted["id"] and job["request_hash"] == submitted["request_hash"],
+                "Correction job identity changed",
+            )
+            require(child is None, "Correction polling continued after child inspection")
+            if job["state"] == "succeeded" and job.get("owned_worker_active") is False:
+                require(len(job["result_ids"]) == 1, "Correction must return exactly one child")
+                succeeded = job
+        else:
+            require(
+                succeeded is not None and child is None,
+                "Child read preceded observed correction worker exit or was duplicated",
+            )
+            child_id = succeeded["result_ids"][0]
+            require(
+                arguments == {"result_id": child_id, "offset": 0, "limit": 1},
+                "Child result read must be exact and bounded",
+            )
+            actual = project.result(child_id, verify_scientific_arrays=False)
+            metadata = value["result"]
+            require(
+                metadata["id"] == actual["id"] == child_id
+                and metadata["source_id"] == actual["source_id"] == prepared["source_id"]
+                and actual["source_sha256"] == prepared["source_sha256"]
+                and metadata["parent_id"] == actual["parent_id"] == parent["result_id"]
+                and metadata["revision_hash"] == actual["revision_hash"]
+                and metadata["review"] is None
+                and project.review_state(child_id) is None,
+                "Child result metadata changed",
+            )
+            child = actual
+    require(
+        submitted and succeeded and child and child_info, "Missing exact correction child evidence"
+    )
+    actual_job = project.job(submitted["id"])
+    require(
+        actual_job["state"] == "succeeded"
+        and actual_job["operation"] == "correct_result"
+        and actual_job["request_hash"] == submitted["request_hash"]
+        and actual_job["request"]["task_request"] == prepared["correction_request"]
+        and actual_job["result_ids"] == [child["id"]]
+        and actual_job["owner"]
+        == {"policy_sha256": prepared["policies"][MAIN]["sha256"], "session_id": session_id},
+        "Persisted correction job differs from observed submitted work",
+    )
+    return {
+        "result_id": child["id"],
+        "revision_hash": child["revision_hash"],
+        "label_sha256": child_info["label_sha256"],
+    }
+
+
+def verify_corrected_scene(binding, final, writes, calls, images):
+    """A parent capture cannot stand in for the newly selected child scene."""
+    require(
+        final["state"]["result"] == binding
+        and final["state"]["selected_object"] is None
+        and len(writes) == 1
+        and writes[0]["status"] == "complete"
+        and writes[0]["proposed_state"]["result"] == binding,
+        "Exact corrected child was not acknowledged rendered",
+    )
+    child_sets = [c for c in calls if c["tool"] == "set_volume_view"]
+    require(
+        len(child_sets) == 1
+        and child_sets[0]["arguments"]["request"]["patch"]
+        == {"result": binding, "selected_object": None},
+        "Correction changed unrelated scene fields",
+    )
+    require(
+        any(
+            image["rendering"]["manifest"]["state"] == final["state"]
+            and image["rendering"]["manifest"]["state"]["result"] == binding
+            for image in images
+        ),
+        "Missing actual corrected-child GUI capture",
+    )
 
 
 def verify_denial_policies(prepared, policies, dimensions):
@@ -805,8 +975,11 @@ def verify(args):
     phase = metadata["phase"]
     for call in calls:
         tool, arguments, server = call["tool"], call["arguments"], call["server"]
-        if tool in {"inspect_action", "validate_action", "submit_action", "job_status"}:
-            require(phase == "correction", "Scientific action outside the correction phase")
+        if tool in {"inspect_action", "validate_action", "submit_action", "job_status", "result"}:
+            require(
+                phase == "correction" and server == MAIN,
+                "Scientific action outside the main correction phase",
+            )
             if tool == "inspect_action":
                 require(arguments["operation"] == "correction_info", "Unexpected scientific read")
             elif tool in {"validate_action", "submit_action"}:
@@ -837,7 +1010,20 @@ def verify(args):
                     require(arguments == successful_set, "Stale replay changed its exact request")
                 else:
                     require(
-                        reads and arguments["request"]["expected_live"] == reads[0]["live"],
+                        reads
+                        and arguments["request"]
+                        == {
+                            "source_id": prepared["source_id"],
+                            "source_sha256": prepared["source_sha256"],
+                            "expected_live": scene_live_token(reads[0]),
+                            "patch": {
+                                "clipping": {
+                                    "enabled": True,
+                                    "axis": "z",
+                                    "position_percent": 11,
+                                }
+                            },
+                        },
                         "Human CAS did not use original token",
                     )
                 errors.append("stale")
@@ -853,16 +1039,7 @@ def verify(args):
                     == {
                         "source_id": prepared["source_id"],
                         "source_sha256": prepared["source_sha256"],
-                        "expected_live": {
-                            key: reads[-1]["live"][key]
-                            for key in (
-                                "view_id",
-                                "renderer_generation",
-                                "live_epoch",
-                                "revision",
-                                "display_revision",
-                            )
-                        },
+                        "expected_live": scene_live_token(reads[-1]),
                         "patch": {"t": reads[-1]["state"]["t"]},
                     },
                     "Wrong denied field, source or current scene token",
@@ -1041,22 +1218,8 @@ def verify(args):
             prepared["result_binding"]["result_id"],
             child_id,
         )
-        require(
-            len([c for c in calls if c["tool"] == "submit_action"]) == 1,
-            "Expected exactly one correction submission",
-        )
-        jobs = [
-            structured(c)["job"] for c in calls if c["tool"] == "job_status" and not error_text(c)
-        ]
-        require(
-            any(
-                j["state"] == "succeeded"
-                and j.get("owned_worker_active") is False
-                and j["result_ids"] == [child_id]
-                for j in jobs
-            ),
-            "Correction worker exit not observed",
-        )
+        binding = verify_correction_calls(prepared, calls, project, main_session["session_id"])
+        verify_corrected_scene(binding, final, writes, calls, images)
     if phase != "correction":
         oracle = load_helper("volume_host_oracle", "scripts/qa_volume_workspace.py")
         oracle.verify(

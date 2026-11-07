@@ -21,6 +21,10 @@ export interface VolumeSceneBridgeOptions {
 export class VolumeSceneBridgeError extends Error {
   constructor(readonly reason: FailureReason, message: string) { super(message); this.name = "VolumeSceneBridgeError"; }
 }
+/** Newer local input invalidates a captured save; callers must still reject it. */
+export class VolumeSceneSupersededError extends VolumeSceneBridgeError {
+  constructor() { super("stale", "The local volume view changed while the operation was pending."); this.name = "VolumeSceneSupersededError"; }
+}
 const fail: (reason: FailureReason, message: string) => never = (reason, message) => { throw new VolumeSceneBridgeError(reason, message); };
 const panes: VolumePane[] = ["volume", "axial", "coronal", "sagittal"];
 const hash = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/u.test(value);
@@ -111,7 +115,7 @@ export class VolumeSceneBridge {
   get current(): VolumeViewDocument | null { return this.view ? clone(this.view) : null; }
   private report(error: unknown): Error {
     const value = error instanceof Error ? error : new Error("The volume workspace operation failed.");
-    if (!this.disposed) this.options.onError?.(value);
+    if (!this.disposed && !(value instanceof VolumeSceneSupersededError)) this.options.onError?.(value);
     return value;
   }
   private enqueue<T>(work: () => Promise<T>): Promise<T> {
@@ -150,8 +154,10 @@ export class VolumeSceneBridge {
   }
   private unchanged(before: VolumeSceneSnapshot, state = true, ready = true): VolumeSceneSnapshot {
     const after = this.snapshot(ready);
-    if (before.liveEpoch !== after.liveEpoch || before.rendererGeneration !== after.rendererGeneration || (state && !equal(before.state, after.state)))
+    if (before.rendererGeneration !== after.rendererGeneration)
       return fail("stale", "The local volume view changed while the operation was pending.");
+    if (before.liveEpoch !== after.liveEpoch || (state && !equal(before.state, after.state)))
+      throw new VolumeSceneSupersededError();
     return after;
   }
   private document(value: unknown): VolumeViewDocument {

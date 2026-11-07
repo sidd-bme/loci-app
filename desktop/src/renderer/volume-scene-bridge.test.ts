@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkedVolumeViewState, VolumeSceneBridge } from "./volume-scene-bridge";
+import { checkedVolumeViewState, VolumeSceneBridge, VolumeSceneBridgeError, VolumeSceneSupersededError } from "./volume-scene-bridge";
 import type { VolumeLiveToken, VolumeSceneAdapter, VolumeSceneSnapshot, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 
 const sourceId = "a".repeat(32), sourceSha256 = "b".repeat(64);
@@ -189,11 +189,23 @@ describe("volume scene lifecycle and CAS", () => {
     await firstRejected; await second;
     expect(maximum).toBe(1); expect(writes).toBe(2);
     expect(f.document().state).toEqual(next); expect(f.local().state).toEqual(next); expect(f.apply).not.toHaveBeenCalled();
+    expect(f.onError).not.toHaveBeenCalled();
   });
   it("rejects a local change during display flush before any save", async () => {
     const f = setup(); await f.bridge.start();
     f.flushDisplay.mockImplementationOnce(async () => { f.change({ liveEpoch: 4 }); return 7; });
-    await expect(f.bridge.save(f.local())).rejects.toThrow(/local volume view changed/);
+    await expect(f.bridge.save(f.local())).rejects.toBeInstanceOf(VolumeSceneSupersededError);
+    expect(f.execute.mock.calls.filter(([operation]) => operation === "save_volume_view")).toHaveLength(0);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+  it("keeps renderer recreation as an ordinary visible stale failure", async () => {
+    const f = setup(); await f.bridge.start();
+    f.flushDisplay.mockImplementationOnce(async () => { f.change({ rendererGeneration: 2 }); return 7; });
+    const error = await f.bridge.save(f.local()).catch(error => error);
+    expect(error).toBeInstanceOf(VolumeSceneBridgeError);
+    expect(error).not.toBeInstanceOf(VolumeSceneSupersededError);
+    expect(error.reason).toBe("stale");
+    expect(f.onError).toHaveBeenCalledExactlyOnceWith(error);
     expect(f.execute.mock.calls.filter(([operation]) => operation === "save_volume_view")).toHaveLength(0);
   });
   it("reports an external revision conflict and requires explicit acknowledgment before a later save", async () => {
@@ -201,6 +213,8 @@ describe("volume scene lifecycle and CAS", () => {
     f.changeDocument({ revision: 3 });
     await expect(f.bridge.save(f.local())).rejects.toThrow(/Review the current revision/);
     expect(f.onConflict).toHaveBeenLastCalledWith(f.document());
+    expect(f.onError).toHaveBeenCalledExactlyOnceWith(expect.any(VolumeSceneBridgeError));
+    expect(f.onError.mock.calls[0][0]).not.toBeInstanceOf(VolumeSceneSupersededError);
     await expect(f.bridge.save(f.local())).rejects.toThrow(/Review the current revision/);
     expect(f.execute.mock.calls.filter(([operation]) => operation === "save_volume_view")).toHaveLength(0);
     f.bridge.acceptConflict(f.document()); await f.bridge.save(f.local());
@@ -263,6 +277,23 @@ describe("exact-token agent handshake", () => {
     expect(f.apply).not.toHaveBeenCalled();
     expect(f.execute.mock.calls.filter(([operation]) => operation === "volume_view_request_complete")).toHaveLength(0);
     expect(f.lock).toHaveBeenLastCalledWith(false);
+  });
+  it("rejects a superseded agent apply as stale without a persistent global error", async () => {
+    const f = setup(); await f.bridge.start(); const request = f.queue("set");
+    f.execute.mockImplementation(async (operation, input) => {
+      const value = await f.handle(operation, input);
+      if (operation === "volume_view_request_apply") f.change({ liveEpoch: 4 });
+      return value;
+    });
+    await expect(f.bridge.update()).rejects.toBeInstanceOf(VolumeSceneSupersededError);
+    expect(f.execute).toHaveBeenCalledWith("volume_view_request_fail", { request_id: request.request_id, reason: "stale" });
+    expect(f.execute.mock.calls.filter(([operation]) => operation === "volume_view_request_complete")).toHaveLength(0);
+    expect(f.apply).not.toHaveBeenCalled(); expect(f.onError).not.toHaveBeenCalled();
+    expect(f.lock).toHaveBeenLastCalledWith(false);
+    // A committed durable revision still requires explicit conflict handling.
+    await expect(f.bridge.save(f.local())).rejects.toThrow(/Review the current revision/);
+    expect(f.onConflict).toHaveBeenCalledExactlyOnceWith(f.document());
+    expect(f.onError).toHaveBeenCalledExactlyOnceWith(expect.any(VolumeSceneBridgeError));
   });
   it("keeps applying presence alive every three seconds and clears busy before acknowledging", async () => {
     vi.useFakeTimers(); const f = setup(); await f.bridge.start();

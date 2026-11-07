@@ -5,6 +5,8 @@
  * LOCI_QA_OUTPUT_ROOT. Also LOCI_QA_PARENT_RESULT (exact ID) and
  * LOCI_QA_SOURCE_COMMIT (actual packaged revision). Node24/macOS only.
  * Optional LOCI_QA_ALLOW_CORRECTION=1 authorizes the helper's one final delete child.
+ * LOCI_QA_HOST_SCOPE=correction-only runs just the explicit correction phase; its receipt
+ * records partial scope and must not substitute for core/concurrency/reopen acceptance.
  * This copies the passed derived study; original fixtures/study remain immutable.
  * Only Open study is simulated. Scene inputs use ordinary rendered UI controls.
  * No mailbox reply, adapter, product hook, transcript or screenshot is synthesized.
@@ -33,6 +35,9 @@ assert.match(parentId ?? '', /^[a-f0-9]{32}$/u); assert.match(sourceCommit ?? ''
 const hostTimeout = Number(env.LOCI_QA_HOST_TIMEOUT_SECONDS ?? 900);
 assert.ok(Number.isSafeInteger(hostTimeout) && hostTimeout >= 60 && hostTimeout <= 3600);
 const allowCorrection = env.LOCI_QA_ALLOW_CORRECTION === '1';
+const scope = env.LOCI_QA_HOST_SCOPE ?? 'complete';
+assert.ok(['complete', 'correction-only'].includes(scope), 'Unknown host journey scope');
+assert.ok(scope !== 'correction-only' || allowCorrection, 'Correction-only scope requires explicit correction authority');
 const output = await fs.mkdtemp(path.join(outputRoot, 'packaged-volume-host-'));
 const study = path.join(output, 'Host workspace.loci-study'), kit = path.join(output, 'actual-host-kit');
 const helper = path.join(repo, 'scripts/qa_volume_agent_host.py'), worker = path.join(bundle, 'Contents/Resources/loci-engine/loci-engine');
@@ -44,7 +49,7 @@ const writeJson = (file, value) => fs.writeFile(file, JSON.stringify(value, null
 const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 const same = (a, b) => canonical(a) === canonical(b);
 const report = { schema: 'loci.packaged-volume-host-journey/v1', status: 'running', started_at: new Date().toISOString(), output, study,
-  source_commit: sourceCommit, commands: [], phases: [], gui_launches: [], dialogs: [], captures: [], processes: [], page_errors: [], console_errors: [], network_requests: [],
+  source_commit: sourceCommit, scope, requested_phases: scope === 'correction-only' ? ['correction'] : ['core', 'human', 'reopen', ...(allowCorrection ? ['correction'] : [])], commands: [], phases: [], gui_launches: [], dialogs: [], captures: [], processes: [], page_errors: [], console_errors: [], network_requests: [],
   limits: ['Engineering acceptance only; no biological validation, human scientific review or observed model-identity claim.',
     'The passed derived study is copied into this exclusive run. Source images and the original study are never written.',
     'Open study responses are explicitly simulated; no ordinary native-dialog acceptance is claimed here.',
@@ -179,7 +184,10 @@ async function launch(number) {
       await selectWorkbenchTool(page, 'Population');
       const channelName = source.metadata.channel_names?.[fixture.selection.c] ?? `Channel ${fixture.selection.c + 1}`;
       const channel = page.getByRole('checkbox', { name: `${channelName} visible`, exact: true });
-      if (!await channel.isVisible()) await page.locator('details.compact-channel-controls > summary').click();
+      const disclosure = page.locator('details.compact-channel-controls');
+      await disclosure.waitFor({ state: 'visible' });
+      if (!await disclosure.evaluate(element => element.open)) await page.locator('details.compact-channel-controls > summary').click();
+      await channel.waitFor({ state: 'visible' });
       if (await channel.isChecked()) await channel.uncheck();
       await channel.check();
     }
@@ -270,7 +278,7 @@ try {
   report.original_study_inventory = await inventory(parentStudy); await fs.cp(parentStudy, study, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
   report.build = { identity: await readJson(path.join(bundle, 'Contents/Resources/loci-build-identity.json')), executable_sha256: await hash(executable), asar_sha256: await hash(asar), worker_sha256: await hash(worker) };
   assert.equal(report.build.identity.sourceRevision, sourceCommit); report.harness_sha256 = await hash(import.meta.filename); report.host_helper_sha256 = await hash(helper);
-  await writeJson(path.join(output, 'attempt.json'), { schema: report.schema, started_at: report.started_at, input: report.input, build: report.build, source_commit: sourceCommit });
+  await writeJson(path.join(output, 'attempt.json'), { schema: report.schema, started_at: report.started_at, input: report.input, build: report.build, source_commit: sourceCommit, scope, requested_phases: report.requested_phases });
   await command('codesign', '/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle], 60000);
   monitor = setInterval(() => { monitorQueue = monitorQueue.then(rememberProcesses).catch(error => { report.process_tracking_error = error.message; }); }, 250);
   const firstLaunch = await launch(1); const firstBefore = await scene();
@@ -279,37 +287,40 @@ try {
     '--source-commit', sourceCommit, '--output', kit, ...(allowCorrection ? ['--allow-correction'] : [])], 120000);
   const prepared = await readJson(path.join(kit, 'prepared.json')); assert.equal(prepared.study, study); assert.equal(prepared.result_binding.result_id, parentId);
   report.prepared = { path: path.join(kit, 'prepared.json'), sha256: await hash(path.join(kit, 'prepared.json')) };
-  const core = await runPhase('core'); assert.equal(core.cancelled_requests.length, 1, 'Completion cannot substitute for actual cancellation');
-  const humanPhase = { phase: 'human', started_at: new Date().toISOString() }; report.phases.push(humanPhase);
-  const human = startCommand('human-run', python, [helper, 'run-host', '--kit', kit, '--phase', 'human', '--human-evidence', humanEvidencePath, '--timeout', String(hostTimeout)], (hostTimeout + 60) * 1000);
-  const marker = await waitForHumanMarker(human); await writeJson(path.join(output, 'human-marker.json'), marker); markerIntervention = true;
-  const before = await scene(); assert.deepEqual(before.state, marker.original.state); assert.equal(before.revision, marker.original.revision);
-  assert.notDeepEqual(before.state.clipping, { enabled: true, axis: 'z', position_percent: 73 }, 'The human marker must be a new ordinary-input change');
-  const beforeCapture = await capture('human-before'); await setHumanClipping();
-  const after = await stableScene(value => value.revision > before.revision && same(value.state.clipping, { enabled: true, axis: 'z', position_percent: 73 }), 'human clipping CAS marker');
-  const afterCapture = await capture('human-after');
-  await writeJson(humanEvidencePath, { schema: 'loci.volume-host-human-edit/v1', route: 'ordinary GUI controls', actor: 'Playwright automation of the human-side UI; not human scientific review', before, after,
-    marker: { transcript: marker.transcript, line: marker.line }, captures: [beforeCapture, afterCapture] });
-  const humanExit = await human.done; assert.equal(humanExit.timedOut, false); assert.equal(humanExit.code, 0, 'Human host failed; its actual transcript and logs are preserved');
-  await command('human-verify', python, [helper, 'verify', '--run', path.join(kit, 'human')], 120000);
-  const humanVerificationPath = path.join(kit, 'human/verification.json'), humanVerification = await readJson(humanVerificationPath);
-  assert.equal(humanVerification.status, 'passed-actual-codex-host-engineering'); assert.deepEqual(humanVerification.expected_denials, ['stale']);
-  assert.deepEqual(humanVerification.final_view.state, after.state);
-  humanPhase.verification = { path: humanVerificationPath, sha256: await hash(humanVerificationPath) }; humanPhase.finished_at = new Date().toISOString();
-  const beforeCloseCapture = await capture('before-normal-close'); await closeNormally(1);
-  const secondLaunch = await launch(2); assert.notEqual(firstLaunch.pid, secondLaunch.pid); assert.notEqual(firstLaunch.profile, secondLaunch.profile);
-  const restored = await stableScene(value => same(value.state, humanVerification.final_view.state) && value.geometry_sha256 === humanVerification.final_view.geometry_sha256, 'exact cold-restored human scene');
-  const reopenedCapture = await capture('fresh-profile-reopened');
-  await writeJson(reopenEvidencePath, { schema: 'loci.volume-host-reopen/v1', fresh_profile: true, study,
-    before_app_pid: firstLaunch.pid, after_app_pid: secondLaunch.pid, before_profile: firstLaunch.profile, after_profile: secondLaunch.profile,
-    before: humanVerification.final_view, after: restored, captures: [beforeCloseCapture, reopenedCapture] });
-  await runPhase('reopen', ['--expected-view', humanVerificationPath, '--reopen-evidence', reopenEvidencePath]);
+  if (scope === 'complete') {
+    const core = await runPhase('core'); assert.equal(core.cancelled_requests.length, 1, 'Completion cannot substitute for actual cancellation');
+    const humanPhase = { phase: 'human', started_at: new Date().toISOString() }; report.phases.push(humanPhase);
+    const human = startCommand('human-run', python, [helper, 'run-host', '--kit', kit, '--phase', 'human', '--human-evidence', humanEvidencePath, '--timeout', String(hostTimeout)], (hostTimeout + 60) * 1000);
+    const marker = await waitForHumanMarker(human); await writeJson(path.join(output, 'human-marker.json'), marker); markerIntervention = true;
+    const before = await scene(); assert.deepEqual(before.state, marker.original.state); assert.equal(before.revision, marker.original.revision);
+    assert.notDeepEqual(before.state.clipping, { enabled: true, axis: 'z', position_percent: 73 }, 'The human marker must be a new ordinary-input change');
+    const beforeCapture = await capture('human-before'); await setHumanClipping();
+    const after = await stableScene(value => value.revision > before.revision && same(value.state.clipping, { enabled: true, axis: 'z', position_percent: 73 }), 'human clipping CAS marker');
+    const afterCapture = await capture('human-after');
+    await writeJson(humanEvidencePath, { schema: 'loci.volume-host-human-edit/v1', route: 'ordinary GUI controls', actor: 'Playwright automation of the human-side UI; not human scientific review', before, after,
+      marker: { transcript: marker.transcript, line: marker.line }, captures: [beforeCapture, afterCapture] });
+    const humanExit = await human.done; assert.equal(humanExit.timedOut, false); assert.equal(humanExit.code, 0, 'Human host failed; its actual transcript and logs are preserved');
+    await command('human-verify', python, [helper, 'verify', '--run', path.join(kit, 'human')], 120000);
+    const humanVerificationPath = path.join(kit, 'human/verification.json'), humanVerification = await readJson(humanVerificationPath);
+    assert.equal(humanVerification.status, 'passed-actual-codex-host-engineering'); assert.deepEqual(humanVerification.expected_denials, ['stale']);
+    assert.deepEqual(humanVerification.final_view.state, after.state);
+    humanPhase.verification = { path: humanVerificationPath, sha256: await hash(humanVerificationPath) }; humanPhase.finished_at = new Date().toISOString();
+    const beforeCloseCapture = await capture('before-normal-close'); await closeNormally(1);
+    const secondLaunch = await launch(2); assert.notEqual(firstLaunch.pid, secondLaunch.pid); assert.notEqual(firstLaunch.profile, secondLaunch.profile);
+    const restored = await stableScene(value => same(value.state, humanVerification.final_view.state) && value.geometry_sha256 === humanVerification.final_view.geometry_sha256, 'exact cold-restored human scene');
+    const reopenedCapture = await capture('fresh-profile-reopened');
+    await writeJson(reopenEvidencePath, { schema: 'loci.volume-host-reopen/v1', fresh_profile: true, study,
+      before_app_pid: firstLaunch.pid, after_app_pid: secondLaunch.pid, before_profile: firstLaunch.profile, after_profile: secondLaunch.profile,
+      before: humanVerification.final_view, after: restored, captures: [beforeCloseCapture, reopenedCapture] });
+    await runPhase('reopen', ['--expected-view', humanVerificationPath, '--reopen-evidence', reopenEvidencePath]);
+  }
   if (allowCorrection) await runPhase('correction');
-  await capture('final-host-scene'); await closeNormally(2);
+  await capture('final-host-scene'); await closeNormally(scope === 'complete' ? 2 : 1);
   assert.deepEqual(report.page_errors, []); assert.deepEqual(report.console_errors, []); assert.deepEqual(report.network_requests, []);
   assert.deepEqual(await inventory(parentStudy), report.original_study_inventory, 'The passed original study changed');
   assert.equal(await hash(fixture.source.path), fixture.source.sha256); assert.equal(await hash(fixture.labels.path), fixture.labels.sha256);
-  report.status = 'passed-actual-host-and-packaged-engineering'; report.originals_preserved = true;
+  assert.deepEqual(report.phases.map(phase => phase.phase), report.requested_phases);
+  report.status = scope === 'complete' ? 'passed-actual-host-and-packaged-engineering' : 'passed-correction-host-and-packaged-engineering'; report.originals_preserved = true;
 } catch (error) {
   failure = error; report.status = 'failed'; report.failure = { message: error.message, stack: error.stack, human_marker_observed: markerIntervention };
   if (page) await capture('failure').catch(() => {});

@@ -230,6 +230,31 @@ function endPointer() {
 }
 
 describe("Workbench volume scene lifecycle barriers", () => {
+  it("persists the latest local label controls when their debounce joins a superseded save", async () => {
+    const f = fixture(); await openVolume(f);
+    const renderer = renderers.get(first.id)!;
+    const pending = f.holdSave();
+    await act(async () => {
+      renderer.snapshot.liveEpoch++;
+      renderer.snapshot.state.labels.selected_only = true;
+      renderer.changed?.();
+    });
+    await waitFor(() => expect(pending.entered()).toBe(true));
+    await act(async () => {
+      // Renderer state can advance without another workbench pointer event.
+      renderer.snapshot.liveEpoch++;
+      renderer.snapshot.state.labels.opacity = .7;
+      renderer.changed?.();
+      // Let the second 350ms debounce join the older unresolved native write.
+      await new Promise(resolve => setTimeout(resolve, 400));
+    });
+    await act(async () => pending.release());
+    await waitFor(() => expect(f.state().state?.labels).toEqual({ visible: false, selected_only: true, opacity: .7 }));
+    expect(renderer.snapshot.state.labels).toEqual(f.state().state?.labels);
+    expect(renderer.appliedStates).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Retry shared view" })).not.toBeInTheDocument();
+  });
+
   it("commits a pending scene before selecting another source", async () => {
     const f = fixture(); await openVolume(f);
     fireEvent.click(screen.getByRole("button", { name: "Move mock crosshair" }));

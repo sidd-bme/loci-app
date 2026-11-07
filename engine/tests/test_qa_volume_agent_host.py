@@ -121,6 +121,31 @@ def test_policy_denial_accepts_only_the_exact_public_boundary_message():
     )
 
 
+def test_human_cas_token_preserves_all_five_fields_without_presence_metadata():
+    token = {
+        "view_id": "gui-view",
+        "renderer_generation": 2,
+        "live_epoch": 25,
+        "revision": 19,
+        "display_revision": 3,
+    }
+    view = {
+        "live": {
+            **token,
+            "source_id": "source",
+            "source_sha256": "hash",
+            "busy": False,
+            "available": True,
+        }
+    }
+    assert QA.scene_live_token(view) == token
+    for key in token:
+        missing = copy.deepcopy(view)
+        missing["live"].pop(key)
+        with pytest.raises(KeyError):
+            QA.scene_live_token(missing)
+
+
 def denial_policy_fixture():
     prepared = {
         "source_id": "a" * 32,
@@ -180,3 +205,188 @@ def test_scope_denial_cannot_be_inferred_from_wrong_or_unrelated_policy(mutation
     mutation(policies)
     with pytest.raises(AssertionError):
         QA.verify_denial_policies(prepared, policies, dimensions)
+
+
+def correction_evidence_fixture():
+    from types import SimpleNamespace
+
+    parent = {"result_id": "a" * 32, "revision_hash": "b" * 64, "label_sha256": "c" * 64}
+    child = {
+        "id": "d" * 32,
+        "revision_hash": "e" * 64,
+        "source_id": "f" * 32,
+        "source_sha256": "1" * 64,
+        "parent_id": parent["result_id"],
+    }
+    prepared = {
+        "allow_correction": True,
+        "result_binding": parent,
+        "target_label": 4294967295,
+        "source_id": child["source_id"],
+        "source_sha256": child["source_sha256"],
+        "correction_request": {
+            "result_id": parent["result_id"],
+            "revision_hash": parent["revision_hash"],
+            "operations": [
+                {
+                    "op": "delete",
+                    "label": 4294967295,
+                    "expected_input_sha256": parent["label_sha256"],
+                }
+            ],
+            "working_bytes": QA.MEMORY,
+        },
+        "policies": {QA.MAIN: {"sha256": "2" * 64}},
+    }
+    submitted = {"id": "3" * 32, "request_hash": "4" * 64, "state": "queued", "result_ids": []}
+    job = {
+        **submitted,
+        "state": "succeeded",
+        "result_ids": [child["id"]],
+        "owned_worker_active": False,
+    }
+    persisted = {
+        **job,
+        "operation": "correct_result",
+        "request": {"task_request": prepared["correction_request"]},
+        "owner": {"policy_sha256": "2" * 64, "session_id": "session"},
+    }
+    parent_info = {**parent, "shape": [12, 48, 64], "label_ids": [17, 65536, 4294967295]}
+    child_info = {
+        "result_id": child["id"],
+        "revision_hash": child["revision_hash"],
+        "parent_id": parent["result_id"],
+        "label_sha256": "5" * 64,
+        "shape": parent_info["shape"],
+        "label_ids": [17, 65536],
+    }
+
+    def call(tool, arguments, response):
+        return {
+            "tool": tool,
+            "server": QA.MAIN,
+            "arguments": copy.deepcopy(arguments),
+            "result": {"structured_content": copy.deepcopy(response)},
+        }
+
+    request = {"operation": "correct_result", "request": prepared["correction_request"]}
+    calls = [
+        call(
+            "inspect_action",
+            {
+                "operation": "correction_info",
+                "request": {
+                    "result_id": parent["result_id"],
+                    "revision_hash": parent["revision_hash"],
+                },
+            },
+            parent_info,
+        ),
+        call("validate_action", request, {**request, "authorized": True}),
+        call(
+            "submit_action", {**request, "request_key": "volume-host-delete-v1"}, {"job": submitted}
+        ),
+        call("job_status", {"job_id": submitted["id"]}, {"job": job}),
+        call(
+            "result",
+            {"result_id": child["id"], "offset": 0, "limit": 1},
+            {"result": {**child, "review": None}},
+        ),
+        call(
+            "inspect_action",
+            {
+                "operation": "correction_info",
+                "request": {"result_id": child["id"], "revision_hash": child["revision_hash"]},
+            },
+            child_info,
+        ),
+    ]
+    project = SimpleNamespace(
+        result=lambda *_a, **_kw: child,
+        job=lambda _identity: persisted,
+        review_state=lambda _identity: None,
+    )
+    return prepared, calls, project, child_info
+
+
+def test_correction_child_metadata_is_bound_to_submitted_inactive_successful_job():
+    prepared, calls, project, child_info = correction_evidence_fixture()
+    assert "result" in QA.TOOLS
+    assert "review" not in project.result("unused")  # Raw immutable records keep review separately.
+    assert QA.verify_correction_calls(prepared, calls, project, "session") == {
+        key: child_info[key] for key in ("result_id", "revision_hash", "label_sha256")
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda p, c, _: p.update(allow_correction=False),
+        lambda _, c, _p: c[4].update(server=QA.CROP),
+        lambda _, c, _p: c[4]["arguments"].update(limit=100),
+        lambda p, c, _: c[4]["arguments"].update(result_id=p["result_binding"]["result_id"]),
+        lambda _, c, _p: c[3]["arguments"].update(job_id="6" * 32),
+        lambda _, c, _p: c[3]["result"]["structured_content"]["job"].update(
+            owned_worker_active=True
+        ),
+        lambda _, c, _p: c[3]["result"]["structured_content"]["job"].update(request_hash="6" * 64),
+        lambda _, c, _p: c[4]["result"]["structured_content"]["result"].update(source_id="6" * 32),
+        lambda _, c, _p: c[4]["result"]["structured_content"]["result"].update(parent_id="6" * 32),
+        lambda _, c, _p: c[4]["result"]["structured_content"]["result"].update(
+            revision_hash="6" * 64
+        ),
+        lambda _, c, _p: c[5]["result"]["structured_content"].update(
+            label_ids=[17, 65536, 4294967295]
+        ),
+        lambda _, c, _p: c[5]["result"]["structured_content"].update(label_ids=[17]),
+        lambda _, c, _p: c[5]["arguments"]["request"].update(revision_hash="6" * 64),
+        lambda _, c, _p: c.append(copy.deepcopy(c[4])),
+        lambda _, c, _p: c.__setitem__(slice(3, 5), [c[4], c[3]]),
+        lambda _, _c, p: p.job("")["owner"].update(session_id="other-session"),
+    ],
+)
+def test_correction_verifier_refuses_unrelated_or_incomplete_child_evidence(mutation):
+    prepared, calls, project, _ = correction_evidence_fixture()
+    mutation(prepared, calls, project)
+    with pytest.raises(AssertionError):
+        QA.verify_correction_calls(prepared, calls, project, "session")
+
+
+def test_correction_prompt_requires_exact_bounded_child_read_before_inspection():
+    prepared, _, _, _ = correction_evidence_fixture()
+    prepared.update(
+        {
+            key: None
+            for key in (
+                "case",
+                "probe_source_xyz",
+                "expected_t",
+                "expected_channels",
+                "positive_patch",
+                "limits",
+            )
+        }
+    )
+    text = QA.prompt(prepared, "correction")
+    assert "offset=0,limit=1" in text
+    assert "use the returned revision_hash" in text
+    assert "job_status supplies IDs, never child revisions" in text
+
+
+def test_corrected_scene_requires_child_capture_and_exact_rendered_scene_patch():
+    prepared, calls, project, _ = correction_evidence_fixture()
+    binding = QA.verify_correction_calls(prepared, calls, project, "session")
+    state = {"result": binding, "selected_object": None}
+    final = {"state": state}
+    writes = [{"status": "complete", "proposed_state": state}]
+    scene_call = {"tool": "set_volume_view", "arguments": {"request": {"patch": state}}}
+    images = [{"rendering": {"manifest": {"state": state}}}]
+    QA.verify_corrected_scene(binding, final, writes, calls + [scene_call], images)
+    parent_capture = copy.deepcopy(images)
+    parent_capture[0]["rendering"]["manifest"]["state"]["result"] = prepared["result_binding"]
+    with pytest.raises(AssertionError, match="corrected-child GUI capture"):
+        QA.verify_corrected_scene(binding, final, writes, calls + [scene_call], parent_capture)
+    wrong_patch = copy.deepcopy(scene_call)
+    wrong_patch["arguments"]["request"]["patch"]["clipping"] = {"enabled": False}
+    with pytest.raises(AssertionError, match="unrelated scene fields"):
+        QA.verify_corrected_scene(binding, final, writes, calls + [wrong_patch], images)
