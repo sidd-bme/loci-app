@@ -5,7 +5,9 @@ export function assertResearchRequestBound(operation: string, request: object): 
   if (operation === "intensity_save" && reportJson !== undefined &&
       (typeof reportJson !== "string" || Buffer.byteLength(reportJson, "utf8") > 8 * 1024 ** 2))
     throw new Error("Intensity report snapshot exceeds its 8 MiB byte limit.");
-  const maximum = operation === "volume_view_request_complete" ? 8 * 1024 ** 2 :
+  // The engine separately enforces an 8 MiB decoded PNG and a 256 KiB receipt.
+  // Allow the PNG's base64 expansion in this JSON transport envelope.
+  const maximum = operation === "volume_view_request_complete" ? 12 * 1024 ** 2 :
     operation === "roi_import" ? 12 * 1024 ** 2 :
     operation === "intensity_save" ? (reportJson === undefined ? 8 : 16) * 1024 ** 2 + 1024 :
     operation === "sample_sheet_preview" || operation === "sample_sheet_apply" ? 4 * 1024 ** 2 : 1024 ** 2;

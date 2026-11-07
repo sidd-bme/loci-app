@@ -980,6 +980,8 @@ export default function ResearchWorkbench({
   const volumeAdapter = useRef<VolumeSceneAdapter | null>(null);
   const volumeDraining = useRef(false);
   const volumeSceneFlush = useRef<() => Promise<void>>(async () => undefined);
+  const volumeScenePersist = useRef<() => Promise<void>>(async () => undefined);
+  const volumeSceneWrite = useRef<Promise<void> | null>(null);
   const [volumeSceneError, setVolumeSceneError] = useState<string | null>(null);
   const [volumeSceneConflict, setVolumeSceneConflict] = useState<VolumeViewDocument | null>(null);
   const [volumeSceneRevision, setVolumeSceneRevision] = useState<number | null>(null);
@@ -1331,7 +1333,7 @@ export default function ResearchWorkbench({
   const handleSourceClick = useCallback(
     async (item: ResearchSource, event: React.MouseEvent, visibleSourceIds?: string[]) => {
       if (!snapshot) return;
-      if (item.id !== sourceId && volumeBridge.current) {
+      if (item.id !== sourceId && (volumeBridge.current || volumeHandle.current)) {
         try { await volumeSceneFlush.current(); }
         catch (caught) { setError(message(caught, "Save the current 3D view before switching sources.")); return; }
       }
@@ -1382,7 +1384,7 @@ export default function ResearchWorkbench({
     if (targetIds.length === 0) return;
     const sourcesToClose = snapshot.sources.filter((s) => targetIds.includes(s.id));
     if (sourcesToClose.length === 0) return;
-    if (volumeBridge.current && sourcesToClose.some(item => item.id === sourceId)) {
+    if ((volumeBridge.current || volumeHandle.current) && sourcesToClose.some(item => item.id === sourceId)) {
       try { await volumeSceneFlush.current(); }
       catch (caught) { setError(message(caught, "Save the current 3D view before removing this source.")); return; }
     }
@@ -2579,19 +2581,21 @@ export default function ResearchWorkbench({
   }, [api, rawVolumeOpen, source?.id, source?.sha256, volumeLabelResult?.result_id, volumeLabelResult?.revision_hash, volumeTarget?.t, shownSelection.t]);
   useEffect(() => {
     volumeSceneGeneration.current++; volumeBridgeScope.current = null; volumeStarting.current = false;
+    volumeSceneWrite.current = null; volumeAdapter.current = null;
     volumeOpeningIntent.current = agentInteraction.current.generation;
     const previous = volumeBridge.current; volumeBridge.current = null; void previous?.dispose();
     if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
     setVolumeSceneError(null); setVolumeSceneConflict(null); setVolumeSceneRevision(null);
     return () => { volumeSceneGeneration.current++; if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current); void volumeBridge.current?.dispose(); volumeBridge.current = null; };
   }, [source?.id, source?.sha256, rawVolumeOpen, documentEpoch]);
-  volumeChangeHandler.current = () => {
-    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
-    volumeSaveTimer.current = setTimeout(() => {
-      volumeSaveTimer.current = null;
+  volumeScenePersist.current = async () => {
+      // Native boundaries must join an in-flight first read/restore/save and
+      // must also initialize a ready scene whose debounce has not fired yet.
+      if (volumeSceneWrite.current) await volumeSceneWrite.current;
       const ctx = volumeContext.current, handle = volumeHandle.current;
       const scene = handle?.snapshot();
-      if (!ctx.source || !ctx.rawVolumeOpen || !ctx.viewSettingsReady || ctx.busy || documentSwitch.current || volumeSharedLocked.current || !scene?.available || scene.busy || volumeStarting.current) return;
+      if (!ctx.source || !ctx.rawVolumeOpen || !ctx.viewSettingsReady || (!volumeDraining.current && ctx.busy) ||
+          (documentSwitch.current && !volumeDraining.current) || volumeSharedLocked.current || !scene?.available || scene.busy) return;
       const scope = `${ctx.documentEpoch}:${ctx.source.id}:${ctx.source.sha256}`;
       const generation = volumeSceneGeneration.current;
       const current = () => volumeSceneGeneration.current === generation && volumeContext.current.source?.id === ctx.source!.id && volumeContext.current.rawVolumeOpen && (!documentSwitch.current || volumeDraining.current);
@@ -2600,7 +2604,11 @@ export default function ResearchWorkbench({
         snapshot: () => {
           if (!current()) return null;
           const s = volumeHandle.current?.snapshot();
-          return s ? { ...s, liveEpoch: s.liveEpoch + agentInteraction.current.generation, busy: s.busy || Boolean(volumeContext.current.busy) || agentInteraction.current.pointers.size > 0 } : null;
+          return s ? { ...s, liveEpoch: s.liveEpoch + agentInteraction.current.generation,
+            // A native document command may set the workbench's progress state
+            // before entering its save barrier. Real gestures/render work and
+            // agent ownership must still prevent that barrier from saving.
+            busy: s.busy || (!volumeDraining.current && Boolean(volumeContext.current.busy)) || agentInteraction.current.pointers.size > 0 } : null;
         },
         lock: locked => { volumeSharedLocked.current = locked; volumeHandle.current?.lock(locked); },
         capture: (panes, maxSize) => { if (!current() || !volumeHandle.current) throw new Error("The native scene has closed."); return volumeHandle.current.capture(panes, maxSize); },
@@ -2653,18 +2661,34 @@ export default function ResearchWorkbench({
         if (current() && latest?.available && !latest.busy && (initializedNow || stateKey(bridge.current?.state) !== stateKey(latest.state))) await bridge.save(latest);
         else if (current()) await bridge.update();
       };
-      void begin().catch(caught => { if (current()) {
-        const now = adapter.snapshot();
-        if (now && (now.busy || now.liveEpoch !== scene.liveEpoch + agentInteraction.current.generation)) queueVolumeSceneChange();
+      const pending = begin();
+      volumeSceneWrite.current = pending;
+      try { await pending; }
+      finally { if (volumeSceneWrite.current === pending) volumeSceneWrite.current = null; }
+  };
+  volumeChangeHandler.current = () => {
+    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
+    const generation = volumeSceneGeneration.current;
+    volumeSaveTimer.current = setTimeout(() => {
+      volumeSaveTimer.current = null;
+      const intent = agentInteraction.current.generation;
+      void volumeScenePersist.current().catch(caught => {
+        if (volumeSceneGeneration.current !== generation) return;
+        const now = volumeAdapter.current?.snapshot();
+        if (now?.busy || intent !== agentInteraction.current.generation) queueVolumeSceneChange();
         else setVolumeSceneError(message(caught, "The volume view could not be shared."));
-      } });
+      });
     }, 350);
   };
   volumeSceneFlush.current = async () => {
     if (volumeSaveTimer.current) { clearTimeout(volumeSaveTimer.current); volumeSaveTimer.current = null; }
+    await volumeScenePersist.current();
     const bridge = volumeBridge.current, current = volumeAdapter.current?.snapshot();
+    const rendered = volumeHandle.current?.snapshot();
+    if (volumeSharedLocked.current || rendered?.busy || agentInteraction.current.pointers.size > 0)
+      throw new Error("Finish the active 3D interaction before leaving this view.");
     if (!bridge || !current?.available) return;
-    if (volumeSharedLocked.current || current.busy) throw new Error("Finish the active 3D interaction before leaving this view.");
+    if (current.busy) throw new Error("Finish the active 3D interaction before leaving this view.");
     await bridge.save(current);
   };
   const selectedResultShape = selectedResult?.arrays?.image?.shape;

@@ -131,9 +131,17 @@ async function openVolume() {
   await wait(() => scene(), value => value.state?.labels.visible, 'labels enabled');
 }
 async function range(label, value) {
-  const field = page.getByLabel(label, { exact: true }); const min = Number(await field.getAttribute('min')), step = Number(await field.getAttribute('step') ?? 1);
-  const count = Math.round((value - min) / step); assert.ok(count >= 0 && count <= 1000);
-  await field.focus(); await field.press('Home'); for (let i = 0; i < count; i++) await field.press('ArrowRight');
+  const field = page.getByLabel(label, { exact: true });
+  const min = Number(await field.getAttribute('min')), max = Number(await field.getAttribute('max'));
+  assert.ok(value >= min && value <= max, `${label} must stay inside its native range`);
+  // Set the actual input and dispatch its normal React event; keyboard Home is
+  // not reliable across macOS range controls or inactive app windows.
+  await field.evaluate((input, next) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    if (!setter) throw new Error('Native range setter unavailable');
+    setter.call(input, String(next)); input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, value);
   assert.equal(Number(await field.inputValue()), value);
 }
 const selected = value => value.state?.selected_object?.label_id === fixture.target_label && value.state.selected_object.result_id === parent.id && value.state.selected_object.revision_hash === parent.revision_hash;
@@ -145,10 +153,8 @@ async function targetFromTable() {
 }
 async function selectMpr() {
   await page.getByRole('button', { name: 'Four panes', exact: true }).click();
-  const displayed = (await page.locator('.raw-volume').getAttribute('data-context-dimensions')).split('x').map(Number);
   for (const [i, axis] of ['X', 'Y', 'Z'].entries()) {
-    const index = Math.round(fixture.probe_source_xyz[i] * (displayed[i] - 1) / (fixture.source_dimensions_xyz[i] - 1));
-    await range(axis + ' slice', index);
+    await range(axis + ' slice', fixture.probe_source_xyz[i]);
   }
   const [x, y, z] = fixture.probe_source_xyz, [nx, ny, nz] = fixture.source_dimensions_xyz;
   for (const [plane, u, v] of [['XY plane', x / (nx - 1), y / (ny - 1)], ['XZ plane', x / (nx - 1), 1 - z / (nz - 1)], ['YZ plane', y / (ny - 1), 1 - z / (nz - 1)]]) {
