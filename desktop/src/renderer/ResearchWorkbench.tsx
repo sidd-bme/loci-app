@@ -3471,7 +3471,7 @@ export default function ResearchWorkbench({
               setChannels((current) => current.map((channel) =>
                 display.channels.find((next) => next.channel === channel.channel) ?? channel));
             }} />
-            {volumeSceneError ? <p role="status">Shared 3D view: {volumeSceneError} <button type="button" onClick={() => { setVolumeSceneError(null); queueVolumeSceneChange(); }}>Retry shared view</button></p> :
+            {volumeSceneError ? <p className="raw-volume-export-status raw-volume-export-error" role="status">Shared 3D view: {volumeSceneError} <button type="button" onClick={() => { setVolumeSceneError(null); queueVolumeSceneChange(); }}>Retry shared view</button></p> :
               volumeSceneRevision !== null ? <p className="raw-volume-export-status">Shared 3D view saved · revision {volumeSceneRevision}</p> : null}
             {volumeSceneConflict && <p role="status">The saved 3D view changed elsewhere. Your current view is preserved. <button type="button" onClick={() => {
               try { volumeBridge.current?.acceptConflict(volumeSceneConflict); setVolumeSceneConflict(null); setVolumeSceneError(null); queueVolumeSceneChange(); }

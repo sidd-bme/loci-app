@@ -1,4 +1,4 @@
-.raw-volume { display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; color: var(--ink); background: var(--graphite-900); -webkit-font-smoothing: antialiased; }
+.raw-volume { container: raw-volume / inline-size; display: flex; flex-direction: column; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; color: var(--ink); background: var(--graphite-900); -webkit-font-smoothing: antialiased; }
 .raw-volume-toolbar, .raw-volume-slices, .raw-volume-channels { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--graphite-900) 92%, transparent); }
 .raw-volume label { display: flex; align-items: center; gap: 6px; color: var(--ink-muted); font-size: var(--type-sm); }
 .raw-volume button, .raw-volume select { min-height: 40px; border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px; color: var(--ink); background: var(--graphite-800); font: inherit; }
@@ -23,11 +23,11 @@
 .raw-volume-stage canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .raw-volume-stage canvas:active { cursor: grabbing; }
 .raw-volume-frame-label { position: absolute; z-index: 2; top: 8px; left: 8px; padding: 4px 6px; border-radius: 4px; background: rgb(0 0 0 / 48%); color: rgb(255 255 255 / 64%); font-size: var(--type-3xs); pointer-events: none; }
-.raw-volume-help { position: absolute; z-index: 2; right: 10px; bottom: 8px; max-width: calc(100% - 20px); margin: 0; padding: 5px 7px; border-radius: 5px; background: rgb(0 0 0 / 55%); color: rgb(255 255 255 / 68%); font-size: var(--type-xs); line-height: 1.35; pointer-events: none; text-wrap: pretty; }
-.raw-volume-slices label { flex: 1 1 180px; }
-.raw-volume-slices input { flex: 1; }
-.raw-volume-slices output { min-width: 5ch; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
-.raw-volume-world { color: var(--ink-muted); font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
+.raw-volume-slices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; }
+.raw-volume-slices label { min-width: 0; }
+.raw-volume-slices input { flex: 1; width: 100%; min-width: 0; }
+.raw-volume-slices output { min-width: 3ch; flex-shrink: 0; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; }
+.raw-volume-world { grid-column: 1 / -1; color: var(--ink-muted); font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
 .raw-volume-channels { border-top: 1px solid var(--line); border-bottom: 0; }
 .raw-volume-channel { min-width: 190px; border-right: 1px solid var(--line); }
 .raw-volume-channel summary { display: grid; grid-template-columns: auto auto minmax(70px, 1fr) auto; align-items: center; gap: 7px; min-height: 40px; padding: 0 10px 0 2px; cursor: pointer; list-style-position: outside; }
@@ -133,7 +133,7 @@
 }
 .mpr-pane-slot, .mpr-pane { min-width: 0; min-height: 0; }
 .mpr-pane-slot > .mpr-pane { height: 100%; }
-.mpr-pane { --plane-color: #88bbb6; display: flex; flex-direction: column; overflow: hidden; background: #151515; }
+.mpr-pane { container: mpr-pane / inline-size; --plane-color: #88bbb6; display: flex; flex-direction: column; overflow: hidden; background: #151515; }
 .mpr-pane[hidden], .mpr-pane-slot[hidden] { display: none; }
 .mpr-pane-axial { --plane-color: #d89188; }
 .mpr-pane-coronal { --plane-color: #86b894; }
@@ -178,9 +178,33 @@
 .mpr-orientation { position: absolute; color: #c9c9c9; font-size: var(--type-xs); pointer-events: none; text-shadow: 0 1px 3px #000; }
 .mpr-orientation-0 { left: 7px; top: 50%; }.mpr-orientation-1 { right: 7px; top: 50%; }
 .mpr-orientation-2 { top: 5px; left: 50%; }.mpr-orientation-3 { bottom: 5px; left: 50%; }
-.mpr-pane-footer { display: flex; flex: 0 0 auto; justify-content: space-between; gap: 8px; padding: 4px 8px; font-size: var(--type-xs); color: #a1a1a1; background: #151515; }
-.mpr-pane-footer span { font-variant-numeric: tabular-nums; }
+.mpr-pane-footer { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px; padding: 4px 8px; font-size: var(--type-xs); color: #a1a1a1; background: #151515; }
+.mpr-pane-footer span { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mpr-slice-error { position: absolute; padding: 10px; color: var(--error); }
-.raw-volume-reslice-note { flex: 0 0 auto; margin: 0; padding: 5px 10px; background: var(--graphite-900); color: var(--ink-muted); font-size: var(--type-xs); }
-.raw-volume-panes-four .raw-volume-help { font-size: var(--type-3xs); }
-@media (max-width: 850px) { .mpr-plane-position { display: none; } .mpr-pane-footer span { display: none; } }
+/* Adapt to the actual image column and individual pane, including a wide window
+   with the statistics panel open. Window width does not describe these spaces. */
+@container raw-volume (max-width: 420px) {
+  .raw-volume-slices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .raw-volume-toolbar { gap: 6px; }
+}
+@container raw-volume (max-width: 280px) {
+  .raw-volume-slices { grid-template-columns: minmax(0, 1fr); }
+}
+@container mpr-pane (max-width: 240px) {
+  .mpr-plane-position { display: none; }
+  .mpr-pane-header { gap: 4px; }
+}
+
+.raw-volume-options { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: flex-start; gap: 2px 12px; padding: 2px 10px; border-bottom: 1px solid var(--line); background: var(--graphite-900); }
+.raw-volume-disclosure { min-width: 0; font-size: var(--type-sm); }
+.raw-volume-disclosure > summary { min-height: 40px; padding: 0 2px; align-content: center; color: var(--ink-secondary); cursor: pointer; }
+.raw-volume-disclosure > summary:hover { color: var(--ink); }
+.raw-volume-disclosure > summary:focus-visible { outline: 2px solid var(--processing); outline-offset: 2px; }
+.raw-volume-disclosure[open] { flex: 1 0 100%; }
+.raw-volume-advanced-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 4px 0 12px; }
+.raw-volume-guide-content { display: grid; gap: 8px; padding: 4px 0 12px; color: var(--ink-secondary); line-height: 1.5; }
+.raw-volume-guide-content p { max-width: 72ch; margin: 0; }
+.raw-volume-guide-content strong { color: var(--ink); font-weight: 550; }
+.raw-volume-options > button { margin-left: auto; }
+
+.raw-volume-active-setting { align-self: center; color: var(--ink-secondary); font-size: var(--type-xs); font-variant-numeric: tabular-nums; white-space: nowrap; }

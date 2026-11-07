@@ -670,6 +670,7 @@ try {
   captures.channelOpacity = await canvasCapture("09-channel-opacity");
   assert.notEqual(captures.channelOpacity.sha256, captures.singleChannel.sha256, "Channel opacity did not change the rendered view.");
 
+  await page.locator('details.raw-volume-rendering-detail > summary').click();
   await page.getByLabel("Clip", { exact: true }).check();
   await page.getByLabel("Clipping axis", { exact: true }).selectOption("0");
   await page.getByLabel("Clipping position", { exact: true }).fill("62");

@@ -109,6 +109,9 @@ export function MprSlicePane({ payload, values, plane, crosshair, transfers, exp
       {plane.edges.map((label, index) => <span key={index} className={`mpr-orientation mpr-orientation-${index}`}>{label}</span>)}
       {error ? <p className="mpr-slice-error" role="alert">{error}</p> : null}
     </div>
-    <footer className="mpr-pane-footer">{labels ? "Click label to select · " : ""}Drag crosshair · scroll / ↑↓ to slice <span>Raw: linear{labels ? " · labels: nearest native" : ""} · level {payload.level}</span></footer>
+    <footer className="mpr-pane-footer" aria-label={`${plane.label} sampling`}>
+      <span title={`Raw data uses linear interpolation at display level ${payload.level}`}>Raw: linear · L{payload.level}</span>
+      {labels && <span title="Label IDs use nearest native sampling">Labels: native</span>}
+    </footer>
   </section>;
 }

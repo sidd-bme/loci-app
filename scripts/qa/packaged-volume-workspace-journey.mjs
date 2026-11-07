@@ -46,6 +46,8 @@ async function wait(read, accept, label, timeout = 30000) {
   const deadline = Date.now() + timeout; let last;
   while (Date.now() < deadline) {
     for (const alert of await page.locator('.research-alert[role="alert"], .volume-workspace-message[role="alert"]').all()) if (await alert.isVisible()) throw new Error(`${label}: ${await alert.textContent()}`);
+    const sceneError = page.getByRole('status').filter({ hasText: /^Shared 3D view:/u });
+    if (await sceneError.count()) throw new Error(`${label}: ${await sceneError.textContent()}`);
     last = await read(); if (accept(last)) return last; await page.waitForTimeout(100);
   }
   throw new Error(`${label}: timed out; ${JSON.stringify(last)}`);
@@ -212,8 +214,10 @@ try {
   const labelControls = page.getByRole('region', { name: 'Volume labels and selection', exact: true });
   await labelControls.getByLabel('Selected only', { exact: true }).check(); await range('Label opacity', 70);
   await wait(() => scene(), v => selected(v) && v.state.labels.selected_only && v.state.labels.opacity === .7, 'label presentation controls persisted');
+  await page.locator('details.raw-volume-rendering-detail > summary').click();
   await page.getByLabel('Clip', { exact: true }).check();
   await wait(() => scene(), v => v.state?.clipping.enabled, 'clipping state persisted independently of selection');
+  await page.locator('details.raw-volume-rendering-detail > summary').click();
   const beforeLocate = await scene(); await page.getByRole('button', { name: 'Locate object', exact: true }).click();
   const located = await wait(() => scene(), v => selected(v) && v.revision > beforeLocate.revision, 'explicit locate persisted');
   const targetRow = fixture.rows.find(r => r.label === fixture.target_label);

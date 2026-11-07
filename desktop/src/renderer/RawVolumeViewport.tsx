@@ -1917,6 +1917,14 @@ export function RawVolumeViewport({
                 ))}
               </select>
             </label>
+          </>
+        )}
+      </div>
+      <div className="raw-volume-options">
+        <details className="raw-volume-disclosure raw-volume-rendering-detail">
+          <summary>Rendering &amp; detail</summary>
+          <div className="raw-volume-advanced-controls">
+            {mode === "volume" && <>
             <label className="raw-volume-quality-control" title="Raycasting sample density: lower for faster rendering, higher for sharper sub-voxel detail without aliasing">
               <span>Quality</span>
               <input
@@ -1935,23 +1943,37 @@ export function RawVolumeViewport({
               />
               <span className="raw-volume-quality-val">{quality}%</span>
             </label>
-          </>
-        )}
+            </>}
+            <label><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
+            {clipEnabled ? (
+              <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
+            ) : null}
+            {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
+              <label>Detail span<select aria-label="Detail span" value={detailSpan}
+                onChange={(event) => setDetailSpan(Number(event.target.value) as 32 | 64 | 96)}>
+                <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
+              </select></label>
+              <button type="button" onClick={requestFocus}>Detail at crosshair</button>
+            </> : null}
+          </div>
+        </details>
+        {clipEnabled && <span className="raw-volume-active-setting" title="Clipping is enabled; open Rendering & detail to adjust it">Clip {(["X", "Y", "Z"] as const)[clipAxis]} · {clipPosition}%</span>}
+        <details className="raw-volume-disclosure raw-volume-controls-guide">
+          <summary>Controls &amp; sampling</summary>
+          <div className="raw-volume-guide-content">
+            <p><strong>Slice panes.</strong> {verifiedLabels ? "Click a label to select it. " : ""}Drag the crosshair; scroll or use ↑↓ to step through slices.</p>
+            <p><strong>3D view.</strong> {mode === "volume"
+              ? "Left-drag or Alt-drag to orbit; right-drag or Shift-drag to pan; scroll, pinch or Ctrl-drag to zoom. Press R to reset."
+              : "Arrow keys move X/Y; Page Up/Down moves Z. Left-drag to orient; right-drag to pan; scroll to zoom. Press R to reset."}</p>
+            <p><strong>Sampling.</strong> Raw slices use linear interpolation{verifiedLabels ? "; labels use nearest native sampling. The 3D label surface is a bounded voxel approximation for display" : ""}.</p>
+            {activePayload && <p>{activePayload.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements.</p>}
+            {onExportFigure && <p><strong>Figure export.</strong> Export PNG includes the 3D pane, with its exact display provenance. Separate slice panes are excluded. Hide labels to export a raw-volume figure.</p>}
+          </div>
+        </details>
         {onExportFigure ? <button type="button" disabled={exporting || loading || !volume || contextState !== "ready" || Boolean(error || renderError) || Boolean(verifiedLabels && labelStyle.visible)}
-          onClick={() => void exportFigure()} title="Export the 3D pane with its exact display provenance; the separate slice panes are not included">
+          onClick={() => void exportFigure()} title={verifiedLabels && labelStyle.visible ? "Hide labels to export a raw-volume figure. Controls & sampling explains the display bounds." : "Export the 3D pane with its exact display provenance; the separate slice panes are not included"}>
           {exporting ? "Exporting…" : "Export PNG…"}
         </button> : null}
-        <label><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
-        {clipEnabled ? (
-          <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
-        ) : null}
-        {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
-          <label>Detail span<select aria-label="Detail span" value={detailSpan}
-            onChange={(event) => setDetailSpan(Number(event.target.value) as 32 | 64 | 96)}>
-            <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
-          </select></label>
-          <button type="button" onClick={requestFocus}>Detail at crosshair</button>
-        </> : null}
       </div>
       {onSelectLabel ? <VolumeWorkspaceControls resultName={labelResult?.name} revisionShort={labelResult?.revision_hash.slice(0, 8)}
         selectedObject={selectedLabel} readiness={labelsLoading ? "loading" : !labelResult ? "raw-only" : verifiedLabels ? "ready" : "unavailable"}
@@ -1964,7 +1986,6 @@ export function RawVolumeViewport({
         onCorrectObject={() => { if (verifiedLabels && selectedLabel) onCorrectLabel?.(selectedLabel, Math.max(0, Math.min(verifiedLabels.payload.dimensions_xyz[2] - 1, (crosshair?.source[2] ?? verifiedLabels.payload.source_offset_xyz[2]) - verifiedLabels.payload.source_offset_xyz[2]))); }}
         onClearSelection={() => onSelectLabel(null)} /> : null}
       {meshError ? <p className="raw-volume-export-status" role="status">{meshError}</p> : null}
-      {verifiedLabels && labelStyle.visible ? <p className="raw-volume-export-status">Labels: native nearest sampling in slices · bounded voxel surface in 3D. Hide labels to export a raw-volume figure.</p> : null}
       {exportError ? <p className="raw-volume-export-status raw-volume-export-error" role="alert">{exportError}</p> : null}
       {exportStatus ? <p className="raw-volume-export-status" role="status">{exportStatus}</p> : null}
       {(showFour || mode === "mpr") && volume ? (
@@ -2048,10 +2069,11 @@ export function RawVolumeViewport({
             tabIndex={0} onKeyDown={onStageKeyDown} onPointerDown={invalidateFigureCapture}
             onWheel={invalidateFigureCapture} onContextMenu={(event) => event.preventDefault()}>
             <div className="raw-volume-frame-label">Rotating source XYZ axes · {activePayload?.frame ?? "image"} frame</div>
-            <p className="raw-volume-help">{mode === "volume"
-              ? "Left-drag or Alt-drag to orbit · right-drag or Shift-drag to pan · scroll / pinch to zoom · Ctrl-drag to zoom · R reset"
-              : "Arrow keys move X/Y · Page Up/Down moves Z · left-drag to orient · right-drag to pan · scroll to zoom · R reset"}</p>
           </div>
+          <footer className="mpr-pane-footer" aria-label="3D display sampling">
+            <span>{activePayload ? `3D display · L${activePayload.level}` : "3D display unavailable"}</span>
+            {verifiedLabels && labelStyle.visible && <span title="Bounded voxel surface for display, not native measurement geometry">Labels: bounded surface</span>}
+          </footer>
         </section>
         {showFour && !expandedPane && (
           <>
@@ -2088,7 +2110,6 @@ export function RawVolumeViewport({
           </>
         )}
       </div>
-      {showFour ? <p className="raw-volume-reslice-note">{activePayload?.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements</p> : null}
       {transfers.length > 0 ? <div className="raw-volume-channels" aria-label="Volume channels">{transfers.map((component) => {
         const defaults = volume?.context.components.find((item) => item.channel_index === component.channel_index);
         const histogram = contextHistograms.find((item) => item.channel_index === component.channel_index);

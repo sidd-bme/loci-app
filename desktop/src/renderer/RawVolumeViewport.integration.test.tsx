@@ -281,6 +281,48 @@ describe("RawVolumeViewport lifecycle", () => {
     }) as typeof requestAnimationFrame;
   });
 
+  it("keeps primary volume actions visible and advanced settings collapsed until requested", async () => {
+    const display = vi.fn(), refine = vi.fn();
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }}
+      onDisplayChange={display} onRequestRefinement={refine} />);
+    await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
+    const initialCameraResets = vtk.resetCamera.mock.calls.length;
+    expect(screen.getByRole("button", { name: "Four panes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset camera" })).toBeTruthy();
+    expect(screen.getByLabelText("3D rendering mode")).toBeTruthy();
+    const summary = screen.getByText("Rendering & detail", { exact: true });
+    const disclosure = summary.closest("details")!;
+    expect(disclosure.open).toBe(false);
+    expect(screen.getByLabelText("3D rendering quality").closest("details")).toBe(disclosure);
+    expect(screen.getByLabelText("Detail span").closest("details")).toBe(disclosure);
+    fireEvent.click(summary);
+    expect(disclosure.open).toBe(true);
+    fireEvent.change(screen.getByRole("slider", { name: "3D rendering quality" }), { target: { value: "80" } });
+    expect(display).toHaveBeenCalledWith(expect.objectContaining({ quality: 80 }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
+    fireEvent.click(summary);
+    expect(disclosure.open).toBe(false);
+    expect(screen.getByText(/Clip Z ·/)).toBeTruthy();
+    expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
+  });
+
+  it("keeps interaction help outside the image canvases and preserves per-plane sampling context", async () => {
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
+    await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
+    const initialCameraResets = vtk.resetCamera.mock.calls.length;
+    const summary = screen.getByText("Controls & sampling", { exact: true });
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(within(screen.getByLabelText("Interactive three-dimensional volume")).queryByText(/Left-drag/)).toBeNull();
+    for (const plane of ["XY plane", "XZ plane", "YZ plane"]) {
+      expect(screen.getByLabelText(`${plane} sampling`).textContent).toBe("Raw: linear · L0");
+    }
+    fireEvent.click(summary);
+    expect(summary.closest("details")!.open).toBe(true);
+    expect(screen.getByText(/Drag the crosshair/)).toBeTruthy();
+    expect(screen.getByText(/resliced display samples, not native measurements/)).toBeTruthy();
+    expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
+  });
+
   it("reports graphics initialization failure inside the viewport", async () => {
     vtk.failInitialization = true;
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
@@ -475,6 +517,7 @@ describe("RawVolumeViewport lifecycle", () => {
     const sliceMidpointColor = [0, 0, 0];
     sliceActor.getProperty().getRGBTransferFunction(0).getColor(127.5, sliceMidpointColor);
     expect(sliceMidpointColor).toEqual([0.5, 0.5, 0.5]);
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     const opacity = screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement;
     fireEvent.change(opacity, { target: { value: "0.25" } });
@@ -563,6 +606,7 @@ describe("RawVolumeViewport lifecycle", () => {
     const activeActors = vtk.addVolume.mock.calls.slice(-2).map(([actor]) => actor);
     await waitFor(() => expect(activeActors.map((actor) => actor.getVisibility())).toEqual([false, true]));
 
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     await waitFor(() => {
       const planes = activeActors.map((actor) => actor.getMapper().getClippingPlanes());
@@ -609,6 +653,7 @@ describe("RawVolumeViewport lifecycle", () => {
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
 
@@ -691,7 +736,8 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(volumeActor.getProperty().getShade?.()).toBe(false);
     expect(volumeActor.getProperty().getColorMixPreset?.()).toBe(3);
 
-    // Change quality slider from 50 to 80
+    // Change quality slider from 50 to 80 through its explicit disclosure.
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     const qualitySlider = screen.getByRole("slider", { name: "3D rendering quality" });
     fireEvent.change(qualitySlider, { target: { value: "80" } });
     expect(screen.getByText("80%")).toBeTruthy();
