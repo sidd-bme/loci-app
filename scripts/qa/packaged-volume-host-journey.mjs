@@ -160,7 +160,7 @@ async function launch(number) {
   await page.waitForFunction(() => Boolean(window.lociResearch));
   await page.locator('main.image-first-empty, main.image-first-workbench').waitFor({ timeout: 120000 });
   await fileMenuAction(page, 'Open study');
-  const current = await waitForSnapshot(page, value => value.results.some(r => r.id === parentId), 'exact copied parent study', 120000);
+  const current = await waitForSnapshot(page, value => value?.results.some(r => r.id === parentId) === true, 'exact copied parent study', 120000);
   parent = current.results.find(r => r.id === parentId); source = current.sources.find(s => s.id === parent.source_id);
   assert.equal(parent.revision_hash, parentReceipt.parent.revision_hash); assert.equal(source.sha256, fixture.source.sha256);
   await page.locator(`button[data-source-id="${source.id}"]`).click(); await page.locator(`button[data-result-id="${parentId}"]`).click();
@@ -171,6 +171,15 @@ async function launch(number) {
   await wait(() => page.locator('.raw-volume').getAttribute('data-layout'), value => value === 'four', 'four actual visible panes', 120000);
   for (const pane of ['axial', 'coronal', 'sagittal']) await page.locator(`[data-pane="${pane}"] canvas`).waitFor({ state: 'visible' });
   await page.locator('.raw-volume-stage canvas').first().waitFor({ state: 'visible' });
+  if (number === 1) {
+    await stableScene(value => value.state?.result?.result_id === parent.id && value.state.camera, 'initial parent scene before channel selection');
+    if (!(await scene()).state.channels.includes(fixture.selection.c)) {
+      const channel = page.getByRole('checkbox', { name: `Channel ${fixture.selection.c + 1} visible`, exact: true });
+      if (!await channel.isVisible()) await page.locator('summary').filter({ hasText: /^Display channels$/u }).click();
+      if (await channel.isChecked()) await channel.uncheck();
+      await channel.check();
+    }
+  }
   const saved = await stableScene(value => value.state?.result?.result_id === parent.id && value.state.result.revision_hash === parent.revision_hash &&
     value.state.result.label_sha256 === fixture.numerical_label_sha256 && value.state.camera && value.state.layout.mode === 'four' &&
     value.state.t === fixture.selection.t && value.state.channels.includes(fixture.selection.c), 'exact saved GUI scene');
@@ -232,6 +241,9 @@ async function waitForHumanMarker(handle) {
   throw new Error('Actual Codex human-CAS progress marker was not observed');
 }
 async function setHumanClipping() {
+  const detail = page.locator('details.raw-volume-rendering-detail');
+  const wasOpen = await detail.getAttribute('open') !== null;
+  if (!wasOpen) await detail.locator('summary').click();
   await page.getByLabel('Clip', { exact: true }).check(); await page.getByLabel('Clipping axis', { exact: true }).selectOption('2');
   const range = page.getByLabel('Clipping position', { exact: true });
   await range.evaluate((input, next) => {
@@ -240,6 +252,7 @@ async function setHumanClipping() {
     setter.call(input, String(next)); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new Event('change', { bubbles: true }));
   }, 73);
   assert.equal(Number(await range.inputValue()), 73);
+  if (!wasOpen) await detail.locator('summary').click();
 }
 try {
   fixture = await readJson(fixturePath); parentReceipt = await readJson(parentReceiptPath);
