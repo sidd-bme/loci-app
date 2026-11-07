@@ -260,7 +260,28 @@ try {
   await launch(2); await fileMenuAction(page, 'Open study'); await waitForSnapshot(page, s => s?.results.some(r => r.id === parent.id) === true, 'fresh profile reopen', 120000);
   await chooseResult(parent); await openVolume();
   const reopened = await wait(() => scene(), v => JSON.stringify(v.state) === JSON.stringify(retained), 'exact cold-reopened scene state', 120000);
-  report.reopened_scene = reopened; await shot('03-reopened-object-scene');
+  report.reopened_scene = reopened;
+  // A durable read can match before the new renderer has restored its scene.
+  // Wait for the ordinary controls and all three painted label panes as well.
+  const expectedWorld = fixture.affine.slice(0, 3).map(row => dot(row, [...localCenter, 1]));
+  const reopenedLabels = await execute('volume_labels', { source_id: source.id, result_id: parent.id, revision_hash: parent.revision_hash, t: retained.t });
+  assert.deepEqual(reopenedLabels.result, retained.result);
+  report.reopened_controls = await wait(() => page.locator('section.raw-volume').evaluate(root => ({
+    busy: root.getAttribute('aria-busy'),
+    source_id: root.getAttribute('data-source-id'),
+    opacity: Number(root.querySelector('[aria-label="Label opacity"]')?.value),
+    selected_only: [...root.querySelectorAll('label')].find(label => label.textContent.trim() === 'Selected only')?.querySelector('input')?.checked,
+    crosshair: ['X', 'Y', 'Z'].map(axis => Number(root.querySelector(`[aria-label="${axis} slice"]`)?.value)),
+    panes: [...root.querySelectorAll('[data-pane] canvas[data-render-binding]')].map(canvas => JSON.parse(canvas.dataset.renderBinding)),
+  })), value => value.busy === 'false' && value.source_id === source.id &&
+    value.opacity === retained.labels.opacity * 100 && value.selected_only === retained.labels.selected_only &&
+    JSON.stringify(value.crosshair) === JSON.stringify(retained.crosshair_source_xyz) && value.panes.length === 3 &&
+    value.panes.every(binding => binding[4] === reopenedLabels.data_sha256 && binding[6] === retained.selected_object.label_id &&
+      binding[5]?.visible === retained.labels.visible && binding[5]?.opacity === retained.labels.opacity &&
+      binding[5]?.selected_only === retained.labels.selected_only &&
+      binding[2].every((coordinate, axis) => Math.abs(coordinate - expectedWorld[axis]) <= 1e-8)),
+  'cold-reopened controls and rendered label panes', 120000);
+  await shot('03-reopened-object-scene');
   await page.getByRole('button', { name: 'Correct', exact: true }).click(); await page.getByLabel('Correction label', { exact: true }).waitFor();
   await wait(() => page.getByLabel('Correction label', { exact: true }).inputValue(), v => Number(v) === fixture.target_label, 'connected exact correction label');
   await page.getByRole('button', { name: 'Delete selected label', exact: true }).click();
