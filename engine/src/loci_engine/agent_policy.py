@@ -26,9 +26,18 @@ VISION_POLICY_SCHEMA = "loci.agent-policy/v3"
 STUDY_POLICY_SCHEMA = "loci.agent-policy/v4"
 SESSION_POLICY_SCHEMA = "loci.agent-policy/v5"
 TISSUE_POLICY_SCHEMA = "loci.agent-policy/v6"
-STUDY_POLICY_SCHEMAS = frozenset({STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA})
+VOLUME_POLICY_SCHEMA = "loci.agent-policy/v7"
+STUDY_POLICY_SCHEMAS = frozenset(
+    {STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA, VOLUME_POLICY_SCHEMA}
+)
 VISION_POLICY_SCHEMAS = frozenset(
-    {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA}
+    {
+        VISION_POLICY_SCHEMA,
+        STUDY_POLICY_SCHEMA,
+        SESSION_POLICY_SCHEMA,
+        TISSUE_POLICY_SCHEMA,
+        VOLUME_POLICY_SCHEMA,
+    }
 )
 PERMISSION_MODES = frozenset({"inspect_only", "ask_approval", "full_access"})
 MAX_POLICY_BYTES = 1024 * 1024
@@ -54,6 +63,15 @@ VISION_OPERATIONS = frozenset(
     {"source_image", "source_display", "set_source_display", "export_vision_handoff"}
 )
 OPERATIONS = LEGACY_OPERATIONS | VISION_OPERATIONS
+VOLUME_OPERATIONS = frozenset(
+    {
+        "volume_view",
+        "set_volume_view",
+        "volume_view_image",
+        "volume_view_request_status",
+        "cancel_volume_view_request",
+    }
+)
 STUDY_OPERATIONS = frozenset(
     {
         "review_result",
@@ -283,6 +301,7 @@ class AgentPolicy:
     export_new_names: bool = False
     permission_mode: str | None = None
     tissue_outputs: tuple[dict[str, Any], ...] | None = None
+    volume_views: dict[str, Any] | None = None
 
     def recheck(self) -> None:
         if self.delegation is not None:
@@ -413,16 +432,21 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    v6 = isinstance(document, dict) and document.get("schema") == TISSUE_POLICY_SCHEMA
+    v7 = isinstance(document, dict) and document.get("schema") == VOLUME_POLICY_SCHEMA
+    v6 = isinstance(document, dict) and (
+        document.get("schema") == TISSUE_POLICY_SCHEMA or (v7 and "tissue_outputs" in document)
+    )
     v5 = isinstance(document, dict) and (
-        document.get("schema") == SESSION_POLICY_SCHEMA or (v6 and "permission_mode" in document)
+        document.get("schema") == SESSION_POLICY_SCHEMA
+        or ((v6 or v7) and "permission_mode" in document)
     )
     v4 = isinstance(document, dict) and (
-        document.get("schema") == STUDY_POLICY_SCHEMA or ((v5 or v6) and "delegation" in document)
+        document.get("schema") == STUDY_POLICY_SCHEMA
+        or ((v5 or v6 or v7) and "delegation" in document)
     )
     v3 = isinstance(document, dict) and (
         document.get("schema") in {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA}
-        or ((v5 or v6) and ("experimental_recipes" in document or v4))
+        or ((v5 or v6 or v7) and ("experimental_recipes" in document or v4))
     )
     v2 = isinstance(document, dict) and (
         document.get("schema")
@@ -431,7 +455,7 @@ def _validated_document(
             VISION_POLICY_SCHEMA,
             STUDY_POLICY_SCHEMA,
         }
-        or ((v5 or v6) and ("remote_grants" in document or v3))
+        or ((v5 or v6 or v7) and ("remote_grants" in document or v3))
     )
     extra = (
         ({"remote_grants"} if v2 else set())
@@ -439,12 +463,32 @@ def _validated_document(
         | ({"delegation", "actions"} if v4 else set())
         | ({"permission_mode"} if v5 else set())
         | ({"tissue_outputs"} if v6 else set())
+        | ({"volume_views"} if v7 else set())
     )
     root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
     if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, *VISION_POLICY_SCHEMAS}:
         raise ValueError("Unsupported policy schema")
     if v5 and root["permission_mode"] not in PERMISSION_MODES:
         raise ValueError("Policy permission mode must be inspect_only, ask_approval or full_access")
+    if v7:
+        from .volume_view_state import PATCH_GROUPS
+
+        grant = _exact_keys(
+            root["volume_views"], {"read", "write", "image", "fields"}, "volume view grant"
+        )
+        if any(type(grant[k]) is not bool for k in ("read", "write", "image")):
+            raise ValueError("Volume view grants must be explicit booleans")
+        if (
+            not isinstance(grant["fields"], list)
+            or any(not isinstance(k, str) for k in grant["fields"])
+            or len(grant["fields"]) != len(set(grant["fields"]))
+            or not set(grant["fields"]) <= PATCH_GROUPS
+        ):
+            raise ValueError("Volume write fields must be unique supported scene groups")
+        if (grant["write"] or grant["image"]) and not grant["read"]:
+            raise ValueError("Volume write/image access requires explicit read access")
+        if bool(grant["fields"]) != grant["write"]:
+            raise ValueError("Volume write access requires explicit field grants")
     project_value = _exact_keys(root["project"], {"path", "id"}, "policy project")
     project_path, project_identity = _plain_directory(project_value["path"], "project path")
     project_id = checked_id(project_value["id"])
@@ -504,8 +548,10 @@ def _validated_document(
         raise ValueError("Policy operations must be a unique list")
     operations = frozenset(root["operations"])
     supported_operations = (
-        (OPERATIONS | STUDY_OPERATIONS) if v4 else OPERATIONS if v3 else LEGACY_OPERATIONS
+        (OPERATIONS | STUDY_OPERATIONS) if v4 else OPERATIONS if v3 or v7 else LEGACY_OPERATIONS
     )
+    if v7:
+        supported_operations |= VOLUME_OPERATIONS
     if not operations <= supported_operations:
         raise ValueError("Policy contains an unsupported agent operation")
 
@@ -663,9 +709,8 @@ def load_policy(path: str | Path) -> AgentPolicy:
         export_new_names=document["export"] is not None
         and document["export"].get("filename_mode") == "directory",
         permission_mode=document.get("permission_mode"),
-        tissue_outputs=tuple(document["tissue_outputs"])
-        if document["schema"] == TISSUE_POLICY_SCHEMA
-        else None,
+        tissue_outputs=tuple(document["tissue_outputs"]) if "tissue_outputs" in document else None,
+        volume_views=document.get("volume_views"),
     )
 
 
@@ -674,6 +719,7 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
+    v7 = isinstance(specification, dict) and "volume_views" in specification
     v6 = isinstance(specification, dict) and "tissue_outputs" in specification
     v5 = isinstance(specification, dict) and "permission_mode" in specification
     v4 = isinstance(specification, dict) and "delegation" in specification
@@ -687,10 +733,13 @@ def write_policy(
         | ({"actions"} if v4 and "actions" in specification else set())
         | ({"permission_mode"} if v5 else set())
         | ({"tissue_outputs"} if v6 else set())
+        | ({"volume_views"} if v7 else set())
     )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": TISSUE_POLICY_SCHEMA
+        "schema": VOLUME_POLICY_SCHEMA
+        if v7
+        else TISSUE_POLICY_SCHEMA
         if v6
         else SESSION_POLICY_SCHEMA
         if v5

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
+import type { VolumeSceneAdapter } from "./volume-scene-types";
 
 const vtk = vi.hoisted(() => ({
   failInitialization: false,
@@ -213,6 +214,43 @@ function focusAt(low: 0 | 2): RawVolumePayload {
 
 describe("RawVolumeViewport lifecycle", () => {
   afterEach(cleanup);
+
+  it("round-trips a shared scene only after verified rendering and keeps its locked human epoch", async () => {
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    const volume = { schema_version: 1 as const, context: sparseContext(), focus: null };
+    render(<RawVolumeViewport volume={volume} sceneHandleRef={handle} />);
+    await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+    const before = handle.current!.snapshot()!;
+    const target = structuredClone(before.state);
+    target.crosshair_source_xyz = [1, 0, 2]; target.layout.col_split = 60;
+    target.clipping = { enabled: true, axis: "x", position_percent: 35 };
+    target.representation.render_mode = "mip";
+    await expect(handle.current!.apply(target)).rejects.toThrow(/locked/);
+    act(() => handle.current!.lock(true));
+    let applied!: Promise<void>;
+    act(() => { applied = handle.current!.apply(target); });
+    await act(async () => { await applied; });
+    expect(handle.current!.snapshot()?.state).toEqual(target);
+    expect(handle.current!.snapshot()?.liveEpoch).toBe(before.liveEpoch);
+    act(() => handle.current!.lock(false));
+    fireEvent.change(screen.getByLabelText("Z slice"), { target: { value: "1" } });
+    expect(handle.current!.snapshot()?.state.crosshair_source_xyz).toEqual([1, 0, 1]);
+    expect(handle.current!.snapshot()!.liveEpoch).toBeGreaterThan(before.liveEpoch);
+    act(() => handle.current!.lock(true));
+    await expect(handle.current!.apply({ ...target, channels: [3] })).rejects.toThrow(/exact source/);
+    act(() => handle.current!.lock(false));
+  });
+
+  it("withdraws shared availability on context loss and refuses hidden-pane capture", async () => {
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} sceneHandleRef={handle} />);
+    await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /^3D view$/ }));
+    act(() => handle.current!.lock(true));
+    await expect(handle.current!.capture(["axial"], 512)).rejects.toThrow(/hidden/);
+    act(() => { vtk.canvas!.dispatchEvent(new Event("webglcontextlost", { cancelable: true })); });
+    expect(handle.current!.snapshot()).toBeNull();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => ({

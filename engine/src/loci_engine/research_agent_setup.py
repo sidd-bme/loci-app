@@ -189,6 +189,7 @@ def create_agent_access(
         "permission_mode",
         "allow_workflow_graph",
         "allow_task_records",
+        "volume_views",
     }
     exact_keys(request, expected | optional, "agent access")
     if set(request) - optional != expected:
@@ -408,7 +409,38 @@ def create_agent_access(
             )
     if "permission_mode" in request:
         specification["permission_mode"] = request["permission_mode"]
-    include_plugin = interactive is not None or delegation is not None
+    if "volume_views" in request:
+        # This independent grant is never inferred from execute/review/full access.
+        from .volume_view_state import PATCH_GROUPS
+
+        volume = request["volume_views"]
+        exact_keys(volume, {"read", "write", "image", "fields"}, "volume view grant")
+        if set(volume) != {"read", "write", "image", "fields"} or any(
+            type(volume[k]) is not bool for k in ("read", "write", "image")
+        ):
+            raise ValueError("Volume view grants require every explicit permission")
+        if (
+            not isinstance(volume["fields"], list)
+            or any(not isinstance(k, str) for k in volume["fields"])
+            or not set(volume["fields"]) <= PATCH_GROUPS
+        ):
+            raise ValueError("Volume view fields must be explicitly supported")
+        required = {"geometry", "provenance", "agent_metadata"} | (
+            {"previews"} if volume["image"] else set()
+        )
+        if any(volume[k] for k in ("read", "write", "image")) and not required <= set(disclosures):
+            raise ValueError("Volume view access requires explicit scene disclosures")
+        specification["volume_views"] = volume
+        if volume["read"]:
+            operations.extend(
+                ["volume_view", "volume_view_request_status", "cancel_volume_view_request"]
+            )
+        if volume["write"]:
+            operations.append("set_volume_view")
+        if volume["image"]:
+            operations.append("volume_view_image")
+        specification["operations"] = sorted(set(operations))
+    include_plugin = interactive is not None or delegation is not None or "volume_views" in request
     target = Path(destination).expanduser()
     if not target.is_absolute() or target.is_symlink() or target.exists():
         raise ValueError("Choose an absent absolute directory for the agent access bundle")
@@ -583,6 +615,11 @@ def create_agent_access(
             "config_filename": "mcp-config.json",
             "disclosures": sorted(disclosures),
             "operations": sorted(operations),
+            **(
+                {"volume_views": specification["volume_views"]}
+                if "volume_views" in specification
+                else {}
+            ),
             "source_id": source["id"],
             "selection": selection,
             **({"plugin_filename": "plugin/plugin.json"} if include_plugin else {}),

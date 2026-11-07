@@ -7,9 +7,12 @@ export function labelsImportUnavailable(source: ResearchSource, selection: Resea
   if (source.source_kind && source.source_kind !== "native") return "Choose a native scalar source image.";
   if (["rgb", "rgba"].includes(source.metadata.sample_semantics?.toLowerCase() ?? "") || (dimensions?.s ?? 1) !== 1 || source.metadata.axes?.includes("S"))
     return "Choose a scalar source channel; RGB samples cannot receive this label profile.";
-  if (!dimensions || selection.level !== 0 || selection.z_stop !== undefined || selection.x !== 0 || selection.y !== 0 ||
+  if (!dimensions || selection.level !== 0 || selection.x !== 0 || selection.y !== 0 ||
       selection.width !== dimensions.x || selection.height !== dimensions.y)
-    return "Choose one full level-0 YX plane without a crop or volume selection.";
+    return "Choose a full level-0 YX plane or ZYX volume without a crop.";
+  if (selection.z_stop !== undefined && (!Number.isSafeInteger(selection.z) || !Number.isSafeInteger(selection.z_stop) ||
+      selection.z < 0 || selection.z_stop - selection.z < 2 || selection.z_stop > (dimensions.z ?? 1)))
+    return "Choose a native Z range containing at least two planes within the source.";
   return null;
 }
 
@@ -19,11 +22,20 @@ function sameSelection(left: ResearchSelection, right: ResearchSelection): boole
 }
 
 export function checkedLabelsPreview(value: ResearchLabelsImportPreview, source: ResearchSource, selection: ResearchSelection, workingBytes: number): ResearchLabelsImportPreview {
-  if (!value || value.source_id !== source.id || value.source_sha256 !== source.sha256 || !value.selection || !sameSelection(value.selection, selection) ||
+  const volume = selection.z_stop !== undefined;
+  const shape = volume ? [selection.z_stop! - selection.z, selection.height, selection.width] : [selection.height, selection.width];
+  const middleIndex = Math.floor(shape[0] / 2);
+  const middleSelection: ResearchSelection = { x: selection.x, y: selection.y, width: selection.width, height: selection.height,
+    t: selection.t, c: selection.c, z: selection.z + middleIndex, level: selection.level };
+  const previewPlane = value?.preview;
+  const validPreviewPlane = volume ? Boolean(previewPlane && previewPlane.plane === "XY" && previewPlane.index === middleIndex &&
+    previewPlane.source_z === middleSelection.z && previewPlane.basis === "single-native-plane-overlay" && previewPlane.selection &&
+    !Object.hasOwn(previewPlane.selection, "z_stop") && sameSelection(previewPlane.selection, middleSelection)) : previewPlane === undefined;
+  if (labelsImportUnavailable(source, selection) || !value || value.source_id !== source.id || value.source_sha256 !== source.sha256 || !value.selection || !sameSelection(value.selection, selection) ||
       value.working_bytes !== workingBytes || typeof value.grant_id !== "string" || !/^[a-f0-9]{32}$/u.test(value.grant_id) ||
-      value.axes !== "YX" || value.profile !== "scalar-native-yx/v1" || value.format !== "TIFF" ||
+      value.axes !== (volume ? "ZYX" : "YX") || value.profile !== (volume ? "scalar-native-zyx/v1" : "scalar-native-yx/v1") || value.format !== "TIFF" || !validPreviewPlane ||
       !["uint8", "uint16", "uint32"].includes(value.original_dtype) || !Array.isArray(value.shape) ||
-      value.shape.length !== 2 || value.shape[0] !== selection.height || value.shape[1] !== selection.width ||
+      value.shape.length !== shape.length || value.shape.some((dimension, index) => dimension !== shape[index]) ||
       !Number.isSafeInteger(value.object_count) || value.object_count < 0 || value.object_count > 100000 ||
       typeof value.file_name !== "string" || !value.file_name || /[/\\]/u.test(value.file_name) ||
       !/^[a-f0-9]{64}$/u.test(value.file_sha256) || !/^[a-f0-9]{64}$/u.test(value.labels_sha256) ||
@@ -31,7 +43,7 @@ export function checkedLabelsPreview(value: ResearchLabelsImportPreview, source:
       typeof value.measurement_channel.name !== "string" || typeof value.image !== "string" || !value.image.startsWith("data:image/png;base64,") ||
       !Number.isSafeInteger(value.preview_width) || value.preview_width < 1 || value.preview_width > 1024 ||
       !Number.isSafeInteger(value.preview_height) || value.preview_height < 1 || value.preview_height > 1024)
-    throw new Error("The label preview did not match this exact native source plane. Choose the TIFF again.");
+    throw new Error(`The label preview did not match this exact native source ${volume ? "volume" : "plane"}. Choose the TIFF again.`);
   return value;
 }
 
@@ -70,11 +82,11 @@ export function ResearchLabelsImportPanel({ api, source, selection, workingBytes
     const owner = `${ownerId}:${token}`;
     setPending(true); setError(null); setPreview(null); onBusy("Checking label TIFF", owner);
     try {
-      // The workbench represents returning from a volume with z_stop: undefined.
-      // Send only the explicit plane fields, while rejecting any defined slab above.
-      const plane: ResearchSelection = { x: selection.x, y: selection.y, width: selection.width, height: selection.height,
-        t: selection.t, c: selection.c, z: selection.z, level: selection.level };
-      const value = await api.labelsImportPreview({ source_id: source.id, source_sha256: source.sha256, selection: plane, working_bytes: workingBytes });
+      // Preserve an explicit volume range; omit z_stop entirely for native planes.
+      const target: ResearchSelection = { x: selection.x, y: selection.y, width: selection.width, height: selection.height,
+        t: selection.t, c: selection.c, z: selection.z, level: selection.level,
+        ...(selection.z_stop !== undefined ? { z_stop: selection.z_stop } : {}) };
+      const value = await api.labelsImportPreview({ source_id: source.id, source_sha256: source.sha256, selection: target, working_bytes: workingBytes });
       if (isCurrent() && value) setPreview({ binding: captured, data: checkedLabelsPreview(value, source, selection, workingBytes) });
     } catch (caught) {
       if (isCurrent()) setError(caught instanceof Error ? caught.message : "Could not check the selected label TIFF.");
@@ -91,13 +103,13 @@ export function ResearchLabelsImportPanel({ api, source, selection, workingBytes
     try {
       const output = await api.execute("labels_import", {
         source_id: checked.source_id, source_sha256: checked.source_sha256, grant_id: checked.grant_id,
-        alignment: "same-native-yx-grid",
+        alignment: checked.profile === "scalar-native-zyx/v1" ? "same-native-zyx-grid" : "same-native-yx-grid",
         ...(producerName.trim() ? { producer: { name: producerName.trim(), ...(producerVersion.trim() ? { version: producerVersion.trim() } : {}) } } : {}),
       }) as { result?: ResearchResult; measurements?: Array<Record<string, unknown>> };
       const result = output?.result;
       if (!result || result.source_id !== source.id || result.source_sha256 !== source.sha256 || !result.selection ||
           !sameSelection(result.selection, selection) || result.review != null || !/^[a-f0-9]{32}$/u.test(result.id) || !/^[a-f0-9]{64}$/u.test(result.revision_hash))
-        throw new Error("Label import did not return an unreviewed result for the checked native plane.");
+        throw new Error(`Label import did not return an unreviewed result for the checked native ${checked.axes === "ZYX" ? "volume" : "plane"}.`);
       if (isCurrent()) {
         await onResult(result, output.measurements, isCurrent);
         if (isCurrent()) setPreview(null);
@@ -113,21 +125,24 @@ export function ResearchLabelsImportPanel({ api, source, selection, workingBytes
     {pending && <p role="status">{checked ? "Importing labels…" : "Checking label TIFF…"}</p>}
     {error && <p role="alert">{error}</p>}
     {checked && <>
-      <img className="research-label-import-preview" src={checked.image} alt="Checked label overlay on the selected source plane" width={checked.preview_width} height={checked.preview_height} />
+      <img className="research-label-import-preview" src={checked.image}
+        alt={checked.axes === "ZYX" ? `Checked label overlay on the volume’s middle XY plane, source Z ${checked.preview!.source_z}` : "Checked label overlay on the selected source plane"}
+        width={checked.preview_width} height={checked.preview_height} />
+      {checked.axes === "ZYX" && <p>Preview: middle XY plane only · source Z {checked.preview!.source_z} · plane {checked.preview!.index + 1} of {checked.shape[0]}.</p>}
       <dl className="research-label-import-metadata">
         <div><dt>Label file</dt><dd>{checked.file_name}</dd></div>
         <div><dt>Objects</dt><dd>{checked.object_count.toLocaleString()}{checked.object_count === 0 ? " · empty population" : ""}</dd></div>
-        <div><dt>Input</dt><dd>{checked.original_dtype} · {checked.shape.join(" × ")} YX</dd></div>
-        <div><dt>Source grid</dt><dd>{source.name} · native level 0 · T {selection.t} / C {selection.c} / Z {selection.z}</dd></div>
+        <div><dt>Input</dt><dd>{checked.original_dtype} · {checked.shape.join(" × ")} {checked.axes}</dd></div>
+        <div><dt>Source grid</dt><dd>{source.name} · native level 0 · T {selection.t} / C {selection.c} / Z {selection.z}{selection.z_stop !== undefined ? `–${selection.z_stop - 1} inclusive` : ""}</dd></div>
         <div><dt>Measurement channel</dt><dd>{checked.measurement_channel.name} · raw source values</dd></div>
       </dl>
       <div className="research-grid">
         <label>Producer name (optional)<input aria-label="Producer name (optional)" maxLength={128} value={producerName} disabled={locked} placeholder="Unknown" onChange={(event) => setProducerName(event.target.value)} /></label>
         <label>Producer version (optional)<input aria-label="Producer version (optional)" maxLength={128} value={producerVersion} disabled={locked} placeholder="Unknown" onChange={(event) => setProducerVersion(event.target.value)} /></label>
       </div>
-      <p>Import declares that these labels use this source plane’s same native YX grid. Upstream settings and validation are unknown.</p>
+      <p>Import declares that these labels use this source {checked.axes === "ZYX" ? "volume’s same native ZYX" : "plane’s same native YX"} grid. Upstream settings and validation are unknown.</p>
       {producerError && <p role="alert">{producerError}</p>}
-      <div className="research-actions"><button type="button" disabled={locked || Boolean(producerError)} onClick={() => void adopt()}>Import on this plane</button>
+      <div className="research-actions"><button type="button" disabled={locked || Boolean(producerError)} onClick={() => void adopt()}>Import on this {checked.axes === "ZYX" ? "volume" : "plane"}</button>
         <button type="button" disabled={locked} onClick={() => setPreview(null)}>Discard preview</button></div>
     </>}
   </section>;

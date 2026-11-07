@@ -67,6 +67,19 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
         source_id = value.get("source_id")
         if _id(source_id):
             source_target(source_id, value.get("selection"))
+            live = value.get("expected_live")
+            if isinstance(live, dict):
+                from .volume_view_mailbox import validate_live
+
+                validate_live(live)
+                add(
+                    {
+                        "kind": "volume_view",
+                        "id": source_id,
+                        "revision": live["revision"],
+                        "live_token": dict(live),
+                    }
+                )
         result_id = value.get("result_id")
         if _id(result_id):
             result = project.result(result_id, verify_scientific_arrays=False)
@@ -199,6 +212,9 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
             "parent",
             "signal",
             "geometry_binding",
+            "patch",
+            "result",
+            "selected_object",
         ):
             item = value.get(key)
             if isinstance(item, dict) and key in {
@@ -245,6 +261,10 @@ def targets_stale(project, targets, *, verify_sources=False) -> bool:
                     return True
             elif kind == "job":
                 project.job(identity)
+            elif kind == "volume_view":
+                from .volume_view_mailbox import _current
+
+                _current(project, identity, target["live_token"])
             elif kind in set(DOCUMENT_KEYS.values()):
                 docs = project.documents(kind, document_id=identity)
                 if not docs:

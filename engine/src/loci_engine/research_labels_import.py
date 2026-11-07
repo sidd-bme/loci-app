@@ -1,4 +1,4 @@
-"""Trusted, exact native-grid adoption of an external scalar TIFF label plane.
+"""Trusted, exact native-grid adoption of external scalar TIFF labels.
 
 Only this trusted picker/CLI boundary accepts a path. Durable requests contain an
 opaque private grant identity; adopted revisions depend only on canonical arrays.
@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import tifffile
 
-from .native_image import NativeImageSession, NativeSelection, _ome_details, _read_tiff_segments
+from .native_image import (
+    NativeImageSession,
+    NativeSelection,
+    _ome_details,
+    _read_tiff_segments,
+    _tiff_actual_page,
+)
 from .quantitative import MAX_OBJECTS, exact_keys, integer, measure_objects
 from .research_project import (
     MAX_ARTIFACT_BYTES,
@@ -32,6 +38,8 @@ if TYPE_CHECKING:
 
 PROFILE = "scalar-native-yx/v1"
 ALIGNMENT = "same-native-yx-grid"
+VOLUME_PROFILE = "scalar-native-zyx/v1"
+VOLUME_ALIGNMENT = "same-native-zyx-grid"
 REQUEST_KEYS = {"source_id", "source_sha256", "grant_id", "alignment", "producer"}
 
 
@@ -71,8 +79,6 @@ def _source_binding(
         raise ValueError("Label import requires a scalar native image source")
     if not isinstance(selection, dict) or not {"t", "c", "z", "level"} <= selection.keys():
         raise ValueError("Label import requires explicit T/C/Z and native level zero")
-    if "z_stop" in selection:
-        raise ValueError("Label import requires one native plane, not a volume")
     session = workbench._session(source_id)
     session.verify_strict()
     metadata = session.metadata
@@ -90,7 +96,10 @@ def _source_binding(
         or resolved["height"] != dims.y
     ):
         raise ValueError("Label import requires the complete native level-zero YX grid")
-    geometry = workbench._native_geometry(session, resolved, False)
+    volume = "z_stop" in resolved
+    if volume and resolved["z_stop"] - resolved["z"] < 2:
+        raise ValueError("ZYX label import requires at least two native Z planes")
+    geometry = workbench._native_geometry(session, resolved, volume)
     declarations = workbench.channel_metadata(source_id)
     channel = resolved["c"]
     return {
@@ -112,8 +121,10 @@ def _calibration(tif: tifffile.TiffFile, session: NativeImageSession, geometry: 
     page = tif.pages[0]
     # GeoTIFF, proprietary spatial tags and TIFF positional coordinates do not
     # have a supported microscopy mapping in this initial profile.
-    if any(code in page.tags for code in (286, 287, 33550, 33922, 34264, 34735, 34736, 34737)):
-        raise ValueError("External label spatial TIFF metadata is unsupported")
+    for item in tif.pages:
+        tags = _tiff_actual_page(item).tags
+        if any(code in tags for code in (286, 287, 33550, 33922, 34264, 34735, 34736, 34737)):
+            raise ValueError("External label spatial TIFF metadata is unsupported")
     imagej = tif.imagej_metadata or {}
     if any(key.lower() in {"unit", "spacing", "xorigin", "yorigin", "zorigin"} for key in imagej):
         raise ValueError("ImageJ microscopic calibration is unsupported in this label profile")
@@ -147,16 +158,18 @@ def _calibration(tif: tifffile.TiffFile, session: NativeImageSession, geometry: 
         if positions:
             raise ValueError("External label plane-position metadata is unsupported")
     if calibration is not None:
-        if calibration.axes != "YX":
-            raise ValueError("External labels support only planar microscopic YX calibration")
+        if calibration.axes != geometry.axes:
+            raise ValueError("External microscopic calibration axes disagree with the source grid")
         spacing = dict(zip(calibration.axes, calibration.spacing, strict=True))
         affine = np.asarray(geometry.affine)
         source_spacing = {
+            "Z": float(np.linalg.norm(affine[:3, 2])),
             "Y": float(np.linalg.norm(affine[:3, 1])),
             "X": float(np.linalg.norm(affine[:3, 0])),
         }
         if ("um" if calibration.unit in {"µm", "μm"} else calibration.unit) != geometry.unit or any(
-            not np.isclose(spacing[axis], source_spacing[axis], rtol=1e-9, atol=0) for axis in "YX"
+            not np.isclose(spacing[axis], source_spacing[axis], rtol=1e-9, atol=0)
+            for axis in geometry.axes
         ):
             raise ValueError("External microscopic calibration disagrees with the source grid")
     return {
@@ -184,7 +197,13 @@ def _read_labels(
     if expected is not None and digest != expected["file_sha256"]:
         raise ValueError("External label file fingerprint changed after preview")
     selection = binding["selection"]
-    pixels = selection["width"] * selection["height"]
+    volume = "z_stop" in selection
+    depth = selection.get("z_stop", selection["z"] + 1) - selection["z"]
+    axes = "ZYX" if volume else "YX"
+    expected_shape = [selection["height"], selection["width"]]
+    if volume:
+        expected_shape.insert(0, depth)
+    pixels = depth * selection["width"] * selection["height"]
     # load_scalar's 96 bytes/pixel plus label decode/canonical arrays, compact
     # measurement arrays and preview working arrays coexist. Bound their sum.
     estimated = pixels * 192 + before[2]
@@ -193,47 +212,60 @@ def _read_labels(
     from .workbench import geometry_from_dict
 
     with tifffile.TiffFile(path) as tif:
-        if len(tif.series) != 1 or len(tif.pages) != 1:
-            raise ValueError("Labels require one TIFF series and one page")
-        series, page = tif.series[0], tif.pages[0]
-        if len(series.levels) != 1 or series.axes != "YX" or len(series.pages) != 1:
-            raise ValueError("Labels require exactly one native YX TIFF level")
+        if len(tif.series) != 1 or len(tif.pages) != depth:
+            raise ValueError("Labels require one TIFF series with one page per selected Z plane")
+        series = tif.series[0]
+        if len(series.levels) != 1 or series.axes != axes or len(series.pages) != depth:
+            raise ValueError(f"Labels require exactly one native {axes} TIFF level")
         dtype = np.dtype(series.dtype)
         if dtype.kind != "u" or dtype.itemsize not in {1, 2, 4}:
             raise ValueError("Labels must use uint8, uint16 or uint32 samples")
-        if (
-            page.samplesperpixel != 1
-            or page.photometric
-            not in {tifffile.PHOTOMETRIC.MINISBLACK, tifffile.PHOTOMETRIC.MINISWHITE}
-            or int(page.tags["Orientation"].value if "Orientation" in page.tags else 1) != 1
-        ):
-            raise ValueError("Labels require scalar samples and TIFF Orientation 1")
+        for page in tif.pages:
+            page = _tiff_actual_page(page)
+            if (
+                page.samplesperpixel != 1
+                or page.photometric
+                not in {tifffile.PHOTOMETRIC.MINISBLACK, tifffile.PHOTOMETRIC.MINISWHITE}
+                or int(page.tags["Orientation"].value if "Orientation" in page.tags else 1) != 1
+                or tuple(page.shape) != tuple(expected_shape[-2:])
+                or np.dtype(page.dtype) != dtype
+                or page.subifds
+            ):
+                raise ValueError("Labels require uniform scalar YX pages and TIFF Orientation 1")
+            if page.index and page.description and page.description != tif.pages[0].description:
+                raise ValueError("Unknown external label page description metadata is unsupported")
         shape = list(series.shape)
-        if shape != [selection["height"], selection["width"]]:
-            raise ValueError("Label dimensions disagree with the complete source YX grid")
+        if shape != expected_shape:
+            raise ValueError(f"Label dimensions disagree with the complete source {axes} grid")
         with NativeImageSession(path, expected_sha256=digest) as session:
             calibration = _calibration(tif, session, geometry_from_dict(binding["geometry"]))
             # Session segment decoding enforces file ranges, coverage, layout,
             # decoded strip/tile bounds and before/after file identity checks.
             session.validate_source()
-            pixels_array, _, _ = _read_tiff_segments(
-                tif,
-                session.metadata,
-                NativeSelection(
-                    x=0,
-                    y=0,
-                    width=shape[1],
-                    height=shape[0],
-                    t=0,
-                    c=0,
-                    z=0,
-                    level=0,
-                    expected_sha256=digest,
-                    budget_bytes=min(working_bytes, 512 * 1024**2),
-                ),
-            )
+            labels = np.empty(shape, dtype=np.uint32)
+            for z in range(depth):
+                pixels_array, _, _ = _read_tiff_segments(
+                    tif,
+                    session.metadata,
+                    NativeSelection(
+                        x=0,
+                        y=0,
+                        width=selection["width"],
+                        height=selection["height"],
+                        t=0,
+                        c=0,
+                        z=z,
+                        level=0,
+                        expected_sha256=digest,
+                        budget_bytes=min(working_bytes, 512 * 1024**2),
+                    ),
+                )
+                if volume:
+                    labels[z] = pixels_array
+                else:
+                    labels[:] = pixels_array
+                del pixels_array
             session.validate_source()
-            labels = np.ascontiguousarray(pixels_array, dtype=np.uint32)
             session.verify_strict()
     unique = np.unique(labels)
     count = int(np.count_nonzero(unique))
@@ -252,13 +284,13 @@ def _read_labels(
         "file_size_bytes": before[2],
         "original_dtype": str(dtype),
         "shape": shape,
-        "axes": "YX",
+        "axes": axes,
         "object_count": count,
         "labels_sha256": hashlib.sha256(labels.tobytes()).hexdigest(),
         "canonical_dtype": "uint32",
         "conversion": "value-preserving-unsigned-to-uint32; IDs unchanged",
         "format": "TIFF",
-        "profile": PROFILE,
+        "profile": VOLUME_PROFILE if volume else PROFILE,
         "estimated_working_bytes": estimated,
         "calibration_handling": calibration,
         "private_file_identity": before,
@@ -289,8 +321,6 @@ def validate_request(workbench: Workbench, request: dict[str, Any]) -> dict[str,
     exact_keys(request, REQUEST_KEYS, "external label adoption")
     if not {"source_id", "source_sha256", "grant_id", "alignment"} <= request.keys():
         raise ValueError("External label adoption requires complete bindings and alignment")
-    if request["alignment"] != ALIGNMENT:
-        raise ValueError("Declare alignment on the same native YX grid")
     producer = request.get("producer")
     if producer is not None:
         exact_keys(producer, {"name", "version"}, "declared external producer")
@@ -306,6 +336,9 @@ def validate_request(workbench: Workbench, request: dict[str, Any]) -> dict[str,
             ):
                 raise ValueError("Producer identity must not contain filesystem paths")
     grant = _grant(workbench, request["grant_id"])
+    alignment = VOLUME_ALIGNMENT if grant["axes"] == "ZYX" else ALIGNMENT
+    if request["alignment"] != alignment:
+        raise ValueError(f"Declare alignment on the {alignment} grid")
     if (
         request["source_id"] != grant["source_id"]
         or request["source_sha256"] != grant["source_sha256"]
@@ -344,13 +377,29 @@ def _create_import_grant(
     working_bytes = integer(working_bytes, "working-memory budget", 1024**2, 8 * 1024**3)
     binding = _source_binding(workbench, source_id, source_sha256, selection)
     labels, input_record = _read_labels(Path(path), binding, working_bytes)
-    image, _, _ = workbench.load_scalar(
-        source_id, binding["selection"], working_bytes=working_bytes
-    )
+    preview_selection = copy.deepcopy(binding["selection"])
+    preview_record = {}
+    if labels.ndim == 3:
+        index = labels.shape[0] // 2
+        preview_selection.pop("z_stop")
+        preview_selection["z"] += index
+        preview_record = {
+            "preview": {
+                "plane": "XY",
+                "index": index,
+                "source_z": preview_selection["z"],
+                "selection": preview_selection,
+                "basis": "single-native-plane-overlay",
+            }
+        }
+        preview_plane = labels[index]
+    else:
+        preview_plane = labels
+    image, _, _ = workbench.load_scalar(source_id, preview_selection, working_bytes=working_bytes)
     from .workbench import _png, display_scalar
 
     stride = max(1, int(np.ceil(max(image.shape) / 1024)))
-    preview_labels = labels[::stride, ::stride]
+    preview_labels = preview_plane[::stride, ::stride]
     rgb, _ = display_scalar(image[::stride, ::stride], working_bytes=working_bytes)
     tint = np.stack(
         [(preview_labels.astype(np.uint64) * n % 223 + 32) / 255 for n in (67, 97, 137)], axis=-1
@@ -364,6 +413,7 @@ def _create_import_grant(
         "schema": "loci.labels-import-grant/v1",
         **binding,
         **input_record,
+        **preview_record,
         "working_bytes": working_bytes,
         "private_path": str(Path(path)),
         "private_project_id": workbench.project.meta["project_id"],
@@ -434,7 +484,7 @@ def import_labels(
     external.update(
         {
             "schema": "loci.external-labels/v1",
-            "alignment": ALIGNMENT,
+            "alignment": request["alignment"],
             "producer": {"name": producer["name"], "version": producer.get("version")}
             if producer is not None
             else None,
@@ -450,6 +500,8 @@ def import_labels(
             "importer": {"name": "Loci scalar TIFF label importer", "runtime": runtime_record()},
         }
     )
+    if "preview" in grant:
+        external["preview"] = copy.deepcopy(grant["preview"])
     provenance = {
         "geometry": geometry.to_dict(),
         "selection": selection,

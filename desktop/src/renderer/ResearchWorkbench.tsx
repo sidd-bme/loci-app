@@ -116,6 +116,9 @@ import { ImageWelcome, WorkbenchTools, type WorkbenchTab } from "./WorkbenchChro
 import { FirstStudyGuide } from "./FirstStudyGuide";
 import { sourceRelinkKind } from "../shared/source-relink";
 import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
+import type { VolumeLabelPayload } from "./volume-label-display";
+import { VolumeSceneBridge } from "./volume-scene-bridge";
+import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import BrandMark from "./BrandMark";
 import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPanel";
 import { SourceExportPanel } from "./SourceExportPanel";
@@ -962,6 +965,25 @@ export default function ResearchWorkbench({
   const [rawVolumeLoading, setRawVolumeLoading] = useState(false);
   const [rawVolumeError, setRawVolumeError] = useState<string | null>(null);
   const rawVolumeToken = useRef(0);
+  const [volumeTarget, setVolumeTarget] = useState<{ t: number; channels: number[] } | null>(null);
+  const [volumeLabels, setVolumeLabels] = useState<VolumeLabelPayload | null>(null);
+  const [volumeLabelsLoading, setVolumeLabelsLoading] = useState(false);
+  const [volumeLabelsError, setVolumeLabelsError] = useState<string | null>(null);
+  const volumeHandle = useRef<VolumeSceneAdapter | null>(null);
+  const volumeBridge = useRef<VolumeSceneBridge | null>(null);
+  const volumeBridgeScope = useRef<string | null>(null);
+  const volumeSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volumeStarting = useRef(false);
+  const volumeSharedLocked = useRef(false);
+  const volumeSceneGeneration = useRef(0);
+  const volumeOpeningIntent = useRef(0);
+  const volumeAdapter = useRef<VolumeSceneAdapter | null>(null);
+  const volumeDraining = useRef(false);
+  const volumeSceneFlush = useRef<() => Promise<void>>(async () => undefined);
+  const [volumeSceneError, setVolumeSceneError] = useState<string | null>(null);
+  const [volumeSceneConflict, setVolumeSceneConflict] = useState<VolumeViewDocument | null>(null);
+  const [volumeSceneRevision, setVolumeSceneRevision] = useState<number | null>(null);
+  const [volumeLocateRequest, setVolumeLocateRequest] = useState(0);
   const [session, setSession] = useState<ManagedSessionState>({ status: "empty" });
   const [jobsOpen, setJobsOpen] = useState(false);
   const [sourceAnnotations, setSourceAnnotations] = useState<ImageAnnotation[]>([]);
@@ -1049,6 +1071,7 @@ export default function ResearchWorkbench({
       largeSelectionIntent.current++;
     }
     documentSwitch.current = true;
+    volumeDraining.current = true;
     // Native dialogs may defer rendering while the window is inactive. Commit
     // the viewport pause before entering the main-process document lock.
     flushSync(() => setDocumentSwitching(true));
@@ -1064,6 +1087,8 @@ export default function ResearchWorkbench({
         throw new Error(message(failure?.store === store ? failure.error : null,
           "Display settings could not be saved. Resolve the displayed error before switching studies."));
       }
+      await volumeSceneFlush.current();
+      volumeDraining.current = false;
       const next = await action();
       if (next && resetDisplay) {
         adopted = true;
@@ -1088,6 +1113,7 @@ export default function ResearchWorkbench({
         setDocumentEpoch((value) => value + 1);
       }
       documentSwitch.current = false;
+      volumeDraining.current = false;
       setDocumentSwitching(false);
     }
   }, []);
@@ -1303,8 +1329,12 @@ export default function ResearchWorkbench({
   }, [snapshot?.sources, sourceId]);
 
   const handleSourceClick = useCallback(
-    (item: ResearchSource, event: React.MouseEvent, visibleSourceIds?: string[]) => {
+    async (item: ResearchSource, event: React.MouseEvent, visibleSourceIds?: string[]) => {
       if (!snapshot) return;
+      if (item.id !== sourceId && volumeBridge.current) {
+        try { await volumeSceneFlush.current(); }
+        catch (caught) { setError(message(caught, "Save the current 3D view before switching sources.")); return; }
+      }
       const allIds = visibleSourceIds ?? snapshot.sources.map((s) => s.id);
       const clickedId = item.id;
       const clickedIndex = allIds.indexOf(clickedId);
@@ -1352,6 +1382,10 @@ export default function ResearchWorkbench({
     if (targetIds.length === 0) return;
     const sourcesToClose = snapshot.sources.filter((s) => targetIds.includes(s.id));
     if (sourcesToClose.length === 0) return;
+    if (volumeBridge.current && sourcesToClose.some(item => item.id === sourceId)) {
+      try { await volumeSceneFlush.current(); }
+      catch (caught) { setError(message(caught, "Save the current 3D view before removing this source.")); return; }
+    }
     largeNavigationIntent.current++;
     largeSelectionIntent.current++;
 
@@ -1792,24 +1826,25 @@ export default function ResearchWorkbench({
     const token = ++rawVolumeToken.current;
     setRawVolumeLoading(true); setRawVolumeError(null);
     try {
-      const selectedChannels = channels.filter((item) => item.visible).map((item) => item.channel);
+      const selectedChannels = volumeTarget?.channels ?? channels.filter((item) => item.visible).map((item) => item.channel);
       if (selectedChannels.length > 4) throw new Error("Choose up to four visible channels for this volume view.");
       const output = await api.execute("viewer_volume", { source_id: source.id,
-        t: shownSelection.t, channel_indices: selectedChannels.length ? selectedChannels : [shownSelection.c],
+        t: volumeTarget?.t ?? shownSelection.t, channel_indices: selectedChannels.length ? selectedChannels : [shownSelection.c],
         target_long_axis: 128, ...refinement }) as RawVolumeResponse;
       if (rawVolumeToken.current !== token) return;
-      if (output.context.source_id !== source.id || output.context.source_sha256 !== source.sha256 || output.context.t !== shownSelection.t)
+      if (output.context.source_id !== source.id || output.context.source_sha256 !== source.sha256 || output.context.t !== (volumeTarget?.t ?? shownSelection.t))
         throw new Error("The volume does not match its source and time point.");
       setRawVolume(output);
     } catch (caught) { if (rawVolumeToken.current === token) setRawVolumeError(message(caught, "Could not prepare the volume.")); }
     finally { if (rawVolumeToken.current === token) setRawVolumeLoading(false); }
-  }, [api, source, shownSelection.t, shownSelection.c, channels]);
+  }, [api, source, shownSelection.t, shownSelection.c, channels, volumeTarget]);
   const volumeChannelKey = channels.filter((item) => item.visible).map((item) => item.channel).join(",");
+  useEffect(() => { if (!volumeSharedLocked.current) setVolumeTarget(null); }, [source?.id, shownSelection.t, volumeChannelKey]);
   useEffect(() => {
     if (!rawVolumeOpen) return;
     setRawVolume(null);
     void requestRawVolume();
-  }, [rawVolumeOpen, source?.id, shownSelection.t, volumeChannelKey]);
+  }, [rawVolumeOpen, source?.id, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
   useEffect(() => {
     const key = JSON.stringify([
       source?.id,
@@ -2520,6 +2555,118 @@ export default function ResearchWorkbench({
   };
   const selectedResult =
     snapshot?.results.find((item) => item.id === resultId) ?? null;
+  const volumeLabelResult = selectedResult && selectedResult.source_id === source?.id && selectedResult.arrays?.labels?.shape?.length === 3
+    ? { result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, name: selectedResult.method_label ?? "3D label result" } : null;
+  const volumeSelectedLabel = Number(populationObject?.label ?? (selectedRow === null ? null : rows[selectedRow]?.label)) || null;
+  const volumeContext = useRef({ source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady });
+  volumeContext.current = { source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady };
+  const volumeChangeHandler = useRef<() => void>(() => undefined);
+  const queueVolumeSceneChange = useCallback(() => volumeChangeHandler.current(), []);
+  const chooseVolumeLabel = useCallback((label: number | null) => {
+    objectPickToken.current++;
+    setSelectedRow(label === null ? null : (() => { const i = rows.findIndex(row => row.label === label); return i < 0 ? null : i; })());
+    setPopulationObject(label === null ? null : rows.find(row => row.label === label) ?? { label });
+  }, [rows]);
+  useEffect(() => {
+    setVolumeLabels(null); setVolumeLabelsError(null); setVolumeLabelsLoading(false);
+    if (!rawVolumeOpen || !source || !volumeLabelResult) return;
+    let cancelled = false; setVolumeLabelsLoading(true);
+    void api.execute("volume_labels", { source_id: source.id, ...{ result_id: volumeLabelResult.result_id, revision_hash: volumeLabelResult.revision_hash }, t: volumeTarget?.t ?? shownSelection.t })
+      .then(value => { if (!cancelled) setVolumeLabels(value as VolumeLabelPayload); })
+      .catch(caught => { if (!cancelled) setVolumeLabelsError(message(caught, "These labels cannot be aligned to this volume.")); })
+      .finally(() => { if (!cancelled) setVolumeLabelsLoading(false); });
+    return () => { cancelled = true; };
+  }, [api, rawVolumeOpen, source?.id, source?.sha256, volumeLabelResult?.result_id, volumeLabelResult?.revision_hash, volumeTarget?.t, shownSelection.t]);
+  useEffect(() => {
+    volumeSceneGeneration.current++; volumeBridgeScope.current = null; volumeStarting.current = false;
+    volumeOpeningIntent.current = agentInteraction.current.generation;
+    const previous = volumeBridge.current; volumeBridge.current = null; void previous?.dispose();
+    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
+    setVolumeSceneError(null); setVolumeSceneConflict(null); setVolumeSceneRevision(null);
+    return () => { volumeSceneGeneration.current++; if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current); void volumeBridge.current?.dispose(); volumeBridge.current = null; };
+  }, [source?.id, source?.sha256, rawVolumeOpen, documentEpoch]);
+  volumeChangeHandler.current = () => {
+    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
+    volumeSaveTimer.current = setTimeout(() => {
+      volumeSaveTimer.current = null;
+      const ctx = volumeContext.current, handle = volumeHandle.current;
+      const scene = handle?.snapshot();
+      if (!ctx.source || !ctx.rawVolumeOpen || !ctx.viewSettingsReady || ctx.busy || documentSwitch.current || volumeSharedLocked.current || !scene?.available || scene.busy || volumeStarting.current) return;
+      const scope = `${ctx.documentEpoch}:${ctx.source.id}:${ctx.source.sha256}`;
+      const generation = volumeSceneGeneration.current;
+      const current = () => volumeSceneGeneration.current === generation && volumeContext.current.source?.id === ctx.source!.id && volumeContext.current.rawVolumeOpen && (!documentSwitch.current || volumeDraining.current);
+      const stateKey = (value: unknown) => JSON.stringify(value, (_k, v) => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
+      const adapter: VolumeSceneAdapter = {
+        snapshot: () => {
+          if (!current()) return null;
+          const s = volumeHandle.current?.snapshot();
+          return s ? { ...s, liveEpoch: s.liveEpoch + agentInteraction.current.generation, busy: s.busy || Boolean(volumeContext.current.busy) || agentInteraction.current.pointers.size > 0 } : null;
+        },
+        lock: locked => { volumeSharedLocked.current = locked; volumeHandle.current?.lock(locked); },
+        capture: (panes, maxSize) => { if (!current() || !volumeHandle.current) throw new Error("The native scene has closed."); return volumeHandle.current.capture(panes, maxSize); },
+        apply: async (state: VolumeViewState) => {
+          if (!current() || !volumeSharedLocked.current) throw new Error("The shared volume workspace changed before applying its scene.");
+          const humanIntent = agentInteraction.current.generation;
+          const unchanged = () => current() && humanIntent === agentInteraction.current.generation;
+          const target = state.result ? volumeContext.current.snapshot?.results.find(r => r.id === state.result!.result_id && r.revision_hash === state.result!.revision_hash && r.source_id === ctx.source!.id) : null;
+          if (state.result && !target) throw new Error("The saved scene's exact label result is unavailable.");
+          // Volume targeting is presentation state. The independent source-display
+          // document must not be rewritten by a scene operation.
+          setVolumeTarget({ t: state.t, channels: state.channels });
+          if (target && volumeContext.current.selectedResult?.id !== target.id) {
+            setResultId(target.id); setRows([]); setPopulationObject(null); setSelectedRow(null);
+            const page = await api.execute("result", { result_id: target.id, offset: 0, limit: 200 }) as { result: ResearchResult; measurements: Record<string, unknown>[] };
+            if (!unchanged() || page.result.id !== target.id || page.result.revision_hash !== target.revision_hash) throw new Error("The requested result changed while loading its objects.");
+            setRows(page.measurements);
+          } else if (!state.result) { setResultId(null); setRows([]); setPopulationObject(null); setSelectedRow(null); }
+          setVolumeDisplay({ renderMode: state.representation.render_mode, quality: state.representation.quality });
+          const deadline = performance.now() + 15000;
+          while (performance.now() < deadline) {
+            if (!unchanged()) throw new Error("The shared volume workspace changed while loading.");
+            const next = volumeHandle.current?.snapshot();
+            if (next?.available && next.state.t === state.t && stateKey(next.state.channels) === stateKey(state.channels) &&
+                next.state.result?.result_id === state.result?.result_id && next.state.result?.revision_hash === state.result?.revision_hash) {
+              await volumeHandle.current!.apply(state); return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 30));
+          }
+          throw new Error("The exact saved volume inputs did not finish loading.");
+        },
+      };
+      volumeAdapter.current = adapter;
+      const begin = async () => {
+        let bridge = volumeBridge.current;
+        let initializedNow = false;
+        if (!bridge || volumeBridgeScope.current !== scope) {
+          volumeStarting.current = true;
+          bridge = new VolumeSceneBridge({ api, binding: { sourceId: ctx.source!.id, sourceSha256: ctx.source!.sha256, viewId: `volume-${crypto.randomUUID()}` }, adapter,
+            flushDisplay: async () => { const store = viewStore.current; if (!current() || !store || !await store.flush()) throw new Error("Save the current channel display before sharing this volume."); return store.currentRevision; },
+            onChanged: view => { if (current()) { setVolumeSceneRevision(view.revision); setVolumeSceneError(null); } },
+            onConflict: view => { if (current()) setVolumeSceneConflict(view); },
+            onError: caught => { if (current()) setVolumeSceneError(caught.message); },
+          });
+          volumeBridge.current = bridge; volumeBridgeScope.current = scope;
+          try { await bridge.start({ restore: volumeOpeningIntent.current === agentInteraction.current.generation, preserveCurrentResult: true }); initializedNow = true; } catch (caught) { if (current()) { volumeBridge.current = null; volumeBridgeScope.current = null; } void bridge.dispose(); throw caught; }
+          finally { if (current()) volumeStarting.current = false; }
+        }
+        const latest = adapter.snapshot();
+        if (current() && latest?.available && !latest.busy && (initializedNow || stateKey(bridge.current?.state) !== stateKey(latest.state))) await bridge.save(latest);
+        else if (current()) await bridge.update();
+      };
+      void begin().catch(caught => { if (current()) {
+        const now = adapter.snapshot();
+        if (now && (now.busy || now.liveEpoch !== scene.liveEpoch + agentInteraction.current.generation)) queueVolumeSceneChange();
+        else setVolumeSceneError(message(caught, "The volume view could not be shared."));
+      } });
+    }, 350);
+  };
+  volumeSceneFlush.current = async () => {
+    if (volumeSaveTimer.current) { clearTimeout(volumeSaveTimer.current); volumeSaveTimer.current = null; }
+    const bridge = volumeBridge.current, current = volumeAdapter.current?.snapshot();
+    if (!bridge || !current?.available) return;
+    if (volumeSharedLocked.current || current.busy) throw new Error("Finish the active 3D interaction before leaving this view.");
+    await bridge.save(current);
+  };
   const selectedResultShape = selectedResult?.arrays?.image?.shape;
   const surfaceAvailable = Boolean(
     selectedResultShape?.length === 3 ||
@@ -2676,6 +2823,7 @@ export default function ResearchWorkbench({
     ) => {
       const row = rows[index];
       if (!row || !resultId) return;
+      if (rawVolumeOpen) { setSelectedRow(index); setPopulationObject(row); return; }
       const center = row.centroid_index;
       if (
         !Array.isArray(center) ||
@@ -2757,11 +2905,12 @@ export default function ResearchWorkbench({
       setSelectedRow(index);
       setPopulationObject(row);
     },
-    [rows, resultId, snapshot?.results, report, api, sourceResultOverlay, displayedResultView, viewCamera, selectedResult],
+    [rows, resultId, snapshot?.results, report, api, sourceResultOverlay, displayedResultView, viewCamera, selectedResult, rawVolumeOpen],
   );
 
   const locatePopulationObject = async (row: Record<string, unknown>) => {
     if (!selectedResult || !Number.isSafeInteger(row.label) || Number(row.label) < 1) return;
+    if (rawVolumeOpen) { chooseVolumeLabel(Number(row.label)); setVolumeLocateRequest(n => n + 1); return; }
     const exact = selectedResult;
     const token = ++objectPickToken.current;
     const navigation = largeNavigationIntent.current;
@@ -2888,7 +3037,11 @@ export default function ResearchWorkbench({
     snapshot?.results.filter((item) => item.parent_id === resultId) ?? [];
   const redoTargetId =
     redoStack.at(-1) ?? (redoChildren.length === 1 ? redoChildren[0].id : null);
-  const openWorkbenchTab = (next: WorkbenchTab) => {
+  const openWorkbenchTab = async (next: WorkbenchTab) => {
+    if (rawVolumeOpen && ["Workflow", "Annotate", "Epidermis", "Correction"].includes(next)) {
+      try { await volumeSceneFlush.current(); }
+      catch (caught) { setVolumeSceneError(message(caught, "Save the current 3D view before changing workspaces.")); return; }
+    }
     largeNavigationIntent.current++;
     largeSelectionIntent.current++;
     setTab(next);
@@ -2896,6 +3049,7 @@ export default function ResearchWorkbench({
       setWorkflowOpened(true);
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
     }
+    if (next === "Correction") { setRawVolumeOpen(false); setSurfaceOpen(false); }
     if (next === "Quantify") setQuantificationOpened(true);
     if (next === "Density") setDensityOpened(true);
     if (next === "Wound") setWoundOpened(true);
@@ -2904,7 +3058,7 @@ export default function ResearchWorkbench({
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
-    if (next === "Population") { setPopulationOpened(true); setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false); }
+    if (next === "Population") { setPopulationOpened(true); setSurfaceOpen(false); setAbCompareMode(false); }
     if (next === "Annotate" || next === "Epidermis") {
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
       setProjection("plane");
@@ -3248,7 +3402,7 @@ export default function ResearchWorkbench({
           {pendingSourceResultCanvas && <span className="result-source-link" role="status">Loading result…</span>}
           {dimensions && dimensions.z > 1 && <><button title={rawVolumeOpen ? "Return to the 2D source plane" : rawVolumeUnavailable ?? "Explore the complete raw volume"} aria-pressed={rawVolumeOpen}
             disabled={!rawVolumeOpen && Boolean(rawVolumeUnavailable)}
-            onClick={() => { setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }}><Box />{rawVolumeOpen ? "2D image" : "3D volume"}</button>
+            onClick={() => { void report(async () => { if (rawVolumeOpen) await volumeSceneFlush.current(); setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }, "Could not save the 3D view before closing it."); }}><Box />{rawVolumeOpen ? "2D image" : "3D volume"}</button>
             {!rawVolumeOpen && rawVolumeUnavailable && <span role="status">{rawVolumeUnavailable}</span>}</>}
           {surfaceAvailable && <button
             aria-pressed={surfaceOpen}
@@ -3277,14 +3431,29 @@ export default function ResearchWorkbench({
             onPickStart={() => ++largeSelectionIntent.current}
             onPick={(row, intent) => { if (intent === largeSelectionIntent.current) { setLargeObject(row); if (tab !== "Population") setTab("Info"); } }} />
         ) : source && rawVolumeOpen ? (
-          <RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
+          <><RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
             onRequestRefinement={requestRawVolume} onExportFigure={api.exportVolumeFigure}
+            labelPayload={volumeLabels} labelResult={volumeLabelResult} labelsLoading={volumeLabelsLoading} labelsError={volumeLabelsError}
+            selectedLabel={volumeSelectedLabel} onSelectLabel={chooseVolumeLabel} sceneHandleRef={volumeHandle} onSceneChange={queueVolumeSceneChange}
+            locateRequest={volumeLocateRequest}
+            onCorrectLabel={(label, localZ) => {
+              if (!selectedResult || !volumeLabels || selectedResult.id !== volumeLabels.result.result_id || selectedResult.revision_hash !== volumeLabels.result.revision_hash) return;
+              setCorrectionObjectTarget({ result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, label });
+              setCorrectionView({ plane: "XY", index: localZ }); setCorrectionPoints([]); void openWorkbenchTab("Correction");
+            }}
             externalDisplay={{ ...volumeDisplay, channels }}
             onDisplayChange={(display) => {
               setVolumeDisplay({ renderMode: display.renderMode, quality: display.quality });
               setChannels((current) => current.map((channel) =>
                 display.channels.find((next) => next.channel === channel.channel) ?? channel));
             }} />
+            {volumeSceneError ? <p role="status">Shared 3D view: {volumeSceneError} <button type="button" onClick={() => { setVolumeSceneError(null); queueVolumeSceneChange(); }}>Retry shared view</button></p> :
+              volumeSceneRevision !== null ? <p className="raw-volume-export-status">Shared 3D view saved · revision {volumeSceneRevision}</p> : null}
+            {volumeSceneConflict && <p role="status">The saved 3D view changed elsewhere. Your current view is preserved. <button type="button" onClick={() => {
+              try { volumeBridge.current?.acceptConflict(volumeSceneConflict); setVolumeSceneConflict(null); setVolumeSceneError(null); queueVolumeSceneChange(); }
+              catch (caught) { setVolumeSceneError(message(caught, "Could not acknowledge the changed view.")); }
+            }}>Keep and save this view</button></p>}
+          </>
         ) : source && surfaceOpen ? (
           <ResearchSurfaceView
             api={api}

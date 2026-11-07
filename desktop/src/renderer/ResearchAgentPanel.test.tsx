@@ -568,3 +568,127 @@ it("points file-based vision clients to Agent and keeps source fingerprints in a
   fireEvent.click(within(scope).getByText("Technical record"));
   expect(fingerprint).toBeVisible();
 });
+
+describe("explicit shared 3D grants", () => {
+  const fullSelection: ResearchSelection = { ...selection, x: 0, y: 0, width: 32, height: 32, z: 0, z_stop: 4 };
+  const fullValidation = { ...validation, selection: fullSelection };
+  const sceneReceipt: ResearchAgentAccessReceipt = {
+    ...receipt, schema: "loci.agent-policy/v7", plugin_filename: "plugin/plugin.json", selection: fullSelection,
+    volume_views: { read: true, write: false, image: false, fields: [] },
+    disclosures: ["geometry", "provenance", "agent_metadata"],
+    operations: ["inspect_source", "validate_recipe", "analysis_context", "volume_view", "volume_view_request_status", "cancel_volume_view_request"],
+  };
+  const discloseScene = () => {
+    for (const name of ["geometry", "provenance", "agent_metadata"]) fireEvent.click(screen.getByLabelText(`Disclose ${name}`));
+  };
+
+  it("starts independently denied and existing image grants never enable it", () => {
+    renderPanel(bridge(vi.fn()));
+    expect(screen.getByLabelText("Allow shared 3D scene inspection")).not.toBeChecked();
+    expect(screen.getByLabelText("Allow changes to selected 3D view settings")).toBeDisabled();
+    expect(screen.getByLabelText("Allow images from the live 3D workspace")).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Allow source images for vision analysis"));
+    fireEvent.click(screen.getByLabelText("Allow reversible channel display changes"));
+    expect(screen.getByLabelText("Allow shared 3D scene inspection")).not.toBeChecked();
+    expect(screen.getByLabelText("Allow images from the live 3D workspace")).not.toBeChecked();
+  });
+  it("blocks a cropped or partial Z scope rather than expanding it implicitly", async () => {
+    const createAgentAccess = vi.fn();
+    renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
+    fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
+    expect(screen.getByText(/Select the full native XY and Z volume/)).toBeVisible();
+    expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
+    expect(screen.getByLabelText("Agent source access")).toHaveValue("selected");
+    expect(createAgentAccess).not.toHaveBeenCalled();
+  });
+  it("creates an inspect-only scene grant without image, write or scientific execution authority", async () => {
+    const createAgentAccess = vi.fn().mockResolvedValue(sceneReceipt);
+    renderPanel(bridge(vi.fn().mockResolvedValue(fullValidation), createAgentAccess), source, fullSelection);
+    fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    expect(await screen.findByLabelText("Created agent access receipt")).toHaveTextContent("not connected yet");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
+      selection: fullSelection, allow_run: false, allow_preview: false, allow_export: false,
+      volume_views: { read: true, write: false, image: false, fields: [] },
+    }));
+    const request = createAgentAccess.mock.calls[0][0];
+    expect(request).not.toHaveProperty("interactive"); expect(request).not.toHaveProperty("delegation"); expect(request).not.toHaveProperty("source_scope");
+  });
+  it("requires explicit write fields and previews disclosure before granting live captures", async () => {
+    const combined: ResearchAgentAccessReceipt = { ...sceneReceipt,
+      volume_views: { read: true, write: true, image: true, fields: ["camera", "crosshair_source_xyz"] },
+      disclosures: [...sceneReceipt.disclosures, "previews"], operations: [...sceneReceipt.operations, "set_volume_view", "volume_view_image"],
+    };
+    const createAgentAccess = vi.fn().mockResolvedValue(combined);
+    renderPanel(bridge(vi.fn().mockResolvedValue(fullValidation), createAgentAccess), source, fullSelection);
+    fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
+    fireEvent.click(screen.getByLabelText("Allow changes to selected 3D view settings"));
+    const grant = screen.getByRole("button", { name: /Grant selected access/ });
+    expect(grant).toBeDisabled(); expect(screen.getByText(/Select at least one 3D view setting/)).toBeVisible();
+    fireEvent.click(screen.getByLabelText("Camera")); fireEvent.click(screen.getByLabelText("Crosshair"));
+    expect(grant).toBeEnabled();
+    fireEvent.click(screen.getByLabelText("Allow images from the live 3D workspace"));
+    expect(grant).toBeDisabled(); expect(screen.getByText(/actual live GUI panes/)).toBeVisible();
+    fireEvent.click(screen.getByLabelText("Disclose previews")); fireEvent.click(grant);
+    await screen.findByLabelText("Created agent access receipt");
+    expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({ volume_views: combined.volume_views, allow_run: false }));
+    expect(screen.getByLabelText("Allow source images for vision analysis")).not.toBeChecked();
+  });
+  it("clears dependent grants when scene inspection is removed, and clears them on source change", () => {
+    const { props, rerender } = renderPanel(bridge(vi.fn()), source, fullSelection);
+    const read = screen.getByLabelText("Allow shared 3D scene inspection");
+    fireEvent.click(read); fireEvent.click(screen.getByLabelText("Allow changes to selected 3D view settings"));
+    fireEvent.click(screen.getByLabelText("Camera")); fireEvent.click(screen.getByLabelText("Allow images from the live 3D workspace"));
+    fireEvent.click(read);
+    expect(screen.getByLabelText("Allow changes to selected 3D view settings")).not.toBeChecked();
+    expect(screen.getByLabelText("Allow images from the live 3D workspace")).not.toBeChecked();
+    fireEvent.click(read); fireEvent.click(screen.getByLabelText("Allow changes to selected 3D view settings"));
+    expect(screen.getByLabelText("Camera")).not.toBeChecked();
+    rerender(<ResearchAgentPanel {...props} source={{ ...source, sha256: "f".repeat(64) }} />);
+    expect(screen.getByLabelText("Allow shared 3D scene inspection")).not.toBeChecked();
+  });
+  it.each([
+    { schema: "loci.agent-policy/v5" as const },
+    { volume_views: undefined },
+    { volume_views: { read: true, write: true, image: false, fields: ["camera"] as ["camera"] } },
+  ])("rejects a receipt that does not confirm the exact independent grant %#", async (returned) => {
+    const errors: string[] = [];
+    const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue(fullValidation), vi.fn().mockResolvedValue({ ...sceneReceipt, ...returned })), source, fullSelection);
+    rerender(<ResearchAgentPanel {...props} report={async <T,>(work: () => Promise<T>) => {
+      try { return await work(); } catch (error) { errors.push((error as Error).message); return undefined; }
+    }} />);
+    fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    await waitFor(() => expect(errors).toEqual([expect.stringContaining("receipt did not match")]));
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+  it("does not display a completed receipt after the user changes 3D grants during bundle creation", async () => {
+    let finish!: (value: ResearchAgentAccessReceipt) => void;
+    const createAgentAccess = vi.fn(() => new Promise<ResearchAgentAccessReceipt>((resolve) => { finish = resolve; }));
+    const { props } = renderPanel(bridge(vi.fn().mockResolvedValue(fullValidation), createAgentAccess), source, fullSelection);
+    fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
+    fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+    fireEvent.click(screen.getByLabelText("Allow images from the live 3D workspace"));
+    finish(sceneReceipt);
+    await waitFor(() => expect(props.onBusyChange).toHaveBeenLastCalledWith(false));
+    expect(createAgentAccess).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText("Created agent access receipt")).not.toBeInTheDocument();
+  });
+  it("keeps shared 3D access off when applying an existing access preset", async () => {
+    renderPanel(bridge(vi.fn().mockResolvedValue(fullValidation)), source, fullSelection);
+    fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection"));
+    fireEvent.click(screen.getByLabelText("Allow changes to selected 3D view settings"));
+    fireEvent.click(screen.getByLabelText("Camera"));
+    fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
+    await screen.findByLabelText("Exact recipe validation");
+    fireEvent.click(screen.getByText("Customize permissions"));
+    expect(screen.getByLabelText("Allow shared 3D scene inspection")).not.toBeChecked();
+    expect(screen.getByLabelText("Allow changes to selected 3D view settings")).not.toBeChecked();
+    expect(screen.getByLabelText("Allow images from the live 3D workspace")).not.toBeChecked();
+  });
+});

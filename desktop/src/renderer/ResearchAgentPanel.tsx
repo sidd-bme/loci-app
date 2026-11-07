@@ -14,6 +14,16 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import "./ResearchAgentPanel.css";
+import type { VolumeViewState } from "./volume-scene-types";
+
+type VolumeViewGrant = { read: boolean; write: boolean; image: boolean; fields: Array<keyof VolumeViewState> };
+const VOLUME_FIELDS: Array<{ id: keyof VolumeViewState; label: string }> = [
+  { id: "camera", label: "Camera" }, { id: "crosshair_source_xyz", label: "Crosshair" },
+  { id: "clipping", label: "Clipping plane" }, { id: "representation", label: "Rendering mode and quality" },
+  { id: "refinement", label: "Detail region and sampling" }, { id: "layout", label: "Pane layout" },
+  { id: "labels", label: "Label visibility and opacity" }, { id: "selected_object", label: "Selected object" },
+  { id: "result", label: "Result revision" }, { id: "channels", label: "Displayed channels" }, { id: "t", label: "Time point" },
+];
 
 type Report = <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
 type RecipeValidation = {
@@ -98,15 +108,17 @@ function exactReceipt(
   sources?: Array<{ id: string; sha256: string }>,
   exportScope: "listed" | "directory" = "listed",
   permissionMode?: ResearchAgentPermissionMode,
+  volumeViews?: VolumeViewGrant,
 ): ResearchAgentAccessReceipt {
   const receipt = value as ResearchAgentAccessReceipt;
   const baseSchema = delegation ? "loci.agent-policy/v4" : interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1";
-  const expectedSchema = permissionMode ? "loci.agent-policy/v5" : baseSchema;
+  const expectedSchema = volumeViews ? "loci.agent-policy/v7" : permissionMode ? "loci.agent-policy/v5" : baseSchema;
   if (
     !receipt ||
     receipt.schema !== expectedSchema ||
     (permissionMode && receipt.permission_mode !== permissionMode) ||
-    ((interactive || delegation) && receipt.plugin_filename !== "plugin/plugin.json") ||
+    ((interactive || delegation || volumeViews) && receipt.plugin_filename !== "plugin/plugin.json") ||
+    (volumeViews && !same(receipt.volume_views, volumeViews)) ||
     (delegation && (!receipt.delegation || !/^[a-f0-9]{32}$/.test(receipt.delegation.id) ||
       !same({ client_id: receipt.delegation.client_id, expires_at: receipt.delegation.expires_at, result_scope: receipt.delegation.result_scope },
         { client_id: delegation.client_id, expires_at: delegation.expires_at, result_scope: delegation.result_scope }))) ||
@@ -182,6 +194,10 @@ export function ResearchAgentPanel({
   const [allowImage, setAllowImage] = useState(false);
   const [allowDisplay, setAllowDisplay] = useState(false);
   const [allowHandoff, setAllowHandoff] = useState(false);
+  const [allowVolumeRead, setAllowVolumeRead] = useState(false);
+  const [allowVolumeWrite, setAllowVolumeWrite] = useState(false);
+  const [allowVolumeImage, setAllowVolumeImage] = useState(false);
+  const [volumeFields, setVolumeFields] = useState<Array<keyof VolumeViewState>>([]);
   const [displayChannels, setDisplayChannels] = useState<number[]>([]);
   const [handoffNameText, setHandoffNameText] = useState("");
   const [experiment, setExperiment] = useState(false);
@@ -215,6 +231,7 @@ export function ResearchAgentPanel({
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
     allowReview, resultScope, expiryHours, client, permissionMode,
+    allowVolumeRead, allowVolumeWrite, allowVolumeImage, volumeFields,
     sourceMode, actionMode, actions, exportMode, sourceMode === "study" ? scopedSources.map(item => [item.id, item.sha256]) : [],
   ]);
   const currentGrant = useRef(grantFingerprint);
@@ -240,6 +257,7 @@ export function ResearchAgentPanel({
     setAllowExport(false);
     setAllowReview(false); setResultScope("pinned-recipes"); setExpiryHours("0");
     setAllowImage(false); setAllowDisplay(false); setAllowHandoff(false);
+    setAllowVolumeRead(false); setAllowVolumeWrite(false); setAllowVolumeImage(false); setVolumeFields([]);
     setDisplayChannels([]); setHandoffNameText(""); setExperiment(false);
     setThresholdRange(["", ""]); setSizeRange(["", ""]);
     setDisclosures([]);
@@ -280,9 +298,21 @@ export function ResearchAgentPanel({
     (!allowHandoff || (handoffNames !== null && handoffNames.every((name) => name.endsWith(".loci-vision")))) &&
     (!experiment || (rangesValid && Object.keys(parameters).length > 0 && (allowPreview || allowRun)));
   const channelCount = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "") ? 1 : source.metadata.dimensions?.c ?? 1;
+  const volumeSource = (item: ResearchSource) => (item.metadata.dimensions?.z ?? 1) > 1 &&
+    !["RGB", "RGBA"].includes(item.metadata.sample_semantics?.toUpperCase() ?? "") && (item.metadata.dimensions?.s ?? 1) === 1;
+  const volumeAvailable = (sourceMode === "study" ? scopedSources : [source]).some(volumeSource);
+  const dimensions = source.metadata.dimensions;
+  const volumeWholeScope = sourceMode === "study" || Boolean(dimensions && selection.level === 0 && selection.x === 0 && selection.y === 0 &&
+    selection.width === dimensions.x && selection.height === dimensions.y && selection.z === 0 && selection.z_stop === dimensions.z);
+  const volumeValid = !allowVolumeRead || (volumeAvailable && volumeWholeScope && contextDisclosed &&
+    (!allowVolumeImage || disclosures.includes("previews")) && (!allowVolumeWrite || volumeFields.length > 0));
+  const volumeViews: VolumeViewGrant | undefined = allowVolumeRead ? {
+    read: true, write: allowVolumeWrite, image: allowVolumeImage, fields: allowVolumeWrite ? [...volumeFields].sort() : [],
+  } : undefined;
+  const volumeChannels = [...new Set([selection.c, ...(imageScope ? displayChannels : [])])].sort((a, b) => a - b);
   const canCreate = Boolean(
     configurationValid && api.createAgentAccess && validation && validatedScope === validationFingerprint &&
-    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && !busy && !localBusy,
+    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && volumeValid && !busy && !localBusy,
   );
 
   const anticipatedOperations = [...new Set([
@@ -298,6 +328,9 @@ export function ResearchAgentPanel({
     ...(allowImage ? ["source_image"] : []),
     ...(allowDisplay ? ["source_display", "set_source_display"] : []),
     ...(allowHandoff ? ["export_vision_handoff"] : []),
+    ...(allowVolumeRead ? ["volume_view", "volume_view_request_status", "cancel_volume_view_request"] : []),
+    ...(allowVolumeWrite ? ["set_volume_view"] : []),
+    ...(allowVolumeImage ? ["volume_view_image"] : []),
     ...(delegated ? ["review_history", "study_results", "result", ...(disclosures.includes("previews") ? ["result_view"] : [])] : []),
     ...(allowReview ? ["review_result"] : []),
     ...(actions.length ? ["validate_action", ...(actions.some(name => operations?.[name].agent_execution === "read") ? ["inspect_action"] : []),
@@ -347,6 +380,7 @@ export function ResearchAgentPanel({
     setAllowPreview(analyze); setAllowRun(analyze); setAllowReview(full); setAllowExport(full);
     setExportMode(full ? "directory" : "listed");
     setAllowImage(true); setAllowDisplay(analyze); setAllowHandoff(false); setExperiment(false);
+    setAllowVolumeRead(false); setAllowVolumeWrite(false); setAllowVolumeImage(false); setVolumeFields([]);
     setDisplayChannels(Array.from({ length: Math.min(channelCount, 16) }, (_, index) => index));
     setDisclosures(DISCLOSURES.map(item => item.id));
   };
@@ -362,6 +396,7 @@ export function ResearchAgentPanel({
       selection,
       recipe: agentRecipe,
       ...(resolvedPermissionMode ? { permission_mode: resolvedPermissionMode } : {}),
+      ...(volumeViews ? { volume_views: volumeViews } : {}),
       allow_preview: allowPreview,
       allow_run: allowRun,
       ...(allowWorkflowGraph ? { allow_workflow_graph: true } : {}),
@@ -402,6 +437,7 @@ export function ResearchAgentPanel({
           request.source_scope?.sources ?? [{ id: source.id, sha256: source.sha256 }],
           exportMode,
           resolvedPermissionMode,
+          volumeViews,
         );
       }, "Could not create bounded local agent access.");
       if (output && generation === creationGeneration.current && currentGrant.current === authorizedGrant) {
@@ -533,6 +569,39 @@ export function ResearchAgentPanel({
         {(allowDisplay || allowHandoff) && !contextDisclosed && <p role="alert">Display and handoff access require geometry, provenance and analysis context disclosures.</p>}
         {allowDisplay && <p>Open Agent → Follow assistant display to see changes in this window. Display changes preserve source pixels and numerical analysis.</p>}
         {allowHandoff && <p>Handoffs are provisional image/context files. They do not require or confer result review. Names must end in .loci-vision.</p>}
+      </section>
+
+      <section className="research-agent-card" aria-label="Shared 3D workspace grants">
+        <h3>Shared 3D workspace</h3>
+        <p>These permissions are separate from source-image access and start off.</p>
+        <label className="research-check"><input type="checkbox" checked={allowVolumeRead} onChange={(event) => {
+          setAllowVolumeRead(event.target.checked);
+          if (!event.target.checked) { setAllowVolumeWrite(false); setAllowVolumeImage(false); setVolumeFields([]); }
+        }} /> Allow shared 3D scene inspection</label>
+        <label className="research-check"><input type="checkbox" checked={allowVolumeWrite} disabled={!allowVolumeRead} onChange={(event) => {
+          setAllowVolumeWrite(event.target.checked); if (!event.target.checked) setVolumeFields([]);
+        }} /> Allow changes to selected 3D view settings</label>
+        <label className="research-check"><input type="checkbox" checked={allowVolumeImage} disabled={!allowVolumeRead}
+          onChange={(event) => setAllowVolumeImage(event.target.checked)} /> Allow images from the live 3D workspace</label>
+        {allowVolumeRead && <>
+          <p>The shared view includes the complete source volume, even when clipping or focus hides part of it. Its source grant must cover full native XY and Z, the displayed time point, and every displayed channel.</p>
+          <p>{sourceMode === "study" ? "All acquisition channels in the listed study sources are granted." : `Currently granted channels: ${volumeChannels.map((channel) => sourceChannelLabel(source, channel)).join(", ")}. The shared view must use only these channels.`}</p>
+          {!volumeAvailable && <p role="alert">Choose a scalar source with at least two Z planes for shared 3D access.</p>}
+          {!volumeWholeScope && <p role="alert">Select the full native XY and Z volume, or explicitly choose all current study sources under Source access.</p>}
+          {!contextDisclosed && <p role="alert">Shared 3D access requires geometry, provenance and analysis context disclosures.</p>}
+        </>}
+        {allowVolumeWrite && <>
+          <p>Choose the settings the assistant may change. Changes appear in the same workspace; source pixels and measurements stay unchanged.</p>
+          <div className="research-agent-channels" role="group" aria-label="Permitted 3D view settings">
+            {VOLUME_FIELDS.map((field) => <label key={field.id} className="research-check"><input type="checkbox" checked={volumeFields.includes(field.id)}
+              onChange={(event) => setVolumeFields((current) => event.target.checked ? [...current, field.id] : current.filter((item) => item !== field.id))} />{field.label}</label>)}
+          </div>
+          {!volumeFields.length && <p role="alert">Select at least one 3D view setting to allow changes.</p>}
+        </>}
+        {allowVolumeImage && <>
+          <p>Images come from the actual live GUI panes and include the current scene record. Loci must have an available 3D workspace open.</p>
+          {!disclosures.includes("previews") && <p role="alert">Live 3D images also require previews disclosure.</p>}
+        </>}
       </section>
 
       <section className="research-agent-card" aria-label="Experimental recipe grants">

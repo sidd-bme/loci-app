@@ -168,7 +168,7 @@ export interface ResearchLabelImportIdentity {
   source_sha256: string;
   file_sha256: string;
   original_dtype: string;
-  shape: [number, number];
+  shape: [number, number] | [number, number, number];
 }
 export interface ResearchLabelsImportBinding {
   source_id: string;
@@ -183,12 +183,19 @@ export interface ResearchLabelsImportPreview extends ResearchLabelsImportBinding
   file_sha256: string;
   file_size_bytes: number;
   original_dtype: "uint8" | "uint16" | "uint32";
-  shape: [number, number];
-  axes: "YX";
+  shape: [number, number] | [number, number, number];
+  axes: "YX" | "ZYX";
   object_count: number;
   labels_sha256: string;
   format: "TIFF";
-  profile: "scalar-native-yx/v1";
+  profile: "scalar-native-yx/v1" | "scalar-native-zyx/v1";
+  preview?: {
+    plane: "XY";
+    index: number;
+    source_z: number;
+    selection: ResearchSelection;
+    basis: "single-native-plane-overlay";
+  };
   estimated_working_bytes: number;
   measurement_channel: { index: number; name: string; basis: "raw-source-channel-values" };
   calibration_handling: Record<string, unknown>;
@@ -244,6 +251,12 @@ export interface ResearchAgentInteractiveAccess {
   handoff_names: string[];
   parameters: Partial<Record<"threshold" | "min_size", { min: number; max: number }>>;
 }
+export interface ResearchAgentVolumeAccess {
+  read: boolean;
+  write: boolean;
+  image: boolean;
+  fields: Array<"t" | "channels" | "result" | "selected_object" | "representation" | "camera" | "crosshair_source_xyz" | "clipping" | "refinement" | "layout" | "labels">;
+}
 export interface ResearchVisionRequest {
   source_id: string;
   selection: ResearchSelection;
@@ -280,6 +293,7 @@ export interface ResearchAgentAccessRequest {
   recipe: ResearchRecipe;
   permission_mode?: ResearchAgentPermissionMode;
   interactive?: ResearchAgentInteractiveAccess;
+  volume_views?: ResearchAgentVolumeAccess;
   delegation?: {
     client_id: string;
     expires_at: string | null;
@@ -297,7 +311,8 @@ export interface ResearchAgentAccessRequest {
   limits: { cpu_seconds: number; memory_bytes: number; concurrency: number };
 }
 export interface ResearchAgentAccessReceipt {
-  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5";
+  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5" | "loci.agent-policy/v7";
+  volume_views?: ResearchAgentVolumeAccess;
   policy_sha256: string;
   project_id: string;
   recipe_sha256: string;

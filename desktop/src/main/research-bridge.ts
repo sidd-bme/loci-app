@@ -737,6 +737,13 @@ export class ResearchBridge {
     if (operation === "viewer_defaults") {
       return this.control.request("research_execute", { project, operation, request });
     }
+    if (operation === "save_volume_view" || operation.startsWith("volume_view_")) {
+      const epoch = this.viewDocumentEpoch;
+      const output = await this.control.request("research_execute", { project, operation, request });
+      if (this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The study changed during the shared volume operation.");
+      return output;
+    }
     if (QUEUED_VIEW_OPERATIONS.has(operation)) {
       return this.viewerQueue.request(operation, { project, operation, request }, viewerLane);
     }
@@ -1984,19 +1991,20 @@ export class ResearchBridge {
         throw new Error("Invalid label-import binding or memory budget.");
       const plane = input.selection;
       if (!plane || typeof plane !== "object" || Array.isArray(plane) ||
-          Object.keys(plane).sort().join(",") !== "c,height,level,t,width,x,y,z")
-        throw new Error("Label import requires an explicit native YX plane.");
+          !["c,height,level,t,width,x,y,z", "c,height,level,t,width,x,y,z,z_stop"].includes(Object.keys(plane).sort().join(",")))
+        throw new Error("Label import requires an explicit native YX plane or ZYX volume.");
       const selection = plane as Record<string, unknown>;
       if (Object.values(selection).some((value) => !Number.isSafeInteger(value) || Number(value) < 0) ||
           selection.level !== 0 || selection.x !== 0 || selection.y !== 0 ||
-          Number(selection.width) < 1 || Number(selection.height) < 1)
-        throw new Error("Label import requires a full level-0 native YX grid.");
+          Number(selection.width) < 1 || Number(selection.height) < 1 ||
+          selection.z_stop !== undefined && Number(selection.z_stop) < Number(selection.z) + 2)
+        throw new Error("Label import requires a full level-0 native grid and at least two planes for a volume.");
       // Reserve the captured document before awaiting the native picker or engine.
       this.switching = true;
       const epoch = this.viewDocumentEpoch;
       try {
         const picked = await dialog.showOpenDialog({
-          title: "Import labels on this plane",
+          title: selection.z_stop === undefined ? "Import labels on this plane" : "Import labels on this volume",
           properties: ["openFile"],
           filters: [{ name: "Integer label TIFF", extensions: ["tif", "tiff"] }],
         });
