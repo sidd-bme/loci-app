@@ -2716,7 +2716,37 @@ export default function ResearchWorkbench({
   };
   volumeSceneFlush.current = async () => {
     if (volumeSaveTimer.current) { clearTimeout(volumeSaveTimer.current); volumeSaveTimer.current = null; }
-    await volumeScenePersist.current();
+    const priorPending = volumeSceneWrite.current;
+    const context = volumeContext.current;
+    const generation = volumeSceneGeneration.current;
+    const intent = agentInteraction.current.generation;
+    const boundary = structuredClone(volumeHandle.current?.snapshot());
+    const boundaryState = JSON.stringify(boundary?.state);
+    const assertBoundaryCurrent = () => {
+      const now = volumeContext.current, rendered = volumeHandle.current?.snapshot();
+      if (!boundary?.available || boundary.busy || !rendered?.available || rendered.busy ||
+          volumeSharedLocked.current || agentInteraction.current.pointers.size > 0 ||
+          !now.rawVolumeOpen || !now.viewSettingsReady ||
+          (!volumeDraining.current && (now.busy || documentSwitch.current)) ||
+          now.source?.id !== context.source?.id || now.source?.sha256 !== context.source?.sha256 ||
+          now.documentEpoch !== context.documentEpoch || volumeSceneGeneration.current !== generation ||
+          agentInteraction.current.generation !== intent ||
+          rendered.liveEpoch !== boundary.liveEpoch || rendered.rendererGeneration !== boundary.rendererGeneration ||
+          JSON.stringify(rendered.state) !== boundaryState)
+        throw new VolumeSceneSupersededError();
+    };
+    let resumedBoundary = false;
+    try { await volumeScenePersist.current(); }
+    catch (caught) {
+      // The click that entered this boundary may supersede an older autosave.
+      // Drain the captured boundary once, only while it remains exact. Later
+      // input and durable/display CAS conflicts must never be rebased here.
+      if (!priorPending || !(caught instanceof VolumeSceneSupersededError)) throw caught;
+      assertBoundaryCurrent();
+      resumedBoundary = true;
+      await volumeScenePersist.current();
+    }
+    if (resumedBoundary) assertBoundaryCurrent();
     const bridge = volumeBridge.current, current = volumeAdapter.current?.snapshot();
     const rendered = volumeHandle.current?.snapshot();
     if (volumeSharedLocked.current || rendered?.busy || agentInteraction.current.pointers.size > 0)
@@ -2724,6 +2754,7 @@ export default function ResearchWorkbench({
     if (!bridge || !current?.available) return;
     if (current.busy) throw new Error("Finish the active 3D interaction before leaving this view.");
     await bridge.save(current);
+    if (resumedBoundary) assertBoundaryCurrent();
   };
   const selectedResultShape = selectedResult?.arrays?.image?.shape;
   const surfaceAvailable = Boolean(

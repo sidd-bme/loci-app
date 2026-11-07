@@ -202,6 +202,15 @@ function fixture() {
     holdSave: () => { const pending = gate(); nextSave = pending; return pending; },
     holdRead: () => { const pending = gate(); nextRead = pending; return pending; },
     holdRawVolume: () => { const pending = gate(); nextRawVolume = pending; return pending; },
+    externalSceneEdit: () => {
+      const previous = volumeViews.get(first.id)!;
+      const state = structuredClone(previous.state!); state.labels.opacity = .2;
+      volumeViews.set(first.id, { ...previous, revision: previous.revision + 1, state });
+    },
+    externalDisplayEdit: () => {
+      const previous = sourceViews.get(first.id)!;
+      sourceViews.set(first.id, { ...previous, revision: previous.revision + 1 });
+    },
     requestStatus: () => agentRequest?.status,
     queueAgentSet: (state: VolumeViewState) => {
       if (!lastPresence?.available) throw new Error("Fixture must publish a ready scene before queuing an agent edit");
@@ -229,6 +238,25 @@ function endPointer() {
   const event = new Event("pointerup", { bubbles: true }); Object.defineProperty(event, "pointerId", { value: 17 }); fireEvent(window, event);
 }
 
+function pointerClick(element: Element) {
+  for (const type of ["pointerdown", "pointerup"]) {
+    const event = new Event(type, { bubbles: true }); Object.defineProperty(event, "pointerId", { value: 23 });
+    fireEvent(element, event);
+  }
+  fireEvent.click(element);
+}
+
+async function holdOlderAutosave(f: ReturnType<typeof fixture>) {
+  const renderer = renderers.get(first.id)!, pending = f.holdSave();
+  await act(async () => {
+    renderer.snapshot.liveEpoch++;
+    renderer.snapshot.state.labels.selected_only = true;
+    renderer.changed?.();
+  });
+  await waitFor(() => expect(pending.entered()).toBe(true));
+  return { renderer, pending };
+}
+
 describe("Workbench volume scene lifecycle barriers", () => {
   it("persists the latest local label controls when their debounce joins a superseded save", async () => {
     const f = fixture(); await openVolume(f);
@@ -253,6 +281,80 @@ describe("Workbench volume scene lifecycle barriers", () => {
     expect(renderer.snapshot.state.labels).toEqual(f.state().state?.labels);
     expect(renderer.appliedStates).toEqual([]);
     expect(screen.queryByRole("button", { name: "Retry shared view" })).not.toBeInTheDocument();
+  });
+
+  it("drains an unchanged boundary snapshot after its pointer click supersedes an older autosave", async () => {
+    const f = fixture(); await openVolume(f);
+    const { renderer, pending } = await holdOlderAutosave(f);
+    renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .7;
+    const boundaryState = structuredClone(renderer.snapshot.state);
+    await act(async () => { pointerClick(screen.getByRole("button", { name: "Add images…" })); });
+    try { expect(f.openImages).not.toHaveBeenCalled(); }
+    finally { await act(async () => pending.release()); }
+    await waitFor(() => expect(f.openImages).toHaveBeenCalledOnce());
+    expect(f.state().state).toEqual(boundaryState);
+    expect(renderer.snapshot.state).toEqual(boundaryState);
+    const saved = f.events.filter(event => event.startsWith(`scene-saved:${first.id}:`));
+    expect(saved.length).toBeGreaterThanOrEqual(3); // initial, older A, current boundary B
+    expect(f.events.indexOf(saved.at(-1)!)).toBeLessThan(f.events.indexOf("native-open-images"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry shared view" })).not.toBeInTheDocument();
+  });
+
+  it.each(["human-input", "renderer-generation"] as const)("blocks a boundary snapshot changed by later %s while joining an older save", async (change) => {
+    const f = fixture(); await openVolume(f);
+    const { renderer, pending } = await holdOlderAutosave(f);
+    renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .7;
+    await act(async () => { pointerClick(screen.getByRole("button", { name: "Add images…" })); });
+    expect(f.openImages).not.toHaveBeenCalled();
+    if (change === "human-input") {
+      // The boundary's initiating click is accepted; this distinct later intent is not.
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .9;
+    } else renderer.snapshot.rendererGeneration++;
+    await act(async () => pending.release());
+    await screen.findByRole("alert");
+    expect(f.openImages).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+    expect(renderer.snapshot.state.labels.opacity).toBe(change === "human-input" ? .9 : .7);
+    expect(renderer.appliedStates).toEqual([]);
+  });
+
+  it("blocks later human input after the boundary snapshot retry has started saving", async () => {
+    const f = fixture(); await openVolume(f);
+    const { renderer, pending: olderSave } = await holdOlderAutosave(f);
+    renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .7;
+    await act(async () => { pointerClick(screen.getByRole("button", { name: "Add images…" })); });
+    const boundarySave = f.holdSave();
+    await act(async () => olderSave.release());
+    try {
+      await waitFor(() => expect(boundarySave.entered()).toBe(true));
+      expect(f.openImages).not.toHaveBeenCalled();
+      fireEvent.keyDown(window, { key: "ArrowRight" });
+      renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .9;
+    } finally { await act(async () => boundarySave.release()); }
+    await screen.findByRole("alert");
+    expect(f.openImages).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+    expect(renderer.snapshot.state.labels.opacity).toBe(.9);
+    expect(renderer.appliedStates).toEqual([]);
+  });
+
+  it.each(["scene", "display"] as const)("does not retry a durable %s CAS conflict while draining a boundary snapshot", async (conflict) => {
+    const f = fixture(); await openVolume(f);
+    const { renderer, pending } = await holdOlderAutosave(f);
+    const writesBeforeBoundary = f.execute.mock.calls.filter(([op]) => op === "save_volume_view").length;
+    renderer.snapshot.liveEpoch++; renderer.snapshot.state.labels.opacity = .7;
+    await act(async () => { pointerClick(screen.getByRole("button", { name: "Add images…" })); });
+    if (conflict === "scene") f.externalSceneEdit(); else f.externalDisplayEdit();
+    const externalState = f.state();
+    await act(async () => pending.release());
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Review the current revision/);
+    expect(f.openImages).not.toHaveBeenCalled();
+    expect(f.state()).toEqual(externalState);
+    expect(f.execute.mock.calls.filter(([op]) => op === "save_volume_view")).toHaveLength(writesBeforeBoundary);
+    expect(renderer.snapshot.state.labels.opacity).toBe(.7);
+    expect(renderer.appliedStates).toEqual([]);
   });
 
   it("commits a pending scene before selecting another source", async () => {
