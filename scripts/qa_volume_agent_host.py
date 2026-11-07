@@ -32,6 +32,10 @@ PHASES = ("core", "human", "reopen", "correction")
 CAPTURE_PANES = ["axial", "coronal", "sagittal", "volume"]
 MEMORY = 256 * 1024**2
 HUMAN_CLIP = 73
+POLICY_DENIAL = (
+    "The operation, source scope, disclosure or resource limit "
+    "is not authorized by the active policy."
+)
 TOOLS = {
     "volume_view",
     "set_volume_view",
@@ -190,12 +194,15 @@ crosshair, four visible panes and labels. Source channels are unchanged.
 3. Intentionally replay that SAME set_volume_view request ONCE. Expect VIEW_STALE;
 do not update its token or retry. Then read and confirm the successful scene remains.
 4. Intentionally set_volume_view once using the current token and patch={{"t":<current t>}}.
-Expect 'exceeds explicitly granted scene fields'. T is deliberately not a write grant.
-5. {CROP}.volume_view(source_id) ONCE must fail with whole-context/source scope denial.
+Expect the exact public authorization denial: '{POLICY_DENIAL}'. T is deliberately
+not a write grant. Private permission diagnostics are intentionally redacted.
+5. {CROP}.volume_view(source_id) ONCE must return that same public authorization denial.
+The lead independently checks the pinned crop restriction; do not infer a private reason.
 """
         if CHANNEL in prepared["policies"]:
             steps += (
-                f"6. {CHANNEL}.volume_view(source_id) ONCE must fail with channel scope denial.\n"
+                f"6. {CHANNEL}.volume_view(source_id) ONCE must return that same public "
+                "authorization denial. Its pinned channel restriction is checked independently.\n"
             )
         steps += (
             capture_step
@@ -497,6 +504,65 @@ def error_text(call):
     return texts[0]
 
 
+def is_policy_denial(tool, text):
+    return text == f"Error executing tool {tool}: {POLICY_DENIAL}"
+
+
+def verify_denial_policies(prepared, policies, dimensions):
+    """Bind generic public refusals to the exact intended negative policy fixtures."""
+    main = policies[MAIN]
+    grant = main["sources"][0]
+    required = {
+        "id": prepared["source_id"],
+        "sha256": prepared["source_sha256"],
+        "crop": {"x": 0, "y": 0, "width": dimensions["x"], "height": dimensions["y"]},
+        "t": [prepared["expected_t"]],
+        "c": list(range(dimensions["c"])),
+        "z": list(range(dimensions["z"])),
+        "level": [0],
+        "measurement_channels": list(range(dimensions["c"])),
+    }
+    require(main["sources"] == [required], "Main policy lacks exact whole-context authority")
+    require(
+        main["volume_views"]["read"] is True
+        and main["volume_views"]["write"] is True
+        and main["volume_views"]["image"] is True
+        and "t" not in main["volume_views"]["fields"]
+        and {"volume_view", "set_volume_view", "volume_view_image"} <= set(main["operations"])
+        and {"geometry", "provenance", "agent_metadata", "previews"} <= set(main["disclosures"]),
+        "Main policy does not isolate the intended field refusal",
+    )
+    for server in (CROP, CHANNEL):
+        if server not in policies:
+            require(server == CHANNEL and dimensions["c"] == 1, "Missing scope policy")
+            continue
+        expected = copy.deepcopy(main)
+        for key in ("remote_grants", "experimental_recipes", "actions", "delegation"):
+            expected.pop(key, None)
+        expected["operations"] = ["volume_view"]
+        expected["volume_views"] = {
+            "read": True,
+            "write": False,
+            "image": False,
+            "fields": [],
+        }
+        if server == CROP:
+            expected["sources"][0]["crop"]["width"] = grant["crop"]["width"] - 1
+        else:
+            channels = policies[server]["sources"][0]["c"]
+            require(
+                len(channels) == 1
+                and channels[0] in required["c"]
+                and not set(prepared["expected_channels"]) <= set(channels),
+                "Channel policy does not withhold a displayed input",
+            )
+            expected["sources"][0]["c"] = channels
+        require(
+            policies[server] == expected,
+            "Scope policy changed beyond its intended restriction",
+        )
+
+
 def host_calls(events, policies):
     active, calls, seen = None, [], set()
     threads = [event["thread_id"] for event in events if event.get("type") == "thread.started"]
@@ -726,6 +792,13 @@ def verify(args):
         s for s in sessions if s["policy_sha256"] == prepared["policies"][MAIN]["sha256"]
     )
     project = ResearchProject(prepared["study"])
+    from loci_engine.volume_view_state import source_dimensions
+
+    verify_denial_policies(
+        prepared,
+        {server: read(policy["path"]) for server, policy in prepared["policies"].items()},
+        source_dimensions(project.source(prepared["source_id"])),
+    )
     requests = {d["id"]: d["data"] for d in project.documents("volume_view_request")}
     errors, images, writes, cancelled, reads = [], [], [], [], []
     successful_set = None
@@ -753,7 +826,8 @@ def verify(args):
                 require(
                     phase == "core"
                     and arguments == {"source_id": prepared["source_id"]}
-                    and "exceeds policy" in denial,
+                    and tool == "volume_view"
+                    and is_policy_denial(tool, denial),
                     "Unexpected scoped-denial request",
                 )
                 errors.append(server)
@@ -770,9 +844,29 @@ def verify(args):
             elif (
                 phase == "core"
                 and tool == "set_volume_view"
-                and "exceeds explicitly granted scene fields" in denial
+                and server == MAIN
+                and is_policy_denial(tool, denial)
             ):
-                require(set(arguments["request"]["patch"]) == {"t"}, "Wrong denied scene group")
+                require(
+                    reads
+                    and arguments["request"]
+                    == {
+                        "source_id": prepared["source_id"],
+                        "source_sha256": prepared["source_sha256"],
+                        "expected_live": {
+                            key: reads[-1]["live"][key]
+                            for key in (
+                                "view_id",
+                                "renderer_generation",
+                                "live_epoch",
+                                "revision",
+                                "display_revision",
+                            )
+                        },
+                        "patch": {"t": reads[-1]["state"]["t"]},
+                    },
+                    "Wrong denied field, source or current scene token",
+                )
                 errors.append("field")
             else:
                 raise AssertionError("Unexpected host tool error: " + denial)

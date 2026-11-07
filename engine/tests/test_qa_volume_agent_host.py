@@ -106,3 +106,77 @@ def test_metadata_packet_has_no_source_paths_or_native_dispatch():
 def test_correction_prompt_requires_explicit_prepared_authority():
     with pytest.raises(AssertionError, match="not explicitly prepared"):
         QA.prompt({"allow_correction": False}, "correction")
+
+
+def test_policy_denial_accepts_only_the_exact_public_boundary_message():
+    message = "Error executing tool volume_view: " + QA.POLICY_DENIAL
+    assert QA.is_policy_denial("volume_view", message)
+    assert not QA.is_policy_denial("set_volume_view", message)
+    assert not QA.is_policy_denial("volume_view", message + " /private/source.tif")
+    assert not QA.is_policy_denial(
+        "volume_view", "Error executing tool volume_view: exceeds policy"
+    )
+    assert not QA.is_policy_denial(
+        "volume_view", "Error executing tool volume_view: The research operation failed validation."
+    )
+
+
+def denial_policy_fixture():
+    prepared = {
+        "source_id": "a" * 32,
+        "source_sha256": "b" * 64,
+        "expected_t": 1,
+        "expected_channels": [0, 1],
+    }
+    dimensions = {"x": 64, "y": 48, "z": 3, "c": 2, "t": 2}
+    main = {
+        "sources": [
+            {
+                "id": prepared["source_id"],
+                "sha256": prepared["source_sha256"],
+                "crop": {"x": 0, "y": 0, "width": 64, "height": 48},
+                "t": [1],
+                "c": [0, 1],
+                "z": [0, 1, 2],
+                "level": [0],
+                "measurement_channels": [0, 1],
+            }
+        ],
+        "operations": ["volume_view", "set_volume_view", "volume_view_image"],
+        "disclosures": ["geometry", "provenance", "agent_metadata", "previews"],
+        "volume_views": {"read": True, "write": True, "image": True, "fields": ["clipping"]},
+    }
+    policies = {QA.MAIN: main, QA.CROP: copy.deepcopy(main), QA.CHANNEL: copy.deepcopy(main)}
+    for server in (QA.CROP, QA.CHANNEL):
+        policies[server]["operations"] = ["volume_view"]
+        policies[server]["volume_views"] = {
+            "read": True,
+            "write": False,
+            "image": False,
+            "fields": [],
+        }
+    policies[QA.CROP]["sources"][0]["crop"]["width"] = 63
+    policies[QA.CHANNEL]["sources"][0]["c"] = [1]
+    return prepared, policies, dimensions
+
+
+def test_generic_policy_refusals_require_independently_pinned_scope_restrictions():
+    QA.verify_denial_policies(*denial_policy_fixture())
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda p: p[QA.MAIN]["volume_views"]["fields"].append("t"),
+        lambda p: p[QA.CROP]["sources"][0]["crop"].update(width=64),
+        lambda p: p[QA.CHANNEL]["sources"][0].update(c=[0, 1]),
+        lambda p: p[QA.CHANNEL]["sources"][0].update(id="c" * 32),
+        lambda p: p[QA.CROP]["operations"].clear(),
+        lambda p: p[QA.CROP]["disclosures"].clear(),
+    ],
+)
+def test_scope_denial_cannot_be_inferred_from_wrong_or_unrelated_policy(mutation):
+    prepared, policies, dimensions = denial_policy_fixture()
+    mutation(policies)
+    with pytest.raises(AssertionError):
+        QA.verify_denial_policies(prepared, policies, dimensions)

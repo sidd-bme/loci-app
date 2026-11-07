@@ -13,6 +13,7 @@ import uuid
 
 from .quantitative import integer
 from .research_project import canonical_json, parse_json, timestamp
+from .volume_view_errors import VolumeViewError
 from .volume_view_state import (
     PATCH_GROUPS,
     digest,
@@ -69,17 +70,17 @@ def _current(project, source_id, expected, *, ready=True):
     validate_live(expected)
     current = presence(project, source_id)
     if current is None or not current["available"]:
-        raise ValueError("VIEW_UNAVAILABLE: no live GUI volume view")
+        raise VolumeViewError("VIEW_UNAVAILABLE")
     if live_token(current) != expected:
-        raise ValueError("VIEW_STALE: human or renderer state changed")
+        raise VolumeViewError("VIEW_STALE")
     if ready and current["busy"]:
-        raise ValueError("VIEW_BUSY: finish the current human interaction")
+        raise VolumeViewError("VIEW_BUSY")
     saved = read_volume_view(project, source_id)
     if (
         saved["revision"] != expected["revision"]
         or saved["display_revision"] != expected["display_revision"]
     ):
-        raise ValueError("VIEW_STALE: saved view or display changed")
+        raise VolumeViewError("VIEW_STALE")
     return current
 
 
@@ -162,7 +163,7 @@ def enqueue(agent, project, kind, request, *, authorized_mode):
     expected = request["expected_live"]
     _current(project, request["source_id"], expected)
     if current["state"] is None:
-        raise ValueError("VIEW_UNAVAILABLE: the GUI has not saved a volume scene")
+        raise VolumeViewError("VIEW_UNAVAILABLE")
     state = copy.deepcopy(current["state"])
     if kind == "set":
         patch = request["patch"]
@@ -270,7 +271,7 @@ def _guard_request(project, document, supplied_live, statuses):
         raise ValueError("Volume request expired or is no longer pending")
     expected = record.get("applied_live", record["expected_live"])
     if supplied_live != expected:
-        raise ValueError("VIEW_STALE: response token differs from the request")
+        raise VolumeViewError("VIEW_STALE")
     _current(project, record["source_id"], expected)
     authorize_record(project, record)
     return record

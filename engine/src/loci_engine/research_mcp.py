@@ -68,6 +68,7 @@ from .research_tool_schemas import (
     VolumeViewImageRequest,
     tool_request_schema,
 )
+from .volume_view_errors import VolumeViewError
 from .workbench import Workbench, runtime_record
 
 _TOOL_CATALOG = (
@@ -2413,7 +2414,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                         last_error=None,
                     )
             return result
-        except (AgentSessionApprovalError, TaskRevisionConflict) as exc:
+        except (AgentSessionApprovalError, TaskRevisionConflict, VolumeViewError) as exc:
             if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(

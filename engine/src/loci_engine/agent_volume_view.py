@@ -6,6 +6,7 @@ import copy
 import time
 
 from .quantitative import integer
+from .volume_view_errors import VolumeViewError
 from .volume_view_state import exact, read_volume_view, source_dimensions
 
 
@@ -80,7 +81,9 @@ def submit(agent, kind, request):
         validate_live(request["expected_live"])
         state = copy.deepcopy(value["state"])
         if state is None:
-            raise ValueError("VIEW_UNAVAILABLE: no saved GUI volume scene")
+            # Public readiness must not disclose an ungranted source or scope.
+            authorize_scene(agent.policy, workbench.project, request["source_id"], None, kind)
+            raise VolumeViewError("VIEW_UNAVAILABLE")
         # Check the observed scene as well as the proposed one: a patch cannot
         # gain authority by hiding an ungranted input from its final state.
         authorize_scene(agent.policy, workbench.project, request["source_id"], state, kind)
