@@ -273,6 +273,7 @@ try {
   await panel.getByLabel('Session permission mode', { exact: true }).selectOption('full_access');
   await panel.getByText('Customize permissions', { exact: true }).click();
   await panel.getByLabel('Share plans and assessments', { exact: true }).check();
+  await panel.getByLabel('Allow display-only recipe previews', { exact: true }).check();
   await panel.getByLabel('Agent result scope', { exact: true }).selectOption('granted-sources');
   for (const disclosure of ['geometry', 'source_names', 'previews', 'measurements', 'provenance', 'agent_metadata']) await panel.getByLabel('Disclose ' + disclosure, { exact: true }).check();
   await panel.getByRole('button', { name: 'Validate exact scope and recipe', exact: true }).click();
@@ -300,8 +301,8 @@ try {
   await openDrawer(); await page.getByText(initialGoal, { exact: true }).waitFor(); await shot(page, '01-docked-plan');
   report.stage = 'draft-transfer-and-native-close';
   await page.getByRole('button', { name: 'Edit plan', exact: true }).click();
-  const firstDraft = 'Unsaved main-window plan before detaching'; await page.getByLabel('Goal', { exact: true }).fill(firstDraft);
-  await popOut(); assert.equal(await popup.getByLabel('Goal', { exact: true }).inputValue(), firstDraft);
+  const firstDraft = 'Unsaved main-window plan before detaching'; await page.getByRole('textbox', { name: 'Goal', exact: true }).fill(firstDraft);
+  await popOut(); assert.equal(await popup.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), firstDraft);
   const isolated = await popup.evaluate(() => ({ api: Object.keys(window.lociAgentWorkspace).sort(), desktop: typeof window.loci, research: typeof window.lociResearch,
     images: typeof window.lociImageWindows, node: typeof window.require, process: typeof window.process }));
   assert.equal(isolated.desktop, 'undefined'); assert.equal(isolated.research, 'undefined'); assert.equal(isolated.images, 'undefined'); assert.equal(isolated.node, 'undefined'); assert.equal(isolated.process, 'undefined'); assert.equal(isolated.api.includes('execute'), false);
@@ -312,17 +313,17 @@ try {
   const firstWindow = (await app.browserWindow(popup)); const windowId = await firstWindow.evaluate(w => w.id); await firstWindow.dispose();
   await page.getByRole('button', { name: 'Agent session status', exact: true }).click();
   assert.equal((await app.windows()).length, 2, 'Repeated open must focus one existing agent window');
-  const secondDraft = 'Latest popup draft survives ordinary native close'; await popup.getByLabel('Goal', { exact: true }).fill(secondDraft);
+  const secondDraft = 'Latest popup draft survives ordinary native close'; await popup.getByRole('textbox', { name: 'Goal', exact: true }).fill(secondDraft);
   await nativeClosePopup();
-  await page.getByLabel('Goal', { exact: true }).waitFor(); assert.equal(await page.getByLabel('Goal', { exact: true }).inputValue(), secondDraft);
+  await page.getByRole('textbox', { name: 'Goal', exact: true }).waitFor(); assert.equal(await page.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), secondDraft);
   const unsaved = tasks(await snapshot()).find(t => t.id === taskId); assert.equal(unsaved.goal, initialGoal); assert.equal(unsaved.revision, 1);
   await page.getByRole('button', { name: 'Save plan', exact: true }).click();
   await wait(snapshot, value => tasks(value).some(t => t.id === taskId && t.goal === secondDraft && t.revision === 2 && t.updated_by === 'human'), 'main UI saved exact transferred draft');
   await popOut();
   await popup.getByRole('button', { name: 'Edit plan', exact: true }).click();
-  const thirdDraft = 'Popup draft returns through the explicit dock control'; await popup.getByLabel('Goal', { exact: true }).fill(thirdDraft);
+  const thirdDraft = 'Popup draft returns through the explicit dock control'; await popup.getByRole('textbox', { name: 'Goal', exact: true }).fill(thirdDraft);
   const returned = popup.waitForEvent('close'); await popup.getByRole('button', { name: 'Return to workspace', exact: true }).click(); await returned; popup = undefined;
-  assert.equal(await page.getByLabel('Goal', { exact: true }).inputValue(), thirdDraft);
+  assert.equal(await page.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), thirdDraft);
   await page.getByRole('button', { name: 'Cancel editing', exact: true }).click(); await popOut();
   assert.equal(await popup.getByRole('form', { name: 'Edit agent plan' }).count(), 0);
   assert.equal(tasks((await workspaceState(popup)).snapshot).find(t => t.id === taskId).goal, secondDraft);
@@ -351,9 +352,11 @@ try {
     await window.lociAgentWorkspace.navigate(state.binding, { requestId: crypto.randomUUID(), intent: 'open-result', target: { ...target, revision_hash: '0'.repeat(64) } }); return { rejected: false };
   } catch (error) { return { rejected: true, message: String(error) }; } }, resultTarget);
   assert.equal(staleNavigation.rejected, true); report.checks.push({ name: 'stale-recorded-revision-refused', ...staleNavigation });
-  await popup.getByLabel('Follow agent', { exact: true }).check();
+  await popup.getByLabel('Follow agent', { exact: true }).click();
   await wait(workspaceState, value => value.follow === true, 'Follow state shared with main');
-  await popup.getByLabel('Follow agent', { exact: true }).uncheck(); await wait(workspaceState, value => value.follow === false, 'Follow disabled in main');
+  assert.equal(await popup.getByLabel('Follow agent', { exact: true }).isChecked(), true);
+  await popup.getByLabel('Follow agent', { exact: true }).click(); await wait(workspaceState, value => value.follow === false, 'Follow disabled in main');
+  assert.equal(await popup.getByLabel('Follow agent', { exact: true }).isChecked(), false);
   await popup.getByRole('button', { name: 'Pause access', exact: true }).click();
   await wait(snapshot, value => value.agent_sessions.policies.some(p => p.policy_sha256 === policyHash && p.paused), 'popup pause native policy');
   await client.call('inspect_source', { source_id: source.id }, true);
@@ -364,18 +367,22 @@ try {
   await popup.getByLabel('Agent permission mode', { exact: true }).selectOption('ask_approval');
   await wait(snapshot, value => value.agent_sessions.policies.some(p => p.policy_sha256 === policyHash && p.permission_mode === 'ask_approval'), 'popup permission mode');
   const currentTask = tasks(await snapshot()).find(t => t.id === taskId);
-  const assessment = client.call('agent_task_write', { operation: 'publish_assessment', request: { task_id: taskId, expected_revision: currentTask.revision,
+  await client.call('agent_task_write', { operation: 'publish_assessment', request: { task_id: taskId, expected_revision: currentTask.revision,
     summary: 'The generated source and retained labels are linked to the same study.', observations: ['Three authored regions are retained in the baseline result.'],
     limitations: ['Generated technical fixture; no biological accuracy or human scientific review.'], targets: [sourceTarget, resultTarget] } });
-  const pending = await wait(snapshot, value => value.agent_sessions.approvals.some(a => a.operation === 'agent_task_write' && a.state === 'pending'), 'actual SDK task approval');
-  const approval = pending.agent_sessions.approvals.find(a => a.operation === 'agent_task_write' && a.state === 'pending');
+  assert.equal((await snapshot()).agent_sessions.approvals.filter(a => a.state === 'pending').length, 0, 'Granted prose metadata does not execute analysis or require an execution approval');
+  const approvedRequest = await json(path.join(access, 'approved-request.json'));
+  const preview = client.call('preview_recipe', { request: approvedRequest });
+  const pending = await wait(snapshot, value => value.agent_sessions.approvals.some(a => a.operation === 'preview_recipe' && a.state === 'pending'), 'actual SDK preview approval');
+  const approval = pending.agent_sessions.approvals.find(a => a.operation === 'preview_recipe' && a.state === 'pending');
   assert.equal(approval.session_id, report.session_id); assert.equal(approval.policy_sha256, policyHash);
-  await popup.getByRole('button', { name: 'Approve agent_task_write', exact: true }).click(); await assessment;
+  await popup.getByRole('button', { name: 'Approve preview_recipe', exact: true }).click(); await preview;
   await wait(snapshot, value => value.agent_sessions.approvals.some(a => a.id === approval.id && a.state === 'consumed'), 'single-use popup approval consumed');
-  assert.ok((await snapshot()).results.every(value => value.review == null), 'Task approval must not create scientific result review');
-  await checkpoint('live-controls-and-single-use-task-approval');
+  assert.ok((await snapshot()).results.every(value => value.review == null), 'Preview approval must not create scientific result review');
+  await checkpoint('live-controls-and-single-use-preview-approval');
   report.stage = 'real-layout-and-appearance';
   await popup.getByRole('button', { name: 'Overview', exact: true }).click();
+  await popup.locator('.agent-workspace-content').evaluate(element => { element.scrollTop = 0; });
   await setTheme('graphite'); await placePopup(960, 760);
   const wide = await shot(popup, '02-detached-wide-graphite'); assert.equal(wide.grid_columns.split(' ').length, 2);
   await placePopup(520, 740); const narrow = await shot(popup, '03-detached-narrow-graphite'); assert.equal(narrow.grid_columns.split(' ').length, 1);

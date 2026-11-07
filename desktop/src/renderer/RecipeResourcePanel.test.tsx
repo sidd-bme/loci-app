@@ -89,4 +89,72 @@ describe("recipe resources", () => {
     expect(screen.getByLabelText("Recipe memory allowance")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Use recommended" })).toBeDisabled();
   });
+  it("cancels a queued estimate while the native picker pins the document and retries on resume", async () => {
+    vi.useFakeTimers();
+    const { props, api, onBudget } = setup();
+    const { rerender } = render(<RecipeResourcePanel {...props} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    rerender(<RecipeResourcePanel {...props} suspended />);
+    await tick();
+    expect(api.execute).not.toHaveBeenCalled();
+    rerender(<RecipeResourcePanel {...props} suspended={false} />);
+    await tick();
+    expect(api.execute).toHaveBeenCalledTimes(1);
+    expect(api.execute).toHaveBeenCalledWith("recipe_preflight", { source_id: source.id, selection, recipe });
+    expect(screen.getByText("892.64 MiB")).toBeInTheDocument();
+    expect(onBudget).not.toHaveBeenCalled();
+  });
+  it("ignores a late successful estimate from before the picker after the resumed estimate completes", async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (value: unknown) => void;
+    const execute = vi.fn().mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve; }))
+      .mockResolvedValue(receipt(10400));
+    const { props, onBudget } = setup(execute);
+    const { rerender } = render(<RecipeResourcePanel {...props} />);
+    await tick();
+    rerender(<RecipeResourcePanel {...props} suspended />);
+    rerender(<RecipeResourcePanel {...props} suspended={false} />);
+    await tick();
+    await act(async () => { resolveOld(receipt()); });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("0.01 MiB")).toBeInTheDocument();
+    expect(screen.queryByText("892.64 MiB")).not.toBeInTheDocument();
+    expect(onBudget).not.toHaveBeenCalled();
+  });
+  it("ignores an in-flight barrier rejection and rechecks identical bindings after the picker", async () => {
+    vi.useFakeTimers();
+    let rejectOld!: (reason: Error) => void;
+    const execute = vi.fn().mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOld = reject; }))
+      .mockResolvedValue(receipt(10400));
+    const { props, onBudget } = setup(execute);
+    const { rerender } = render(<RecipeResourcePanel {...props} />);
+    await tick();
+    rerender(<RecipeResourcePanel {...props} suspended />);
+    await act(async () => { rejectOld(new Error("Wait for the study to finish opening.")); });
+    await tick();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Wait for the study to finish opening.")).not.toBeInTheDocument();
+    rerender(<RecipeResourcePanel {...props} suspended={false} />);
+    await tick();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("0.01 MiB")).toBeInTheDocument();
+    expect(onBudget).not.toHaveBeenCalled();
+  });
+  it("recovers a retained error on resume without requiring a recipe change or manual recheck", async () => {
+    vi.useFakeTimers();
+    const execute = vi.fn().mockRejectedValueOnce(new Error("Wait for the study to finish opening."))
+      .mockResolvedValue(receipt(10400));
+    const { props } = setup(execute);
+    const { rerender } = render(<RecipeResourcePanel {...props} />);
+    await tick();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    rerender(<RecipeResourcePanel {...props} suspended />);
+    rerender(<RecipeResourcePanel {...props} suspended={false} />);
+    await tick();
+    expect(screen.getByText("0.01 MiB")).toBeInTheDocument();
+    expect(screen.queryByText("Wait for the study to finish opening.")).not.toBeInTheDocument();
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
 });

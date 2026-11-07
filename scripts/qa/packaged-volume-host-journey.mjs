@@ -174,7 +174,8 @@ async function launch(number) {
   if (number === 1) {
     await stableScene(value => value.state?.result?.result_id === parent.id && value.state.camera, 'initial parent scene before channel selection');
     if (!(await scene()).state.channels.includes(fixture.selection.c)) {
-      const channel = page.getByRole('checkbox', { name: `Channel ${fixture.selection.c + 1} visible`, exact: true });
+      const channelName = source.metadata.channel_names?.[fixture.selection.c] ?? `Channel ${fixture.selection.c + 1}`;
+      const channel = page.getByRole('checkbox', { name: `${channelName} visible`, exact: true });
       if (!await channel.isVisible()) await page.locator('summary').filter({ hasText: /^Display channels$/u }).click();
       if (await channel.isChecked()) await channel.uncheck();
       await channel.check();

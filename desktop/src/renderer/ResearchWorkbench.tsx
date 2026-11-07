@@ -4138,7 +4138,7 @@ export default function ResearchWorkbench({
         </div>}
         {source && (tab === "Process" || (tab === "Analyze" && segmentationFamily === "classical")) &&
           <RecipeResourcePanel api={api} source={source} selection={shownSelection} recipe={recipe}
-            busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
+            suspended={documentSwitching} busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
           <Process
             key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("process", valid)}

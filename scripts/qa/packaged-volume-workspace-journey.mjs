@@ -211,17 +211,25 @@ try {
   await selectWorkbenchTool(page, 'Display'); await page.getByLabel('Display scope').selectOption('max'); await page.getByLabel('Analysis depth').selectOption('volume');
   for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['Z', 'z'], ['Z stop', 'z_stop'], ['T', 't']]) await setSelectionField(page, label, fixture.selection[key]);
   await selectWorkbenchTool(page, 'Analyze'); await page.getByLabel('Segmentation input', { exact: true }).selectOption(String(fixture.selection.c));
-  await revealExternalLabels(page); await page.getByRole('button', { name: 'Import labels', exact: true }).click();
+  await revealExternalLabels(page);
+  const memoryEstimate = page.locator('.recipe-resources summary strong');
+  const waitMemory = label => wait(() => memoryEstimate.innerText(), value => /^\d[\d,.]* (?:MiB|GiB)$/u.test(value), label);
+  const memoryBeforePicker = await waitMemory('recipe estimate before native label picker');
+  await page.getByRole('button', { name: 'Import labels', exact: true }).click();
   if (nativeLabels) {
     console.log('NATIVE_LABEL_CANCEL_READY');
     await wait(() => app.evaluate(() => globalThis.__volumeQaDialogs.filter(d => /^Import labels/.test(d.title))), v => v.length === 1, 'ordinary label picker cancellation', 120000);
     const cancelled = await app.evaluate(() => globalThis.__volumeQaDialogs.at(-1));
     assert.equal(cancelled.simulated, false); assert.equal(cancelled.canceled, true);
     assert.equal((await snapshot()).results.length, 0, 'Cancelling the picker must not create a result');
+    const restoredEstimate = await waitMemory('recipe estimate automatically restored after picker cancellation');
+    assert.equal(restoredEstimate, memoryBeforePicker);
+    report.checks.push({ route: 'native picker cancellation memory estimate recovery', estimate: restoredEstimate });
     await page.getByRole('button', { name: 'Import labels', exact: true }).click();
     console.log('NATIVE_LABEL_SELECT_READY');
   }
   await page.getByAltText(/Checked label overlay on the volume/u).waitFor({ timeout: nativeLabels ? 120000 : 30000 });
+  assert.equal(await waitMemory('recipe estimate restored after label preview'), memoryBeforePicker);
   await page.getByRole('button', { name: 'Import on this volume', exact: true }).click();
   parent = (await waitForSnapshot(page, s => s.results.length === 1, 'actual volume label adoption', 120000)).results[0];
   assert.equal(parent.label_import.profile, 'scalar-native-zyx/v1'); assert.deepEqual(parent.selection, fixture.selection); assert.equal(parent.object_count, fixture.rows.length); assert.equal(parent.review, null);
