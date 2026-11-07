@@ -10,7 +10,7 @@ import type { VolumeSceneAdapter, VolumeSceneSnapshot, VolumeViewDocument, Volum
 import ResearchWorkbench from "./ResearchWorkbench";
 
 const renderers = vi.hoisted(() => new Map<string, {
-  snapshot: VolumeSceneSnapshot; locked: boolean; changed: (() => void) | null;
+  snapshot: VolumeSceneSnapshot; locked: boolean; changed: (() => void) | null; appliedStates: VolumeViewState[];
 }>());
 
 // Keep the Workbench, SourceViewStore and VolumeSceneBridge real. The test boundary
@@ -18,23 +18,30 @@ const renderers = vi.hoisted(() => new Map<string, {
 vi.mock("./RawVolumeViewport", async () => {
   const React = await import("react");
   return { RawVolumeViewport: ({ volume, loading, sceneHandleRef, onSceneChange }: {
-    volume: { context: { source_id: string } } | null; loading?: boolean;
+    volume: { context: { source_id: string; t: number; components: Array<{ channel_index: number }> } } | null; loading?: boolean;
     sceneHandleRef?: RefObject<VolumeSceneAdapter | null>; onSceneChange?: () => void;
   }) => {
     const sourceId = !loading ? volume?.context.source_id : undefined;
     const entry = sourceId ? renderers.get(sourceId) : undefined;
     React.useEffect(() => {
       if (!entry || !sceneHandleRef) return;
+      entry.snapshot.state.t = volume!.context.t;
+      entry.snapshot.state.channels = volume!.context.components.map(component => component.channel_index);
       const adapter: VolumeSceneAdapter = {
         snapshot: () => structuredClone(entry.snapshot),
-        apply: async (state) => { entry.snapshot.state = structuredClone(state); },
+        apply: async (state) => {
+          entry.appliedStates.push(structuredClone(state)); entry.snapshot.state = structuredClone(state);
+          // Actual scene application resolves after a rendered frame, allowing
+          // Workbench target effects to commit while the renderer is locked.
+          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        },
         capture: async () => { throw new Error("Lifecycle regression must not request an image capture."); },
         lock: (locked) => { entry.locked = locked; },
       };
       sceneHandleRef.current = adapter; entry.changed = onSceneChange ?? null;
       onSceneChange?.();
       return () => { if (sceneHandleRef.current === adapter) sceneHandleRef.current = null; entry.changed = null; };
-    }, [entry, sceneHandleRef, onSceneChange]);
+    }, [entry, volume, sceneHandleRef, onSceneChange]);
     return entry ? <div aria-label="Mock volume renderer ready">
       <button type="button" onClick={() => {
         if (entry.locked) throw new Error("A human edit reached the locked mock renderer.");
@@ -48,8 +55,8 @@ vi.mock("./RawVolumeViewport", async () => {
 
 const first: ResearchSource = {
   id: "a".repeat(32), sha256: "b".repeat(64), name: "First volume", source_kind: "native",
-  metadata: { format: "OME-TIFF", axes: "TCZYX", sample_semantics: "scalar", channel_names: ["Signal"], channel_dtypes: ["uint8"],
-    dimensions: { x: 64, y: 48, z: 3, t: 1, c: 1 }, levels: [{ index: 0, dimensions: { x: 64, y: 48, z: 3, t: 1, c: 1 } }] },
+  metadata: { format: "OME-TIFF", axes: "TCZYX", sample_semantics: "scalar", channel_names: ["Signal", "Reference"], channel_dtypes: ["uint8", "uint8"],
+    dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 }, levels: [{ index: 0, dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 } }] },
 };
 const second: ResearchSource = { ...structuredClone(first), id: "c".repeat(32), sha256: "d".repeat(64), name: "Second volume" };
 const scene = (): VolumeViewState => ({
@@ -72,7 +79,7 @@ function gate() {
 beforeEach(() => {
   renderers.clear();
   for (const source of [first, second]) renderers.set(source.id, {
-    snapshot: { state: scene(), liveEpoch: 0, rendererGeneration: 1, busy: false, available: true }, locked: false, changed: null,
+    snapshot: { state: scene(), liveEpoch: 0, rendererGeneration: 1, busy: false, available: true }, locked: false, changed: null, appliedStates: [],
   });
   vi.stubGlobal("crypto", webcrypto);
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -112,15 +119,34 @@ function fixture() {
     { schema: "loci.volume-view/v1", source_id: source.id, source_sha256: source.sha256, geometry_sha256: "f".repeat(64), revision: 0, display_revision: 0, state: null }]));
   let nextSave: ReturnType<typeof gate> | null = null;
   let nextRead: ReturnType<typeof gate> | null = null;
+  let nextRawVolume: ReturnType<typeof gate> | null = null;
+  let agentRequest: Record<string, unknown> | null = null;
   const execute = vi.fn(async (operation: string, request: Record<string, unknown>): Promise<unknown> => {
     const sourceId = String(request.source_id);
     const source = [first, second].find((item) => item.id === sourceId);
-    if (operation === "volume_view_requests") return { requests: [] };
+    if (operation === "volume_view_requests") return { requests: agentRequest?.status === "queued" ? [structuredClone(agentRequest)] : [] };
+    if (operation === "volume_view_request_apply") {
+      if (!agentRequest || request.request_id !== agentRequest.request_id) throw new Error("Fixture request identity mismatch");
+      const previous = volumeViews.get(first.id)!;
+      const token = agentRequest.expected_live as Record<string, unknown>;
+      if (request.live_token && JSON.stringify(request.live_token) !== JSON.stringify(token)) throw new Error("Fixture request token mismatch");
+      const saved: VolumeViewDocument = { ...previous, revision: previous.revision + 1,
+        state: structuredClone(agentRequest.proposed_state) as VolumeViewState };
+      volumeViews.set(first.id, saved); agentRequest.status = "applying";
+      return { request_id: agentRequest.request_id, status: "applying", live_token: { ...token, revision: saved.revision }, view: structuredClone(saved) };
+    }
+    if (operation === "volume_view_request_complete" || operation === "volume_view_request_fail") {
+      if (!agentRequest || request.request_id !== agentRequest.request_id) throw new Error("Fixture request identity mismatch");
+      agentRequest.status = operation === "volume_view_request_complete" ? "complete" : "failed";
+      if (operation === "volume_view_request_fail") agentRequest.reason = request.reason;
+      return { request_id: agentRequest.request_id, status: agentRequest.status };
+    }
     if (!source) return {};
     if (operation === "viewer_defaults") {
       events.push(`source-defaults:${sourceId}`);
       return { source_id: sourceId, source_sha256: source.sha256, basis: "Synthetic acquisition range",
-        channels: [{ channel: 0, low: 0, high: 255, gamma: 1, color: "#ffffff", opacity: 1, visible: true }] };
+        channels: [{ channel: 0, low: 0, high: 255, gamma: 1, color: "#ffffff", opacity: 1, visible: true },
+          { channel: 1, low: 0, high: 255, gamma: 1, color: "#00ff00", opacity: 1, visible: false }] };
     }
     if (operation === "source_view") return structuredClone(sourceViews.get(sourceId));
     if (operation === "save_source_view") {
@@ -133,7 +159,11 @@ function fixture() {
     if (operation === "viewer_tile") return { image: "data:image/png;base64,fixture", source_sha256: source.sha256,
       ...(request.overview ? { source_extent: [64, 48], width: 64, height: 48,
         selection: { t: request.t ?? 0, z: request.z ?? 0, c: request.c ?? 0, z_stop: request.z_stop ?? null }, projection: request.projection ?? null } : { selection: request.selection }) };
-    if (operation === "viewer_volume") return { schema_version: 1, context: { source_id: sourceId, source_sha256: source.sha256, t: request.t }, focus: null };
+    if (operation === "viewer_volume") {
+      if (nextRawVolume) { const pending = nextRawVolume; nextRawVolume = null; await pending.wait(); }
+      return { schema_version: 1, context: { source_id: sourceId, source_sha256: source.sha256, t: request.t,
+        components: (request.channel_indices as number[]).map(channel_index => ({ channel_index })) }, focus: null };
+    }
     if (operation === "volume_view") {
       if (nextRead) { const pending = nextRead; nextRead = null; await pending.wait(); }
       return { ...structuredClone(volumeViews.get(sourceId)), display_revision: sourceViews.get(sourceId)!.revision };
@@ -171,6 +201,15 @@ function fixture() {
     state: () => structuredClone(volumeViews.get(first.id)!),
     holdSave: () => { const pending = gate(); nextSave = pending; return pending; },
     holdRead: () => { const pending = gate(); nextRead = pending; return pending; },
+    holdRawVolume: () => { const pending = gate(); nextRawVolume = pending; return pending; },
+    requestStatus: () => agentRequest?.status,
+    queueAgentSet: (state: VolumeViewState) => {
+      if (!lastPresence?.available) throw new Error("Fixture must publish a ready scene before queuing an agent edit");
+      const expected_live = Object.fromEntries(["view_id", "renderer_generation", "live_epoch", "revision", "display_revision"].map(key => [key, lastPresence![key]]));
+      agentRequest = { request_id: "6".repeat(32), source_id: first.id, source_sha256: first.sha256,
+        kind: "set", status: "queued", expected_live, proposed_state: structuredClone(state), panes: [], max_size: 1024 };
+      renderers.get(first.id)!.changed?.();
+    },
   };
 }
 
@@ -264,4 +303,38 @@ describe("Workbench volume scene lifecycle barriers", () => {
     expect(f.events.indexOf(`scene-saved:${first.id}:1`)).toBeLessThan(f.events.indexOf("native-open-images"));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+  it("keeps an agent scene edit on the ready payload without clearing or reloading identical inputs", async () => {
+    const f = fixture(); await openVolume(f);
+    const initialRequests = f.execute.mock.calls.filter(([op]) => op === "viewer_volume").length;
+    const unexpectedReload = f.holdRawVolume();
+    const target = structuredClone(renderers.get(first.id)!.snapshot.state);
+    target.crosshair_source_xyz = [46, 34, 1]; target.labels.opacity = 0.65;
+    try {
+      await act(async () => { f.queueAgentSet(target); });
+      await waitFor(() => expect(f.requestStatus()).toBe("complete"));
+      expect(unexpectedReload.entered()).toBe(false);
+      expect(f.execute.mock.calls.filter(([op]) => op === "viewer_volume")).toHaveLength(initialRequests);
+      expect(renderers.get(first.id)!.snapshot.state).toEqual(target);
+      expect(renderers.get(first.id)!.appliedStates).toEqual([target]);
+      expect(screen.queryByText(/The volume renderer is unavailable/)).not.toBeInTheDocument();
+    } finally { await act(async () => unexpectedReload.release()); }
+  });
+
+  it("waits for genuinely changed agent scene time and channels before applying or acknowledging", async () => {
+    const f = fixture(); await openVolume(f);
+    const load = f.holdRawVolume();
+    const target = structuredClone(renderers.get(first.id)!.snapshot.state); target.t = 1; target.channels = [1];
+    await act(async () => { f.queueAgentSet(target); });
+    try {
+      await waitFor(() => expect(load.entered()).toBe(true));
+      expect(f.requestStatus()).toBe("applying");
+      expect(renderers.get(first.id)!.appliedStates).toEqual([]);
+      expect(f.execute).toHaveBeenCalledWith("viewer_volume", expect.objectContaining({ t: 1, channel_indices: [1] }));
+    } finally { await act(async () => load.release()); }
+    await waitFor(() => expect(f.requestStatus()).toBe("complete"));
+    expect(renderers.get(first.id)!.appliedStates).toEqual([target]);
+    expect(renderers.get(first.id)!.snapshot.state.t).toBe(1);
+    expect(renderers.get(first.id)!.snapshot.state.channels).toEqual([1]);
+  });
+
 });

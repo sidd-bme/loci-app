@@ -16,14 +16,16 @@ import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileMenuAction, waitForSnapshot } from '../../desktop/tests/workbench-qa-helpers.mjs';
+import { fileMenuAction, waitForSnapshot, selectWorkbenchTool } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), env = process.env;
 const require = createRequire(path.join(repo, 'desktop/package.json'));
 const { _electron: electron } = require('playwright'), exec = promisify(execFile);
 assert.equal(process.platform, 'darwin'); assert.equal(process.versions.node.split('.')[0], '24');
 const absolute = name => { assert.ok(path.isAbsolute(env[name] ?? ''), `${name} must be explicit and absolute`); return env[name]; };
-const bundle = await fs.realpath(absolute('LOCI_PACKAGED_APP')), python = await fs.realpath(absolute('LOCI_QA_PYTHON'));
+// Preserve the venv launcher path: resolving its interpreter symlink loses pyvenv.cfg.
+const bundle = await fs.realpath(absolute('LOCI_PACKAGED_APP')), python = absolute('LOCI_QA_PYTHON');
+await fs.access(python);
 const fixturePath = await fs.realpath(absolute('LOCI_QA_VOLUME_FIXTURE')), parentStudy = await fs.realpath(absolute('LOCI_QA_PARENT_STUDY'));
 const parentReceiptPath = await fs.realpath(absolute('LOCI_QA_PARENT_RECEIPT')), outputRoot = await fs.realpath(absolute('LOCI_QA_OUTPUT_ROOT'));
 const parentId = env.LOCI_QA_PARENT_RESULT, sourceCommit = env.LOCI_QA_SOURCE_COMMIT;
@@ -174,9 +176,10 @@ async function launch(number) {
   if (number === 1) {
     await stableScene(value => value.state?.result?.result_id === parent.id && value.state.camera, 'initial parent scene before channel selection');
     if (!(await scene()).state.channels.includes(fixture.selection.c)) {
+      await selectWorkbenchTool(page, 'Population');
       const channelName = source.metadata.channel_names?.[fixture.selection.c] ?? `Channel ${fixture.selection.c + 1}`;
       const channel = page.getByRole('checkbox', { name: `${channelName} visible`, exact: true });
-      if (!await channel.isVisible()) await page.locator('summary').filter({ hasText: /^Display channels$/u }).click();
+      if (!await channel.isVisible()) await page.locator('details.compact-channel-controls > summary').click();
       if (await channel.isChecked()) await channel.uncheck();
       await channel.check();
     }
@@ -190,9 +193,9 @@ async function closeNormally(number) {
   if (!app) return;
   await rememberProcesses(); const role = 'app-' + number, before = await liveOwned(role);
   report.dialogs.push(...await app.evaluate(() => globalThis.__volumeHostDialogs ?? []));
-  const current = app, closed = current.waitForEvent('close', { timeout: 30000 }); let quitError;
+  const current = app, processHandle = current.process(), closed = current.waitForEvent('close', { timeout: 30000 }); let quitError;
   try { await current.evaluate(({ app }) => app.quit()); await closed; } catch (error) { quitError = error; }
-  finally { app = undefined; page = undefined; if (quitError) await current.close().catch(() => {}); if (roots.get(current.process().pid)?.child === current.process()) roots.delete(current.process().pid); }
+  finally { app = undefined; page = undefined; if (quitError) await current.close().catch(() => {}); if (roots.get(processHandle.pid)?.child === processHandle) roots.delete(processHandle.pid); }
   let survivors = await liveOwned(role);
   for (let i = 0; i < 30 && survivors.length; i++) { await new Promise(resolve => setTimeout(resolve, 100)); survivors = await liveOwned(role); }
   const record = { role, before_quit: before, survivors_after_quit: survivors, ordinary_quit: !quitError };

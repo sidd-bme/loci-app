@@ -2643,14 +2643,22 @@ export default function ResearchWorkbench({
           if (state.result && !target) throw new Error("The saved scene's exact label result is unavailable.");
           // Volume targeting is presentation state. The independent source-display
           // document must not be rewritten by a scene operation.
-          setVolumeTarget({ t: state.t, channels: state.channels });
+          const loaded = volumeHandle.current?.snapshot();
+          // Pin only genuinely different inputs. Pinning the already-loaded
+          // default would trigger the target effect to clear and reload it
+          // while the locked renderer is acknowledging this scene.
+          if (!loaded || loaded.state.t !== state.t || stateKey(loaded.state.channels) !== stateKey(state.channels)) {
+            setVolumeTarget(current => current?.t === state.t && stateKey(current.channels) === stateKey(state.channels)
+              ? current : { t: state.t, channels: state.channels });
+          }
           if (target && volumeContext.current.selectedResult?.id !== target.id) {
             setResultId(target.id); setRows([]); setPopulationObject(null); setSelectedRow(null);
             const page = await api.execute("result", { result_id: target.id, offset: 0, limit: 200 }) as { result: ResearchResult; measurements: Record<string, unknown>[] };
             if (!unchanged() || page.result.id !== target.id || page.result.revision_hash !== target.revision_hash) throw new Error("The requested result changed while loading its objects.");
             setRows(page.measurements);
           } else if (!state.result) { setResultId(null); setRows([]); setPopulationObject(null); setSelectedRow(null); }
-          setVolumeDisplay({ renderMode: state.representation.render_mode, quality: state.representation.quality });
+          setVolumeDisplay(current => current.renderMode === state.representation.render_mode && current.quality === state.representation.quality
+            ? current : { renderMode: state.representation.render_mode, quality: state.representation.quality });
           const deadline = performance.now() + 15000;
           while (performance.now() < deadline) {
             if (!unchanged()) throw new Error("The shared volume workspace changed while loading.");
