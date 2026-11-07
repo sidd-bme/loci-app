@@ -13,6 +13,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ImageWindowLayoutStore } from "./main/image-window-layout";
 import { ImageWindowCoordinator } from "./main/image-window-coordinator";
+import { AgentWorkspaceCoordinator } from "./main/agent-workspace-coordinator";
+import { AgentWorkspaceLayoutStore } from "./main/agent-workspace-layout";
 import { ResearchBridge } from "./main/research-bridge";
 import { correctionOperationIds } from "./main/correction-provenance";
 
@@ -195,6 +197,8 @@ const engine = new EngineWorkerClient();
 const researchBridge = new ResearchBridge();
 const imageWindows = new ImageWindowCoordinator(researchBridge, createImageWindow,
   new ImageWindowLayoutStore(path.join(app.getPath("userData"), "image-window-layouts")));
+const agentWorkspace = new AgentWorkspaceCoordinator(researchBridge, createAgentWorkspaceWindow,
+  new AgentWorkspaceLayoutStore(path.join(app.getPath("userData"), "agent-workspace-layouts")));
 const engineResultResidency = new EngineResultResidencyCoordinator();
 let mainWindow: BrowserWindow | null = null;
 const MAX_DISCOVERED_SOURCES = MAX_PROJECT_SOURCES;
@@ -3525,6 +3529,7 @@ async function finalizeOpenBatchesForShutdown(): Promise<void> {
 function registerIpc(): void {
   researchBridge.register(assertTrustedSender);
   imageWindows.registerIpc();
+  agentWorkspace.registerIpc();
   ipcMain.handle("loci:create-project", (event, manifest: unknown) => {
     assertTrustedSender(event);
     return rendererSafeProjectOperation(
@@ -4293,15 +4298,34 @@ async function confirmQuitWithoutSaving(
 
 async function prepareApplicationQuit(window: BrowserWindow): Promise<boolean> {
   if (!await confirmWindowClose(window)) return false;
-  return shouldQuitAfterProjectSave(
-    Boolean(activeProject),
-    () => requestRendererProjectSave(window),
-    async (outcome) => {
-      const discard = await confirmQuitWithoutSaving(window, outcome);
-      if (!discard) quitProjectSaveCoordinator.resumeSavingAfterCancelledRequest();
-      return discard;
-    },
-  );
+  try {
+    // The detached renderer must acknowledge its latest edit while both hosts
+    // are alive. A failed handoff keeps the app open with its local draft.
+    await agentWorkspace.dockForShutdown();
+  } catch {
+    await dialog.showMessageBox(window, {
+      type: "warning", title: "Agent workspace is still active",
+      message: "The latest agent plan edit has not returned to the main workspace.",
+      detail: "Wait for the current action or retry returning the agent window, then quit again.",
+      buttons: ["Keep Working"], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    return false;
+  }
+  let confirmed = false;
+  try {
+    confirmed = await shouldQuitAfterProjectSave(
+      Boolean(activeProject),
+      () => requestRendererProjectSave(window),
+      async (outcome) => {
+        const discard = await confirmQuitWithoutSaving(window, outcome);
+        if (!discard) quitProjectSaveCoordinator.resumeSavingAfterCancelledRequest();
+        return discard;
+      },
+    );
+    return confirmed;
+  } finally {
+    if (!confirmed) agentWorkspace.cancelShutdown();
+  }
 }
 
 function requestConfirmedApplicationQuit(window: BrowserWindow): void {
@@ -4352,6 +4376,21 @@ function createImageWindow(): { window: BrowserWindow; load: () => Promise<void>
   return { window, load };
 }
 
+function createAgentWorkspaceWindow(): { window: BrowserWindow; load: () => Promise<void> } {
+  const window = new BrowserWindow({
+    width: 960, height: 760, minWidth: 520, minHeight: 480, show: false,
+    title: "Loci · Agent workspace", backgroundColor: "#111614",
+    webPreferences: { preload: path.join(__dirname, "agent-preload.cjs"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+  return { window, load };
+}
+
 async function createWindow(): Promise<void> {
   const state = await readWindowState();
   const { fullscreen, maximized, ...bounds } = state;
@@ -4372,6 +4411,7 @@ async function createWindow(): Promise<void> {
   });
   mainWindow = window;
   imageWindows.registerControl(window);
+  agentWorkspace.registerMain(window);
   trackWindowState(window);
   const notifyPresentation = () => {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
@@ -4480,6 +4520,7 @@ let engineDrainStarted = false;
 async function finishApplicationQuit(): Promise<void> {
   const cleanShutdown = (async () => {
     await imageWindows.flushLayout();
+    agentWorkspace.dispose();
     await researchBridge.dispose();
     await finalizeOpenBatchesForShutdown();
     for (const record of [...activeBatchRuns.values()]) {

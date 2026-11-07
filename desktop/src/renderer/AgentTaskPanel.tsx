@@ -4,8 +4,11 @@ import type { ResearchAgentControlRequest, ResearchAgentTaskRecord, ResearchSnap
 import { agentTargetState, AgentTargetLinks, RecordedTime, type AgentActivityNavigation } from "./AgentActivityTimeline";
 import "./AgentTaskPanel.css";
 
+import type { AgentWorkspacePresentation } from "../shared/agent-workspace-api";
+
 type Assessment = ResearchAgentTaskRecord["assessments"][number];
-type Draft = { revision: number; goal: string; steps: { id: string; title: string }[] };
+export type AgentTaskDraft = NonNullable<AgentWorkspacePresentation["draft"]>;
+export type AgentTaskPresentation = { selectedTaskId: string | null; draft: AgentTaskDraft | null };
 const taskState = { active: "In progress", awaiting_review: "Ready for your review", complete: "Reported complete", cancelled: "Plan cancelled" };
 const stepState = { planned: "Planned", in_progress: "In progress", complete: "Reported complete", blocked: "Blocked" };
 
@@ -34,13 +37,15 @@ function AssessmentView({ assessment, snapshot, navigation, unavailable }: {
   </section>;
 }
 
-function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, onControl, onEditingChange }: {
+function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, onControl, draft, onDraftChange }: {
   task: ResearchAgentTaskRecord; snapshot: ResearchSnapshot; navigation: AgentActivityNavigation;
   unavailable: boolean; busy: boolean; canControl: boolean;
   onControl: (request: ResearchAgentControlRequest) => Promise<boolean>;
-  onEditingChange: (editing: boolean) => void;
+  draft: AgentTaskDraft | null;
+  onDraftChange: (draft: AgentTaskDraft | null) => void;
 }): React.JSX.Element {
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const setDraft = (next: AgentTaskDraft | null | ((current: AgentTaskDraft | null) => AgentTaskDraft | null)) =>
+    onDraftChange(typeof next === "function" ? next(draft) : next);
   const [saveError, setSaveError] = useState("");
   const submitting = useRef(false);
   const editButton = useRef<HTMLButtonElement>(null);
@@ -48,7 +53,7 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
   useEffect(() => {
     if (!draft && returnFocus.current) { editButton.current?.focus(); returnFocus.current = false; }
   }, [draft]);
-  const revisionChanged = draft !== null && draft.revision !== task.revision;
+  const revisionChanged = draft !== null && draft.baseRevision !== task.revision;
   const locked = busy || unavailable || !canControl;
   const editable = !locked && task.state !== "cancelled";
   const session = snapshot.agent_sessions?.sessions.find(item => item.session_id === task.session_id);
@@ -59,15 +64,15 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
     job.owner?.session_id === task.session_id && job.owner.policy_sha256 === task.policy_sha256);
   const assessments = [...task.assessments].sort((a, b) => b.created_at.localeCompare(a.created_at));
   const edit = () => {
-    setDraft({ revision: task.revision, goal: task.goal, steps: task.steps.map(({ id, title }) => ({ id, title })) });
-    setSaveError(""); onEditingChange(true);
+    setDraft({ taskId: task.id, baseRevision: task.revision, goal: task.goal, steps: task.steps.map(({ id, title }) => ({ id, title })) });
+    setSaveError("");
   };
-  const finishEdit = () => { returnFocus.current = true; setDraft(null); setSaveError(""); onEditingChange(false); };
+  const finishEdit = () => { returnFocus.current = true; setDraft(null); setSaveError(""); };
   const save = async () => {
     if (!draft || locked || revisionChanged || submitting.current) return;
     submitting.current = true; setSaveError("");
     try {
-      const saved = await onControl({ action: "edit_task", task_id: task.id, expected_revision: draft.revision,
+      const saved = await onControl({ action: "edit_task", task_id: task.id, expected_revision: draft.baseRevision,
         goal: draft.goal.trim(), steps: draft.steps.map(step => ({ ...step, title: step.title.trim() })) });
       if (saved) finishEdit();
       else setSaveError("The plan was not saved. Your draft is preserved; check the latest task state before retrying.");
@@ -141,21 +146,28 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
   </article>;
 }
 
-export function AgentTaskPanel({ tasks, sessionId, snapshot, navigation = {}, unavailable = false, busy = false, canControl, onControl }: {
+export function AgentTaskPanel({ tasks, sessionId, snapshot, navigation = {}, unavailable = false, busy = false,
+  canControl, onControl, presentation, onPresentationChange }: {
   tasks: ResearchAgentTaskRecord[]; sessionId?: string; snapshot: ResearchSnapshot; navigation?: AgentActivityNavigation;
   unavailable?: boolean; busy?: boolean; canControl: boolean; onControl: (request: ResearchAgentControlRequest) => Promise<boolean>;
+  presentation?: AgentTaskPresentation;
+  onPresentationChange?: (next: AgentTaskPresentation) => void;
 }): React.JSX.Element | null {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
+  const [local, setLocal] = useState<AgentTaskPresentation>({ selectedTaskId: null, draft: null });
+  const current = presentation ?? local;
+  const change = (next: AgentTaskPresentation) => { if (!presentation) setLocal(next); onPresentationChange?.(next); };
   const ordered = [...tasks].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
   const preferred = (sessionId && ordered.find(task => task.session_id === sessionId)) || ordered[0];
-  const task = ordered.find(item => item.id === selectedId) ?? preferred;
-  if (!task) return null;
+  const task = ordered.find(item => item.id === (current.draft?.taskId ?? current.selectedTaskId)) ?? preferred;
+  if (!task) return current.draft ? <p className="agent-task-warning" role="alert">The edited task is unavailable. Your draft is retained; reopen this study's agent workspace after the task state is restored.</p> : null;
+  if (current.draft && current.draft.taskId !== task.id) return <p className="agent-task-warning" role="alert">The edited task is unavailable. Your draft is retained and cannot be applied to another task.</p>;
   return <section className="agent-task-panel" aria-label="External agent plans and assessments">
-    {ordered.length > 1 && <label className="agent-task-selector">Task<select value={task.id} disabled={editing || busy} onChange={event => setSelectedId(event.target.value)}>
+    {ordered.length > 1 && <label className="agent-task-selector">Task<select value={task.id} disabled={Boolean(current.draft) || busy}
+      onChange={event => change({ ...current, selectedTaskId: event.target.value })}>
       {ordered.map(item => <option key={item.id} value={item.id}>{item.client_id} · {item.goal}</option>)}
     </select></label>}
     <TaskView key={task.id} task={task} snapshot={snapshot} navigation={navigation} unavailable={unavailable} busy={busy} canControl={canControl}
-      onControl={onControl} onEditingChange={value => { setEditing(value); if (value) setSelectedId(task.id); }} />
+      onControl={onControl} draft={current.draft}
+      onDraftChange={draft => change({ selectedTaskId: task.id, draft })} />
   </section>;
 }

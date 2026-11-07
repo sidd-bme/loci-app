@@ -102,6 +102,20 @@ function makeApi(
 }
 
 describe("AgentSessionIndicator", () => {
+  it("focuses an existing detached workspace instead of opening another editable drawer", () => {
+    const focus = vi.fn();
+    render(<AgentSessionIndicator api={makeApi()} snapshot={makeSnapshot(wire)} detached onFocusDetached={focus}
+      followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+    expect(focus).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("region", { name: "Agent session and approvals" })).not.toBeInTheDocument();
+  });
+  it("offers an entry point before the first bundle or session exists", () => {
+    render(<AgentSessionIndicator api={makeApi()} snapshot={makeSnapshot({ status: "none", policies: [], sessions: [], approvals: [], events: [] })}
+      followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+    expect(screen.getByRole("heading", { name: "No agent plan yet" })).toBeVisible();
+  });
   it("keeps retained tasks accessible when no client or access bundle remains", () => {
     const snapshot = makeSnapshot({ status: "none", policies: [], sessions: [], approvals: [], events: [], tasks: [{
       id: "retained-task", revision: 1, policy_sha256: "d".repeat(64), session_id: "old-session", client_id: "Codex",

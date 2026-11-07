@@ -99,6 +99,7 @@ export class VolumeSceneBridge {
   private timer: ReturnType<typeof setInterval> | null = null;
   private tasks: Promise<unknown> = Promise.resolve();
   private nativeTasks: Promise<unknown> = Promise.resolve();
+  private publishedToken: VolumeLiveToken | null = null;
   private heartbeatPending = false;
   private active: { request: SceneRequest; original: VolumeSceneSnapshot; token: VolumeLiveToken; applying: boolean } | null = null;
 
@@ -118,8 +119,22 @@ export class VolumeSceneBridge {
     this.tasks = next.catch(() => undefined);
     return next.catch((error) => { throw this.report(error); });
   }
-  private execute(operation: string, request: Record<string, unknown>, allowDisposed = false, guard?: () => void): Promise<unknown> {
-    const next = this.nativeTasks.then(() => { if (!allowDisposed) this.alive(); guard?.(); return this.options.api.execute(operation, request); });
+  private execute(operation: string, request: Record<string, unknown> | (() => Record<string, unknown> | null), allowDisposed = false, guard?: () => void): Promise<unknown> {
+    const next = this.nativeTasks.then(async () => {
+      if (!allowDisposed) this.alive(); guard?.();
+      const payload = typeof request === "function" ? request() : request;
+      if (payload === null) return null;
+      const value = await this.options.api.execute(operation, payload);
+      if (operation === "volume_view_presence" && record(value) &&
+          value.source_id === this.options.binding.sourceId && value.source_sha256 === this.options.binding.sourceSha256 &&
+          ["view_id", "renderer_generation", "live_epoch", "revision", "display_revision"].every(key => value[key] === payload[key])) {
+        // Record the accepted native token before releasing the serialized queue,
+        // including when the renderer detaches while this call is in flight.
+        this.publishedToken = checkedToken(Object.fromEntries(
+          ["view_id", "renderer_generation", "live_epoch", "revision", "display_revision"].map(key => [key, value[key]])));
+      }
+      return value;
+    });
     this.nativeTasks = next.catch(() => undefined);
     return next;
   }
@@ -367,11 +382,12 @@ export class VolumeSceneBridge {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.options.adapter.lock(false);
-    if (!this.view) return;
-    const snapshot = this.options.adapter.snapshot();
-    const token = this.active?.token ?? { view_id: this.options.binding.viewId, live_epoch: snapshot?.liveEpoch ?? 0,
-      renderer_generation: snapshot?.rendererGeneration ?? 0, revision: this.view.revision, display_revision: this.view.display_revision };
-    await this.execute("volume_view_presence", { ...token, source_id: this.options.binding.sourceId,
-      source_sha256: this.options.binding.sourceSha256, busy: false, available: false }, true);
+    await this.execute("volume_view_presence", () => {
+      // A detached renderer has no snapshot. Withdraw only the presence we
+      // actually published, after any in-flight native publication completes.
+      if (!this.publishedToken) return null;
+      return { ...this.publishedToken, source_id: this.options.binding.sourceId,
+        source_sha256: this.options.binding.sourceSha256, busy: false, available: false };
+    }, true);
   }
 }

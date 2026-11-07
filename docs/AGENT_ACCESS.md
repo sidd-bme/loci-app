@@ -1,5 +1,28 @@
 # Policy-bound agent access
 
+## Detached agent workspace
+
+The Agent session drawer can open as a separate native window, including on a
+second display. It shows the same study's plans, assessments, approvals, activity
+and session controls. The main workspace remains the owner of research state and
+polling; the detached window does not start a second agent or gain generic source
+or execution access. Access configuration opens in the main workspace's current
+source context.
+
+Plan drafts move between the drawer and the detached window with their task ID
+and base revision. Returning or closing the window waits for the latest draft
+handoff. Sessions and jobs continue independently. A failed handoff leaves the
+window open; after a renderer crash only the last acknowledged draft can be
+recovered. Window bounds are saved locally per study and brought back onto an
+available display when a monitor is removed. Drafts are transient presentation
+state until the researcher saves the plan to the study.
+
+Recorded-evidence links open the exact source, result, job or workflow revision
+in the main workspace. Success is reported after the main workspace acknowledges
+the target, including the rendered result view where applicable. Study switches,
+renderer replacement and stale revisions invalidate pending commands. Moving a
+panel or changing Follow does not change policy permissions or scientific review.
+
 ## Shared 3D scene access
 
 An explicit `loci.agent-policy/v7` `volume_views` grant adds access to the same

@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { assertAgentWorkflow, type AgentWorkflowNavigationProps } from "./agent-workspace-workflows";
 import { Check, ChevronRight, Play, RefreshCw, Save, Square } from "lucide-react";
 import type { ResearchDesktopApi, ResearchResult, ResearchSelection, ResearchSnapshot } from "../shared/research-contracts";
 import { checkedGraphContinuation, checkedGraphPreparedPreviews, checkedGraphRun, checkedGraphStatus, checkedGraphWorkflow, graphJson, type GraphContinuation, type GraphPreparedPreviewBinding, type GraphBindings, type GraphPlan, type GraphRun, type GraphStatus, type GraphWorkflow } from "../shared/workflow-graph-contracts";
 import "./ResearchWorkflowGraphPanel.css";
 
-export interface ResearchWorkflowGraphPanelProps {
+export interface ResearchWorkflowGraphPanelProps extends AgentWorkflowNavigationProps {
   api: ResearchDesktopApi; snapshot: ResearchSnapshot; sourceId: string; selection: ResearchSelection;
   active: boolean; busy: boolean; onBusyChange: (busy: boolean) => void;
   onOpenResult: (result: ResearchResult) => void | Promise<void>; onRefresh: () => void | Promise<void>;
@@ -13,7 +14,10 @@ const message = (error: unknown) => error instanceof Error ? error.message : "Th
 const labels: Record<string, string> = { run_recipe: "Segment and measure", classical_run: "Adaptive segmentation", associate_results: "Associate labels", spatial_distance_run: "Measure distance bands", morphometrics_run: "Measure morphology", annotation_evaluation_run: "Compare annotations", method_run: "Apply reusable method", tissue_model_run: "Create tissue candidate" };
 const ended = (run: GraphRun) => ["succeeded", "failed", "cancelled"].includes(run.data.state);
 
-export function ResearchWorkflowGraphPanel({ api, snapshot, sourceId, selection, active, busy, onBusyChange, onOpenResult, onRefresh }: ResearchWorkflowGraphPanelProps) {
+export function ResearchWorkflowGraphPanel({ api, snapshot, sourceId, selection, active, busy, onBusyChange, onOpenResult, onRefresh, agentNavigation, onAgentNavigationComplete }: ResearchWorkflowGraphPanelProps) {
+  const agentPending = useRef<string | null>(null);
+  const agentCallbacks = useRef(onAgentNavigationComplete); agentCallbacks.current = onAgentNavigationComplete;
+  const [libraryReady, setLibraryReady] = useState(false);
   const [library, setLibrary] = useState<GraphWorkflow[]>([]), [selectedId, setSelectedId] = useState("");
   const [choices, setChoices] = useState<Record<string, string>>({});
   const [plan, setPlan] = useState<{ value: GraphPlan; scope: string } | null>(null);
@@ -27,6 +31,26 @@ export function ResearchWorkflowGraphPanel({ api, snapshot, sourceId, selection,
   const [pending, setPending] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState("");
   const mounted = useRef(true), generation = useRef(0), lock = useRef(false), requestKey = useRef<{ scope: string; key: string } | null>(null);
   const workflow = library.find((row) => row.id === selectedId) ?? null;
+  useEffect(() => {
+    const request = agentNavigation;
+    if (!request || request.version !== 2 || !active || !libraryReady || !request.current()) return;
+    if (busy || pending || saveName.trim() || Object.keys(choices).length || Object.keys(previewChoices).length) {
+      agentCallbacks.current?.(request.requestId, "Finish the current composed-workflow inputs before opening recorded evidence."); return;
+    }
+    let alive = true;
+    void api.execute("workflow_graph_get", { workflow_id: request.target.id }).then(output => {
+      const record = checkedGraphWorkflow((output as { workflow: unknown }).workflow); assertAgentWorkflow(record, request.target);
+      if (!alive || !request.current()) return;
+      agentPending.current = request.requestId; setLibrary(old => [...old.filter(item => item.id !== record.id), record]);
+      setSelectedId(record.id); setChoices({}); setPlan(null); setRun(null); setError(""); setNotice("");
+    }).catch(error => { if (alive && request.current()) agentCallbacks.current?.(request.requestId, message(error)); });
+    return () => { alive = false; };
+  }, [agentNavigation?.requestId, active, libraryReady]);
+  useLayoutEffect(() => {
+    if (!agentNavigation || agentPending.current !== agentNavigation.requestId || !workflow || !active || !agentNavigation.current()) return;
+    assertAgentWorkflow(workflow, agentNavigation.target);
+    agentPending.current = null; agentCallbacks.current?.(agentNavigation.requestId);
+  }, [agentNavigation, workflow, active]);
   const projectId = snapshot.project.project_id ?? "";
   const previewSource = snapshot.sources.find(item => item.id === sourceId && item.locator_state !== "relink-required");
   const currentPreviews = preparedPreviews.filter(preview => previewSource && preview.receipt.request.source_id === previewSource.id && preview.receipt.request.source_sha256 === previewSource.sha256);
@@ -71,14 +95,15 @@ export function ResearchWorkflowGraphPanel({ api, snapshot, sourceId, selection,
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; }; }, []);
   useEffect(() => {
     let live = true;
-    setLibrary([]); setSelectedId(""); setChoices({}); setPlan(null); setRuns([]); setRun(null); setContinuation(null); setPreviewChoices({}); setError("");
+    setLibraryReady(false); setLibrary([]); setSelectedId(""); setChoices({}); setPlan(null); setRuns([]); setRun(null); setContinuation(null); setPreviewChoices({}); setError("");
     void Promise.all([api.execute("workflow_graph_list", {}), api.execute("workflow_graph_runs", {})]).then(([definitions, saved]) => {
       if (!live || !mounted.current) return;
       const records = (definitions as { workflows?: unknown[] }).workflows;
       const runRecords = (saved as { runs?: unknown[] }).runs;
       if (!Array.isArray(records) || !Array.isArray(runRecords)) throw new Error("The saved composed workflow library is invalid.");
       setLibrary(records.map(checkedGraphWorkflow)); setRuns(runRecords.map(checkedGraphRun));
-    }).catch((caught) => { if (live && mounted.current) setError(message(caught)); });
+    }).catch((caught) => { if (live && mounted.current) setError(message(caught)); })
+      .finally(() => { if (live && mounted.current) setLibraryReady(true); });
     return () => { live = false; generation.current++; };
   }, [api, projectId]);
   const perform = async (label: string, work: (current: () => boolean) => Promise<void>) => {
@@ -210,7 +235,9 @@ export function ResearchWorkflowGraphPanel({ api, snapshot, sourceId, selection,
   const blocked = !active || busy || Boolean(pending);
   const savedRuns = runs.filter((row) => !workflow || row.data.workflow_id === workflow.id);
   const canAdvance = run && !run.data.owner && !ended(run) && !run.data.cancel_requested && Object.values(run.data.nodes).some((node) => ["pending", "intent", "queued"].includes(node.state));
-  return <section className="composed-workflow-panel" aria-label="Composed workflows">
+  return <section className="composed-workflow-panel" aria-label="Composed workflows"
+    data-agent-workflow-id={workflow?.id} data-agent-workflow-revision={workflow?.revision}
+    data-agent-workflow-sha256={workflow?.data.definition_sha256}>
     <p>Run saved workflows with multiple inputs and exact result revisions.</p>
     <label>Saved composed workflow<select aria-label="Saved composed workflow" value={selectedId} disabled={blocked} onChange={(event) => { setSelectedId(event.target.value); setChoices({}); setPlan(null); setRun(null); requestKey.current = null; setError(""); setNotice(""); }}>
       <option value="">Choose a saved workflow</option>{library.map((row) => <option key={row.id} value={row.id}>{row.data.definition.name} · revision {row.revision}</option>)}

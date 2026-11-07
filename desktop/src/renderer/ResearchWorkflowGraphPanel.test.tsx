@@ -213,3 +213,29 @@ describe("Composed workflows", () => {
     expect(screen.getByRole("button", { name: "Run composed workflow" })).toBeDisabled();
   });
 });
+
+describe("exact native agent composed workflow navigation", () => {
+  const target = { kind: "workflow" as const, id: workflow.id, revision: workflow.revision, sha256: hash };
+  it("renders the exact saved definition before acknowledging", async () => {
+    const complete = vi.fn();
+    mount({ agentNavigation: { requestId: "graph", target, version: 2, current: () => true }, onAgentNavigationComplete: complete },
+      op => op === "workflow_graph_get" ? { workflow } : undefined);
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("graph"));
+    expect(screen.getByRole("region", { name: "Composed workflows" })).toHaveAttribute("data-agent-workflow-id", workflow.id);
+    expect(screen.getByRole("region", { name: "Composed workflows" })).toHaveAttribute("data-agent-workflow-sha256", hash);
+  });
+  it("preserves local input bindings instead of replacing them with an agent target", async () => {
+    const complete = vi.fn(); const f = mount({ onAgentNavigationComplete: complete }); await choose();
+    f.rerender(<ResearchWorkflowGraphPanel {...f.props} agentNavigation={{ requestId: "draft", target, version: 2, current: () => true }} />);
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("draft", expect.stringContaining("current composed-workflow inputs")));
+    expect(screen.getByRole("combobox", { name: "Workflow input image" })).toHaveValue(sid);
+    expect(f.execute).not.toHaveBeenCalledWith("workflow_graph_get", expect.anything());
+  });
+  it("rejects the same workflow ID with a different definition digest", async () => {
+    const complete = vi.fn();
+    mount({ agentNavigation: { requestId: "changed", target, version: 2, current: () => true }, onAgentNavigationComplete: complete },
+      op => op === "workflow_graph_get" ? { workflow: { ...workflow, data: { ...workflow.data, definition_sha256: "9".repeat(64) } } } : undefined);
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("changed", expect.stringContaining("revision changed")));
+    expect(screen.getByRole("region", { name: "Composed workflows" })).not.toHaveAttribute("data-agent-workflow-id");
+  });
+});

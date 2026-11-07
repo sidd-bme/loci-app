@@ -92,6 +92,10 @@ import { AgentImagePanel } from "./AgentImagePanel";
 import { SourceDisplayFollower } from "./source-display-follower";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
 import { AgentSessionIndicator } from "./AgentSessionIndicator";
+import type { AgentWorkspaceNavigationRequest } from "../shared/agent-workspace-api";
+import { AgentSnapshotFence, waitForAgentNavigation } from "./agent-workspace-host";
+import { useAgentWorkspaceHost } from "./use-agent-workspace-host";
+import { useAgentWorkflowTargets, type AgentWorkflowNavigation } from "./agent-workspace-workflows";
 import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewComparison";
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
@@ -992,6 +996,8 @@ export default function ResearchWorkbench({
   const [invalidNumberForms, setInvalidNumberForms] = useState<Record<string, true>>({});
   const [numberResetEpoch, setNumberResetEpoch] = useState(0);
   const annotationViewportReady = useRef(false);
+  const agentRenderedOverlay = useRef<string | null>(null);
+  const onAgentResultRendered = useCallback((value: string | null) => { agentRenderedOverlay.current = value; }, []);
   const annotationViewReady = useCallback((key: string) => {
     annotationViewportReady.current = Boolean(key);
     setViewReadyKey(key);
@@ -1055,6 +1061,8 @@ export default function ResearchWorkbench({
   const exportDraftStudy = JSON.stringify([snapshot?.project.project_id ?? null, studyEpoch]);
   const currentStudyScope = useRef(exportDraftStudy);
   currentStudyScope.current = exportDraftStudy;
+  const agentSnapshotFence = useRef(new AgentSnapshotFence());
+  const agentProjectId = useRef(snapshot?.project.project_id); agentProjectId.current = snapshot?.project.project_id;
   const [intensitySeed, setIntensitySeed] = useState<{ study: string; result: ResearchResult; serial: number } | null>(null);
   const scientificExportDraftControl: ScientificDataExportDraftControl = {
     draft: scientificExportDraft?.study === exportDraftStudy ? scientificExportDraft.draft : null,
@@ -1073,6 +1081,7 @@ export default function ResearchWorkbench({
       largeSelectionIntent.current++;
     }
     documentSwitch.current = true;
+    agentSnapshotFence.current.invalidate();
     volumeDraining.current = true;
     // Native dialogs may defer rendering while the window is inactive. Commit
     // the viewport pause before entering the main-process document lock.
@@ -1124,6 +1133,18 @@ export default function ResearchWorkbench({
   // cloned study retains the same source IDs.
   const api = useMemo<ResearchDesktopApi>(() => ({
     ...desktopApi,
+    ...(desktopApi.controlAgentSession ? { controlAgentSession: (request) => {
+      const scope = currentStudyScope.current, projectId = agentProjectId.current;
+      if (documentSwitch.current) return Promise.reject(new Error("Wait for the study to finish opening."));
+      return agentSnapshotFence.current.control(async (valid) => {
+        const next = await desktopApi.controlAgentSession!(request);
+        if (!valid() || documentSwitch.current || currentStudyScope.current !== scope)
+          throw new Error("The study changed before the agent control returned.");
+        if (next && next.project.project_id !== projectId) throw new Error("The returned agent snapshot belongs to a different study.");
+        if (next) flushSync(() => setSnapshot(next));
+        return next;
+      });
+    } } : {}),
     openStudy: () => switchDocument(() => desktopApi.openStudy()),
     createStudy: () => switchDocument(() => desktopApi.createStudy()),
     addSources: (kind) => switchDocument(() => desktopApi.addSources(kind)),
@@ -2072,7 +2093,7 @@ export default function ResearchWorkbench({
     enabled: hasPendingJobs || hasActiveAgentActivity,
     suspended: documentSwitching,
     interval: hasPendingJobs ? 1000 : 2000,
-    getSnapshot: api.getSnapshot,
+    getSnapshot: () => agentSnapshotFence.current.read(api.getSnapshot),
     setSnapshot,
     onError: (caught) => {
       if (hasActiveAgentActivity) setAgentRefreshError(caught === null ? null :
@@ -2227,7 +2248,7 @@ export default function ResearchWorkbench({
   const openAgentSource = (target: ResearchAgentTargetReference, automatic = false) => {
     if (!snapshot || !agentTargetNavigationReady || documentSwitch.current) {
       if (!automatic) setError("Finish the current edit or operation before opening an agent target.");
-      return;
+      return false;
     }
     try {
       const exact = agentSourceTarget(snapshot, target);
@@ -2243,7 +2264,8 @@ export default function ResearchWorkbench({
       setPendingAgentSource({ target, isCurrent });
       setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
       setRawVolumeOpen(false); setAbCompareMode(false); setSourceId(exact.id); setTab("Display");
-    } catch (caught) { if (!automatic) setError(message(caught, "The recorded agent target is unavailable.")); }
+      return true;
+    } catch (caught) { if (!automatic) setError(message(caught, "The recorded agent target is unavailable.")); return false; }
   };
   const closeSharedPreview = () => {
     previewReadToken.current++;
@@ -2259,11 +2281,11 @@ export default function ResearchWorkbench({
   }, [source?.id, source?.sha256, exportDraftStudy, sharedPreview]);
   const inspectAgentPreview = async (target: ResearchAgentTargetReference) => {
     if (!snapshot || !agentTargetNavigationReady || documentSwitch.current) {
-      setError("Finish the current edit or operation before inspecting a preview."); return;
+      setError("Finish the current edit or operation before inspecting a preview."); return false;
     }
     const job = snapshot.jobs.find((item) => item.id === target.id && item.state === "succeeded");
     if (!job || !["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)) {
-      setError("The recorded preview task is unavailable."); return;
+      setError("The recorded preview task is unavailable."); return false;
     }
     const token = ++previewReadToken.current;
     const generation = agentInteraction.current.generation, study = exportDraftStudy;
@@ -2272,7 +2294,7 @@ export default function ResearchWorkbench({
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const output = await report(() => api.execute("task_preview_get", { job_id: job.id }) as Promise<{ preview: SharedTaskPreview }>,
       "The recorded preview is unavailable. It has not been rerun.", isCurrent);
-    if (!output || !isCurrent()) return;
+    if (!output || !isCurrent()) return false;
     const preview = output.preview;
     try {
       if (preview.job_id !== job.id || preview.operation !== job.operation) throw new Error("The preview does not match its task.");
@@ -2283,7 +2305,8 @@ export default function ResearchWorkbench({
       setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
       setSourceId(exact.id); setTab("Display"); setFocusedPanel(null); setRawVolumeOpen(false);
       setSharedPreview({ preview, study });
-    } catch (caught) { if (isCurrent()) setError(message(caught, "The exact preview source is unavailable.")); }
+      return true;
+    } catch (caught) { if (isCurrent()) setError(message(caught, "The exact preview source is unavailable.")); return false; }
   };
   const openAgentSourceRef = useRef(openAgentSource); openAgentSourceRef.current = openAgentSource;
   useEffect(() => {
@@ -3126,6 +3149,117 @@ export default function ResearchWorkbench({
     setSourceId(exact.id);
     current.openWorkbenchTab("Info");
   };
+  const nativeAgentApi = window.lociAgentWorkspace;
+  const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, Boolean(nativeAgentApi) && !documentSwitching);
+  const agentCurrentTargets = useMemo(() => agentWorkflowTargets.map(({ version: _version, ...target }) => target), [agentWorkflowTargets]);
+  const inspectableAgentPreviewIds = useMemo(() => snapshot?.jobs.filter(job => job.state === "succeeded" &&
+    ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
+  const [agentWorkflowNavigation, setAgentWorkflowNavigation] = useState<AgentWorkflowNavigation | null>(null);
+  const agentWorkflowCompletion = useRef<{ requestId: string; resolve(): void; reject(error: Error): void } | null>(null);
+  const finishAgentWorkflow = useCallback((requestId: string, error?: string) => {
+    const pending = agentWorkflowCompletion.current;
+    if (!pending || pending.requestId !== requestId) return;
+    agentWorkflowCompletion.current = null;
+    if (error) pending.reject(new Error(error)); else pending.resolve();
+  }, []);
+  useEffect(() => {
+    agentWorkflowCompletion.current?.reject(new Error("The study changed before workflow navigation finished."));
+    agentWorkflowCompletion.current = null; setAgentWorkflowNavigation(null);
+  }, [exportDraftStudy]);
+  const agentNavigationView = useRef({ snapshot, scope: exportDraftStudy, sourceId, source, sourceIsChanging, viewSettingsReady,
+    viewReadyKey, resultId, resultView, sourceResultOverlay, pendingResultNavigation, pendingAgentSource, sharedPreview, tab, resultSection, jobsOpen, busy });
+  agentNavigationView.current = { snapshot, scope: exportDraftStudy, sourceId, source, sourceIsChanging, viewSettingsReady,
+    viewReadyKey, resultId, resultView, sourceResultOverlay, pendingResultNavigation, pendingAgentSource, sharedPreview, tab, resultSection, jobsOpen, busy };
+  const navigateAgentWorkspace = async (request: AgentWorkspaceNavigationRequest, nativeCurrent: () => boolean) => {
+    if (!snapshot || !agentTargetNavigationReady || documentSwitch.current || !nativeCurrent())
+      throw new Error("Finish the current edit or operation before opening recorded evidence.");
+    const scope = exportDraftStudy, intent = agentInteraction.current.generation;
+    const current = () => nativeCurrent() && currentStudyScope.current === scope && !documentSwitch.current && agentInteraction.current.generation === intent;
+    const target = request.target;
+    if (volumeBridge.current && ["open-source", "open-result", "review-result", "inspect-preview", "open-workflow"].includes(request.intent)) {
+      await volumeSceneFlush.current();
+      if (!current()) throw new Error("The view changed while saving its current 3D state.");
+    }
+    let ready: () => boolean;
+    if (request.intent === "configure-access") {
+      if (!source || !dimensions) throw new Error("Select a current source before configuring agent access.");
+      await openWorkbenchTab("Agent");
+      ready = () => agentNavigationView.current.tab === "Agent" && Boolean(document.querySelector(".research-agent"));
+    } else if (request.intent === "open-source") {
+      if (!target) throw new Error("The recorded source target is missing.");
+      const exact = agentSourceTarget(snapshot, target);
+      if (!openAgentSource(target)) throw new Error("The recorded source could not be opened.");
+      ready = () => {
+        const view = agentNavigationView.current;
+        const selected = target.selection;
+        return view.sourceId === exact.id && !view.sourceIsChanging && view.viewSettingsReady && !view.pendingAgentSource &&
+          view.tab === "Display" && Boolean(document.querySelector(`[data-viewer-source="${exact.id}"][data-prepared="true"]`)) && view.viewReadyKey.startsWith(`${exact.id}:${exact.sha256}:`) &&
+          (!selected || view.viewReadyKey === `${exact.id}:${exact.sha256}:${selected.t}:${selected.z}`);
+      };
+    } else if (request.intent === "open-result" || request.intent === "review-result") {
+      if (!target) throw new Error("The recorded result target is missing.");
+      const exact = agentResultTarget(snapshot, target);
+      agentRenderedOverlay.current = null;
+      setSharedPreview(null); setRawVolumeOpen(false); setTab("Display"); setFocusedPanel(null);
+      await navigateExactResult(exact, scope, "review", current);
+      if (!current()) throw new Error("The recorded result navigation was superseded.");
+      if (request.intent === "review-result") await openWorkbenchTab("Info");
+      ready = () => {
+        const view = agentNavigationView.current;
+        if (view.sourceId !== exact.source_id || view.resultId !== exact.id || view.pendingResultNavigation ||
+            view.resultView?.resultId !== exact.id || view.resultView.revisionHash !== exact.revision_hash || view.busy ||
+            (request.intent === "review-result" && (view.tab !== "Info" || view.resultSection !== "review"))) return false;
+        if (view.sourceResultOverlay) return agentRenderedOverlay.current === view.sourceResultOverlay.key;
+        const image = document.querySelector<HTMLImageElement>("img[alt='Exact selected result revision']");
+        return Boolean(image?.complete && image.naturalWidth > 0 && image.getAttribute("src") === view.resultView.image);
+      };
+    } else if (request.intent === "open-job") {
+      const exact = snapshot.jobs.find(job => job.id === target?.id && job.request_hash === target?.sha256);
+      if (!exact) throw new Error("The recorded job revision is unavailable.");
+      setJobsOpen(true);
+      ready = () => agentNavigationView.current.jobsOpen && Boolean(document.querySelector("[aria-label='Job center']"));
+    } else if (request.intent === "inspect-preview") {
+      if (!target || !await inspectAgentPreview(target)) throw new Error("The exact retained preview is unavailable.");
+      ready = () => {
+        const view = agentNavigationView.current;
+        const panel = document.querySelector(".agent-preview-comparison");
+        const images = panel ? Array.from(panel.querySelectorAll<HTMLImageElement>("img")) : [];
+        return view.sharedPreview?.preview.job_id === target.id && view.sharedPreview.study === scope && view.tab === "Display" &&
+          images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0);
+      };
+    } else {
+      const exact = agentWorkflowTargets.find(item => item.id === target?.id &&
+        (target?.revision === undefined || item.revision === target.revision) && (target?.sha256 === undefined || item.sha256 === target.sha256));
+      if (!target || !exact) throw new Error("The exact recorded workflow is unavailable.");
+      await openWorkbenchTab("Workflow");
+      if (!current()) throw new Error("Workflow navigation was superseded.");
+      if (exact.version === 2) setGraphOpened(true);
+      let painted = false;
+      const opened = new Promise<void>((resolve, reject) => { agentWorkflowCompletion.current = { requestId: request.requestId, resolve: () => { painted = true; resolve(); }, reject }; });
+      setAgentWorkflowNavigation({ requestId: request.requestId, target, version: exact.version, current });
+      // The panel fetches and validates the exact revision, then confirms its committed selection.
+      try { await Promise.race([opened, waitForAgentNavigation(() => painted, current)]); }
+      finally { if (agentWorkflowCompletion.current?.requestId === request.requestId) agentWorkflowCompletion.current = null; }
+      ready = () => painted && agentNavigationView.current.tab === "Workflow" &&
+        Array.from(document.querySelectorAll<HTMLElement>("[data-agent-workflow-id]")).some(element =>
+          element.dataset.agentWorkflowId === exact.id && element.dataset.agentWorkflowRevision === String(exact.revision) &&
+          element.dataset.agentWorkflowSha256 === exact.sha256);
+    }
+    await waitForAgentNavigation(ready, current);
+    if (!current()) throw new Error("The recorded navigation no longer belongs to this study.");
+  };
+  const agentPublishedPacket = useMemo(() => snapshot ? { snapshot, follow: followAgent, refreshError: agentRefreshError,
+    currentTargets: agentCurrentTargets, inspectablePreviewJobIds: inspectableAgentPreviewIds } : null,
+    [snapshot, followAgent, agentRefreshError, agentCurrentTargets, inspectableAgentPreviewIds]);
+  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, { scope: exportDraftStudy, switching: documentSwitching, packet: agentPublishedPacket }, {
+    control: async (request, current) => {
+      if (!current() || !api.controlAgentSession) throw new Error("Agent controls are unavailable for this study.");
+      const next = await api.controlAgentSession(request);
+      return current() ? next : null;
+    },
+    navigate: navigateAgentWorkspace,
+    follow: (value, current) => { if (!current()) throw new Error("The Follow command is stale."); flushSync(() => setFollowAgent(value)); },
+  }, setError);
   if (!snapshot)
     return (
       <main className={`image-first-empty${emptyDropActive ? " is-drag-active" : ""}`} aria-label="Loci workspace"
@@ -3729,6 +3863,7 @@ export default function ResearchWorkbench({
             }}
             onObjectClick={drawingAnalysisRegion ? undefined : handleObjectClick}
             onViewReady={annotationViewReady}
+            onResultRendered={onAgentResultRendered}
             overrideImage={sourceResultOverlay || pendingSourceResultCanvas ? null : image}
             resultOverlay={sourceResultOverlay}
             resultDrawing={sourceResultOverlay && !busy ? resultDrawing : null}
@@ -3798,6 +3933,8 @@ export default function ResearchWorkbench({
         {workflowOpened && source && dimensions && <div className="workflow-workspace-host" hidden={tab !== "Workflow"}>
           <ResearchWorkflowPanel key={documentEpoch}
             api={api} source={source} sources={snapshot.sources}
+            agentNavigation={agentWorkflowNavigation?.version === 1 ? agentWorkflowNavigation : null}
+            onAgentNavigationComplete={finishAgentWorkflow}
             selectedSourceIds={selectedSourceIds}
             onSelectedSourceIdsChange={setSelectedSourceIds}
             selection={shownSelection} recipe={recipe} configurationValid={configurationValid} jobs={snapshot.jobs}
@@ -3826,9 +3963,11 @@ export default function ResearchWorkbench({
             onExport={async (result, runId) => { await api.exportResult(result.id, result.revision_hash, runId); }}
             onRefresh={async () => { await api.getSnapshot().then(adopt); }}
           />
-          <details className="composed-workflows" onToggle={(event) => setGraphOpened(event.currentTarget.open)}><summary>Composed workflows</summary>
+          <details className="composed-workflows" open={graphOpened} onToggle={(event) => setGraphOpened(event.currentTarget.open)}><summary>Composed workflows</summary>
             {graphOpened && <ResearchWorkflowGraphPanel key={`graph-${documentEpoch}`} api={api} snapshot={snapshot}
               sourceId={source.id} selection={shownSelection} active={tab === "Workflow"} busy={busy !== null}
+              agentNavigation={agentWorkflowNavigation?.version === 2 ? agentWorkflowNavigation : null}
+              onAgentNavigationComplete={finishAgentWorkflow}
               onBusyChange={(value) => setBusy((current) => value ? (current ?? "composed-workflow") : current === "composed-workflow" ? null : current)}
               onOpenResult={async (result) => { await navigateExactResult(result); }}
               onRefresh={async () => { await api.getSnapshot().then(adopt); }} />}
@@ -4572,6 +4711,17 @@ export default function ResearchWorkbench({
           key={exportDraftStudy}
           api={api}
           snapshot={snapshot}
+          {...(nativeAgentApi ? { detached: agentWorkspace.detached, onFocusDetached: agentWorkspace.focus,
+            onDetach: agentWorkspace.open, openRequest: agentWorkspace.openRequest, presentation: agentWorkspace.presentation,
+            onPresentationChange: agentWorkspace.changePresentation, commandBusy: Boolean(agentWorkspace.state?.pendingCommands),
+            currentTargets: agentCurrentTargets,
+            onConfigureAccess: () => { void openWorkbenchTab("Agent"); },
+            onOpenWorkflow: (target: ResearchAgentTargetReference) => {
+              const scope = exportDraftStudy;
+              void navigateAgentWorkspace({ requestId: crypto.randomUUID(), intent: "open-workflow", target },
+                () => currentStudyScope.current === scope && !documentSwitch.current)
+                .catch(caught => { if (currentStudyScope.current === scope) setError(message(caught, "The recorded workflow is unavailable.")); });
+            } } : {})}
           refreshError={agentRefreshError}
           followAgent={followAgent}
           expandActivityDetails={preferences.agent.expandActivityDetails}
@@ -4580,9 +4730,8 @@ export default function ResearchWorkbench({
             if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
               next.project.project_id === snapshot.project.project_id) setSnapshot(next);
           }}
-          onError={setError}
-          inspectablePreviewJobIds={snapshot.jobs.filter((job) => job.state === "succeeded" &&
-            ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map((job) => job.id)}
+          onError={(value) => { if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy) setError(value); }}
+          inspectablePreviewJobIds={inspectableAgentPreviewIds}
           onInspectPreview={(target) => void inspectAgentPreview(target)}
           onOpenSource={openAgentSource}
           onReviewResult={(target) => {

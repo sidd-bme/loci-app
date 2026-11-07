@@ -51,7 +51,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function source(id: string, sha256: string, name: string): ResearchSource {
   return { id, sha256, name, source_kind: "native", metadata: { axes: "TCZYX", dimensions,
-    levels: [{ index: 0, dimensions }], channel_names: ["Raw", "Ramp"], channel_dtypes: ["uint16", "uint16"],
+    levels: [{ index: 0, dimensions, calibration: { axes: "XYZ", spacing: [1, 1, 1], unit: "um" } }], channel_names: ["Raw", "Ramp"], channel_dtypes: ["uint16", "uint16"],
     physical_calibration: { unit: "um", spacing: [1, 1, 1] } } };
 }
 
@@ -246,5 +246,54 @@ describe("Agent navigation integration", () => {
     expect(screen.getByLabelText("Active image")).toHaveTextContent("Source B");
     expect(viewer()).toHaveAttribute("data-viewer-source", ID_B);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+});
+
+describe("native agent workspace renderer integration", () => {
+  function nativeHost() {
+    const binding = { projectId: "0".repeat(32), studyEpoch: 1, generation: 1 };
+    let listener: (command: import("../shared/agent-workspace-api").AgentWorkspaceCommand) => void = () => undefined;
+    let onState: (state: import("../shared/agent-workspace-api").AgentWorkspaceState) => void = () => undefined;
+    let current: import("../shared/agent-workspace-api").AgentWorkspaceState = { role: "main", status: "open", binding,
+      sequence: 1, snapshot: null, follow: false, refreshError: null, freshness: "current", currentTargets: [],
+      inspectablePreviewJobIds: [], presentation: { selectedTaskId: null, section: "overview", draft: null },
+      pendingCommands: 0, pendingCommandId: null, error: null };
+    const api = {
+      state: vi.fn(async () => current), onState: vi.fn((callback: typeof onState) => { onState = callback; return vi.fn(); }),
+      onCommand: vi.fn((callback: typeof listener) => { listener = callback; return vi.fn(); }),
+      publish: vi.fn(async (_binding: unknown, packet: import("../shared/agent-workspace-api").AgentWorkspacePublishedState) => {
+        current = { ...current, ...packet, sequence: current.sequence + 1 }; onState(current); return current;
+      }),
+      complete: vi.fn(async () => { current = { ...current, sequence: current.sequence + 1, pendingCommands: 0, pendingCommandId: null }; onState(current); }),
+    } as unknown as import("../shared/agent-workspace-api").AgentWorkspaceApi;
+    window.lociAgentWorkspace = api;
+    return { api, command: (command: Omit<Extract<import("../shared/agent-workspace-api").AgentWorkspaceCommand, {kind: "navigate"}>, "binding" | "commandId"> |
+      Omit<Extract<import("../shared/agent-workspace-api").AgentWorkspaceCommand, {kind: "follow"}>, "binding" | "commandId">) => {
+      current = { ...current, sequence: current.sequence + 1, pendingCommands: 1, pendingCommandId: "native-command" };
+      onState(current); listener({ ...command, commandId: "native-command", binding });
+    } };
+  }
+  afterEach(() => { delete window.lociAgentWorkspace; });
+  it("publishes the main Follow choice before acknowledging the detached command", async () => {
+    const native = nativeHost(), state = harness(); render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
+    await screen.findByRole("checkbox", { name: "Channel 1 visible" });
+    await waitFor(() => expect(native.api.publish).toHaveBeenCalled());
+    await act(async () => { native.command({ kind: "follow", follow: true }); });
+    await waitFor(() => expect(native.api.complete).toHaveBeenCalled());
+    expect(vi.mocked(native.api.publish).mock.lastCall?.[1].follow).toBe(true);
+    expect(vi.mocked(native.api.publish).mock.invocationCallOrder.at(-1)!).toBeLessThan(vi.mocked(native.api.complete).mock.invocationCallOrder[0]);
+  });
+  it("acknowledges an exact result only after its source canvas paints the overlay", async () => {
+    const native = nativeHost(), state = harness(); state.publishResult();
+    render(<ResearchWorkbench api={state.api} onBack={vi.fn()} />);
+    await screen.findByRole("checkbox", { name: "Channel 1 visible" });
+    await waitFor(() => expect(viewer()).toHaveAttribute("data-prepared", "true"));
+    await act(async () => { native.command({ kind: "navigate", request: { requestId: "exact-result", intent: "open-result",
+      target: { kind: "result", id: result.id, revision_hash: result.revision_hash, source_id: result.source_id, source_sha256: result.source_sha256 } } }); });
+    await waitFor(() => expect(state.execute).toHaveBeenCalledWith("result", expect.anything()));
+    expect(native.api.complete).not.toHaveBeenCalled();
+    await act(async () => { state.completeResult(); });
+    await waitFor(() => expect(native.api.complete).toHaveBeenCalledWith(expect.anything(), { commandId: "native-command", ok: true }));
+    expect(viewer().getAttribute("data-result-overlay")).toContain(result.revision_hash);
   });
 });

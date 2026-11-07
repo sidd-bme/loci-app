@@ -44,6 +44,8 @@ function setup(options: { saved?: VolumeViewState | null; local?: VolumeViewStat
     }
     if (operation === "volume_view_presence") {
       if (input.available && (input.revision !== document.revision || input.display_revision !== document.display_revision)) throw new Error("Presence revision mismatch");
+      if (presence && presence.view_id === input.view_id && presence.renderer_generation === input.renderer_generation &&
+          Number(input.live_epoch) < Number(presence.live_epoch)) throw new Error("Live epoch cannot move backwards");
       presence = copy(input); return copy(input);
     }
     if (operation === "volume_view_requests") return { requests: copy(requests.filter((request) => ["queued", "applying"].includes(String(request.status)))) };
@@ -74,13 +76,35 @@ function setup(options: { saved?: VolumeViewState | null; local?: VolumeViewStat
       proposed_state: copy(state), panes: kind === "image" ? ["volume", "axial"] : [], max_size: 1024, ...patch };
     requests.push(request); return request;
   };
-  return { bridge, execute, handle, apply, capture, lock, flushDisplay, onChanged, onConflict, onError, queue, token,
+  return { bridge, execute, handle, adapter, apply, capture, lock, flushDisplay, onChanged, onConflict, onError, queue, token,
     local: () => copy(local), change: (patch: Partial<VolumeSceneSnapshot>) => { local = { ...local, ...copy(patch) }; },
     document: () => copy(document), changeDocument: (patch: Partial<VolumeViewDocument>) => { document = { ...document, ...copy(patch) }; },
     presence: () => copy(presence) };
 }
 
 describe("volume scene lifecycle and CAS", () => {
+  it("withdraws the acknowledged epoch after its renderer has detached", async () => {
+    const f = setup(); f.change({ liveEpoch: 37, rendererGeneration: 0 }); await f.bridge.start();
+    f.adapter.snapshot = () => null;
+    await f.bridge.dispose();
+    expect(f.presence()).toMatchObject({ live_epoch: 37, renderer_generation: 0, available: false, busy: false });
+  });
+  it("waits for an in-flight presence before withdrawing its newly accepted epoch", async () => {
+    const f = setup(); await f.bridge.start(); f.change({ liveEpoch: 44 });
+    const gate = deferred<void>(); const entered = deferred<void>();
+    f.execute.mockImplementation(async (operation, request) => {
+      if (operation === "volume_view_presence" && request.available === true) { entered.resolve(); await gate.promise; }
+      return f.handle(operation, request);
+    });
+    const update = f.bridge.update(); const rejected = expect(update).rejects.toThrow(/closed/);
+    await entered.promise; f.adapter.snapshot = () => null;
+    const disposal = f.bridge.dispose(); gate.resolve(); await disposal; await rejected;
+    expect(f.presence()).toMatchObject({ live_epoch: 44, available: false, busy: false });
+  });
+  it("does not manufacture presence when disposed before first publication", async () => {
+    const f = setup(); f.adapter.snapshot = () => null; await f.bridge.dispose();
+    expect(f.execute).not.toHaveBeenCalled();
+  });
   it("restores a saved scene once under a gesture lock and publishes only its exact bound revision", async () => {
     const saved = scene(); saved.crosshair_source_xyz = [8, 7, 6];
     const f = setup({ saved }); await f.bridge.start(); await f.bridge.start(); await f.bridge.update();

@@ -153,6 +153,11 @@ async function targetFromTable() {
   await wait(() => scene(), selected, 'exact table selection');
   await page.locator(`tr[data-label="${fixture.target_label}"][aria-selected="true"]`).waitFor();
 }
+async function clearObjectSelection() {
+  const clear = page.getByRole('button', { name: 'Clear object selection', exact: true });
+  if (await clear.isVisible()) await clear.click();
+  return wait(() => scene(), value => value.state?.selected_object === null, 'cleared selection saved before a new pick');
+}
 async function selectMpr() {
   await page.getByRole('button', { name: 'Four panes', exact: true }).click();
   for (const [i, axis] of ['X', 'Y', 'Z'].entries()) {
@@ -160,7 +165,7 @@ async function selectMpr() {
   }
   const [x, y, z] = fixture.probe_source_xyz, [nx, ny, nz] = fixture.source_dimensions_xyz;
   for (const [plane, u, v] of [['XY plane', x / (nx - 1), y / (ny - 1)], ['XZ plane', x / (nx - 1), 1 - z / (nz - 1)], ['YZ plane', y / (ny - 1), 1 - z / (nz - 1)]]) {
-    const clear = page.getByRole('button', { name: 'Clear object selection', exact: true }); if (await clear.isVisible()) await clear.click();
+    await clearObjectSelection();
     const canvas = page.getByRole('region', { name: plane + ' view', exact: true }).getByLabel(plane + ' resliced image', { exact: true });
     const b = await canvas.boundingBox(); assert.ok(b);
     const beforeCamera = (await scene()).state.camera;
@@ -175,7 +180,10 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 const norm = a => a.map(n => n / Math.hypot(...a));
 async function select3d() {
   await page.getByRole('button', { name: '3D view', exact: true }).click();
-  const view = await wait(() => scene(), v => v.state?.layout.mode === 'single' && v.state.camera, 'saved 3D camera');
+  await wait(() => scene(), v => v.state?.layout.mode === 'single' && v.state.camera, 'saved 3D camera');
+  // Clearing the selection changes the controls' height. Resolve the canvas
+  // bounds and camera only after that layout/state change has committed.
+  const view = await clearObjectSelection();
   const c = view.state.camera, p = [...fixture.probe_source_xyz, 1]; p[2] -= fixture.selection.z;
   const world = fixture.affine.slice(0, 3).map(row => dot(row, p));
   const forward = norm(c.focal_point_xyz.map((n, i) => n - c.position_xyz[i]));
@@ -184,7 +192,7 @@ async function select3d() {
   const half = c.projection === 'parallel' ? c.parallel_scale : dot(delta, forward) * Math.tan(c.view_angle_degrees * Math.PI / 360);
   const u = .5 + dot(delta, right) / (2 * half * b.width / b.height), v = .5 - dot(delta, up) / (2 * half);
   assert.ok(u > 0 && u < 1 && v > 0 && v < 1, 'Known object must project into the real 3D canvas');
-  const clear = page.getByRole('button', { name: 'Clear object selection', exact: true }); if (await clear.isVisible()) await clear.click();
+
   await page.mouse.click(b.x + u * b.width, b.y + v * b.height);
   const picked = await wait(() => scene(), selected, 'exact voxel ray selected in 3D');
   assert.deepEqual(picked.state.camera, c, '3D picking must preserve the researcher camera');
@@ -204,6 +212,15 @@ try {
   for (const [label, key] of [['Width', 'width'], ['Height', 'height'], ['X', 'x'], ['Y', 'y'], ['Z', 'z'], ['Z stop', 'z_stop'], ['T', 't']]) await setSelectionField(page, label, fixture.selection[key]);
   await selectWorkbenchTool(page, 'Analyze'); await page.getByLabel('Segmentation input', { exact: true }).selectOption(String(fixture.selection.c));
   await revealExternalLabels(page); await page.getByRole('button', { name: 'Import labels', exact: true }).click();
+  if (nativeLabels) {
+    console.log('NATIVE_LABEL_CANCEL_READY');
+    await wait(() => app.evaluate(() => globalThis.__volumeQaDialogs.filter(d => /^Import labels/.test(d.title))), v => v.length === 1, 'ordinary label picker cancellation', 120000);
+    const cancelled = await app.evaluate(() => globalThis.__volumeQaDialogs.at(-1));
+    assert.equal(cancelled.simulated, false); assert.equal(cancelled.canceled, true);
+    assert.equal((await snapshot()).results.length, 0, 'Cancelling the picker must not create a result');
+    await page.getByRole('button', { name: 'Import labels', exact: true }).click();
+    console.log('NATIVE_LABEL_SELECT_READY');
+  }
   await page.getByAltText(/Checked label overlay on the volume/u).waitFor({ timeout: nativeLabels ? 120000 : 30000 });
   await page.getByRole('button', { name: 'Import on this volume', exact: true }).click();
   parent = (await waitForSnapshot(page, s => s.results.length === 1, 'actual volume label adoption', 120000)).results[0];
@@ -232,7 +249,7 @@ try {
   assert.deepEqual(located.state.clipping, beforeLocate.state.clipping);
   report.checks.push({ route: 'selection and explicit locate', selection_camera_preserved: true, explicit_locate_translation_verified: true, view_orientation_and_zoom_preserved: true, clipping_controls_preserved: true });
   const retained = located.state; report.retained_scene = located; await close();
-  await launch(2); await fileMenuAction(page, 'Open study'); await waitForSnapshot(page, s => s.results.some(r => r.id === parent.id), 'fresh profile reopen', 120000);
+  await launch(2); await fileMenuAction(page, 'Open study'); await waitForSnapshot(page, s => s?.results.some(r => r.id === parent.id) === true, 'fresh profile reopen', 120000);
   await chooseResult(parent); await openVolume();
   const reopened = await wait(() => scene(), v => JSON.stringify(v.state) === JSON.stringify(retained), 'exact cold-reopened scene state', 120000);
   report.reopened_scene = reopened; await shot('03-reopened-object-scene');
@@ -244,7 +261,9 @@ try {
   report.checks.push({ route: 'connected delete correction', parent_id: parent.id, child_id: child.id, exact_remeasurement: true });
   assert.deepEqual(report.page_errors, []); assert.deepEqual(report.console_errors, []); assert.deepEqual(report.network_requests, []);
   const labelDialogs = report.dialogs.filter(d => /^Import labels on this (plane|volume)$/u.test(d.title));
-  assert.equal(labelDialogs.length, 1); assert.equal(labelDialogs[0].simulated, !nativeLabels); assert.equal(labelDialogs[0].canceled, false);
+  assert.equal(labelDialogs.length, nativeLabels ? 2 : 1);
+  assert.deepEqual(labelDialogs.map(d => d.canceled), nativeLabels ? [true, false] : [false]);
+  assert.ok(labelDialogs.every(d => d.simulated === !nativeLabels));
   report.parent = parent; report.child = child; report.study = study; report.status = 'passed-packaged-engineering';
 } catch (error) {
   failure = error; report.status = 'failed'; report.failure = { message: error.message, stack: error.stack }; if (page) await shot('failure').catch(() => {});
