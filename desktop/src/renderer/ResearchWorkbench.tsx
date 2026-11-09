@@ -2664,7 +2664,7 @@ export default function ResearchWorkbench({
               // Publish fresh session metadata too when this read still owns the
               // cached snapshot; preserve newer unrelated state otherwise.
               flushSync(() => setSnapshot(previous => {
-                if (!unchanged() || previous?.project.project_id !== projectId ||
+                if (!unchanged() || !previous || previous.project.project_id !== projectId ||
                     !previous.sources.some(s => s.id === ctx.source!.id && s.sha256 === ctx.source!.sha256)) return previous;
                 if (previous === cached) return hydrated;
                 return { ...previous, results: [...previous.results.filter(r => r.id !== verified.id), verified] };
