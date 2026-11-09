@@ -2,6 +2,8 @@
  * Node 24/macOS: LOCI_PACKAGED_APP, LOCI_QA_PYTHON, LOCI_QA_OUTPUT_ROOT (absolute),
  * LOCI_QA_SOURCE_COMMIT (exact clean package SHA). Optional LOCI_QA_SECONDARY_DISPLAY
  * is an actual Electron display ID or exact label; a missing requested display fails.
+ * Main placement prefers Sidecar/iPad with a receipted primary fallback if needed
+ * for the live window minimum. Popup sizes and layout checks remain independent.
  * Uses an authored synthetic TIFF, supported frozen-worker CLI, real renderer UI,
  * native BrowserWindows and the existing MCP SDK controller. This is not an LLM-host
  * journey. Only study-open and access-bundle save picker answers are substituted.
@@ -14,6 +16,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
+import { placeQaWindow } from './display-placement.mjs';
 import { selectWorkbenchTool, setSelectionField } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), env = process.env;
@@ -86,9 +89,8 @@ async function launch() {
   app = await electron.launch({ executablePath: executable, args: ['--user-data-dir=' + profile], cwd: path.join(repo, 'desktop'), timeout: 120000,
     env: { ...env, LOCI_MODEL_HOME: path.join(profile, 'models') } });
   page = await app.firstWindow(); observe(page, 'main');
-  const inventory = await app.evaluate(({ BrowserWindow, screen, dialog }, paths) => {
-    const displays = screen.getAllDisplays(), primary = screen.getPrimaryDisplay(), main = BrowserWindow.getAllWindows()[0];
-    main.setBounds({ x: primary.workArea.x + 15, y: primary.workArea.y + 15, width: Math.min(1440, primary.workArea.width - 30), height: Math.min(1000, primary.workArea.height - 30) }); main.show();
+  const { inventory } = await placeQaWindow(app, { requestedDisplay: env.LOCI_QA_SECONDARY_DISPLAY, margin: 15, launch: (report.display_placements?.length ?? 0) + 1 }, report);
+  await app.evaluate(({ dialog }, paths) => {
     globalThis.__agentWorkspaceQaDialogs = [];
     dialog.showOpenDialog = async (...args) => {
       const options = args.at(-1);
@@ -103,7 +105,6 @@ async function launch() {
       return { canceled: false, filePath: paths.access };
     };
     dialog.showMessageBox = async (...args) => { throw new Error('Unexpected confirmation: ' + args.at(-1)?.message); };
-    return { primary_id: primary.id, displays: displays.map(d => ({ id: d.id, label: d.label, workArea: d.workArea, bounds: d.bounds, scaleFactor: d.scaleFactor, internal: d.internal })) };
   }, { study, access });
   report.display_inventory ??= inventory;
   report.latest_display_inventory = inventory;
@@ -249,6 +250,7 @@ try {
   assert.equal(report.build.identity.sourceRevision, env.LOCI_QA_SOURCE_COMMIT);
   assert.equal(report.build.identity.sourceDirty, false, 'Packaged qualification requires a clean recorded candidate');
   report.harness_sha256 = await hash(import.meta.filename); report.helper_sha256 = await hash(helper); report.fixture_helper_sha256 = await hash(fixtureHelper);
+  report.display_helper_sha256 = await hash(path.join(repo, 'scripts/qa/display-placement.mjs'));
   await saveReport();
   report.stage = 'generated-fixture-and-native-study';
   fixture = JSON.parse((await exec(python, [helper, 'fixture', output], { timeout: 30000 })).stdout);

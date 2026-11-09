@@ -3,6 +3,9 @@
  * LOCI_QA_VOLUME_FIXTURE and LOCI_QA_SOURCE_COMMIT. All paths must be absolute.
  * Set LOCI_QA_NATIVE_LABEL_PICKER=1 to retain the ordinary OS label dialog;
  * select the prepared labels.tif manually. Other pickers are declared simulations.
+ * Optional LOCI_QA_SECONDARY_DISPLAY selects an Electron display ID or exact label.
+ * Otherwise prefer Sidecar/iPad; use primary if unavailable or below the live window
+ * minimum. Missing explicit displays fail. Actual placement/fallback is receipted.
  * No new bridge, hidden scene controls, model, download, install or build.
  */
 import assert from 'node:assert/strict';
@@ -12,6 +15,7 @@ import { createReadStream, promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { placeQaWindow } from './display-placement.mjs';
 import { createEmptyStudy, fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField, waitForSnapshot } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), require = createRequire(path.join(repo, 'desktop/package.json'));
@@ -33,11 +37,13 @@ const report = { schema: 'loci.packaged-volume-workspace-qa/v1', status: 'runnin
     'Open/create/source pickers are simulated in main; all adoption uses real preload/main/packaged worker.',
     nativeLabels ? 'Label picker uses the ordinary OS dialog and requires manual choice of the prepared TIFF.' : 'Label picker response is explicitly simulated; ordinary OS picker qualification remains separate.',
     'CellSeg3D axes and unsigned conversion are explicit derived declarations; physical calibration remains absent.',
-    'Kidney labels are authored technical geometry on biological raw pixels, not reference cell annotations.'] };
+    'Kidney labels are authored technical geometry on biological raw pixels, not reference cell annotations.',
+    'Display inventory and placement are real; physical Sidecar unplug/reconnect is not exercised by this harness.'] };
 for (const [name, file] of Object.entries({ executable, asar: path.join(bundle, 'Contents/Resources/app.asar'), worker: path.join(bundle, 'Contents/Resources/loci-engine/loci-engine') })) report.build[name + '_sha256'] = await hash(file);
 report.build.identity = JSON.parse(await fs.readFile(path.join(bundle, 'Contents/Resources/loci-build-identity.json'), 'utf8'));
 assert.equal(report.build.identity.sourceRevision, env.LOCI_QA_SOURCE_COMMIT, 'The requested source revision must identify the actual packaged app');
 report.harness_sha256 = await hash(import.meta.filename); report.oracle_sha256 = await hash(oracle);
+report.display_helper_sha256 = await hash(path.join(repo, 'scripts/qa/display-placement.mjs'));
 let app, page, source, parent, child, failure;
 const snapshot = () => page.evaluate(() => window.lociResearch.getSnapshot());
 const execute = (operation, request) => page.evaluate(({ operation, request }) => window.lociResearch.execute(operation, request), { operation, request });
@@ -61,9 +67,8 @@ async function launch(number) {
   page.on('pageerror', error => report.page_errors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') report.console_errors.push(message.text()); });
   page.on('request', request => { if (/^https?:/u.test(request.url())) report.network_requests.push(request.url()); });
-  await app.evaluate(({ BrowserWindow, dialog, screen }, paths) => {
-    const display = screen.getPrimaryDisplay(), w = BrowserWindow.getAllWindows()[0];
-    w.setBounds({ x: display.workArea.x + 15, y: display.workArea.y + 15, width: Math.min(1440, display.workArea.width - 30), height: Math.min(1000, display.workArea.height - 30) }); w.show();
+  await placeQaWindow(app, { requestedDisplay: env.LOCI_QA_SECONDARY_DISPLAY, margin: 15, launch: number }, report);
+  await app.evaluate(({ dialog }, paths) => {
     globalThis.__volumeQaDialogs = [];
     const ordinary = dialog.showOpenDialog.bind(dialog);
     dialog.showOpenDialog = async (...args) => {

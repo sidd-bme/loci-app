@@ -8,6 +8,9 @@
  * LOCI_QA_HOST_SCOPE=correction-only runs just the explicit correction phase; its receipt
  * records partial scope and must not substitute for core/concurrency/reopen acceptance.
  * This copies the passed derived study; original fixtures/study remain immutable.
+ * Optional LOCI_QA_SECONDARY_DISPLAY selects an Electron display ID or exact label.
+ * Otherwise prefer Sidecar/iPad; use primary if unavailable or below the live window
+ * minimum. Missing explicit displays fail. Actual placement/fallback is receipted.
  * Only Open study is simulated. Scene inputs use ordinary rendered UI controls.
  * No mailbox reply, adapter, product hook, transcript or screenshot is synthesized.
  */
@@ -18,6 +21,7 @@ import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { placeQaWindow } from './display-placement.mjs';
 import { fileMenuAction, waitForSnapshot, selectWorkbenchTool } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), env = process.env;
@@ -55,7 +59,8 @@ const report = { schema: 'loci.packaged-volume-host-journey/v1', status: 'runnin
     'Open study responses are explicitly simulated; no ordinary native-dialog acceptance is claimed here.',
     'Human-CAS input is automated through ordinary GUI controls after an actual Codex progress marker; it is not human scientific review.',
     'Core enqueue/cancel is a real race. A completed image request is a cancellation failure; this run never relabels or retries it.',
-    'Process ownership combines sampled native PID/start-time ancestry with the actual host helper server-exit receipts.'] };
+    'Process ownership combines sampled native PID/start-time ancestry with the actual host helper server-exit receipts.',
+    'Display inventory and placement are real; physical Sidecar unplug/reconnect is not exercised by this harness.'] };
 let fixture, parentReceipt, parent, source, app, page, activeProfile, failure, monitor, monitorQueue = Promise.resolve();
 const owned = new Map(), roots = new Map(), activeChildren = new Set();
 let markerIntervention = false;
@@ -155,9 +160,8 @@ async function launch(number) {
   page.on('pageerror', error => report.page_errors.push({ launch: number, message: error.message }));
   page.on('console', message => { if (message.type() === 'error') report.console_errors.push({ launch: number, message: message.text() }); });
   page.on('request', request => { if (/^https?:/u.test(request.url())) report.network_requests.push({ launch: number, url: request.url() }); });
-  await app.evaluate(({ BrowserWindow, dialog, screen }, selectedStudy) => {
-    const display = screen.getPrimaryDisplay(), window = BrowserWindow.getAllWindows()[0];
-    window.setBounds({ x: display.workArea.x + 10, y: display.workArea.y + 10, width: Math.min(1440, display.workArea.width - 20), height: Math.min(1000, display.workArea.height - 20) }); window.show();
+  await placeQaWindow(app, { requestedDisplay: env.LOCI_QA_SECONDARY_DISPLAY, margin: 10, launch: number }, report);
+  await app.evaluate(({ dialog }, selectedStudy) => {
     globalThis.__volumeHostDialogs = [];
     dialog.showOpenDialog = async (...args) => { const title = args.at(-1)?.title; if (title !== 'Open research study') throw new Error('Unexpected picker: ' + title);
       globalThis.__volumeHostDialogs.push({ title, simulated: true, selected_basename: selectedStudy.split('/').at(-1) }); return { canceled: false, filePaths: [selectedStudy] }; };
@@ -278,6 +282,7 @@ try {
   report.original_study_inventory = await inventory(parentStudy); await fs.cp(parentStudy, study, { recursive: true, force: false, errorOnExist: true, preserveTimestamps: true });
   report.build = { identity: await readJson(path.join(bundle, 'Contents/Resources/loci-build-identity.json')), executable_sha256: await hash(executable), asar_sha256: await hash(asar), worker_sha256: await hash(worker) };
   assert.equal(report.build.identity.sourceRevision, sourceCommit); report.harness_sha256 = await hash(import.meta.filename); report.host_helper_sha256 = await hash(helper);
+  report.display_helper_sha256 = await hash(path.join(repo, 'scripts/qa/display-placement.mjs'));
   await writeJson(path.join(output, 'attempt.json'), { schema: report.schema, started_at: report.started_at, input: report.input, build: report.build, source_commit: sourceCommit, scope, requested_phases: report.requested_phases });
   await command('codesign', '/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle], 60000);
   monitor = setInterval(() => { monitorQueue = monitorQueue.then(rememberProcesses).catch(error => { report.process_tracking_error = error.message; }); }, 250);
@@ -345,6 +350,7 @@ try {
         assert.equal(await hash(executable), report.build.executable_sha256); assert.equal(await hash(asar), report.build.asar_sha256); assert.equal(await hash(worker), report.build.worker_sha256);
       }
       if (report.harness_sha256) assert.equal(await hash(import.meta.filename), report.harness_sha256);
+      if (report.display_helper_sha256) assert.equal(await hash(path.join(repo, 'scripts/qa/display-placement.mjs')), report.display_helper_sha256);
       report.originals_preserved = true;
     } catch (error) { report.originals_preserved = false; report.preservation_error = error.message; report.status = 'failed'; failure ??= error; }
   }
