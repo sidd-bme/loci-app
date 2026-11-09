@@ -2638,8 +2638,40 @@ export default function ResearchWorkbench({
         apply: async (state: VolumeViewState) => {
           if (!current() || !volumeSharedLocked.current) throw new Error("The shared volume workspace changed before applying its scene.");
           const humanIntent = agentInteraction.current.generation;
-          const unchanged = () => current() && humanIntent === agentInteraction.current.generation;
-          const target = state.result ? volumeContext.current.snapshot?.results.find(r => r.id === state.result!.result_id && r.revision_hash === state.result!.revision_hash && r.source_id === ctx.source!.id) : null;
+          const studyScope = currentStudyScope.current, projectId = ctx.snapshot?.project.project_id;
+          const unchanged = () => current() && humanIntent === agentInteraction.current.generation &&
+            currentStudyScope.current === studyScope && volumeContext.current.documentEpoch === ctx.documentEpoch &&
+            volumeContext.current.snapshot?.project.project_id === projectId && volumeContext.current.source?.sha256 === ctx.source!.sha256;
+          const exactResult = (value: ResearchSnapshot | null | undefined) => state.result
+            ? value?.results.find(r => r.id === state.result!.result_id && r.revision_hash === state.result!.revision_hash && r.source_id === ctx.source!.id) : null;
+          let target = exactResult(volumeContext.current.snapshot);
+          if (state.result && !target) {
+            // An external correction can publish before this renderer's next
+            // history refresh. Hydrate its exact immutable result once; this is
+            // not a retry of the scene CAS or its live token.
+            const cached = volumeContext.current.snapshot;
+            const hydrated = await agentSnapshotFence.current.read(api.getSnapshot);
+            if (!unchanged()) throw new Error("The shared volume workspace changed while loading its result history.");
+            const hydratedSource = hydrated?.sources.find(s => s.id === ctx.source!.id && s.sha256 === ctx.source!.sha256);
+            target = hydrated?.project.project_id === projectId && hydratedSource ? exactResult(hydrated) : null;
+            if (target && target.source_sha256 !== ctx.source!.sha256) target = null;
+            if (target) {
+              const verified = target;
+              const latest = volumeContext.current.snapshot?.results.find(r => r.id === verified.id);
+              if (latest && (latest.revision_hash !== verified.revision_hash || latest.source_id !== verified.source_id ||
+                  latest.source_sha256 !== verified.source_sha256))
+                throw new Error("The requested result changed while loading its history.");
+              // Publish fresh session metadata too when this read still owns the
+              // cached snapshot; preserve newer unrelated state otherwise.
+              flushSync(() => setSnapshot(previous => {
+                if (!unchanged() || previous?.project.project_id !== projectId ||
+                    !previous.sources.some(s => s.id === ctx.source!.id && s.sha256 === ctx.source!.sha256)) return previous;
+                if (previous === cached) return hydrated;
+                return { ...previous, results: [...previous.results.filter(r => r.id !== verified.id), verified] };
+              }));
+              if (!unchanged()) throw new Error("The shared volume workspace changed while loading its result history.");
+            }
+          }
           if (state.result && !target) throw new Error("The saved scene's exact label result is unavailable.");
           // Volume targeting is presentation state. The independent source-display
           // document must not be rewritten by a scene operation.

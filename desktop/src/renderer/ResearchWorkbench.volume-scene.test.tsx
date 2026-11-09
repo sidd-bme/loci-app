@@ -4,10 +4,11 @@ import { webcrypto } from "node:crypto";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
-import type { ResearchDesktopApi, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
+import type { ResearchAgentSessionsSnapshot, ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
 import type { SavedSourceView } from "./source-view-store";
 import type { VolumeSceneAdapter, VolumeSceneSnapshot, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import ResearchWorkbench from "./ResearchWorkbench";
+import agentSessions from "./__fixtures__/agent-sessions-snapshot.json";
 
 const renderers = vi.hoisted(() => new Map<string, {
   snapshot: VolumeSceneSnapshot; locked: boolean; changed: (() => void) | null; appliedStates: VolumeViewState[];
@@ -17,9 +18,11 @@ const renderers = vi.hoisted(() => new Map<string, {
 // replaces GPU rendering with an explicit adapter, never the lifecycle under test.
 vi.mock("./RawVolumeViewport", async () => {
   const React = await import("react");
-  return { RawVolumeViewport: ({ volume, loading, sceneHandleRef, onSceneChange }: {
+  return { RawVolumeViewport: ({ volume, loading, sceneHandleRef, onSceneChange, labelResult, labelPayload }: {
     volume: { context: { source_id: string; t: number; components: Array<{ channel_index: number }> } } | null; loading?: boolean;
     sceneHandleRef?: RefObject<VolumeSceneAdapter | null>; onSceneChange?: () => void;
+    labelResult?: { result_id: string; revision_hash: string } | null;
+    labelPayload?: { result: { result_id: string; revision_hash: string; label_sha256: string } } | null;
   }) => {
     const sourceId = !loading ? volume?.context.source_id : undefined;
     const entry = sourceId ? renderers.get(sourceId) : undefined;
@@ -27,6 +30,8 @@ vi.mock("./RawVolumeViewport", async () => {
       if (!entry || !sceneHandleRef) return;
       entry.snapshot.state.t = volume!.context.t;
       entry.snapshot.state.channels = volume!.context.components.map(component => component.channel_index);
+      if (labelResult && labelPayload?.result.result_id === labelResult.result_id && labelPayload.result.revision_hash === labelResult.revision_hash)
+        entry.snapshot.state.result = structuredClone(labelPayload.result);
       const adapter: VolumeSceneAdapter = {
         snapshot: () => structuredClone(entry.snapshot),
         apply: async (state) => {
@@ -41,7 +46,7 @@ vi.mock("./RawVolumeViewport", async () => {
       sceneHandleRef.current = adapter; entry.changed = onSceneChange ?? null;
       onSceneChange?.();
       return () => { if (sceneHandleRef.current === adapter) sceneHandleRef.current = null; entry.changed = null; };
-    }, [entry, volume, sceneHandleRef, onSceneChange]);
+    }, [entry, volume, sceneHandleRef, onSceneChange, labelResult?.result_id, labelResult?.revision_hash, labelPayload]);
     return entry ? <div aria-label="Mock volume renderer ready">
       <button type="button" onClick={() => {
         if (entry.locked) throw new Error("A human edit reached the locked mock renderer.");
@@ -59,6 +64,12 @@ const first: ResearchSource = {
     dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 }, levels: [{ index: 0, dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 } }] },
 };
 const second: ResearchSource = { ...structuredClone(first), id: "c".repeat(32), sha256: "d".repeat(64), name: "Second volume" };
+const child: ResearchResult = {
+  id: "7".repeat(32), revision_hash: "8".repeat(64), source_id: first.id, source_sha256: first.sha256,
+  kind: "corrected-labels", method_label: "External correction", created_at: "2026-11-09T09:00:00Z", object_count: 2,
+  arrays: { labels: { shape: [3, 48, 64], dtype: "uint32" } },
+};
+const childBinding = { result_id: child.id, revision_hash: child.revision_hash, label_sha256: "9".repeat(64) };
 const scene = (): VolumeViewState => ({
   t: 0, channels: [0], result: null, selected_object: null,
   representation: { mode: "volume", extent: "context", render_mode: "blend", quality: 50 },
@@ -120,8 +131,11 @@ function fixture() {
   let nextSave: ReturnType<typeof gate> | null = null;
   let nextRead: ReturnType<typeof gate> | null = null;
   let nextRawVolume: ReturnType<typeof gate> | null = null;
+  let nextSnapshot: ReturnType<typeof gate> | null = null;
   let agentRequest: Record<string, unknown> | null = null;
   const execute = vi.fn(async (operation: string, request: Record<string, unknown>): Promise<unknown> => {
+    if (operation === "result") return { result: structuredClone(child), measurements: [{ label: 17 }, { label: 65536 }] };
+    if (operation === "volume_labels") return { result: structuredClone(childBinding) };
     const sourceId = String(request.source_id);
     const source = [first, second].find((item) => item.id === sourceId);
     if (operation === "volume_view_requests") return { requests: agentRequest?.status === "queued" ? [structuredClone(agentRequest)] : [] };
@@ -194,7 +208,11 @@ function fixture() {
       workspace: { revision: change.expected_revision + 1, closed_sources: [first, second].filter((item) => hidden.has(item.id)), hidden_results: [] } };
     return study;
   });
-  const api = { getSnapshot: vi.fn(async () => study), execute, openImages, openStudy, updateWorkspace,
+  const api = { getSnapshot: vi.fn(async () => {
+    const captured = study;
+    if (nextSnapshot) { const pending = nextSnapshot; nextSnapshot = null; await pending.wait(); }
+    return captured;
+  }), execute, openImages, openStudy, updateWorkspace,
     createStudy: vi.fn(async () => study), addSources: vi.fn(async () => study), reviewResult: vi.fn(), exportResult: vi.fn(), cancelJob: vi.fn() } as ResearchDesktopApi;
   return { api, execute, events, openImages, openStudy, updateWorkspace,
     isSceneReady: () => lastPresence?.available === true && Number(lastPresence.revision) > 0,
@@ -202,6 +220,10 @@ function fixture() {
     holdSave: () => { const pending = gate(); nextSave = pending; return pending; },
     holdRead: () => { const pending = gate(); nextRead = pending; return pending; },
     holdRawVolume: () => { const pending = gate(); nextRawVolume = pending; return pending; },
+    holdSnapshot: () => { const pending = gate(); nextSnapshot = pending; return pending; },
+    publishExternalChild: (change: (snapshot: ResearchSnapshot) => void = () => undefined) => {
+      study = { ...structuredClone(study), results: [structuredClone(child)] }; change(study);
+    },
     externalSceneEdit: () => {
       const previous = volumeViews.get(first.id)!;
       const state = structuredClone(previous.state!); state.labels.opacity = .2;
@@ -223,12 +245,13 @@ function fixture() {
 }
 
 async function openVolume(f: ReturnType<typeof fixture>, initialized = true) {
-  render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+  const mounted = render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
   const open = await screen.findByRole("button", { name: "3D volume" });
   await waitFor(() => expect(open).toBeEnabled());
   fireEvent.click(open);
   await screen.findByLabelText("Mock volume renderer ready");
   if (initialized) await waitFor(() => expect(f.isSceneReady()).toBe(true));
+  return mounted;
 }
 function beginPointer() {
   const event = new Event("pointerdown", { bubbles: true }); Object.defineProperty(event, "pointerId", { value: 17 });
@@ -258,6 +281,71 @@ async function holdOlderAutosave(f: ReturnType<typeof fixture>) {
 }
 
 describe("Workbench volume scene lifecycle barriers", () => {
+  it("hydrates a newly published exact child once before acknowledging its rendered scene without reloading raw input", async () => {
+    const f = fixture(); await openVolume(f);
+    const initialReads = vi.mocked(f.api.getSnapshot).mock.calls.length;
+    const initialRaw = f.execute.mock.calls.filter(([op]) => op === "viewer_volume").length;
+    const previous = f.state().revision;
+    f.publishExternalChild(study => {
+      const wire = structuredClone(agentSessions) as ResearchAgentSessionsSnapshot;
+      study.agent_sessions = { ...wire, status: "connected_idle", pending_approval_count: 0, approvals: [], events: [],
+        sessions: [{ ...wire.sessions[0], state: "connected_idle", current_operation: null, recent_result_ids: [], active_approval_id: null }] };
+    });
+    const target = structuredClone(renderers.get(first.id)!.snapshot.state); target.result = childBinding;
+    await act(async () => f.queueAgentSet(target));
+    await waitFor(() => expect(f.requestStatus()).toBe("complete"));
+    expect(f.api.getSnapshot).toHaveBeenCalledTimes(initialReads + 1);
+    expect(f.execute.mock.calls.filter(([op]) => op === "volume_view_request_apply")).toHaveLength(1);
+    expect(f.execute.mock.calls.filter(([op]) => op === "viewer_volume")).toHaveLength(initialRaw);
+    expect(f.execute).toHaveBeenCalledWith("volume_labels", expect.objectContaining({ result_id: child.id, revision_hash: child.revision_hash }));
+    expect(f.state().revision).toBe(previous + 1);
+    expect(renderers.get(first.id)!.appliedStates).toEqual([target]);
+    expect(screen.getByRole("button", { name: /External correction/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("No active agent")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent session status" })).toHaveTextContent("MCP connected · Idle");
+  });
+
+  it.each(["absent", "revision", "source", "fingerprint", "source-record", "project"] as const)("refuses a hydrated child with %s mismatch after the scene CAS", async (invalid) => {
+    const f = fixture(); await openVolume(f);
+    const initialReads = vi.mocked(f.api.getSnapshot).mock.calls.length;
+    f.publishExternalChild(study => {
+      if (invalid === "absent") study.results = [];
+      else if (invalid === "revision") study.results[0].revision_hash = "0".repeat(64);
+      else if (invalid === "source") study.results[0].source_id = second.id;
+      else if (invalid === "fingerprint") study.results[0].source_sha256 = second.sha256;
+      else if (invalid === "source-record") study.sources[0].sha256 = second.sha256;
+      else study.project.project_id = "0".repeat(32);
+    });
+    const target = structuredClone(renderers.get(first.id)!.snapshot.state); target.result = childBinding;
+    await act(async () => f.queueAgentSet(target));
+    await waitFor(() => expect(f.requestStatus()).toBe("failed"));
+    expect(f.api.getSnapshot).toHaveBeenCalledTimes(initialReads + 1);
+    expect(f.state().state).toEqual(target); // Durable apply is not a rendered acknowledgment.
+    expect(f.execute.mock.calls.filter(([op]) => op === "volume_view_request_complete")).toHaveLength(0);
+    expect(renderers.get(first.id)!.appliedStates).toEqual([]);
+    expect(screen.queryByRole("button", { name: /External correction/ })).not.toBeInTheDocument();
+  });
+
+  it.each(["human", "document"] as const)("refuses hydration when the %s context changes during the authoritative read", async (change) => {
+    const f = fixture(), mounted = await openVolume(f);
+    const renderer = renderers.get(first.id)!;
+    f.publishExternalChild(); const pending = f.holdSnapshot();
+    const target = structuredClone(renderer.snapshot.state); target.result = childBinding;
+    await act(async () => f.queueAgentSet(target));
+    await waitFor(() => expect(pending.entered()).toBe(true));
+    try {
+      if (change === "human") fireEvent.keyDown(window, { key: "Shift" });
+      else {
+        mounted.unmount();
+        render(<ResearchWorkbench key="replacement-study" api={fixture().api} onBack={vi.fn()} />);
+      }
+    } finally { await act(async () => pending.release()); }
+    await waitFor(() => expect(f.requestStatus()).toBe("failed"));
+    expect(f.execute.mock.calls.filter(([op]) => op === "volume_view_request_complete")).toHaveLength(0);
+    expect(renderer.appliedStates).toEqual([]);
+    expect(screen.queryByRole("button", { name: /External correction/ })).not.toBeInTheDocument();
+  });
+
   it("persists the latest local label controls when their debounce joins a superseded save", async () => {
     const f = fixture(); await openVolume(f);
     const renderer = renderers.get(first.id)!;
