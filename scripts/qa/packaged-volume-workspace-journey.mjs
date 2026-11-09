@@ -241,6 +241,10 @@ try {
   await verifyArrays(); await openVolume();
   const beforeTable = (await scene()).state.camera; await targetFromTable(); assert.deepEqual((await scene()).state.camera, beforeTable);
   await selectMpr(); await shot('01-linked-mpr-object'); await select3d(); await shot('02-native-3d-object');
+  // Retain four panes so the cold-restore check can verify every visible slice.
+  // The preceding single-pane pick and capture remain a separate 3D check.
+  await page.getByRole('button', { name: 'Four panes', exact: true }).click();
+  await wait(() => scene(), v => selected(v) && v.state.layout.mode === 'four' && v.state.layout.expanded_pane === null, 'four-pane layout retained for cold restore');
   const labelControls = page.getByRole('region', { name: 'Volume labels and selection', exact: true });
   await labelControls.getByLabel('Selected only', { exact: true }).check(); await range('Label opacity', 70);
   await wait(() => scene(), v => selected(v) && v.state.labels.selected_only && v.state.labels.opacity === .7, 'label presentation controls persisted');
