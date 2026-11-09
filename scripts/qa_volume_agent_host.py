@@ -218,13 +218,24 @@ Finally read volume_view. Report exact request IDs and limits in a concise summa
         )
     elif phase == "human":
         steps = f"""
-FIRST volume_view on {MAIN}; remember its complete original token and state. Output
+FIRST volume_view on {MAIN}; require live.available=true and live.busy=false;
+remember its complete original token and state. Output
 the exact progress marker READY_FOR_HUMAN_CAS with that revision. The lead now changes
 the clipping control through the actual GUI to enabled=true, axis=z, position={HUMAN_CLIP}.
 Do NOT make that change yourself. Poll only volume_view sequentially, at most 180 reads,
-until its saved revision exceeds the first and that exact marker is visible in state.
+while preserving the original source_id/source_sha256, geometry_sha256, result binding,
+live.view_id and live.renderer_generation. All saved state except clipping must remain
+original. During THIS wait only, non-null live.available=false or live.busy=true is
+an allowed GUI interaction transition: continue read-only waiting within the same
+180-read limit; this is the sole exception to the common missing-GUI stop rule.
+Stop on null/missing live, a changed source/view/renderer/geometry/result or other saved
+state, any RPC error, or exhaustion of the limit. Do not write or capture while waiting.
+Proceed ONLY when the LAST read has live.available=true, live.busy=false, a saved
+revision newer than the first, live.revision/display_revision equal that saved view,
+and clipping exactly enabled=true, axis=z, position_percent={HUMAN_CLIP}.
 Then intentionally call set_volume_view ONCE with the ORIGINAL token and patch={{
 "clipping":{{"enabled":true,"axis":"z","position_percent":11}}}}. Expect VIEW_STALE.
+Never retry that write or any image request; failed writes/captures must still stop.
 Read the view again: the human's exact clipping marker MUST remain. {capture_step}
 Report the original/human/final revisions. The lead separately records screenshots
 and before/after GUI evidence; you cannot supply or infer human-route evidence.
@@ -523,6 +534,60 @@ def scene_live_token(view):
         key: view["live"][key]
         for key in ("view_id", "renderer_generation", "live_epoch", "revision", "display_revision")
     }
+
+
+def human_marker_ready(original, current):
+    """Allow only bounded readiness transitions of the same human-edited GUI scene."""
+    require(
+        all(
+            current.get(key) == original[key]
+            for key in ("source_id", "source_sha256", "geometry_sha256")
+        ),
+        "Human wait source or geometry changed",
+    )
+    before, live = original.get("live"), current.get("live")
+    require(isinstance(before, dict) and isinstance(live, dict), "Human wait lost its GUI")
+    require(
+        all(live.get(key) == before[key] for key in ("view_id", "renderer_generation"))
+        and live.get("source_id") == original["source_id"]
+        and live.get("source_sha256") == original["source_sha256"],
+        "Human wait GUI binding changed",
+    )
+    require(
+        type(live.get("available")) is bool and type(live.get("busy")) is bool,
+        "Human wait GUI readiness is invalid",
+    )
+    require(
+        {key: value for key, value in current["state"].items() if key != "clipping"}
+        == {key: value for key, value in original["state"].items() if key != "clipping"},
+        "Human wait changed unrelated saved state",
+    )
+    return (
+        live["available"] is True
+        and live["busy"] is False
+        and current["revision"] > original["revision"]
+        and live["revision"] == current["revision"]
+        and live["display_revision"] == current["display_revision"]
+        and current["state"]["clipping"]
+        == {"enabled": True, "axis": "z", "position_percent": HUMAN_CLIP}
+    )
+
+
+def verify_human_stale_call(prepared, reads, arguments):
+    require(2 <= len(reads) <= 181, "Human marker wait missing or exceeded 180 reads")
+    for view in reads[1:]:
+        human_marker_ready(reads[0], view)
+    require(human_marker_ready(reads[0], reads[-1]), "Human marker was not ready before stale call")
+    require(
+        arguments["request"]
+        == {
+            "source_id": prepared["source_id"],
+            "source_sha256": prepared["source_sha256"],
+            "expected_live": scene_live_token(reads[0]),
+            "patch": {"clipping": {"enabled": True, "axis": "z", "position_percent": 11}},
+        },
+        "Human CAS did not use original token",
+    )
 
 
 def verify_correction_calls(prepared, calls, project, session_id):
@@ -1009,23 +1074,7 @@ def verify(args):
                 if phase == "core":
                     require(arguments == successful_set, "Stale replay changed its exact request")
                 else:
-                    require(
-                        reads
-                        and arguments["request"]
-                        == {
-                            "source_id": prepared["source_id"],
-                            "source_sha256": prepared["source_sha256"],
-                            "expected_live": scene_live_token(reads[0]),
-                            "patch": {
-                                "clipping": {
-                                    "enabled": True,
-                                    "axis": "z",
-                                    "position_percent": 11,
-                                }
-                            },
-                        },
-                        "Human CAS did not use original token",
-                    )
+                    verify_human_stale_call(prepared, reads, arguments)
                 errors.append("stale")
             elif (
                 phase == "core"
@@ -1056,6 +1105,8 @@ def verify(args):
                 and value["source_sha256"] == prepared["source_sha256"],
                 "View source drift",
             )
+            if phase == "human" and reads:
+                human_marker_ready(reads[0], value)
             reads.append(value)
         elif tool in {"set_volume_view", "volume_view_image"}:
             if tool == "volume_view_image":

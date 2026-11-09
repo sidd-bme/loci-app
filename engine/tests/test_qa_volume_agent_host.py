@@ -146,6 +146,143 @@ def test_human_cas_token_preserves_all_five_fields_without_presence_metadata():
             QA.scene_live_token(missing)
 
 
+def human_marker_fixture():
+    original = {
+        "source_id": "a" * 32,
+        "source_sha256": "b" * 64,
+        "geometry_sha256": "c" * 64,
+        "revision": 19,
+        "display_revision": 2,
+        "state": {
+            "result": {"result_id": "d" * 32, "revision_hash": "e" * 64},
+            "t": 1,
+            "clipping": {"enabled": False, "axis": "z", "position_percent": 50},
+        },
+        "live": {
+            "source_id": "a" * 32,
+            "source_sha256": "b" * 64,
+            "view_id": "original-view",
+            "renderer_generation": 0,
+            "live_epoch": 11,
+            "revision": 19,
+            "display_revision": 2,
+            "available": True,
+            "busy": False,
+        },
+    }
+    ready = copy.deepcopy(original)
+    ready["revision"] = 20
+    ready["live"].update(revision=20, live_epoch=25)
+    ready["state"]["clipping"] = {"enabled": True, "axis": "z", "position_percent": QA.HUMAN_CLIP}
+    arguments = {
+        "request": {
+            "source_id": original["source_id"],
+            "source_sha256": original["source_sha256"],
+            "expected_live": QA.scene_live_token(original),
+            "patch": {"clipping": {"enabled": True, "axis": "z", "position_percent": 11}},
+        }
+    }
+    return original, ready, arguments
+
+
+def test_human_wait_allows_same_gui_availability_and_busy_transitions_before_ready_marker():
+    original, ready, arguments = human_marker_fixture()
+    unavailable = copy.deepcopy(original)
+    unavailable["live"].update(available=False, live_epoch=19)
+    busy = copy.deepcopy(ready)
+    busy["live"].update(busy=True)
+    assert not QA.human_marker_ready(original, unavailable)
+    assert not QA.human_marker_ready(original, busy)
+    assert QA.human_marker_ready(original, ready)
+    QA.verify_human_stale_call(original, [original, unavailable, busy, ready], arguments)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda view: view.update(live=None),
+        lambda view: view["live"].update(view_id="replacement"),
+        lambda view: view["live"].update(renderer_generation=1),
+        lambda view: view.update(source_id="0" * 32),
+        lambda view: view.update(source_sha256="0" * 64),
+        lambda view: view["live"].update(source_id="0" * 32),
+        lambda view: view["live"].update(source_sha256="0" * 64),
+        lambda view: view.update(geometry_sha256="0" * 64),
+        lambda view: view["state"]["result"].update(revision_hash="0" * 64),
+        lambda view: view["state"].update(t=0),
+    ],
+)
+def test_human_wait_refuses_replacement_even_if_a_later_read_is_ready(mutation):
+    original, ready, arguments = human_marker_fixture()
+    replaced = copy.deepcopy(original)
+    replaced["live"].update(available=False)
+    mutation(replaced)
+    with pytest.raises(AssertionError):
+        QA.verify_human_stale_call(original, [original, replaced, ready], arguments)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda view: view["live"].update(available=False),
+        lambda view: view["live"].update(busy=True),
+        lambda view: view.update(revision=19),
+        lambda view: view["live"].update(revision=19),
+        lambda view: view["live"].update(display_revision=1),
+        lambda view: view["state"]["clipping"].update(enabled=False),
+        lambda view: view["state"]["clipping"].update(axis="x"),
+        lambda view: view["state"]["clipping"].update(position_percent=11),
+    ],
+)
+def test_human_stale_submission_requires_the_last_read_to_have_a_ready_exact_marker(mutation):
+    original, ready, arguments = human_marker_fixture()
+    last = copy.deepcopy(ready)
+    mutation(last)
+    with pytest.raises(AssertionError, match="not ready before stale call"):
+        QA.verify_human_stale_call(original, [original, ready, last], arguments)
+
+
+def test_human_stale_submission_keeps_original_token_and_existing_180_read_limit():
+    original, ready, arguments = human_marker_fixture()
+    QA.verify_human_stale_call(original, [original] * 180 + [ready], arguments)
+    with pytest.raises(AssertionError, match="exceeded 180 reads"):
+        QA.verify_human_stale_call(original, [original] * 181 + [ready], arguments)
+    with pytest.raises(AssertionError, match="marker wait missing"):
+        QA.verify_human_stale_call(original, [original], arguments)
+    arguments["request"]["expected_live"] = QA.scene_live_token(ready)
+    with pytest.raises(AssertionError, match="original token"):
+        QA.verify_human_stale_call(original, [original, ready], arguments)
+
+
+def test_human_prompt_scopes_transient_gui_wait_to_same_view_and_keeps_stop_boundaries():
+    prepared = {
+        key: None
+        for key in (
+            "case",
+            "source_id",
+            "source_sha256",
+            "result_binding",
+            "target_label",
+            "probe_source_xyz",
+            "expected_t",
+            "expected_channels",
+            "positive_patch",
+            "correction_request",
+            "limits",
+        )
+    }
+    text = QA.prompt(prepared, "human")
+    assert "at most 180 reads" in text
+    assert "live.available=false or live.busy=true" in text
+    assert "sole exception to the common missing-GUI stop rule" in text
+    assert "live.view_id and live.renderer_generation" in text
+    assert "Stop on null/missing live" in text
+    assert "any RPC error" in text
+    assert "LAST read has live.available=true, live.busy=false" in text
+    assert "ONCE with the ORIGINAL token" in text
+    assert "Never retry that write or any image request" in text
+
+
 def denial_policy_fixture():
     prepared = {
         "source_id": "a" * 32,
