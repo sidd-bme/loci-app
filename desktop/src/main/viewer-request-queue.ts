@@ -38,6 +38,7 @@ export const VIEW_OPERATIONS: ReadonlySet<string> = new Set([
 // detached-image permissions independent from decoder scheduling capability.
 export const QUEUED_VIEW_OPERATIONS: ReadonlySet<string> = new Set([
   ...VIEW_OPERATIONS,
+  "volume_labels",
   "large_result_view",
   "large_result_locate",
 ]);

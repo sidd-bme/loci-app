@@ -3,6 +3,34 @@
 from __future__ import annotations
 
 OPERATION_CATALOG = {
+    "save_volume_view": {
+        "mutates": True,
+        "summary": "Save exact source-bound 3D presentation with view/display CAS",
+    },
+    "volume_labels": {
+        "mutates": False,
+        "summary": "Read bounded exact native label geometry for GUI display",
+    },
+    "volume_view_presence": {
+        "mutates": True,
+        "summary": "Register one exact live GUI scene token and readiness",
+    },
+    "volume_view_requests": {
+        "mutates": False,
+        "summary": "Inspect bounded pending policy-owned GUI scene requests",
+    },
+    "volume_view_request_apply": {
+        "mutates": True,
+        "summary": "Commit one authorized GUI scene request at the exact live token",
+    },
+    "volume_view_request_complete": {
+        "mutates": True,
+        "summary": "Acknowledge actual rendering or deliver a bounded native GUI PNG",
+    },
+    "volume_view_request_fail": {
+        "mutates": True,
+        "summary": "Fail one exact pending GUI scene request without adopting an image",
+    },
     "annotation_reference_candidates": {
         "mutates": False,
         "summary": "Inspect closed annotation candidates within an exact granted result grid",

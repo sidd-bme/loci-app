@@ -92,6 +92,10 @@ import { AgentImagePanel } from "./AgentImagePanel";
 import { SourceDisplayFollower } from "./source-display-follower";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
 import { AgentSessionIndicator } from "./AgentSessionIndicator";
+import type { AgentWorkspaceNavigationRequest } from "../shared/agent-workspace-api";
+import { AgentSnapshotFence, waitForAgentNavigation } from "./agent-workspace-host";
+import { useAgentWorkspaceHost } from "./use-agent-workspace-host";
+import { useAgentWorkflowTargets, type AgentWorkflowNavigation } from "./agent-workspace-workflows";
 import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewComparison";
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
@@ -116,6 +120,9 @@ import { ImageWelcome, WorkbenchTools, type WorkbenchTab } from "./WorkbenchChro
 import { FirstStudyGuide } from "./FirstStudyGuide";
 import { sourceRelinkKind } from "../shared/source-relink";
 import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
+import type { VolumeLabelPayload } from "./volume-label-display";
+import { VolumeSceneBridge, VolumeSceneSupersededError } from "./volume-scene-bridge";
+import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import BrandMark from "./BrandMark";
 import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPanel";
 import { SourceExportPanel } from "./SourceExportPanel";
@@ -962,12 +969,35 @@ export default function ResearchWorkbench({
   const [rawVolumeLoading, setRawVolumeLoading] = useState(false);
   const [rawVolumeError, setRawVolumeError] = useState<string | null>(null);
   const rawVolumeToken = useRef(0);
+  const [volumeTarget, setVolumeTarget] = useState<{ t: number; channels: number[] } | null>(null);
+  const [volumeLabels, setVolumeLabels] = useState<VolumeLabelPayload | null>(null);
+  const [volumeLabelsLoading, setVolumeLabelsLoading] = useState(false);
+  const [volumeLabelsError, setVolumeLabelsError] = useState<string | null>(null);
+  const volumeHandle = useRef<VolumeSceneAdapter | null>(null);
+  const volumeBridge = useRef<VolumeSceneBridge | null>(null);
+  const volumeBridgeScope = useRef<string | null>(null);
+  const volumeSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volumeStarting = useRef(false);
+  const volumeSharedLocked = useRef(false);
+  const volumeSceneGeneration = useRef(0);
+  const volumeOpeningIntent = useRef(0);
+  const volumeAdapter = useRef<VolumeSceneAdapter | null>(null);
+  const volumeDraining = useRef(false);
+  const volumeSceneFlush = useRef<() => Promise<void>>(async () => undefined);
+  const volumeScenePersist = useRef<() => Promise<void>>(async () => undefined);
+  const volumeSceneWrite = useRef<Promise<void> | null>(null);
+  const [volumeSceneError, setVolumeSceneError] = useState<string | null>(null);
+  const [volumeSceneConflict, setVolumeSceneConflict] = useState<VolumeViewDocument | null>(null);
+  const [volumeSceneRevision, setVolumeSceneRevision] = useState<number | null>(null);
+  const [volumeLocateRequest, setVolumeLocateRequest] = useState(0);
   const [session, setSession] = useState<ManagedSessionState>({ status: "empty" });
   const [jobsOpen, setJobsOpen] = useState(false);
   const [sourceAnnotations, setSourceAnnotations] = useState<ImageAnnotation[]>([]);
   const [invalidNumberForms, setInvalidNumberForms] = useState<Record<string, true>>({});
   const [numberResetEpoch, setNumberResetEpoch] = useState(0);
   const annotationViewportReady = useRef(false);
+  const agentRenderedOverlay = useRef<string | null>(null);
+  const onAgentResultRendered = useCallback((value: string | null) => { agentRenderedOverlay.current = value; }, []);
   const annotationViewReady = useCallback((key: string) => {
     annotationViewportReady.current = Boolean(key);
     setViewReadyKey(key);
@@ -1031,6 +1061,8 @@ export default function ResearchWorkbench({
   const exportDraftStudy = JSON.stringify([snapshot?.project.project_id ?? null, studyEpoch]);
   const currentStudyScope = useRef(exportDraftStudy);
   currentStudyScope.current = exportDraftStudy;
+  const agentSnapshotFence = useRef(new AgentSnapshotFence());
+  const agentProjectId = useRef(snapshot?.project.project_id); agentProjectId.current = snapshot?.project.project_id;
   const [intensitySeed, setIntensitySeed] = useState<{ study: string; result: ResearchResult; serial: number } | null>(null);
   const scientificExportDraftControl: ScientificDataExportDraftControl = {
     draft: scientificExportDraft?.study === exportDraftStudy ? scientificExportDraft.draft : null,
@@ -1049,6 +1081,8 @@ export default function ResearchWorkbench({
       largeSelectionIntent.current++;
     }
     documentSwitch.current = true;
+    agentSnapshotFence.current.invalidate();
+    volumeDraining.current = true;
     // Native dialogs may defer rendering while the window is inactive. Commit
     // the viewport pause before entering the main-process document lock.
     flushSync(() => setDocumentSwitching(true));
@@ -1064,6 +1098,8 @@ export default function ResearchWorkbench({
         throw new Error(message(failure?.store === store ? failure.error : null,
           "Display settings could not be saved. Resolve the displayed error before switching studies."));
       }
+      await volumeSceneFlush.current();
+      volumeDraining.current = false;
       const next = await action();
       if (next && resetDisplay) {
         adopted = true;
@@ -1088,6 +1124,7 @@ export default function ResearchWorkbench({
         setDocumentEpoch((value) => value + 1);
       }
       documentSwitch.current = false;
+      volumeDraining.current = false;
       setDocumentSwitching(false);
     }
   }, []);
@@ -1096,6 +1133,18 @@ export default function ResearchWorkbench({
   // cloned study retains the same source IDs.
   const api = useMemo<ResearchDesktopApi>(() => ({
     ...desktopApi,
+    ...(desktopApi.controlAgentSession ? { controlAgentSession: (request) => {
+      const scope = currentStudyScope.current, projectId = agentProjectId.current;
+      if (documentSwitch.current) return Promise.reject(new Error("Wait for the study to finish opening."));
+      return agentSnapshotFence.current.control(async (valid) => {
+        const next = await desktopApi.controlAgentSession!(request);
+        if (!valid() || documentSwitch.current || currentStudyScope.current !== scope)
+          throw new Error("The study changed before the agent control returned.");
+        if (next && next.project.project_id !== projectId) throw new Error("The returned agent snapshot belongs to a different study.");
+        if (next) flushSync(() => setSnapshot(next));
+        return next;
+      });
+    } } : {}),
     openStudy: () => switchDocument(() => desktopApi.openStudy()),
     createStudy: () => switchDocument(() => desktopApi.createStudy()),
     addSources: (kind) => switchDocument(() => desktopApi.addSources(kind)),
@@ -1303,8 +1352,12 @@ export default function ResearchWorkbench({
   }, [snapshot?.sources, sourceId]);
 
   const handleSourceClick = useCallback(
-    (item: ResearchSource, event: React.MouseEvent, visibleSourceIds?: string[]) => {
+    async (item: ResearchSource, event: React.MouseEvent, visibleSourceIds?: string[]) => {
       if (!snapshot) return;
+      if (item.id !== sourceId && (volumeBridge.current || volumeHandle.current)) {
+        try { await volumeSceneFlush.current(); }
+        catch (caught) { setError(message(caught, "Save the current 3D view before switching sources.")); return; }
+      }
       const allIds = visibleSourceIds ?? snapshot.sources.map((s) => s.id);
       const clickedId = item.id;
       const clickedIndex = allIds.indexOf(clickedId);
@@ -1352,6 +1405,10 @@ export default function ResearchWorkbench({
     if (targetIds.length === 0) return;
     const sourcesToClose = snapshot.sources.filter((s) => targetIds.includes(s.id));
     if (sourcesToClose.length === 0) return;
+    if ((volumeBridge.current || volumeHandle.current) && sourcesToClose.some(item => item.id === sourceId)) {
+      try { await volumeSceneFlush.current(); }
+      catch (caught) { setError(message(caught, "Save the current 3D view before removing this source.")); return; }
+    }
     largeNavigationIntent.current++;
     largeSelectionIntent.current++;
 
@@ -1792,24 +1849,25 @@ export default function ResearchWorkbench({
     const token = ++rawVolumeToken.current;
     setRawVolumeLoading(true); setRawVolumeError(null);
     try {
-      const selectedChannels = channels.filter((item) => item.visible).map((item) => item.channel);
+      const selectedChannels = volumeTarget?.channels ?? channels.filter((item) => item.visible).map((item) => item.channel);
       if (selectedChannels.length > 4) throw new Error("Choose up to four visible channels for this volume view.");
       const output = await api.execute("viewer_volume", { source_id: source.id,
-        t: shownSelection.t, channel_indices: selectedChannels.length ? selectedChannels : [shownSelection.c],
+        t: volumeTarget?.t ?? shownSelection.t, channel_indices: selectedChannels.length ? selectedChannels : [shownSelection.c],
         target_long_axis: 128, ...refinement }) as RawVolumeResponse;
       if (rawVolumeToken.current !== token) return;
-      if (output.context.source_id !== source.id || output.context.source_sha256 !== source.sha256 || output.context.t !== shownSelection.t)
+      if (output.context.source_id !== source.id || output.context.source_sha256 !== source.sha256 || output.context.t !== (volumeTarget?.t ?? shownSelection.t))
         throw new Error("The volume does not match its source and time point.");
       setRawVolume(output);
     } catch (caught) { if (rawVolumeToken.current === token) setRawVolumeError(message(caught, "Could not prepare the volume.")); }
     finally { if (rawVolumeToken.current === token) setRawVolumeLoading(false); }
-  }, [api, source, shownSelection.t, shownSelection.c, channels]);
+  }, [api, source, shownSelection.t, shownSelection.c, channels, volumeTarget]);
   const volumeChannelKey = channels.filter((item) => item.visible).map((item) => item.channel).join(",");
+  useEffect(() => { if (!volumeSharedLocked.current) setVolumeTarget(null); }, [source?.id, shownSelection.t, volumeChannelKey]);
   useEffect(() => {
     if (!rawVolumeOpen) return;
     setRawVolume(null);
     void requestRawVolume();
-  }, [rawVolumeOpen, source?.id, shownSelection.t, volumeChannelKey]);
+  }, [rawVolumeOpen, source?.id, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
   useEffect(() => {
     const key = JSON.stringify([
       source?.id,
@@ -2035,7 +2093,7 @@ export default function ResearchWorkbench({
     enabled: hasPendingJobs || hasActiveAgentActivity,
     suspended: documentSwitching,
     interval: hasPendingJobs ? 1000 : 2000,
-    getSnapshot: api.getSnapshot,
+    getSnapshot: () => agentSnapshotFence.current.read(api.getSnapshot),
     setSnapshot,
     onError: (caught) => {
       if (hasActiveAgentActivity) setAgentRefreshError(caught === null ? null :
@@ -2190,7 +2248,7 @@ export default function ResearchWorkbench({
   const openAgentSource = (target: ResearchAgentTargetReference, automatic = false) => {
     if (!snapshot || !agentTargetNavigationReady || documentSwitch.current) {
       if (!automatic) setError("Finish the current edit or operation before opening an agent target.");
-      return;
+      return false;
     }
     try {
       const exact = agentSourceTarget(snapshot, target);
@@ -2206,7 +2264,8 @@ export default function ResearchWorkbench({
       setPendingAgentSource({ target, isCurrent });
       setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
       setRawVolumeOpen(false); setAbCompareMode(false); setSourceId(exact.id); setTab("Display");
-    } catch (caught) { if (!automatic) setError(message(caught, "The recorded agent target is unavailable.")); }
+      return true;
+    } catch (caught) { if (!automatic) setError(message(caught, "The recorded agent target is unavailable.")); return false; }
   };
   const closeSharedPreview = () => {
     previewReadToken.current++;
@@ -2222,11 +2281,11 @@ export default function ResearchWorkbench({
   }, [source?.id, source?.sha256, exportDraftStudy, sharedPreview]);
   const inspectAgentPreview = async (target: ResearchAgentTargetReference) => {
     if (!snapshot || !agentTargetNavigationReady || documentSwitch.current) {
-      setError("Finish the current edit or operation before inspecting a preview."); return;
+      setError("Finish the current edit or operation before inspecting a preview."); return false;
     }
     const job = snapshot.jobs.find((item) => item.id === target.id && item.state === "succeeded");
     if (!job || !["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)) {
-      setError("The recorded preview task is unavailable."); return;
+      setError("The recorded preview task is unavailable."); return false;
     }
     const token = ++previewReadToken.current;
     const generation = agentInteraction.current.generation, study = exportDraftStudy;
@@ -2235,7 +2294,7 @@ export default function ResearchWorkbench({
     const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const output = await report(() => api.execute("task_preview_get", { job_id: job.id }) as Promise<{ preview: SharedTaskPreview }>,
       "The recorded preview is unavailable. It has not been rerun.", isCurrent);
-    if (!output || !isCurrent()) return;
+    if (!output || !isCurrent()) return false;
     const preview = output.preview;
     try {
       if (preview.job_id !== job.id || preview.operation !== job.operation) throw new Error("The preview does not match its task.");
@@ -2246,7 +2305,8 @@ export default function ResearchWorkbench({
       setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
       setSourceId(exact.id); setTab("Display"); setFocusedPanel(null); setRawVolumeOpen(false);
       setSharedPreview({ preview, study });
-    } catch (caught) { if (isCurrent()) setError(message(caught, "The exact preview source is unavailable.")); }
+      return true;
+    } catch (caught) { if (isCurrent()) setError(message(caught, "The exact preview source is unavailable.")); return false; }
   };
   const openAgentSourceRef = useRef(openAgentSource); openAgentSourceRef.current = openAgentSource;
   useEffect(() => {
@@ -2520,6 +2580,214 @@ export default function ResearchWorkbench({
   };
   const selectedResult =
     snapshot?.results.find((item) => item.id === resultId) ?? null;
+  const volumeLabelResult = selectedResult && selectedResult.source_id === source?.id && selectedResult.arrays?.labels?.shape?.length === 3
+    ? { result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, name: selectedResult.method_label ?? "3D label result" } : null;
+  const volumeSelectedLabel = Number(populationObject?.label ?? (selectedRow === null ? null : rows[selectedRow]?.label)) || null;
+  const volumeContext = useRef({ source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady });
+  volumeContext.current = { source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady };
+  const volumeChangeHandler = useRef<() => void>(() => undefined);
+  const queueVolumeSceneChange = useCallback(() => volumeChangeHandler.current(), []);
+  const chooseVolumeLabel = useCallback((label: number | null) => {
+    objectPickToken.current++;
+    setSelectedRow(label === null ? null : (() => { const i = rows.findIndex(row => row.label === label); return i < 0 ? null : i; })());
+    setPopulationObject(label === null ? null : rows.find(row => row.label === label) ?? { label });
+  }, [rows]);
+  useEffect(() => {
+    setVolumeLabels(null); setVolumeLabelsError(null); setVolumeLabelsLoading(false);
+    if (!rawVolumeOpen || !source || !volumeLabelResult) return;
+    let cancelled = false; setVolumeLabelsLoading(true);
+    void api.execute("volume_labels", { source_id: source.id, ...{ result_id: volumeLabelResult.result_id, revision_hash: volumeLabelResult.revision_hash }, t: volumeTarget?.t ?? shownSelection.t })
+      .then(value => { if (!cancelled) setVolumeLabels(value as VolumeLabelPayload); })
+      .catch(caught => { if (!cancelled) setVolumeLabelsError(message(caught, "These labels cannot be aligned to this volume.")); })
+      .finally(() => { if (!cancelled) setVolumeLabelsLoading(false); });
+    return () => { cancelled = true; };
+  }, [api, rawVolumeOpen, source?.id, source?.sha256, volumeLabelResult?.result_id, volumeLabelResult?.revision_hash, volumeTarget?.t, shownSelection.t]);
+  useEffect(() => {
+    volumeSceneGeneration.current++; volumeBridgeScope.current = null; volumeStarting.current = false;
+    volumeSceneWrite.current = null; volumeAdapter.current = null;
+    volumeOpeningIntent.current = agentInteraction.current.generation;
+    const previous = volumeBridge.current; volumeBridge.current = null; void previous?.dispose();
+    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
+    setVolumeSceneError(null); setVolumeSceneConflict(null); setVolumeSceneRevision(null);
+    return () => { volumeSceneGeneration.current++; if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current); void volumeBridge.current?.dispose(); volumeBridge.current = null; };
+  }, [source?.id, source?.sha256, rawVolumeOpen, documentEpoch]);
+  volumeScenePersist.current = async () => {
+      // Native boundaries must join an in-flight first read/restore/save and
+      // must also initialize a ready scene whose debounce has not fired yet.
+      if (volumeSceneWrite.current) await volumeSceneWrite.current;
+      const ctx = volumeContext.current, handle = volumeHandle.current;
+      const scene = handle?.snapshot();
+      if (!ctx.source || !ctx.rawVolumeOpen || !ctx.viewSettingsReady || (!volumeDraining.current && ctx.busy) ||
+          (documentSwitch.current && !volumeDraining.current) || volumeSharedLocked.current || !scene?.available || scene.busy) return;
+      const scope = `${ctx.documentEpoch}:${ctx.source.id}:${ctx.source.sha256}`;
+      const generation = volumeSceneGeneration.current;
+      const current = () => volumeSceneGeneration.current === generation && volumeContext.current.source?.id === ctx.source!.id && volumeContext.current.rawVolumeOpen && (!documentSwitch.current || volumeDraining.current);
+      const stateKey = (value: unknown) => JSON.stringify(value, (_k, v) => v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
+      const adapter: VolumeSceneAdapter = {
+        snapshot: () => {
+          if (!current()) return null;
+          const s = volumeHandle.current?.snapshot();
+          return s ? { ...s, liveEpoch: s.liveEpoch + agentInteraction.current.generation,
+            // A native document command may set the workbench's progress state
+            // before entering its save barrier. Real gestures/render work and
+            // agent ownership must still prevent that barrier from saving.
+            busy: s.busy || (!volumeDraining.current && Boolean(volumeContext.current.busy)) || agentInteraction.current.pointers.size > 0 } : null;
+        },
+        lock: locked => { volumeSharedLocked.current = locked; volumeHandle.current?.lock(locked); },
+        capture: (panes, maxSize) => { if (!current() || !volumeHandle.current) throw new Error("The native scene has closed."); return volumeHandle.current.capture(panes, maxSize); },
+        apply: async (state: VolumeViewState) => {
+          if (!current() || !volumeSharedLocked.current) throw new Error("The shared volume workspace changed before applying its scene.");
+          const humanIntent = agentInteraction.current.generation;
+          const studyScope = currentStudyScope.current, projectId = ctx.snapshot?.project.project_id;
+          const unchanged = () => current() && humanIntent === agentInteraction.current.generation &&
+            currentStudyScope.current === studyScope && volumeContext.current.documentEpoch === ctx.documentEpoch &&
+            volumeContext.current.snapshot?.project.project_id === projectId && volumeContext.current.source?.sha256 === ctx.source!.sha256;
+          const exactResult = (value: ResearchSnapshot | null | undefined) => state.result
+            ? value?.results.find(r => r.id === state.result!.result_id && r.revision_hash === state.result!.revision_hash && r.source_id === ctx.source!.id) : null;
+          let target = exactResult(volumeContext.current.snapshot);
+          if (state.result && !target) {
+            // An external correction can publish before this renderer's next
+            // history refresh. Hydrate its exact immutable result once; this is
+            // not a retry of the scene CAS or its live token.
+            const cached = volumeContext.current.snapshot;
+            const hydrated = await agentSnapshotFence.current.read(api.getSnapshot);
+            if (!unchanged()) throw new Error("The shared volume workspace changed while loading its result history.");
+            const hydratedSource = hydrated?.sources.find(s => s.id === ctx.source!.id && s.sha256 === ctx.source!.sha256);
+            target = hydrated?.project.project_id === projectId && hydratedSource ? exactResult(hydrated) : null;
+            if (target && target.source_sha256 !== ctx.source!.sha256) target = null;
+            if (target) {
+              const verified = target;
+              const latest = volumeContext.current.snapshot?.results.find(r => r.id === verified.id);
+              if (latest && (latest.revision_hash !== verified.revision_hash || latest.source_id !== verified.source_id ||
+                  latest.source_sha256 !== verified.source_sha256))
+                throw new Error("The requested result changed while loading its history.");
+              // Publish fresh session metadata too when this read still owns the
+              // cached snapshot; preserve newer unrelated state otherwise.
+              flushSync(() => setSnapshot(previous => {
+                if (!unchanged() || !previous || previous.project.project_id !== projectId ||
+                    !previous.sources.some(s => s.id === ctx.source!.id && s.sha256 === ctx.source!.sha256)) return previous;
+                if (previous === cached) return hydrated;
+                return { ...previous, results: [...previous.results.filter(r => r.id !== verified.id), verified] };
+              }));
+              if (!unchanged()) throw new Error("The shared volume workspace changed while loading its result history.");
+            }
+          }
+          if (state.result && !target) throw new Error("The saved scene's exact label result is unavailable.");
+          // Volume targeting is presentation state. The independent source-display
+          // document must not be rewritten by a scene operation.
+          const loaded = volumeHandle.current?.snapshot();
+          // Pin only genuinely different inputs. Pinning the already-loaded
+          // default would trigger the target effect to clear and reload it
+          // while the locked renderer is acknowledging this scene.
+          if (!loaded || loaded.state.t !== state.t || stateKey(loaded.state.channels) !== stateKey(state.channels)) {
+            setVolumeTarget(current => current?.t === state.t && stateKey(current.channels) === stateKey(state.channels)
+              ? current : { t: state.t, channels: state.channels });
+          }
+          if (target && volumeContext.current.selectedResult?.id !== target.id) {
+            setResultId(target.id); setRows([]); setPopulationObject(null); setSelectedRow(null);
+            const page = await api.execute("result", { result_id: target.id, offset: 0, limit: 200 }) as { result: ResearchResult; measurements: Record<string, unknown>[] };
+            if (!unchanged() || page.result.id !== target.id || page.result.revision_hash !== target.revision_hash) throw new Error("The requested result changed while loading its objects.");
+            setRows(page.measurements);
+          } else if (!state.result) { setResultId(null); setRows([]); setPopulationObject(null); setSelectedRow(null); }
+          setVolumeDisplay(current => current.renderMode === state.representation.render_mode && current.quality === state.representation.quality
+            ? current : { renderMode: state.representation.render_mode, quality: state.representation.quality });
+          const deadline = performance.now() + 15000;
+          while (performance.now() < deadline) {
+            if (!unchanged()) throw new Error("The shared volume workspace changed while loading.");
+            const next = volumeHandle.current?.snapshot();
+            if (next?.available && next.state.t === state.t && stateKey(next.state.channels) === stateKey(state.channels) &&
+                next.state.result?.result_id === state.result?.result_id && next.state.result?.revision_hash === state.result?.revision_hash) {
+              await volumeHandle.current!.apply(state); return;
+            }
+            await new Promise(resolve => setTimeout(resolve, 30));
+          }
+          throw new Error("The exact saved volume inputs did not finish loading.");
+        },
+      };
+      volumeAdapter.current = adapter;
+      const begin = async () => {
+        let bridge = volumeBridge.current;
+        let initializedNow = false;
+        if (!bridge || volumeBridgeScope.current !== scope) {
+          volumeStarting.current = true;
+          bridge = new VolumeSceneBridge({ api, binding: { sourceId: ctx.source!.id, sourceSha256: ctx.source!.sha256, viewId: `volume-${crypto.randomUUID()}` }, adapter,
+            flushDisplay: async () => { const store = viewStore.current; if (!current() || !store || !await store.flush()) throw new Error("Save the current channel display before sharing this volume."); return store.currentRevision; },
+            onChanged: view => { if (current()) { setVolumeSceneRevision(view.revision); setVolumeSceneError(null); } },
+            onConflict: view => { if (current()) setVolumeSceneConflict(view); },
+            onError: caught => { if (current()) setVolumeSceneError(caught.message); },
+          });
+          volumeBridge.current = bridge; volumeBridgeScope.current = scope;
+          try { await bridge.start({ restore: volumeOpeningIntent.current === agentInteraction.current.generation, preserveCurrentResult: true }); initializedNow = true; } catch (caught) { if (current()) { volumeBridge.current = null; volumeBridgeScope.current = null; } void bridge.dispose(); throw caught; }
+          finally { if (current()) volumeStarting.current = false; }
+        }
+        const latest = adapter.snapshot();
+        if (current() && latest?.available && !latest.busy && (initializedNow || stateKey(bridge.current?.state) !== stateKey(latest.state))) await bridge.save(latest);
+        else if (current()) await bridge.update();
+      };
+      const pending = begin();
+      volumeSceneWrite.current = pending;
+      try { await pending; }
+      finally { if (volumeSceneWrite.current === pending) volumeSceneWrite.current = null; }
+  };
+  volumeChangeHandler.current = () => {
+    if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
+    const generation = volumeSceneGeneration.current;
+    volumeSaveTimer.current = setTimeout(() => {
+      volumeSaveTimer.current = null;
+      const intent = agentInteraction.current.generation;
+      void volumeScenePersist.current().catch(caught => {
+        if (volumeSceneGeneration.current !== generation) return;
+        const now = volumeAdapter.current?.snapshot();
+        // A later local input can supersede either this captured save or the
+        // earlier save it joined. Queue a fresh snapshot; durable CAS conflicts
+        // still require the researcher's explicit acknowledgment.
+        if (caught instanceof VolumeSceneSupersededError || now?.busy || intent !== agentInteraction.current.generation) queueVolumeSceneChange();
+        else setVolumeSceneError(message(caught, "The volume view could not be shared."));
+      });
+    }, 350);
+  };
+  volumeSceneFlush.current = async () => {
+    if (volumeSaveTimer.current) { clearTimeout(volumeSaveTimer.current); volumeSaveTimer.current = null; }
+    const priorPending = volumeSceneWrite.current;
+    const context = volumeContext.current;
+    const generation = volumeSceneGeneration.current;
+    const intent = agentInteraction.current.generation;
+    const boundary = structuredClone(volumeHandle.current?.snapshot());
+    const boundaryState = JSON.stringify(boundary?.state);
+    const assertBoundaryCurrent = () => {
+      const now = volumeContext.current, rendered = volumeHandle.current?.snapshot();
+      if (!boundary?.available || boundary.busy || !rendered?.available || rendered.busy ||
+          volumeSharedLocked.current || agentInteraction.current.pointers.size > 0 ||
+          !now.rawVolumeOpen || !now.viewSettingsReady ||
+          (!volumeDraining.current && (now.busy || documentSwitch.current)) ||
+          now.source?.id !== context.source?.id || now.source?.sha256 !== context.source?.sha256 ||
+          now.documentEpoch !== context.documentEpoch || volumeSceneGeneration.current !== generation ||
+          agentInteraction.current.generation !== intent ||
+          rendered.liveEpoch !== boundary.liveEpoch || rendered.rendererGeneration !== boundary.rendererGeneration ||
+          JSON.stringify(rendered.state) !== boundaryState)
+        throw new VolumeSceneSupersededError();
+    };
+    let resumedBoundary = false;
+    try { await volumeScenePersist.current(); }
+    catch (caught) {
+      // The click that entered this boundary may supersede an older autosave.
+      // Drain the captured boundary once, only while it remains exact. Later
+      // input and durable/display CAS conflicts must never be rebased here.
+      if (!priorPending || !(caught instanceof VolumeSceneSupersededError)) throw caught;
+      assertBoundaryCurrent();
+      resumedBoundary = true;
+      await volumeScenePersist.current();
+    }
+    if (resumedBoundary) assertBoundaryCurrent();
+    const bridge = volumeBridge.current, current = volumeAdapter.current?.snapshot();
+    const rendered = volumeHandle.current?.snapshot();
+    if (volumeSharedLocked.current || rendered?.busy || agentInteraction.current.pointers.size > 0)
+      throw new Error("Finish the active 3D interaction before leaving this view.");
+    if (!bridge || !current?.available) return;
+    if (current.busy) throw new Error("Finish the active 3D interaction before leaving this view.");
+    await bridge.save(current);
+    if (resumedBoundary) assertBoundaryCurrent();
+  };
   const selectedResultShape = selectedResult?.arrays?.image?.shape;
   const surfaceAvailable = Boolean(
     selectedResultShape?.length === 3 ||
@@ -2676,6 +2944,7 @@ export default function ResearchWorkbench({
     ) => {
       const row = rows[index];
       if (!row || !resultId) return;
+      if (rawVolumeOpen) { setSelectedRow(index); setPopulationObject(row); return; }
       const center = row.centroid_index;
       if (
         !Array.isArray(center) ||
@@ -2757,11 +3026,12 @@ export default function ResearchWorkbench({
       setSelectedRow(index);
       setPopulationObject(row);
     },
-    [rows, resultId, snapshot?.results, report, api, sourceResultOverlay, displayedResultView, viewCamera, selectedResult],
+    [rows, resultId, snapshot?.results, report, api, sourceResultOverlay, displayedResultView, viewCamera, selectedResult, rawVolumeOpen],
   );
 
   const locatePopulationObject = async (row: Record<string, unknown>) => {
     if (!selectedResult || !Number.isSafeInteger(row.label) || Number(row.label) < 1) return;
+    if (rawVolumeOpen) { chooseVolumeLabel(Number(row.label)); setVolumeLocateRequest(n => n + 1); return; }
     const exact = selectedResult;
     const token = ++objectPickToken.current;
     const navigation = largeNavigationIntent.current;
@@ -2888,7 +3158,11 @@ export default function ResearchWorkbench({
     snapshot?.results.filter((item) => item.parent_id === resultId) ?? [];
   const redoTargetId =
     redoStack.at(-1) ?? (redoChildren.length === 1 ? redoChildren[0].id : null);
-  const openWorkbenchTab = (next: WorkbenchTab) => {
+  const openWorkbenchTab = async (next: WorkbenchTab) => {
+    if (rawVolumeOpen && ["Workflow", "Annotate", "Epidermis", "Correction"].includes(next)) {
+      try { await volumeSceneFlush.current(); }
+      catch (caught) { setVolumeSceneError(message(caught, "Save the current 3D view before changing workspaces.")); return; }
+    }
     largeNavigationIntent.current++;
     largeSelectionIntent.current++;
     setTab(next);
@@ -2896,6 +3170,7 @@ export default function ResearchWorkbench({
       setWorkflowOpened(true);
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
     }
+    if (next === "Correction") { setRawVolumeOpen(false); setSurfaceOpen(false); }
     if (next === "Quantify") setQuantificationOpened(true);
     if (next === "Density") setDensityOpened(true);
     if (next === "Wound") setWoundOpened(true);
@@ -2904,7 +3179,7 @@ export default function ResearchWorkbench({
     if (next !== "Population") setStatisticsFocused(false);
     if (next === "Study") setStudyOpened(true);
     else setStudyFocused(false);
-    if (next === "Population") { setPopulationOpened(true); setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false); }
+    if (next === "Population") { setPopulationOpened(true); setSurfaceOpen(false); setAbCompareMode(false); }
     if (next === "Annotate" || next === "Epidermis") {
       setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false);
       setProjection("plane");
@@ -2948,6 +3223,117 @@ export default function ResearchWorkbench({
     setSourceId(exact.id);
     current.openWorkbenchTab("Info");
   };
+  const nativeAgentApi = window.lociAgentWorkspace;
+  const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, Boolean(nativeAgentApi) && !documentSwitching);
+  const agentCurrentTargets = useMemo(() => agentWorkflowTargets.map(({ version: _version, ...target }) => target), [agentWorkflowTargets]);
+  const inspectableAgentPreviewIds = useMemo(() => snapshot?.jobs.filter(job => job.state === "succeeded" &&
+    ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
+  const [agentWorkflowNavigation, setAgentWorkflowNavigation] = useState<AgentWorkflowNavigation | null>(null);
+  const agentWorkflowCompletion = useRef<{ requestId: string; resolve(): void; reject(error: Error): void } | null>(null);
+  const finishAgentWorkflow = useCallback((requestId: string, error?: string) => {
+    const pending = agentWorkflowCompletion.current;
+    if (!pending || pending.requestId !== requestId) return;
+    agentWorkflowCompletion.current = null;
+    if (error) pending.reject(new Error(error)); else pending.resolve();
+  }, []);
+  useEffect(() => {
+    agentWorkflowCompletion.current?.reject(new Error("The study changed before workflow navigation finished."));
+    agentWorkflowCompletion.current = null; setAgentWorkflowNavigation(null);
+  }, [exportDraftStudy]);
+  const agentNavigationView = useRef({ snapshot, scope: exportDraftStudy, sourceId, source, sourceIsChanging, viewSettingsReady,
+    viewReadyKey, resultId, resultView, sourceResultOverlay, pendingResultNavigation, pendingAgentSource, sharedPreview, tab, resultSection, jobsOpen, busy });
+  agentNavigationView.current = { snapshot, scope: exportDraftStudy, sourceId, source, sourceIsChanging, viewSettingsReady,
+    viewReadyKey, resultId, resultView, sourceResultOverlay, pendingResultNavigation, pendingAgentSource, sharedPreview, tab, resultSection, jobsOpen, busy };
+  const navigateAgentWorkspace = async (request: AgentWorkspaceNavigationRequest, nativeCurrent: () => boolean) => {
+    if (!snapshot || !agentTargetNavigationReady || documentSwitch.current || !nativeCurrent())
+      throw new Error("Finish the current edit or operation before opening recorded evidence.");
+    const scope = exportDraftStudy, intent = agentInteraction.current.generation;
+    const current = () => nativeCurrent() && currentStudyScope.current === scope && !documentSwitch.current && agentInteraction.current.generation === intent;
+    const target = request.target;
+    if (volumeBridge.current && ["open-source", "open-result", "review-result", "inspect-preview", "open-workflow"].includes(request.intent)) {
+      await volumeSceneFlush.current();
+      if (!current()) throw new Error("The view changed while saving its current 3D state.");
+    }
+    let ready: () => boolean;
+    if (request.intent === "configure-access") {
+      if (!source || !dimensions) throw new Error("Select a current source before configuring agent access.");
+      await openWorkbenchTab("Agent");
+      ready = () => agentNavigationView.current.tab === "Agent" && Boolean(document.querySelector(".research-agent"));
+    } else if (request.intent === "open-source") {
+      if (!target) throw new Error("The recorded source target is missing.");
+      const exact = agentSourceTarget(snapshot, target);
+      if (!openAgentSource(target)) throw new Error("The recorded source could not be opened.");
+      ready = () => {
+        const view = agentNavigationView.current;
+        const selected = target.selection;
+        return view.sourceId === exact.id && !view.sourceIsChanging && view.viewSettingsReady && !view.pendingAgentSource &&
+          view.tab === "Display" && Boolean(document.querySelector(`[data-viewer-source="${exact.id}"][data-prepared="true"]`)) && view.viewReadyKey.startsWith(`${exact.id}:${exact.sha256}:`) &&
+          (!selected || view.viewReadyKey === `${exact.id}:${exact.sha256}:${selected.t}:${selected.z}`);
+      };
+    } else if (request.intent === "open-result" || request.intent === "review-result") {
+      if (!target) throw new Error("The recorded result target is missing.");
+      const exact = agentResultTarget(snapshot, target);
+      agentRenderedOverlay.current = null;
+      setSharedPreview(null); setRawVolumeOpen(false); setTab("Display"); setFocusedPanel(null);
+      await navigateExactResult(exact, scope, "review", current);
+      if (!current()) throw new Error("The recorded result navigation was superseded.");
+      if (request.intent === "review-result") await openWorkbenchTab("Info");
+      ready = () => {
+        const view = agentNavigationView.current;
+        if (view.sourceId !== exact.source_id || view.resultId !== exact.id || view.pendingResultNavigation ||
+            view.resultView?.resultId !== exact.id || view.resultView.revisionHash !== exact.revision_hash || view.busy ||
+            (request.intent === "review-result" && (view.tab !== "Info" || view.resultSection !== "review"))) return false;
+        if (view.sourceResultOverlay) return agentRenderedOverlay.current === view.sourceResultOverlay.key;
+        const image = document.querySelector<HTMLImageElement>("img[alt='Exact selected result revision']");
+        return Boolean(image?.complete && image.naturalWidth > 0 && image.getAttribute("src") === view.resultView.image);
+      };
+    } else if (request.intent === "open-job") {
+      const exact = snapshot.jobs.find(job => job.id === target?.id && job.request_hash === target?.sha256);
+      if (!exact) throw new Error("The recorded job revision is unavailable.");
+      setJobsOpen(true);
+      ready = () => agentNavigationView.current.jobsOpen && Boolean(document.querySelector("[aria-label='Job center']"));
+    } else if (request.intent === "inspect-preview") {
+      if (!target || !await inspectAgentPreview(target)) throw new Error("The exact retained preview is unavailable.");
+      ready = () => {
+        const view = agentNavigationView.current;
+        const panel = document.querySelector(".agent-preview-comparison");
+        const images = panel ? Array.from(panel.querySelectorAll<HTMLImageElement>("img")) : [];
+        return view.sharedPreview?.preview.job_id === target.id && view.sharedPreview.study === scope && view.tab === "Display" &&
+          images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0);
+      };
+    } else {
+      const exact = agentWorkflowTargets.find(item => item.id === target?.id &&
+        (target?.revision === undefined || item.revision === target.revision) && (target?.sha256 === undefined || item.sha256 === target.sha256));
+      if (!target || !exact) throw new Error("The exact recorded workflow is unavailable.");
+      await openWorkbenchTab("Workflow");
+      if (!current()) throw new Error("Workflow navigation was superseded.");
+      if (exact.version === 2) setGraphOpened(true);
+      let painted = false;
+      const opened = new Promise<void>((resolve, reject) => { agentWorkflowCompletion.current = { requestId: request.requestId, resolve: () => { painted = true; resolve(); }, reject }; });
+      setAgentWorkflowNavigation({ requestId: request.requestId, target, version: exact.version, current });
+      // The panel fetches and validates the exact revision, then confirms its committed selection.
+      try { await Promise.race([opened, waitForAgentNavigation(() => painted, current)]); }
+      finally { if (agentWorkflowCompletion.current?.requestId === request.requestId) agentWorkflowCompletion.current = null; }
+      ready = () => painted && agentNavigationView.current.tab === "Workflow" &&
+        Array.from(document.querySelectorAll<HTMLElement>("[data-agent-workflow-id]")).some(element =>
+          element.dataset.agentWorkflowId === exact.id && element.dataset.agentWorkflowRevision === String(exact.revision) &&
+          element.dataset.agentWorkflowSha256 === exact.sha256);
+    }
+    await waitForAgentNavigation(ready, current);
+    if (!current()) throw new Error("The recorded navigation no longer belongs to this study.");
+  };
+  const agentPublishedPacket = useMemo(() => snapshot ? { snapshot, follow: followAgent, refreshError: agentRefreshError,
+    currentTargets: agentCurrentTargets, inspectablePreviewJobIds: inspectableAgentPreviewIds } : null,
+    [snapshot, followAgent, agentRefreshError, agentCurrentTargets, inspectableAgentPreviewIds]);
+  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, { scope: exportDraftStudy, switching: documentSwitching, packet: agentPublishedPacket }, {
+    control: async (request, current) => {
+      if (!current() || !api.controlAgentSession) throw new Error("Agent controls are unavailable for this study.");
+      const next = await api.controlAgentSession(request);
+      return current() ? next : null;
+    },
+    navigate: navigateAgentWorkspace,
+    follow: (value, current) => { if (!current()) throw new Error("The Follow command is stale."); flushSync(() => setFollowAgent(value)); },
+  }, setError);
   if (!snapshot)
     return (
       <main className={`image-first-empty${emptyDropActive ? " is-drag-active" : ""}`} aria-label="Loci workspace"
@@ -3248,7 +3634,7 @@ export default function ResearchWorkbench({
           {pendingSourceResultCanvas && <span className="result-source-link" role="status">Loading result…</span>}
           {dimensions && dimensions.z > 1 && <><button title={rawVolumeOpen ? "Return to the 2D source plane" : rawVolumeUnavailable ?? "Explore the complete raw volume"} aria-pressed={rawVolumeOpen}
             disabled={!rawVolumeOpen && Boolean(rawVolumeUnavailable)}
-            onClick={() => { setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }}><Box />{rawVolumeOpen ? "2D image" : "3D volume"}</button>
+            onClick={() => { void report(async () => { if (rawVolumeOpen) await volumeSceneFlush.current(); setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }, "Could not save the 3D view before closing it."); }}><Box />{rawVolumeOpen ? "2D image" : "3D volume"}</button>
             {!rawVolumeOpen && rawVolumeUnavailable && <span role="status">{rawVolumeUnavailable}</span>}</>}
           {surfaceAvailable && <button
             aria-pressed={surfaceOpen}
@@ -3277,14 +3663,29 @@ export default function ResearchWorkbench({
             onPickStart={() => ++largeSelectionIntent.current}
             onPick={(row, intent) => { if (intent === largeSelectionIntent.current) { setLargeObject(row); if (tab !== "Population") setTab("Info"); } }} />
         ) : source && rawVolumeOpen ? (
-          <RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
+          <><RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
             onRequestRefinement={requestRawVolume} onExportFigure={api.exportVolumeFigure}
+            labelPayload={volumeLabels} labelResult={volumeLabelResult} labelsLoading={volumeLabelsLoading} labelsError={volumeLabelsError}
+            selectedLabel={volumeSelectedLabel} onSelectLabel={chooseVolumeLabel} sceneHandleRef={volumeHandle} onSceneChange={queueVolumeSceneChange}
+            locateRequest={volumeLocateRequest}
+            onCorrectLabel={(label, localZ) => {
+              if (!selectedResult || !volumeLabels || selectedResult.id !== volumeLabels.result.result_id || selectedResult.revision_hash !== volumeLabels.result.revision_hash) return;
+              setCorrectionObjectTarget({ result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, label });
+              setCorrectionView({ plane: "XY", index: localZ }); setCorrectionPoints([]); void openWorkbenchTab("Correction");
+            }}
             externalDisplay={{ ...volumeDisplay, channels }}
             onDisplayChange={(display) => {
               setVolumeDisplay({ renderMode: display.renderMode, quality: display.quality });
               setChannels((current) => current.map((channel) =>
                 display.channels.find((next) => next.channel === channel.channel) ?? channel));
             }} />
+            {volumeSceneError ? <p className="raw-volume-export-status raw-volume-export-error" role="status">Shared 3D view: {volumeSceneError} <button type="button" onClick={() => { setVolumeSceneError(null); queueVolumeSceneChange(); }}>Retry shared view</button></p> :
+              volumeSceneRevision !== null ? <p className="raw-volume-export-status">Shared 3D view saved · revision {volumeSceneRevision}</p> : null}
+            {volumeSceneConflict && <p role="status">The saved 3D view changed elsewhere. Your current view is preserved. <button type="button" onClick={() => {
+              try { volumeBridge.current?.acceptConflict(volumeSceneConflict); setVolumeSceneConflict(null); setVolumeSceneError(null); queueVolumeSceneChange(); }
+              catch (caught) { setVolumeSceneError(message(caught, "Could not acknowledge the changed view.")); }
+            }}>Keep and save this view</button></p>}
+          </>
         ) : source && surfaceOpen ? (
           <ResearchSurfaceView
             api={api}
@@ -3536,6 +3937,7 @@ export default function ResearchWorkbench({
             }}
             onObjectClick={drawingAnalysisRegion ? undefined : handleObjectClick}
             onViewReady={annotationViewReady}
+            onResultRendered={onAgentResultRendered}
             overrideImage={sourceResultOverlay || pendingSourceResultCanvas ? null : image}
             resultOverlay={sourceResultOverlay}
             resultDrawing={sourceResultOverlay && !busy ? resultDrawing : null}
@@ -3605,6 +4007,8 @@ export default function ResearchWorkbench({
         {workflowOpened && source && dimensions && <div className="workflow-workspace-host" hidden={tab !== "Workflow"}>
           <ResearchWorkflowPanel key={documentEpoch}
             api={api} source={source} sources={snapshot.sources}
+            agentNavigation={agentWorkflowNavigation?.version === 1 ? agentWorkflowNavigation : null}
+            onAgentNavigationComplete={finishAgentWorkflow}
             selectedSourceIds={selectedSourceIds}
             onSelectedSourceIdsChange={setSelectedSourceIds}
             selection={shownSelection} recipe={recipe} configurationValid={configurationValid} jobs={snapshot.jobs}
@@ -3633,9 +4037,11 @@ export default function ResearchWorkbench({
             onExport={async (result, runId) => { await api.exportResult(result.id, result.revision_hash, runId); }}
             onRefresh={async () => { await api.getSnapshot().then(adopt); }}
           />
-          <details className="composed-workflows" onToggle={(event) => setGraphOpened(event.currentTarget.open)}><summary>Composed workflows</summary>
+          <details className="composed-workflows" open={graphOpened} onToggle={(event) => setGraphOpened(event.currentTarget.open)}><summary>Composed workflows</summary>
             {graphOpened && <ResearchWorkflowGraphPanel key={`graph-${documentEpoch}`} api={api} snapshot={snapshot}
               sourceId={source.id} selection={shownSelection} active={tab === "Workflow"} busy={busy !== null}
+              agentNavigation={agentWorkflowNavigation?.version === 2 ? agentWorkflowNavigation : null}
+              onAgentNavigationComplete={finishAgentWorkflow}
               onBusyChange={(value) => setBusy((current) => value ? (current ?? "composed-workflow") : current === "composed-workflow" ? null : current)}
               onOpenResult={async (result) => { await navigateExactResult(result); }}
               onRefresh={async () => { await api.getSnapshot().then(adopt); }} />}
@@ -3806,7 +4212,7 @@ export default function ResearchWorkbench({
         </div>}
         {source && (tab === "Process" || (tab === "Analyze" && segmentationFamily === "classical")) &&
           <RecipeResourcePanel api={api} source={source} selection={shownSelection} recipe={recipe}
-            busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
+            suspended={documentSwitching} busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
           <Process
             key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("process", valid)}
@@ -4379,6 +4785,17 @@ export default function ResearchWorkbench({
           key={exportDraftStudy}
           api={api}
           snapshot={snapshot}
+          {...(nativeAgentApi ? { detached: agentWorkspace.detached, onFocusDetached: agentWorkspace.focus,
+            onDetach: agentWorkspace.open, openRequest: agentWorkspace.openRequest, presentation: agentWorkspace.presentation,
+            onPresentationChange: agentWorkspace.changePresentation, commandBusy: Boolean(agentWorkspace.state?.pendingCommands),
+            currentTargets: agentCurrentTargets,
+            onConfigureAccess: () => { void openWorkbenchTab("Agent"); },
+            onOpenWorkflow: (target: ResearchAgentTargetReference) => {
+              const scope = exportDraftStudy;
+              void navigateAgentWorkspace({ requestId: crypto.randomUUID(), intent: "open-workflow", target },
+                () => currentStudyScope.current === scope && !documentSwitch.current)
+                .catch(caught => { if (currentStudyScope.current === scope) setError(message(caught, "The recorded workflow is unavailable.")); });
+            } } : {})}
           refreshError={agentRefreshError}
           followAgent={followAgent}
           expandActivityDetails={preferences.agent.expandActivityDetails}
@@ -4387,9 +4804,8 @@ export default function ResearchWorkbench({
             if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
               next.project.project_id === snapshot.project.project_id) setSnapshot(next);
           }}
-          onError={setError}
-          inspectablePreviewJobIds={snapshot.jobs.filter((job) => job.state === "succeeded" &&
-            ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map((job) => job.id)}
+          onError={(value) => { if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy) setError(value); }}
+          inspectablePreviewJobIds={inspectableAgentPreviewIds}
           onInspectPreview={(target) => void inspectAgentPreview(target)}
           onOpenSource={openAgentSource}
           onReviewResult={(target) => {

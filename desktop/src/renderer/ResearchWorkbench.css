@@ -1045,6 +1045,24 @@
 }
 .image-first-workbench .research-sources > button small,
 .image-first-workbench .research-sources-list > button small { font-size: var(--type-xs); margin-top: 3px; }
+/* Result selection covers the whole card; source-row indicators stay distinct. */
+.image-first-workbench .research-sources > button[data-result-id] {
+  --result-selected-fill: color-mix(in srgb, var(--mineral) 12%, var(--graphite-900));
+  --result-selected-edge: color-mix(in srgb, var(--mineral-bright) 85%, var(--graphite-900));
+}
+.image-first-workbench .research-sources > button[data-result-id]::before {
+  content: none;
+}
+.image-first-workbench .research-sources > button[data-result-id][aria-pressed="true"],
+.image-first-workbench .research-sources > button[data-result-id][aria-pressed="true"]:hover:not(:disabled) {
+  background: var(--result-selected-fill);
+  border-color: var(--result-selected-edge);
+  color: var(--ink);
+}
+.image-first-workbench .research-sources > button[data-result-id]:not([aria-pressed="true"]):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--mineral) 6%, var(--graphite-900));
+  border-color: transparent;
+}
 .workbench-file-menu { position: relative; }
 .workbench-file-menu > summary { padding: 6px 10px; cursor: pointer; list-style: none; border-radius: 5px; font-size: var(--type-md); }
 .workbench-file-menu > div { position: absolute; right: 0; top: 35px; width: 220px; z-index: 25; padding: 6px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--graphite-850); box-shadow: 0 8px 24px #0003; }

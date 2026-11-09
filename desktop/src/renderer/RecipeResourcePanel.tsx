@@ -3,9 +3,9 @@ import type { ResearchDesktopApi, ResearchRecipe, ResearchSelection, ResearchSou
 import { memorySize, RECIPE_BUDGETS, type RecipeResources } from "../shared/recipe-resources";
 
 interface Estimate { key: string; bytes?: number; error?: string }
-export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, busy }: {
+export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, busy, suspended = false }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection;
-  recipe: ResearchRecipe; onBudget: (bytes: number) => void; busy: boolean;
+  recipe: ResearchRecipe; onBudget: (bytes: number) => void; busy: boolean; suspended?: boolean;
 }) {
   const [resources, setResources] = useState<RecipeResources | null>(null);
   const [capacityError, setCapacityError] = useState("");
@@ -23,6 +23,9 @@ export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, 
   }, [api]);
   useEffect(() => {
     let cancelled = false;
+    // Native pickers pin the document. Abandon background estimates during that
+    // barrier, then recheck the unchanged binding after the picker closes.
+    if (suspended) { setEstimate(null); return; }
     // Debounce edits without occupying the analysis job or discarding its errors.
     const timer = setTimeout(() => {
       const { source_sha256, ...request } = JSON.parse(key);
@@ -45,7 +48,7 @@ export function RecipeResourcePanel({ api, source, selection, recipe, onBudget, 
       });
     }, 200);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [api, key, retry]);
+  }, [api, key, retry, suspended]);
   const current = estimate?.key === key ? estimate : null;
   const overBudget = current?.bytes !== undefined && current.bytes > recipe.working_bytes;
   const options = [...new Set([...RECIPE_BUDGETS, recipe.working_bytes])].sort((a, b) => a - b);

@@ -1,5 +1,102 @@
 # Policy-bound agent access
 
+## Detached agent workspace
+
+The Agent session drawer can open as a separate native window, including on a
+second display. It shows the same study's plans, assessments, approvals, activity
+and session controls. The main workspace remains the owner of research state and
+polling; the detached window does not start a second agent or gain generic source
+or execution access. Access configuration opens in the main workspace's current
+source context.
+
+Plan drafts move between the drawer and the detached window with their task ID
+and base revision. Returning or closing the window waits for the latest draft
+handoff. Sessions and jobs continue independently. A failed handoff leaves the
+window open; after a renderer crash only the last acknowledged draft can be
+recovered. Window bounds are saved locally per study and brought back onto an
+available display when a monitor is removed. Drafts are transient presentation
+state until the researcher saves the plan to the study.
+
+Recorded-evidence links open the exact source, result, job or workflow revision
+in the main workspace. Success is reported after the main workspace acknowledges
+the target, including the rendered result view where applicable. Study switches,
+renderer replacement and stale revisions invalidate pending commands. Moving a
+panel or changing Follow does not change policy permissions or scientific review.
+
+## Shared 3D scene access
+
+An explicit `loci.agent-policy/v7` `volume_views` grant adds access to the same
+source-bound 3D presentation used by the desktop. Earlier policies grant none of
+these operations. Execution, scientific review and source-channel permissions
+remain independent. The human-side access-bundle helper accepts the following
+optional grant; it never infers it from Full access or analysis permission:
+
+```json
+"volume_views": {
+  "read": true,
+  "write": true,
+  "image": true,
+  "fields": ["camera", "crosshair_source_xyz", "clipping", "layout"]
+}
+```
+
+`write` requires a nonempty explicit field list; a read/image-only grant uses an
+empty list. Supported groups are `t`, `channels` (1–4 source indices), `result`,
+`selected_object`, `representation`, `camera`, `crosshair_source_xyz`, `clipping`,
+`refinement`, `layout` and `labels`. This grant authorizes presentation changes,
+not arbitrary native dispatch or numerical measurement. Read/write require
+`geometry`, `provenance` and `agent_metadata` disclosures; images additionally
+require `previews`. Every input to the whole-context payload must fall within the
+existing source crop, T/C/Z/level grant, including channels hidden by display
+settings. Zoom, clipping and Focus do not widen a partial source grant.
+
+| Tool | Contract |
+| --- | --- |
+| `volume_view(source_id)` | Read one saved scene, display revision and live GUI token. |
+| `set_volume_view(request)` | Queue an explicit permitted scene-group patch at the exact live token. |
+| `volume_view_image(request)` | Queue actual visible GUI pane capture at the exact live token. |
+| `volume_view_request_status(request_id)` | Read only this policy/session's request; deliver a completed PNG as a native MCP image. |
+| `cancel_volume_view_request(request_id)` | Cancel this policy/session's pending request; report whether a scene was already committed. |
+
+The SDK uses these same MCP tools over the existing stdio connection. Request
+schemas appear in MCP discovery and `catalog`. A live token contains exactly
+`view_id`, `renderer_generation`, `live_epoch`, `revision` and `display_revision`.
+Patch requests contain `source_id`, `source_sha256`, `expected_live` and `patch`.
+Image requests replace `patch` with explicit distinct `panes` chosen from
+`volume`, `axial`, `coronal`, `sagittal`, and `max_size` from 64 through 2048.
+The GUI refuses panes that are not currently visible. Image/state requests return
+a request ID; a persisted state is acknowledged as rendered only after the GUI
+confirms that exact scene. No GUI, an active gesture, an expired registration, a
+changed display revision or another human edit prevents adoption/delivery. A
+stale approval cannot overwrite a later human edit. Inspect-only permits scene
+inspection and separately granted images, while scene writes retain the existing
+Ask for approval / Full access lifecycle.
+
+`loci.volume-view/v1` is a separate per-source study document. It preserves exact
+source/result/label/geometry bindings, time, world-frame camera, level-zero XYZ
+crosshair, clipping, context/focus extent, representation, pane layout and label
+presentation. Focus extents use inclusive `[x0,x1,y0,y1,z0,z1]` source indices.
+The old `loci.source-view/v1` remains the authority for source-channel window,
+gamma, color, opacity and visibility. Use `set_source_display` for those settings;
+a scene patch cannot combine a channel-settings write with a scene write.
+Selecting an object requires an existing label ID and the exact result revision
+and label-array SHA-256. Retained scene reads preserve their registered bindings
+when original source bytes are unavailable; rendering and agent pixel access
+still require verified authorized sources.
+
+GUI capture responses identify `gui-rendered-scene` and carry a bounded
+`loci.volume-scene-capture/v1` receipt with the exact saved state, effective source
+display channels, payload hashes, label binding/rendering/stride when visible,
+pane composition and actual PNG size. The engine validates PNG bytes, receipt
+bindings and current policy/session authority before delivery. Captures are
+display-only; resampled display pixels and boundary meshes are not original-value
+scientific measurements. The existing `source_image` plane/max/mean views remain
+engine-generated images with their existing semantics. They do not substitute for
+a requested GUI scene. The mailbox retains at most 32 active requests and 128
+recent request records; requests expire after 30 seconds, live registrations
+after 10 seconds, and each capture PNG is limited to 8 MiB. Cancellation after a
+state commit retains that presentation and reports `scene_committed=true`.
+
 Loci can expose explicitly granted study operations to a local agent over
 Model Context Protocol (MCP) stdio. The MCP process opens no HTTP or other
 network listener. It uses the same validated project, recipe, job, result, and

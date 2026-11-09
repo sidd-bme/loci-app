@@ -470,3 +470,33 @@ it("uses one enclosing scroller only while its sibling composed workflow is open
     style.remove();
   }
 });
+
+describe("exact native agent workflow navigation", () => {
+  const record: WorkflowRecord = { id: "9".repeat(32), revision: 3, data: { definition: workflowFromRecipe(recipe), definition_sha256: hash } };
+  const target = { kind: "workflow" as const, id: record.id, revision: record.revision, sha256: hash };
+  it("acknowledges the committed exact revision, after initial library loading", async () => {
+    const complete = vi.fn();
+    setup({ agentNavigation: { requestId: "exact", target, version: 1, current: () => true }, onAgentNavigationComplete: complete },
+      (op, _request, normal) => op === "workflow_get" ? { workflow: record } : normal());
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("exact"));
+    expect(screen.getByRole("region", { name: "Visual workflow builder" })).toHaveAttribute("data-agent-workflow-revision", "3");
+    expect(screen.getByRole("region", { name: "Visual workflow builder" })).toHaveAttribute("data-agent-workflow-sha256", hash);
+  });
+  it("refuses a changed workflow without acknowledging a generic tab", async () => {
+    const complete = vi.fn();
+    setup({ agentNavigation: { requestId: "stale", target, version: 1, current: () => true }, onAgentNavigationComplete: complete },
+      (op, _request, normal) => op === "workflow_get" ? { workflow: { ...record, revision: 4 } } : normal());
+    await waitFor(() => expect(complete).toHaveBeenCalledWith("stale", expect.stringContaining("revision changed")));
+    expect(screen.getByRole("region", { name: "Visual workflow builder" })).not.toHaveAttribute("data-agent-workflow-id");
+  });
+  it("does not adopt a delayed exact fetch after a human intent supersedes it", async () => {
+    let current = true, finish!: (value: unknown) => void;
+    const complete = vi.fn();
+    const f = setup({ agentNavigation: { requestId: "late", target, version: 1, current: () => current }, onAgentNavigationComplete: complete },
+      (op, _request, normal) => op === "workflow_get" ? new Promise(resolve => { finish = resolve; }) : normal());
+    await waitFor(() => expect(f.execute).toHaveBeenCalledWith("workflow_get", { workflow_id: record.id }));
+    current = false; finish({ workflow: record });
+    await waitFor(() => expect(screen.getByRole("region", { name: "Visual workflow builder" })).not.toHaveAttribute("data-agent-workflow-id"));
+    expect(complete).not.toHaveBeenCalled();
+  });
+});

@@ -160,10 +160,163 @@ ReviewResultRequest = Annotated[
 ]
 
 
+def _closed(properties, required=None):
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(properties) if required is None else required,
+        "properties": properties,
+    }
+
+
+_LIVE = _closed(
+    {
+        "view_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        **{
+            key: {"type": "integer", "minimum": 0, "maximum": 2**53 - 1}
+            for key in ("renderer_generation", "live_epoch", "revision", "display_revision")
+        },
+    }
+)
+_VECTOR = {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3}
+_RESULT = _closed({"result_id": _ID, "revision_hash": _SHA, "label_sha256": _SHA})
+_CAMERA = _closed(
+    {
+        "projection": {"enum": ["parallel", "perspective"]},
+        **{key: _VECTOR for key in ("position_xyz", "focal_point_xyz", "view_up_xyz")},
+        "clipping_range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "minItems": 2,
+            "maxItems": 2,
+        },
+        "view_angle_degrees": {"type": "number", "minimum": 0.01, "maximum": 179},
+        "parallel_scale": {"type": ["number", "null"]},
+        "frame": {"enum": ["image", "LPS", "RAS"]},
+        "unit": {"type": "string", "maxLength": 32},
+    }
+)
+VOLUME_STATE_PROPERTIES = {
+    "t": _INDEX,
+    "channels": {
+        "type": "array",
+        "items": _INDEX,
+        "minItems": 1,
+        "maxItems": 4,
+        "uniqueItems": True,
+    },
+    "result": {"anyOf": [_RESULT, {"type": "null"}]},
+    "selected_object": {
+        "anyOf": [
+            _closed(
+                {
+                    **_RESULT["properties"],
+                    "label_id": {"type": "integer", "minimum": 1, "maximum": 2**32 - 1},
+                }
+            ),
+            {"type": "null"},
+        ]
+    },
+    "representation": _closed(
+        {
+            "mode": {"enum": ["volume", "mpr"]},
+            "extent": {"enum": ["context", "focus"]},
+            "render_mode": {"enum": ["blend", "normal_shading", "mip", "average", "minip"]},
+            "quality": {"type": "integer", "minimum": 1, "maximum": 100},
+        }
+    ),
+    "camera": {"anyOf": [_CAMERA, {"type": "null"}]},
+    "crosshair_source_xyz": {
+        "type": "array",
+        "items": _INDEX,
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Level-zero source XYZ indices, never display-grid/local ZYX coordinates.",
+    },
+    "clipping": _closed(
+        {
+            "enabled": {"type": "boolean"},
+            "axis": {"enum": ["x", "y", "z"]},
+            "position_percent": {"type": "number", "minimum": 0, "maximum": 100},
+        }
+    ),
+    "refinement": _closed(
+        {
+            "target_long_axis": {"type": "integer", "minimum": 16, "maximum": 256},
+            "focus_region_xyzxyz": {
+                "anyOf": [
+                    {
+                        "type": "array",
+                        "items": _INDEX,
+                        "minItems": 6,
+                        "maxItems": 6,
+                        "description": "Inclusive level-zero [x0,x1,y0,y1,z0,z1] source extent.",
+                    },
+                    {"type": "null"},
+                ]
+            },
+        }
+    ),
+    "layout": _closed(
+        {
+            "mode": {"enum": ["four", "single"]},
+            "expanded_pane": {"enum": ["axial", "coronal", "sagittal", "volume", None]},
+            "pane_order": {
+                "type": "array",
+                "items": {"enum": ["axial", "coronal", "sagittal", "volume"]},
+                "minItems": 4,
+                "maxItems": 4,
+                "uniqueItems": True,
+            },
+            "col_split": {"type": "number", "minimum": 10, "maximum": 90},
+            "row_split": {"type": "number", "minimum": 10, "maximum": 90},
+        }
+    ),
+    "labels": _closed(
+        {
+            "visible": {"type": "boolean"},
+            "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+            "selected_only": {"type": "boolean"},
+        }
+    ),
+}
+SET_VOLUME_VIEW_REQUEST_SCHEMA = _closed(
+    {
+        "source_id": _ID,
+        "source_sha256": _SHA,
+        "expected_live": _LIVE,
+        "patch": {**_closed(VOLUME_STATE_PROPERTIES, []), "minProperties": 1},
+    }
+)
+VOLUME_VIEW_IMAGE_REQUEST_SCHEMA = _closed(
+    {
+        "source_id": _ID,
+        "source_sha256": _SHA,
+        "expected_live": _LIVE,
+        "panes": {
+            "type": "array",
+            "items": {"enum": ["volume", "axial", "coronal", "sagittal"]},
+            "minItems": 1,
+            "maxItems": 4,
+            "uniqueItems": True,
+        },
+        "max_size": {"type": "integer", "minimum": 64, "maximum": 2048},
+    }
+)
+SetVolumeViewRequest = Annotated[
+    dict[str, Any], Field(json_schema_extra=SET_VOLUME_VIEW_REQUEST_SCHEMA)
+]
+VolumeViewImageRequest = Annotated[
+    dict[str, Any], Field(json_schema_extra=VOLUME_VIEW_IMAGE_REQUEST_SCHEMA)
+]
+
+
 def tool_request_schema(name: str) -> dict[str, Any] | None:
     """Return detached, source-independent request documentation for the catalog."""
     schemas = {
         "source_image": SOURCE_IMAGE_REQUEST_SCHEMA,
         "review_result": REVIEW_RESULT_REQUEST_SCHEMA,
+        "set_volume_view": SET_VOLUME_VIEW_REQUEST_SCHEMA,
+        "volume_view_image": VOLUME_VIEW_IMAGE_REQUEST_SCHEMA,
     }
     return deepcopy(schemas[name]) if name in schemas else None

@@ -66,7 +66,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onError, onPoint, annotations = [], draft = [], drawingMode = "navigate", onDraftChange,
   showRegion = false, overrideImage = null,
   resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null, resultGroupCentroids = [],
-  initialCamera = null, controlledCamera = null, onCamera, onViewportSize, onViewReady, onRegion, paused = false,
+  initialCamera = null, controlledCamera = null, onCamera, onViewportSize, onViewReady, onResultRendered, onRegion, paused = false,
   showScaleBar = true, showNavigator = true, requestLane, overlayRight = 0,
   onObjectClick, onRelinkSource, relinkBusy = false,
 }: {
@@ -85,6 +85,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onCamera?: (camera: Camera) => void;
   onViewportSize?: (size: { width: number; height: number }) => void;
   onViewReady?: (key: string) => void;
+  /** Reports an exact overlay only after its verified bitmap was drawn on this source grid. */
+  onResultRendered?: (key: string | null) => void;
   onRegion?: (region: { x: number; y: number; width: number; height: number }) => void;
   paused?: boolean;
   showScaleBar?: boolean; showNavigator?: boolean;
@@ -233,6 +235,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         setDisplayedPlane(previous => previous?.isMatching ? { ...previous, isMatching: false } : previous);
         setPrepared(false);
         onViewReady?.("");
+        onResultRendered?.(null);
         return;
       }
       const width = Math.max(1, Math.round(state.size.width * ratio));
@@ -263,6 +266,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         setDisplayedPlane(null);
         setPrepared(false);
         onViewReady?.("");
+        onResultRendered?.(null);
         return;
       }
 
@@ -336,6 +340,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           overlay.height * state.camera.scale * state.extent.aspectY);
         context.restore();
       }
+      onResultRendered?.(isMatchingPlane && overlay && overlayImage?.key === overlay.key ? overlay.key : null);
       const point = (p: ImagePoint) => sourceToScreen(state.camera, state.size, state.extent, p.x, p.y);
       const outline = (points: ImagePoint[], color: string, closed: boolean, label?: string, labelHalo = false) => {
         if (!points.length) return;
@@ -453,7 +458,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         }
       }
     });
-  }, [onViewReady, source]);
+  }, [onViewReady, onResultRendered, source]);
 
   useEffect(() => {
     alive.current = true;

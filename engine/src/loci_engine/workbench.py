@@ -1735,6 +1735,28 @@ class Workbench:
             from .source_view_state import execute_view_state
 
             return execute_view_state(self, operation, request)
+        if operation == "save_volume_view" or (
+            operation == "volume_view"
+            and isinstance(request, dict)
+            and set(request) == {"source_id"}
+        ):
+            from .volume_view_state import execute_volume_view
+
+            return execute_volume_view(self, operation, request)
+        if operation == "volume_labels":
+            from .volume_labels import volume_labels
+
+            return volume_labels(self, request)
+        if operation in {
+            "volume_view_presence",
+            "volume_view_requests",
+            "volume_view_request_apply",
+            "volume_view_request_complete",
+            "volume_view_request_fail",
+        }:
+            from .volume_view_mailbox import execute_native
+
+            return execute_native(self, operation, request)
         if operation in {"source_annotations", "annotate_source"}:
             from .source_annotations import execute_annotations
 

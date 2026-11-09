@@ -1,0 +1,63 @@
+.volume-workspace-controls {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  background: var(--graphite-900);
+  font-size: var(--type-sm);
+  font-variant-numeric: tabular-nums;
+}
+.volume-workspace-controls-row,
+.volume-workspace-layer,
+.volume-workspace-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  min-width: 0;
+}
+.volume-workspace-controls-row { justify-content: space-between; }
+.volume-workspace-selection { gap: 8px; }
+.volume-workspace-selection strong { font-weight: 600; margin-right: 4px; }
+.volume-workspace-controls .volume-workspace-toggle,
+.volume-workspace-controls .volume-workspace-opacity {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  color: var(--ink-secondary);
+}
+.volume-workspace-controls input { accent-color: var(--mineral-bright); }
+.volume-workspace-toggle input { margin: 0; }
+.volume-workspace-opacity input { width: 88px; min-width: 48px; margin: 0; }
+.volume-workspace-opacity output { min-width: 4ch; text-align: right; }
+.volume-workspace-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--graphite-800);
+  font: inherit;
+  cursor: pointer;
+  transition: color 120ms ease-out, background-color 120ms ease-out;
+}
+.volume-workspace-controls button:hover:not(:disabled) { background: var(--mineral-wash); color: var(--mineral-bright); }
+.volume-workspace-controls button:active:not(:disabled) { scale: .96; }
+.volume-workspace-controls .volume-workspace-clear { min-width: 40px; padding: 6px; }
+.volume-workspace-controls button svg { width: 16px; height: 16px; stroke-width: 1.5; flex-shrink: 0; }
+.volume-workspace-controls :disabled { opacity: .55; cursor: not-allowed; }
+.volume-workspace-controls :focus-visible { outline: 2px solid var(--mineral-bright); outline-offset: 2px; }
+.volume-workspace-result,
+.volume-workspace-message { margin: 4px 0 0; color: var(--ink-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+.volume-workspace-result { font-size: var(--type-xs); }
+.volume-workspace-message.is-error { color: var(--error); }
+@media (prefers-reduced-motion: reduce) {
+  .volume-workspace-controls button { transition: none; }
+  .volume-workspace-controls button:active:not(:disabled) { scale: 1; }
+}

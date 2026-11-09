@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
+import type { VolumeSceneAdapter } from "./volume-scene-types";
 
 const vtk = vi.hoisted(() => ({
   failInitialization: false,
@@ -213,6 +214,43 @@ function focusAt(low: 0 | 2): RawVolumePayload {
 
 describe("RawVolumeViewport lifecycle", () => {
   afterEach(cleanup);
+
+  it("round-trips a shared scene only after verified rendering and keeps its locked human epoch", async () => {
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    const volume = { schema_version: 1 as const, context: sparseContext(), focus: null };
+    render(<RawVolumeViewport volume={volume} sceneHandleRef={handle} />);
+    await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+    const before = handle.current!.snapshot()!;
+    const target = structuredClone(before.state);
+    target.crosshair_source_xyz = [1, 0, 2]; target.layout.col_split = 60;
+    target.clipping = { enabled: true, axis: "x", position_percent: 35 };
+    target.representation.render_mode = "mip";
+    await expect(handle.current!.apply(target)).rejects.toThrow(/locked/);
+    act(() => handle.current!.lock(true));
+    let applied!: Promise<void>;
+    act(() => { applied = handle.current!.apply(target); });
+    await act(async () => { await applied; });
+    expect(handle.current!.snapshot()?.state).toEqual(target);
+    expect(handle.current!.snapshot()?.liveEpoch).toBe(before.liveEpoch);
+    act(() => handle.current!.lock(false));
+    fireEvent.change(screen.getByLabelText("Z slice"), { target: { value: "1" } });
+    expect(handle.current!.snapshot()?.state.crosshair_source_xyz).toEqual([1, 0, 1]);
+    expect(handle.current!.snapshot()!.liveEpoch).toBeGreaterThan(before.liveEpoch);
+    act(() => handle.current!.lock(true));
+    await expect(handle.current!.apply({ ...target, channels: [3] })).rejects.toThrow(/exact source/);
+    act(() => handle.current!.lock(false));
+  });
+
+  it("withdraws shared availability on context loss and refuses hidden-pane capture", async () => {
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} sceneHandleRef={handle} />);
+    await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /^3D view$/ }));
+    act(() => handle.current!.lock(true));
+    await expect(handle.current!.capture(["axial"], 512)).rejects.toThrow(/hidden/);
+    act(() => { vtk.canvas!.dispatchEvent(new Event("webglcontextlost", { cancelable: true })); });
+    expect(handle.current!.snapshot()).toBeNull();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(() => ({
@@ -241,6 +279,48 @@ describe("RawVolumeViewport lifecycle", () => {
       callback(0);
       return 1;
     }) as typeof requestAnimationFrame;
+  });
+
+  it("keeps primary volume actions visible and advanced settings collapsed until requested", async () => {
+    const display = vi.fn(), refine = vi.fn();
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }}
+      onDisplayChange={display} onRequestRefinement={refine} />);
+    await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
+    const initialCameraResets = vtk.resetCamera.mock.calls.length;
+    expect(screen.getByRole("button", { name: "Four panes" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset camera" })).toBeTruthy();
+    expect(screen.getByLabelText("3D rendering mode")).toBeTruthy();
+    const summary = screen.getByText("Rendering & detail", { exact: true });
+    const disclosure = summary.closest("details")!;
+    expect(disclosure.open).toBe(false);
+    expect(screen.getByLabelText("3D rendering quality").closest("details")).toBe(disclosure);
+    expect(screen.getByLabelText("Detail span").closest("details")).toBe(disclosure);
+    fireEvent.click(summary);
+    expect(disclosure.open).toBe(true);
+    fireEvent.change(screen.getByRole("slider", { name: "3D rendering quality" }), { target: { value: "80" } });
+    expect(display).toHaveBeenCalledWith(expect.objectContaining({ quality: 80 }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
+    fireEvent.click(summary);
+    expect(disclosure.open).toBe(false);
+    expect(screen.getByText(/Clip Z ·/)).toBeTruthy();
+    expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
+  });
+
+  it("keeps interaction help outside the image canvases and preserves per-plane sampling context", async () => {
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
+    await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
+    const initialCameraResets = vtk.resetCamera.mock.calls.length;
+    const summary = screen.getByText("Controls & sampling", { exact: true });
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(within(screen.getByLabelText("Interactive three-dimensional volume")).queryByText(/Left-drag/)).toBeNull();
+    for (const plane of ["XY plane", "XZ plane", "YZ plane"]) {
+      expect(screen.getByLabelText(`${plane} sampling`).textContent).toBe("Raw: linear · L0");
+    }
+    fireEvent.click(summary);
+    expect(summary.closest("details")!.open).toBe(true);
+    expect(screen.getByText(/Drag the crosshair/)).toBeTruthy();
+    expect(screen.getByText(/resliced display samples, not native measurements/)).toBeTruthy();
+    expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
   });
 
   it("reports graphics initialization failure inside the viewport", async () => {
@@ -437,6 +517,7 @@ describe("RawVolumeViewport lifecycle", () => {
     const sliceMidpointColor = [0, 0, 0];
     sliceActor.getProperty().getRGBTransferFunction(0).getColor(127.5, sliceMidpointColor);
     expect(sliceMidpointColor).toEqual([0.5, 0.5, 0.5]);
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     const opacity = screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement;
     fireEvent.change(opacity, { target: { value: "0.25" } });
@@ -525,6 +606,7 @@ describe("RawVolumeViewport lifecycle", () => {
     const activeActors = vtk.addVolume.mock.calls.slice(-2).map(([actor]) => actor);
     await waitFor(() => expect(activeActors.map((actor) => actor.getVisibility())).toEqual([false, true]));
 
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     await waitFor(() => {
       const planes = activeActors.map((actor) => actor.getMapper().getClippingPlanes());
@@ -571,6 +653,7 @@ describe("RawVolumeViewport lifecycle", () => {
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
 
@@ -653,7 +736,8 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(volumeActor.getProperty().getShade?.()).toBe(false);
     expect(volumeActor.getProperty().getColorMixPreset?.()).toBe(3);
 
-    // Change quality slider from 50 to 80
+    // Change quality slider from 50 to 80 through its explicit disclosure.
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
     const qualitySlider = screen.getByRole("slider", { name: "3D rendering quality" });
     fireEvent.change(qualitySlider, { target: { value: "80" } });
     expect(screen.getByText("80%")).toBeTruthy();

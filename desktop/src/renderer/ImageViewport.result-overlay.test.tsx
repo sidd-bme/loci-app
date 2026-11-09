@@ -106,11 +106,14 @@ function api(sourceForTiles: ResearchSource = source): ResearchDesktopApi {
 
 describe("ImageViewport exact result overlay", () => {
   it("draws the result crop over source tiles with the unchanged source camera", async () => {
+    const rendered = vi.fn((key: string | null) => {
+      if (key) expect(context.drawImage).toHaveBeenCalledWith(expect.objectContaining({ src: overlay.image }), 20, 40, 100, 80);
+    });
     render(<ImageViewport api={api()} source={source}
       selection={{ x: 0, y: 0, width: 400, height: 300, z: 0, t: 0, c: 0, level: 0 }}
       channels={[{ channel: 0, low: 0, high: 255, gamma: 1, visible: true, color: "#ffffff" }]}
       initialCamera={{ x: 200, y: 150, scale: 1 }} resultOverlay={overlay}
-      onError={vi.fn()} />);
+      onResultRendered={rendered} onError={vi.fn()} />);
 
     const viewport = screen.getByLabelText("Image viewer: Shared source");
     expect(viewport).toHaveAttribute("data-result-overlay", overlay.key);
@@ -120,6 +123,7 @@ describe("ImageViewport exact result overlay", () => {
     ));
     expect(context.save).toHaveBeenCalled();
     expect(context.restore).toHaveBeenCalled();
+    expect(rendered).toHaveBeenLastCalledWith(overlay.key);
   });
 
   it("maps a source-camera click back to the exact result pixel grid", async () => {

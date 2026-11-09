@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { assertAgentWorkflow, type AgentWorkflowNavigationProps } from "./agent-workspace-workflows";
 import { ArrowDown, ArrowUp, Check, Download, GitBranch, Image, Play, Plus, Save, Scan, SlidersHorizontal, Trash2 } from "lucide-react";
 import type { ResearchDesktopApi, ResearchRecipe, ResearchResult, ResearchSelection, ResearchSource, ResearchJob, ResearchBatchTask, ResearchBatchReceipt } from "../shared/research-contracts";
 import { checkedWorkflow, connected, finiteDraft, nodeLabel, PROCESS_OPTIONS, reconnectProcess, workflowFromRecipe, type WorkflowDefinition, type WorkflowNode, type WorkflowRecord } from "./workflow-editor";
 import "./ResearchWorkflowPanel.css";
 
-export interface ResearchWorkflowPanelProps {
+export interface ResearchWorkflowPanelProps extends AgentWorkflowNavigationProps {
   configurationValid?: boolean;
   api: ResearchDesktopApi; source: ResearchSource; sources: ResearchSource[]; selection: ResearchSelection; recipe: ResearchRecipe; busy: boolean;
   selectedSourceIds?: string[]; onSelectedSourceIdsChange?: (ids: string[]) => void;
@@ -25,10 +26,13 @@ const failure = (error: unknown) => error instanceof Error ? error.message : "Th
 const definitionJson = (definition: WorkflowDefinition) => exactJson({ ...definition, nodes: definition.nodes.map((node) => node.type === "population" ? { ...node, settings: { filters: [...node.settings.filters as unknown[]].sort((a, b) => exactJson(a).localeCompare(exactJson(b))) } } : node) });
 const exactJson = (value: unknown) => JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 export function ResearchWorkflowPanel(props: ResearchWorkflowPanelProps) { return <WorkflowEditor {...props} />; }
-function WorkflowEditor({ configurationValid = true, api, source, sources, selectedSourceIds, onSelectedSourceIdsChange, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh }: ResearchWorkflowPanelProps) {
+function WorkflowEditor({ configurationValid = true, api, source, sources, selectedSourceIds, onSelectedSourceIdsChange, selection, recipe, busy, active, jobs, displayedResult, onBusyChange, onPreview, onResult, onReview, onExport, onRefresh, agentNavigation, onAgentNavigationComplete }: ResearchWorkflowPanelProps) {
+  const agentPending = useRef<string | null>(null), userEdited = useRef(false);
+  const agentCallbacks = useRef(onAgentNavigationComplete); agentCallbacks.current = onAgentNavigationComplete;
   const [definition, setDefinition] = useState<WorkflowDefinition>(() => workflowFromRecipe(recipe));
   const [draftReady, setDraftReady] = useState(configurationValid), [showRunControls, setShowRunControls] = useState(false);
   const [selectedId, setSelectedId] = useState("source"), [saved, setSaved] = useState<WorkflowRecord | null>(null);
+  const [libraryReady, setLibraryReady] = useState(false);
   const [library, setLibrary] = useState<WorkflowRecord[]>([]), [openId, setOpenId] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [invalid, setInvalid] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(""), [error, setError] = useState(""), [notice, setNotice] = useState("");
@@ -59,16 +63,41 @@ function WorkflowEditor({ configurationValid = true, api, source, sources, selec
   const draftBlocked = blocked || !draftReady;
   const displayedRef = useRef(displayedResult); displayedRef.current = displayedResult;
   const exactDisplayed = Boolean(run && displayedResult && displayedResult.id === run.response.result.id && displayedResult.revision_hash === run.response.result.revision_hash && displayedResult.source_id === source.id && displayedResult.source_sha256 === source.sha256);
-  useEffect(() => { mounted.current = true; let live = true;
+  useEffect(() => { mounted.current = true; let live = true; setLibraryReady(false);
     void api.execute("workflow_list", {}).then((value) => {
       if (!mounted.current || !live) return;
       const records = (value as { workflows?: unknown[] }).workflows;
       if (!Array.isArray(records)) throw new Error("The workflow list response is invalid.");
       setLibrary(records.map(checkedWorkflow));
-    }).catch((caught) => { if (mounted.current && live) setError(failure(caught)); });
+    }).catch((caught) => { if (mounted.current && live) setError(failure(caught)); })
+      .finally(() => { if (mounted.current && live) setLibraryReady(true); });
     return () => { live = false; mounted.current = false; generation.current++; };
   }, [api]);
-  const mutate = (next: WorkflowDefinition) => { generation.current++; setDefinition(next); setNotice(""); setError(""); };
+  const mutate = (next: WorkflowDefinition) => { userEdited.current = true; generation.current++; setDefinition(next); setNotice(""); setError(""); };
+  useEffect(() => {
+    const request = agentNavigation;
+    if (!request || request.version !== 1 || !active || !libraryReady || !request.current()) return;
+    if (busy || pending || userEdited.current || Object.keys(drafts).length || Object.keys(invalid).length) {
+      agentCallbacks.current?.(request.requestId, "Finish the current workflow draft before opening recorded evidence."); return;
+    }
+    let alive = true;
+    void api.execute("workflow_get", { workflow_id: request.target.id }).then(output => {
+      const record = checkedWorkflow((output as { workflow: unknown }).workflow); assertAgentWorkflow(record, request.target);
+      if (!alive || !request.current()) return;
+      agentPending.current = request.requestId;
+      setDraftReady(true); setSaved(record); setDefinition(record.data.definition); setOpenId(record.id);
+      setLibrary(old => [...old.filter(item => item.id !== record.id), record]); setTemplateReferences(false);
+      setDrafts({}); setInvalid({}); setRun(null); setBatchId(null); setSelectedId(record.data.definition.nodes[0].id);
+    }).catch(error => { if (alive && request.current()) agentCallbacks.current?.(request.requestId, failure(error)); });
+    return () => { alive = false; };
+  }, [agentNavigation?.requestId, active, libraryReady]);
+  useLayoutEffect(() => {
+    if (!agentNavigation || agentPending.current !== agentNavigation.requestId || !saved || !active || !agentNavigation.current()) return;
+    assertAgentWorkflow(saved, agentNavigation.target);
+    if (openId === saved.id && definitionJson(definition) === definitionJson(saved.data.definition)) {
+      agentPending.current = null; agentCallbacks.current?.(agentNavigation.requestId);
+    }
+  }, [agentNavigation, saved, definition, openId, active]);
   const patch = (settings: Record<string, unknown>) => mutate({ ...definition, nodes: definition.nodes.map((node) => node.id === selected.id ? { ...node, settings: { ...node.settings, ...settings } } : node) });
   const perform = async (label: string, work: (current: () => boolean) => Promise<void>) => {
     if (lock.current || busy || !active) return;
@@ -108,7 +137,7 @@ function WorkflowEditor({ configurationValid = true, api, source, sources, selec
       const record = checkedWorkflow((response as { workflow: unknown }).workflow);
       if (record.id !== id || record.revision !== (saved?.revision ?? 0) + 1 || record.data.definition_sha256 !== validated.definition_sha256 || definitionJson(record.data.definition) !== definitionJson(definition)) throw new Error("The saved revision does not match this draft. Reopen the workflow before continuing.");
       if (!current()) return;
-      setSaved(record); setDefinition(record.data.definition); setOpenId(record.id); setLibrary((old) => [...old.filter((item) => item.id !== record.id), record]); setNotice("Saved revision " + record.revision + "."); await onRefresh();
+      userEdited.current = false; setSaved(record); setDefinition(record.data.definition); setOpenId(record.id); setLibrary((old) => [...old.filter((item) => item.id !== record.id), record]); setNotice("Saved revision " + record.revision + "."); await onRefresh();
     });
   };
   const reopen = async () => {
@@ -117,7 +146,7 @@ function WorkflowEditor({ configurationValid = true, api, source, sources, selec
       const record = checkedWorkflow(((await api.execute("workflow_get", { workflow_id: openId })) as { workflow: unknown }).workflow);
       if (record.id !== openId) throw new Error("The returned workflow does not match the selected record.");
       if (!current()) return;
-      setDraftReady(true); setSaved(record); setTemplateReferences(false); setDefinition(record.data.definition); setDrafts({}); setInvalid({}); setRun(null); setBatchId(null); setSelectedId(record.data.definition.nodes[0].id); setNotice("Opened revision " + record.revision + ".");
+      userEdited.current = false; setDraftReady(true); setSaved(record); setTemplateReferences(false); setDefinition(record.data.definition); setDrafts({}); setInvalid({}); setRun(null); setBatchId(null); setSelectedId(record.data.definition.nodes[0].id); setNotice("Opened revision " + record.revision + ".");
     });
   };
   const preview = async () => {
@@ -269,7 +298,10 @@ function WorkflowEditor({ configurationValid = true, api, source, sources, selec
   const runResult = run?.response.result;
   const currentRun = Boolean(run && !edited && !outdated && runState !== "outdated");
   const resultStatus = !run ? "No result yet." : outdated || runState === "outdated" ? "Outdated execution · parameters or image scope changed. Run again before review or export." : run.response.result.object_count.toLocaleString() + " objects · " + (runState === "waiting_review" ? "review required" : runState.replaceAll("_", " "));
-  return <section ref={panelRef} className="workflow-panel" aria-label="Visual workflow builder">
+  return <section ref={panelRef} className="workflow-panel" aria-label="Visual workflow builder"
+    data-agent-workflow-id={!edited && saved?.id || undefined}
+    data-agent-workflow-revision={!edited && saved?.revision || undefined}
+    data-agent-workflow-sha256={!edited && saved?.data.definition_sha256 || undefined}>
     <div className="workflow-body">
     <header className="workflow-toolbar">
       <div className="workflow-library"><select aria-label="Saved workflow" value={openId} onChange={(event) => setOpenId(event.target.value)}><option value="">Saved workflows…</option>{library.map((record) => <option key={record.id} value={record.id}>{record.data.definition.name} · v{record.revision}</option>)}</select><button disabled={blocked || !openId} onClick={() => void reopen()}>Open</button></div>
@@ -307,7 +339,7 @@ function WorkflowEditor({ configurationValid = true, api, source, sources, selec
           {selected.type === "process" && <><label>Connect image input after<select aria-label="Connect processing input after" value={definition.edges.find((edge) => edge.to === selected.id)?.from ?? ""} onChange={(event) => { try { mutate(reconnectProcess(definition, selected.id, event.target.value)); } catch (caught) { setError(failure(caught)); } }}>{definition.nodes.filter((node) => node.id !== selected.id).map((node) => <option key={node.id} value={node.id}>{nodeLabel(node)} · {node.id}</option>)}</select></label><p>Image inputs accept the source or another processing output. Moving a node reconnects the ordered chain.</p><div className="workflow-actions"><button aria-label="Move workflow node up" disabled={definition.nodes[definition.nodes.indexOf(selected) - 1]?.type !== "process"} onClick={() => move(-1)}><ArrowUp size={14} />Up</button><button aria-label="Move workflow node down" disabled={definition.nodes[definition.nodes.indexOf(selected) + 1]?.type !== "process"} onClick={() => move(1)}><ArrowDown size={14} />Down</button><button onClick={remove}><Trash2 size={14} />Remove node</button></div></>}
         </>}
         {selected.type === "measure" && <><p>Measurements use original source pixels. Processing affects segmentation only.</p><fieldset><legend>Raw measurement channels</legend>{Array.from({ length: source.metadata.dimensions?.c ?? 1 }, (_, channel) => <label className="workflow-checkbox" key={channel}><input type="checkbox" checked={(selected.settings.measurement_channels as number[]).includes(channel)} onChange={(event) => patch({ measurement_channels: event.target.checked ? [...selected.settings.measurement_channels as number[], channel].sort((a, b) => a - b) : (selected.settings.measurement_channels as number[]).filter((item) => item !== channel) })} />{source.metadata.channel_names?.[channel] ?? "Channel " + (channel + 1)}</label>)}</fieldset><p>{(selected.settings.gates as unknown[]).length} configured gates retained.</p></>}
-        {selected.type === "population" && <PopulationSettings node={selected} metrics={sourceMetrics} drafts={drafts} invalid={invalid} onEdit={() => { generation.current++; }} onDraft={setDrafts} onInvalid={setInvalid} onPatch={patch} onRemove={remove} />}
+        {selected.type === "population" && <PopulationSettings node={selected} metrics={sourceMetrics} drafts={drafts} invalid={invalid} onEdit={() => { userEdited.current = true; generation.current++; }} onDraft={setDrafts} onInvalid={setInvalid} onPatch={patch} onRemove={remove} />}
         {selected.type === "review" && <><p>Inspect the saved result in the image and object explorer. Review records this exact revision.</p><p>Current displayed result: {exactDisplayed ? "matches this execution" : "inspect the exact execution before approval"}.</p></>}
         {selected.type === "export" && <p>Export opens the native destination picker after exact human approval. Population filters retain membership receipts; they do not remove segmentation labels.</p>}
       </section>

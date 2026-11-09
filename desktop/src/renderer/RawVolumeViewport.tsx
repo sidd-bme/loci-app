@@ -2,6 +2,10 @@ import "@kitware/vtk.js/Rendering/Profiles/Volume";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
 import vtkImageData from "@kitware/vtk.js/Common/DataModel/ImageData";
+import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
+import vtkActor from "@kitware/vtk.js/Rendering/Core/Actor";
+import vtkMapper from "@kitware/vtk.js/Rendering/Core/Mapper";
+import vtkCoordinate from "@kitware/vtk.js/Rendering/Core/Coordinate";
 import vtkPiecewiseFunction from "@kitware/vtk.js/Common/DataModel/PiecewiseFunction";
 import vtkPlane from "@kitware/vtk.js/Common/DataModel/Plane";
 import vtkMouseCameraTrackballPanManipulator from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballPanManipulator";
@@ -19,13 +23,16 @@ import vtkVolume from "@kitware/vtk.js/Rendering/Core/Volume";
 import vtkVolumeMapper from "@kitware/vtk.js/Rendering/Core/VolumeMapper";
 import { BlendMode } from "@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants";
 import vtkGenericRenderWindow from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
-import { type KeyboardEvent as ReactKeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VolumeFigureExportReceipt, VolumeFigureExportRequest, VolumeFigurePayloadRecord } from "../shared/research-contracts";
 import { HistogramPlot, type HistogramRecord } from "./DisplayHistogram";
 import { buildRawVolumeHistograms, type RawVolumeHistogramRecord } from "./raw-volume-histogram";
 import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, SlidersHorizontal } from "lucide-react";
 import { MprSlicePane } from "./MprSlicePane";
-import { mprPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { indexToWorld, mprPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { VolumeWorkspaceControls } from "./VolumeWorkspaceControls";
+import { labelBoundaryMesh, labelGeometry, mprCanvasSignature, pickLabelRay, verifyVolumeLabels, type VolumeLabelPayload, type VerifiedVolumeLabels, type VolumeLabelStyle } from "./volume-label-display";
+import type { VolumeSceneAdapter, VolumeViewState, VolumeSceneSnapshot, VolumePane } from "./volume-scene-types";
 import { configureVolumeChannelColorMix, VOLUME_AVERAGE_PROJECTION_ALGORITHM, VOLUME_CHANNEL_COMPOSITING_ALGORITHM } from "./volume-channel-mix";
 import { applyVolumeDisplayChannels, volumeDisplayChannels, type VolumeDisplayControls } from "./raw-volume-display";
 import "./RawVolumeViewport.css";
@@ -109,6 +116,10 @@ type CameraSnapshot = {
   parallelScale?: number;
 };
 
+const sceneKey = (value: unknown): string => JSON.stringify(value, (_key, v) =>
+  v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
+const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+
 type Props = {
   externalDisplay?: VolumeDisplayControls;
   onDisplayChange?: (display: VolumeDisplayControls) => void;
@@ -117,6 +128,16 @@ type Props = {
   error?: string | null;
   onRequestRefinement?: (request: RawVolumeRefinementRequest) => void;
   onExportFigure?: (request: VolumeFigureExportRequest) => Promise<VolumeFigureExportReceipt | null>;
+  labelPayload?: VolumeLabelPayload | null;
+  labelResult?: { result_id: string; revision_hash: string; name: string } | null;
+  labelsLoading?: boolean;
+  labelsError?: string | null;
+  selectedLabel?: number | null;
+  onSelectLabel?: (label: number | null) => void;
+  onCorrectLabel?: (label: number, localZ: number) => void;
+  sceneHandleRef?: RefObject<VolumeSceneAdapter | null>;
+  onSceneChange?: () => void;
+  locateRequest?: number;
 };
 
 type TransferState = RawVolumeComponent & { opacity: number; visible: boolean };
@@ -676,9 +697,29 @@ export function RawVolumeViewport({
   error = null,
   onRequestRefinement,
   onExportFigure,
+  labelPayload = null, labelResult = null, labelsLoading = false, labelsError = null,
+  selectedLabel = null, onSelectLabel, onCorrectLabel, sceneHandleRef, onSceneChange,
+  locateRequest = 0,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRef = useRef<HTMLElement | null>(null);
   const sceneRef = useRef<any>(null);
+  const [verifiedLabels, setVerifiedLabels] = useState<VerifiedVolumeLabels | null>(null);
+  const [labelError, setLabelError] = useState<string | null>(null);
+  const [meshError, setMeshError] = useState<string | null>(null);
+  const [labelStyle, setLabelStyle] = useState<VolumeLabelStyle>({ visible: true, opacity: 0.45, selected_only: false });
+  const [preciseCrosshair, setPreciseCrosshair] = useState<Vec3 | null>(null);
+  const liveEpochRef = useRef(0);
+  const gestureRef = useRef(false);
+  const sceneLockedRef = useRef(false);
+  const [sceneLocked, setSceneLocked] = useState(false);
+  const [targetLongAxis, setTargetLongAxis] = useState(128);
+  const snapshotRef = useRef<() => VolumeSceneSnapshot | null>(() => null);
+  const snapshotKeyRef = useRef<string | null>(null);
+  const pendingApply = useRef<{ state: VolumeViewState; resolve: () => void; reject: (e: Error) => void; timer: number } | null>(null);
+  const appliedCameraRef = useRef<string | null>(null);
+  const selectRef = useRef(onSelectLabel); selectRef.current = onSelectLabel;
+  const labelPickRef = useRef<{ labels: VerifiedVolumeLabels | null; style: VolumeLabelStyle; selected: number | null; clip: { origin: Vec3; normal: Vec3 } | null }>({ labels: null, style: labelStyle, selected: null, clip: null });
 
   const syncContainer = useCallback((node: HTMLDivElement | null) => {
     containerRef.current = node;
@@ -736,6 +777,23 @@ export function RawVolumeViewport({
   const initialCameraRef = useRef<CameraSnapshot | null>(null);
   const lostCameraRef = useRef<CameraSnapshot | null>(null);
   const selectedFocusRef = useRef<string | null>(null);
+  const changedRef = useRef(onSceneChange); changedRef.current = onSceneChange;
+  const sourceToDisplayIndex = (point: Vec3): Vec3 => point.map((n, i) => !volume || volume.context.source_dimensions_xyz[i] < 2 ? 0 :
+    n * (volume.context.dimensions_xyz[i] - 1) / (volume.context.source_dimensions_xyz[i] - 1)) as Vec3;
+
+  useEffect(() => {
+    setVerifiedLabels(null); setLabelError(null);
+    if (!labelPayload || !labelResult || !volume) return;
+    let cancelled = false;
+    void verifyVolumeLabels(labelPayload, volume.context, labelResult).then((labels) => {
+      if (!cancelled) setVerifiedLabels(labels);
+    }).catch((caught) => { if (!cancelled) setLabelError(caught instanceof Error ? caught.message : "Could not verify volume labels."); });
+    return () => { cancelled = true; };
+  }, [labelPayload, labelResult?.result_id, labelResult?.revision_hash, volume]);
+
+  useEffect(() => {
+    setPreciseCrosshair(null);
+  }, [volume?.context.source_id, volume?.context.source_sha256, volume?.context.t]);
 
   useEffect(() => {
     if (!volume) return;
@@ -788,6 +846,17 @@ export function RawVolumeViewport({
   }, [externalDisplayKey, volume]);
 
   useEffect(() => {
+    if (!volume || !externalDisplay || !onDisplayChange || !transfers.length || verifiedPlanes?.volume !== volume || sceneLockedRef.current) return;
+    // Persist the effective native ranges used by this renderer, including any
+    // source defaults, so a later exact scene receipt has reproducible transfers.
+    const effective = volumeDisplayChannels(transfers);
+    if (effective.some(channel => {
+      const declared = externalDisplay.channels.find(c => c.channel === channel.channel);
+      return declared && (declared.low == null || declared.high == null);
+    })) onDisplayChange({ channels: effective, renderMode, quality });
+  }, [transfers, verifiedPlanes, volume, externalDisplayKey]);
+
+  useEffect(() => {
     if (!volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
     // Do not replace the coarse context until its verified bytes have been
     // bound to VTK. This preserves a genuinely visible progressive first pass
@@ -797,7 +866,9 @@ export function RawVolumeViewport({
     const maximum = volume.context.refinement.maximum_target_long_axis;
     if (current >= maximum) return;
     const timer = window.setTimeout(() => {
-      onRequestRefinement({ target_long_axis: Math.min(maximum, Math.max(128, current * 2)) });
+      if (sceneLockedRef.current) return;
+      const target = Math.min(maximum, Math.max(128, current * 2)); setTargetLongAxis(target);
+      onRequestRefinement({ target_long_axis: target });
     }, 450);
     return () => window.clearTimeout(timer);
   }, [onRequestRefinement, sceneRevision, volume]);
@@ -1190,6 +1261,63 @@ export function RawVolumeViewport({
     return () => window.cancelAnimationFrame(frame);
   }, [layout, expandedPane, colSplit, rowSplit, paneOrder]);
 
+  // A sampled categorical surface shares the raw volume's world coordinates.
+  // Labels are never linearly interpolated; picking uses the verified native grid.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || scene.contextLost) return;
+    setMeshError(null);
+    let actor: any = null, mapper: any = null, poly: any = null, colors: any = null, clip: any = null;
+    scene.labelSurface = null;
+    if (verifiedLabels && labelStyle.visible && labelStyle.opacity > 0) {
+      try {
+        const mesh = labelBoundaryMesh(verifiedLabels, selectedLabel, labelStyle.selected_only);
+        poly = vtkPolyData.newInstance(); poly.getPoints().setData(mesh.points, 3); poly.getPolys().setData(mesh.polys);
+        colors = vtkDataArray.newInstance({ name: "Exact label identity colors", numberOfComponents: 3, values: mesh.colors });
+        poly.getCellData().setScalars(colors);
+        mapper = vtkMapper.newInstance(); mapper.setInputData(poly); mapper.setScalarModeToUseCellData(); mapper.setColorModeToDirectScalars();
+        actor = vtkActor.newInstance(); actor.setMapper(mapper); actor.getProperty().setOpacity(labelStyle.opacity);
+        actor.getProperty().setAmbient(0.55); actor.getProperty().setDiffuse(0.45);
+        if (clipEnabled && volume) {
+          clip = vtkPlane.newInstance(contextClippingPlane(volume.context, clipAxis, clipPosition)); mapper.addClippingPlane(clip);
+        }
+        scene.renderer.addActor(actor);
+        scene.labelSurface = { labels: verifiedLabels, stride: mesh.stride, signature: sceneKey([verifiedLabels.payload.data_sha256, labelStyle, selectedLabel]) };
+      } catch (caught) { setMeshError(caught instanceof Error ? caught.message : "Could not render the label surface."); }
+    }
+    scene.stateEpoch += 1;
+    try { scene.renderWindow.render(); } catch { /* renderer error is reported by its owning effect */ }
+    return () => {
+      if (actor) { scene.renderer.removeActor(actor); actor.delete(); }
+      mapper?.delete(); colors?.delete(); poly?.delete(); clip?.delete(); scene.labelSurface = null;
+    };
+  }, [verifiedLabels, labelStyle, selectedLabel, clipEnabled, clipAxis, clipPosition, rendererGeneration, sceneRevision]);
+
+  useEffect(() => {
+    const scene = sceneRef.current, stage = containerRef.current;
+    if (!scene || !stage) return;
+    let down: { x: number; y: number } | null = null;
+    const start = (event: PointerEvent) => { down = event.button === 0 && !event.shiftKey && !event.altKey && !event.ctrlKey ? { x: event.clientX, y: event.clientY } : null; };
+    const end = (event: PointerEvent) => {
+      if (!down || Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4 || sceneLockedRef.current) { down = null; return; }
+      down = null;
+      const current = labelPickRef.current;
+      if (!current.labels || !current.style.visible || current.style.opacity <= 0 || !scene.labelSurface || scene.contextLost) return;
+      const rect = scene.canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const coord = vtkCoordinate.newInstance(); coord.setCoordinateSystemToDisplay();
+      const x = (event.clientX - rect.left) * scene.canvas.width / rect.width;
+      const y = (rect.bottom - event.clientY) * scene.canvas.height / rect.height;
+      coord.setValue([x, y, 0]); const a = [...coord.getComputedWorldValue(scene.renderer)] as Vec3;
+      coord.setValue([x, y, 1]); const b = [...coord.getComputedWorldValue(scene.renderer)] as Vec3; coord.delete();
+      const label = pickLabelRay(current.labels, a, b, current.style.selected_only ? current.selected : null, current.clip ? (p) =>
+        p.reduce((sum, n, i) => sum + (n - current.clip!.origin[i]) * current.clip!.normal[i], 0) >= 0 : undefined);
+      selectRef.current?.(label || null);
+    };
+    stage.addEventListener("pointerdown", start); stage.addEventListener("pointerup", end);
+    return () => { stage.removeEventListener("pointerdown", start); stage.removeEventListener("pointerup", end); };
+  }, [rendererGeneration, layout]);
+
   const caption = useMemo(() => {
     if (!volume) return null;
     const payload = volume.context;
@@ -1199,14 +1327,17 @@ export function RawVolumeViewport({
   const activePayload = detailView === "focus" && volume?.focus ? volume.focus : volume?.context ?? null;
   const crosshair = useMemo(() => {
     if (!volume) return null;
-    const source = slices.map((index, axis) =>
+    const source = preciseCrosshair ?? slices.map((index, axis) =>
       volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
-    return { source, world: worldAtDisplayIndex(volume.context, slices) };
-  }, [slices, volume]);
+    const continuous = source.map((n, i) => volume.context.source_dimensions_xyz[i] < 2 ? 0 : n * (volume.context.dimensions_xyz[i] - 1) / (volume.context.source_dimensions_xyz[i] - 1)) as Vec3;
+    return { source, world: worldAtDisplayIndex(volume.context, continuous) };
+  }, [slices, volume, preciseCrosshair]);
   const focusContainsCrosshair = Boolean(volume?.focus && crosshair && crosshair.source.every(
     (value, axis) => value >= volume.focus!.source_extent_xyzxyz[axis * 2] &&
       value <= volume.focus!.source_extent_xyzxyz[axis * 2 + 1],
   ));
+  labelPickRef.current = { labels: verifiedLabels, style: labelStyle, selected: selectedLabel,
+    clip: clipEnabled && volume ? contextClippingPlane(volume.context, clipAxis, clipPosition) : null };
   useEffect(() => {
     const focus = volume?.focus;
     if (!focus) {
@@ -1251,8 +1382,8 @@ export function RawVolumeViewport({
   const moveSlice = (axis: 0 | 1 | 2, delta: number) => {
     if (!volume) return;
     if (sceneRef.current) sceneRef.current.stateEpoch += 1;
-    setSlices((current) => current.map((value, index) => index === axis
-      ? Math.max(0, Math.min(volume.context.dimensions_xyz[axis] - 1, value + delta)) : value) as [number, number, number]);
+    const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Math.max(0, Math.min(volume.context.source_dimensions_xyz[axis] - 1, n + delta)) : n) as Vec3;
+    setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point).map(Math.round) as Vec3);
   };
 
   const onStageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1298,6 +1429,7 @@ export function RawVolumeViewport({
     const extent: [number, number, number, number, number, number] = [
       bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1], bounds[2][0], bounds[2][1],
     ];
+    setTargetLongAxis(256);
     onRequestRefinement({ target_long_axis: 256, focus_region_xyzxyz: extent });
   };
 
@@ -1508,6 +1640,8 @@ export function RawVolumeViewport({
     if (!volume) return;
     const index = worldToIndex(volume.context, world);
     invalidateFigureCapture();
+    setPreciseCrosshair(index.map((n, axis) => Math.max(0, Math.min(volume.context.source_dimensions_xyz[axis] - 1,
+      Math.round(n * (volume.context.source_dimensions_xyz[axis] - 1) / Math.max(1, volume.context.dimensions_xyz[axis] - 1))))) as Vec3);
     setSlices(index.map((value, axis) => Math.max(0, Math.min(volume.context.dimensions_xyz[axis] - 1, Math.round(value)))) as Vec3);
   };
 
@@ -1565,8 +1699,178 @@ export function RawVolumeViewport({
     }
   };
 
+  const locateLabel = () => {
+    if (!verifiedLabels || !selectedLabel || !volume) return;
+    const dims = verifiedLabels.payload.dimensions_xyz;
+    const min = [...dims], max = [-1, -1, -1];
+    for (let i = 0; i < verifiedLabels.values.length; i++) if (verifiedLabels.values[i] === selectedLabel) {
+      const p = [i % dims[0], Math.floor(i / dims[0]) % dims[1], Math.floor(i / (dims[0] * dims[1]))];
+      p.forEach((n, a) => { min[a] = Math.min(min[a], n); max[a] = Math.max(max[a], n); });
+    }
+    if (max[0] < 0) return;
+    const center = min.map((n, i) => Math.round((n + max[i]) / 2)) as Vec3;
+    const sourcePoint = center.map((n, i) => n + verifiedLabels.payload.source_offset_xyz[i]) as Vec3;
+    const world = indexToWorld(labelGeometry(verifiedLabels.payload), center);
+    setPreciseCrosshair(sourcePoint); setSlices(sourceToDisplayIndex(sourcePoint).map(Math.round) as Vec3);
+    if (detailView === "focus" && volume.focus && !sourcePoint.every((n, i) => n >= volume.focus!.source_extent_xyzxyz[i * 2] && n <= volume.focus!.source_extent_xyzxyz[i * 2 + 1])) setDetailView("context");
+    const scene = sceneRef.current;
+    if (scene && !scene.contextLost) {
+      const camera = scene.renderer.getActiveCamera(), oldFocal = camera.getFocalPoint(), oldPosition = camera.getPosition();
+      camera.setFocalPoint(...world); camera.setPosition(...oldPosition.map((n: number, i: number) => n + world[i] - oldFocal[i]));
+      scene.renderer.resetCameraClippingRange(); scene.renderWindow.render();
+    }
+    invalidateFigureCapture();
+  };
+  useEffect(() => { if (locateRequest) locateLabel(); }, [locateRequest]);
+
+  snapshotRef.current = () => {
+    const scene = sceneRef.current;
+    if (!volume || !crosshair || !scene || scene.contextLost || !scene.renderer.getActiveCamera) return null;
+    const camera = scene.renderer.getActiveCamera();
+    const boundLabels = verifiedLabels?.payload === labelPayload && labelPayload?.result.result_id === labelResult?.result_id && labelPayload?.result.revision_hash === labelResult?.revision_hash ? verifiedLabels : null;
+    const state: VolumeViewState = {
+      t: volume.context.t, channels: volume.context.components.map(c => c.channel_index),
+      result: boundLabels?.payload.result ?? null,
+      selected_object: boundLabels && selectedLabel ? { ...boundLabels.payload.result, label_id: selectedLabel } : null,
+      representation: { mode, extent: detailView, render_mode: renderMode, quality },
+      camera: {
+        projection: camera.getParallelProjection() ? "parallel" : "perspective",
+        position_xyz: [...camera.getPosition()] as Vec3, focal_point_xyz: [...camera.getFocalPoint()] as Vec3,
+        view_up_xyz: [...camera.getViewUp()] as Vec3, clipping_range: [...camera.getClippingRange()] as [number, number],
+        view_angle_degrees: camera.getViewAngle(), parallel_scale: camera.getParallelProjection() ? camera.getParallelScale() : null,
+        frame: volume.context.frame, unit: volume.context.unit,
+      },
+      crosshair_source_xyz: crosshair.source,
+      clipping: { enabled: clipEnabled, axis: (["x", "y", "z"] as const)[clipAxis], position_percent: clipPosition },
+      refinement: { target_long_axis: targetLongAxis, focus_region_xyzxyz: volume.focus?.source_extent_xyzxyz ?? null },
+      layout: { mode: layout, expanded_pane: expandedPane as VolumePane | null, pane_order: paneOrder as VolumePane[], col_split: colSplit, row_split: rowSplit },
+      labels: { ...labelStyle, visible: Boolean(boundLabels && labelStyle.visible) },
+    };
+    const key = sceneKey([state, externalDisplay]);
+    if (snapshotKeyRef.current !== key) {
+      if (snapshotKeyRef.current !== null && !sceneLockedRef.current) liveEpochRef.current++;
+      snapshotKeyRef.current = key;
+    }
+    const activeMode = RENDER_MODE_DETAILS[renderMode];
+    const rawReady = scene.renderStateSignature === figureRenderStateSignature(volume, mode, detailView, transfers, clipEnabled, clipAxis, clipPosition, slices, activeMode.shade, renderMode, quality);
+    const labelsReady = !boundLabels || !labelStyle.visible || labelStyle.opacity <= 0 ? !scene.labelSurface : scene.labelSurface?.labels === boundLabels &&
+      scene.labelSurface.signature === sceneKey([boundLabels.payload.data_sha256, labelStyle, selectedLabel]);
+    const panesReady = !showFour || !activePayload || slicePlanes.filter(p => !expandedPane || expandedPane === p.id).every(p =>
+      workspaceRef.current?.querySelector<HTMLCanvasElement>(`[data-pane="${p.id}"] canvas`)?.dataset.renderBinding === mprCanvasSignature(activePayload, p, crosshair.world, transfers, verifiedLabels, labelStyle, selectedLabel));
+    const available = rawReady && labelsReady && panesReady && !loading && !labelsLoading && !error && !renderError && !labelError && !labelsError && !meshError &&
+      contextState === "ready" && verifiedPlanes?.volume === volume && (!labelResult || Boolean(boundLabels)) &&
+      scene.imageRecords[0]?.payload === volume.context && (!volume.focus || scene.imageRecords[1]?.payload === volume.focus);
+    return { state, liveEpoch: liveEpochRef.current, rendererGeneration, busy: gestureRef.current || isDraggingSplit || exporting, available };
+  };
+
+  useEffect(() => {
+    if (!pendingApply.current || !sceneLockedRef.current) return;
+    const pending = pendingApply.current, state = pending.state, scene = sceneRef.current;
+    const snapshot = snapshotRef.current();
+    if (!snapshot?.available || !scene || !volume) return;
+    // Set the camera after all data/representation effects which can refit its clipping range.
+    if (state.camera && sceneKey(snapshot.state.camera) !== sceneKey(state.camera)) {
+      const camera = scene.renderer.getActiveCamera(), c = state.camera;
+      camera.setPosition(...c.position_xyz); camera.setFocalPoint(...c.focal_point_xyz); camera.setViewUp(...c.view_up_xyz);
+      camera.setParallelProjection(c.projection === "parallel"); camera.setViewAngle(c.view_angle_degrees);
+      if (c.parallel_scale !== null) camera.setParallelScale(c.parallel_scale);
+      camera.setClippingRange(...c.clipping_range); scene.orientationWidget.updateMarkerOrientation();
+      scene.renderWindow.render(); appliedCameraRef.current = sceneKey(c);
+    }
+    const frame = requestAnimationFrame(() => {
+      if (pendingApply.current !== pending) return;
+      const actual = snapshotRef.current();
+      const expected = { ...state, camera: state.camera ?? actual?.state.camera };
+      if (actual?.available && sceneKey(actual.state) === sceneKey(expected)) {
+        clearTimeout(pending.timer); pendingApply.current = null; pending.resolve();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  });
+
+  if (sceneHandleRef) sceneHandleRef.current = {
+    snapshot: () => snapshotRef.current(),
+    lock: (locked) => { sceneLockedRef.current = locked; setSceneLocked(locked); },
+    apply: async (state) => {
+      if (!sceneLockedRef.current || gestureRef.current || !volume) throw new Error("The volume must be idle and locked before applying a shared scene.");
+      if (state.t !== volume.context.t || sceneKey(state.channels) !== sceneKey(volume.context.components.map(c => c.channel_index)) ||
+          state.result?.result_id !== (verifiedLabels?.payload.result.result_id) || state.result?.revision_hash !== (verifiedLabels?.payload.result.revision_hash))
+        throw new Error("Load the exact source, channels and labels before applying this scene.");
+      if (pendingApply.current) throw new Error("A shared scene is already being applied.");
+      setMode(state.representation.mode); setRenderMode(state.representation.render_mode); setQuality(state.representation.quality);
+      setLayout(state.layout.mode); setExpandedPane(state.layout.expanded_pane); setPaneOrder(state.layout.pane_order); setColSplit(state.layout.col_split); setRowSplit(state.layout.row_split);
+      setClipEnabled(state.clipping.enabled); setClipAxis(["x", "y", "z"].indexOf(state.clipping.axis) as 0 | 1 | 2); setClipPosition(state.clipping.position_percent);
+      setLabelStyle(state.labels); setPreciseCrosshair(state.crosshair_source_xyz); setSlices(sourceToDisplayIndex(state.crosshair_source_xyz).map(Math.round) as Vec3);
+      setDetailView(state.representation.extent); setTargetLongAxis(state.refinement.target_long_axis);
+      selectRef.current?.(state.selected_object?.label_id ?? null);
+      if (sceneKey(state.refinement.focus_region_xyzxyz) !== sceneKey(volume.focus?.source_extent_xyzxyz ?? null) || state.refinement.target_long_axis !== targetLongAxis) {
+        onRequestRefinement?.({ target_long_axis: state.refinement.target_long_axis, ...(state.refinement.focus_region_xyzxyz ? { focus_region_xyzxyz: state.refinement.focus_region_xyzxyz } : {}) });
+      }
+      appliedCameraRef.current = null;
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => { if (pendingApply.current?.timer === timer) { pendingApply.current = null; reject(new Error("The exact shared scene did not finish rendering.")); } }, 15000);
+        pendingApply.current = { state, resolve, reject, timer };
+      });
+    },
+    capture: async (panes, maxSize) => {
+      const before = snapshotRef.current(), scene = sceneRef.current;
+      if (!sceneLockedRef.current || !before?.available || before.busy || !scene || !volume || !panes.length) throw new Error("The native volume view is unavailable or changing.");
+      const epoch = scene.stateEpoch, renderSignature = scene.renderStateSignature, labelsAtCapture = scene.labelSurface;
+      const contextAtCapture = scene.imageRecords[0]?.payload, focusAtCapture = scene.imageRecords[1]?.payload;
+      const frames: { pane: VolumePane; source: CanvasImageSource; width: number; height: number }[] = [];
+      for (const pane of panes) {
+        const host = workspaceRef.current?.querySelector(pane === "volume" ? ".mpr-pane-volume" : `[data-pane="${pane}"]`) as HTMLElement | null;
+        if (!host || host.closest("[hidden]") || host.getBoundingClientRect().width < 1) throw new Error("A requested pane is hidden. Show it before capture.");
+        if (pane === "volume") {
+          const captured = scene.apiWindow.captureNextImage("image/png", { resetCamera: false, size: null, scale: 1 }) as Promise<string>;
+          scene.renderWindow.render(); const uri = await captured;
+          const img = new Image(); img.src = uri; await img.decode(); frames.push({ pane, source: img, width: img.naturalWidth, height: img.naturalHeight });
+        } else {
+          const canvas = host.querySelector("canvas"); if (!canvas?.width || !canvas.height) throw new Error("The requested slice is not rendered.");
+          frames.push({ pane, source: canvas, width: canvas.width, height: canvas.height });
+        }
+      }
+      await nextFrame();
+      const after = snapshotRef.current();
+      if (!after?.available || after.busy || after.liveEpoch !== before.liveEpoch || after.rendererGeneration !== before.rendererGeneration || sceneKey(before.state) !== sceneKey(after.state) ||
+          sceneRef.current !== scene || scene.contextLost || scene.stateEpoch !== epoch || scene.renderStateSignature !== renderSignature || scene.labelSurface !== labelsAtCapture ||
+          scene.imageRecords[0]?.payload !== contextAtCapture || contextAtCapture !== volume.context || scene.imageRecords[1]?.payload !== focusAtCapture || (volume.focus && focusAtCapture !== volume.focus))
+        throw new Error("The native scene changed during capture.");
+      const cols = frames.length > 1 ? 2 : 1, rows = Math.ceil(frames.length / cols);
+      const width = Math.min(maxSize, Math.max(...frames.map(f => f.width)) * cols), cell = Math.floor(width / cols);
+      const height = Math.min(maxSize, cell * rows);
+      const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext("2d"); if (!ctx) throw new Error("Cannot compose the rendered panes.");
+      ctx.fillStyle = "#151515"; ctx.fillRect(0, 0, width, height);
+      frames.forEach((f, i) => { const h = height / rows, scale = Math.min(cell / f.width, (h - 20) / f.height);
+        ctx.drawImage(f.source, i % cols * cell + (cell - f.width * scale) / 2, Math.floor(i / cols) * h + 20 + (h - 20 - f.height * scale) / 2, f.width * scale, f.height * scale);
+        ctx.fillStyle = "#e0e0e0"; ctx.font = "12px system-ui"; ctx.fillText(f.pane, i % cols * cell + 6, Math.floor(i / cols) * h + 14); });
+      return { image: canvas.toDataURL("image/png"), width, height, manifest: {
+        schema: "loci.volume-scene-capture/v1", source_id: volume.context.source_id, source_sha256: volume.context.source_sha256,
+        state: after.state, display_channels: volumeDisplayChannels(transfers),
+        raw_payloads: { context_data_sha256: volume.context.data_sha256, focus_data_sha256: volume.focus?.data_sha256 ?? null },
+        labels: verifiedLabels && labelStyle.visible ? { binding: verifiedLabels.payload.result, data_sha256: verifiedLabels.payload.data_sha256,
+          rendering: "nearest-sampled-voxel-boundaries", mpr_interpolation: "nearest-native", stride: Array(3).fill(scene.labelSurface?.stride ?? 1) } : null,
+        panes, composition: "gui-pane-contact-sheet", image_size: [width, height],
+      } };
+    },
+  };
+
+  useEffect(() => {
+    if (!sceneLockedRef.current) changedRef.current?.();
+  }, [volume, verifiedPlanes, verifiedLabels, labelStyle, selectedLabel, preciseCrosshair, slices, mode, renderMode, quality, layout, expandedPane, paneOrder, colSplit, rowSplit, clipEnabled, clipAxis, clipPosition, detailView, targetLongAxis, contextState]);
+  useEffect(() => () => {
+    if (sceneHandleRef) sceneHandleRef.current = null;
+    if (pendingApply.current) { clearTimeout(pendingApply.current.timer); pendingApply.current.reject(new Error("The native volume view closed.")); pendingApply.current = null; }
+  }, []);
+
   return (
-    <section className="raw-volume" aria-label="Raw whole-volume viewport"
+    <section ref={workspaceRef} className="raw-volume" aria-label="Raw whole-volume viewport" aria-busy={sceneLocked}
+      onPointerDownCapture={(event) => { if (sceneLockedRef.current) { event.preventDefault(); event.stopPropagation(); return; } gestureRef.current = true; liveEpochRef.current++; }}
+      onPointerUpCapture={() => { gestureRef.current = false; window.setTimeout(() => changedRef.current?.(), 0); }}
+      onPointerCancelCapture={() => { gestureRef.current = false; changedRef.current?.(); }}
+      onWheelCapture={(event) => { if (sceneLockedRef.current) { event.stopPropagation(); return; } liveEpochRef.current++; window.setTimeout(() => changedRef.current?.(), 100); }}
+      onKeyDownCapture={(event) => { if (sceneLockedRef.current) { event.preventDefault(); event.stopPropagation(); return; } liveEpochRef.current++; window.setTimeout(() => changedRef.current?.(), 0); }}
       data-layout={showFour ? "four" : "single"}
       data-expanded-pane={expandedPane ?? "none"}
       data-source-id={volume?.context.source_id}
@@ -1613,6 +1917,14 @@ export function RawVolumeViewport({
                 ))}
               </select>
             </label>
+          </>
+        )}
+      </div>
+      <div className="raw-volume-options">
+        <details className="raw-volume-disclosure raw-volume-rendering-detail">
+          <summary>Rendering &amp; detail</summary>
+          <div className="raw-volume-advanced-controls">
+            {mode === "volume" && <>
             <label className="raw-volume-quality-control" title="Raycasting sample density: lower for faster rendering, higher for sharper sub-voxel detail without aliasing">
               <span>Quality</span>
               <input
@@ -1631,29 +1943,57 @@ export function RawVolumeViewport({
               />
               <span className="raw-volume-quality-val">{quality}%</span>
             </label>
-          </>
-        )}
-        {onExportFigure ? <button type="button" disabled={exporting || loading || !volume || contextState !== "ready" || Boolean(error || renderError)}
-          onClick={() => void exportFigure()} title="Export the 3D pane with its exact display provenance; the separate slice panes are not included">
+            </>}
+            <label><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
+            {clipEnabled ? (
+              <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
+            ) : null}
+            {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
+              <label>Detail span<select aria-label="Detail span" value={detailSpan}
+                onChange={(event) => setDetailSpan(Number(event.target.value) as 32 | 64 | 96)}>
+                <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
+              </select></label>
+              <button type="button" onClick={requestFocus}>Detail at crosshair</button>
+            </> : null}
+          </div>
+        </details>
+        {clipEnabled && <span className="raw-volume-active-setting" title="Clipping is enabled; open Rendering & detail to adjust it">Clip {(["X", "Y", "Z"] as const)[clipAxis]} · {clipPosition}%</span>}
+        <details className="raw-volume-disclosure raw-volume-controls-guide">
+          <summary>Controls &amp; sampling</summary>
+          <div className="raw-volume-guide-content">
+            <p><strong>Slice panes.</strong> {verifiedLabels ? "Click a label to select it. " : ""}Drag the crosshair; scroll or use ↑↓ to step through slices.</p>
+            <p><strong>3D view.</strong> {mode === "volume"
+              ? "Left-drag or Alt-drag to orbit; right-drag or Shift-drag to pan; scroll, pinch or Ctrl-drag to zoom. Press R to reset."
+              : "Arrow keys move X/Y; Page Up/Down moves Z. Left-drag to orient; right-drag to pan; scroll to zoom. Press R to reset."}</p>
+            <p><strong>Sampling.</strong> Raw slices use linear interpolation{verifiedLabels ? "; labels use nearest native sampling. The 3D label surface is a bounded voxel approximation for display" : ""}.</p>
+            {activePayload && <p>{activePayload.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements.</p>}
+            {onExportFigure && <p><strong>Figure export.</strong> Export PNG includes the 3D pane, with its exact display provenance. Separate slice panes are excluded. Hide labels to export a raw-volume figure.</p>}
+          </div>
+        </details>
+        {onExportFigure ? <button type="button" disabled={exporting || loading || !volume || contextState !== "ready" || Boolean(error || renderError) || Boolean(verifiedLabels && labelStyle.visible)}
+          onClick={() => void exportFigure()} title={verifiedLabels && labelStyle.visible ? "Hide labels to export a raw-volume figure. Controls & sampling explains the display bounds." : "Export the 3D pane with its exact display provenance; the separate slice panes are not included"}>
           {exporting ? "Exporting…" : "Export PNG…"}
         </button> : null}
-        <label><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
-        {clipEnabled ? (
-          <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
-        ) : null}
-        {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
-          <label>Detail span<select aria-label="Detail span" value={detailSpan}
-            onChange={(event) => setDetailSpan(Number(event.target.value) as 32 | 64 | 96)}>
-            <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
-          </select></label>
-          <button type="button" onClick={requestFocus}>Detail at crosshair</button>
-        </> : null}
       </div>
+      {onSelectLabel ? <VolumeWorkspaceControls resultName={labelResult?.name} revisionShort={labelResult?.revision_hash.slice(0, 8)}
+        selectedObject={selectedLabel} readiness={labelsLoading ? "loading" : !labelResult ? "raw-only" : verifiedLabels ? "ready" : "unavailable"}
+        busy={sceneLocked} error={labelsError || labelError} labelsVisible={labelStyle.visible} labelOpacity={labelStyle.opacity} selectedOnly={labelStyle.selected_only}
+        canLocate={Boolean(verifiedLabels && selectedLabel)} canCorrect={Boolean(verifiedLabels && selectedLabel && onCorrectLabel)}
+        correctionReason={selectedLabel ? "Corrections open on an exact native source plane and create a new measured result." : null}
+        selectionHiddenReason={selectedLabel && clipEnabled ? "Clipping may hide the selected object. Locate object moves the crosshair; clipping stays unchanged." : undefined}
+        onVisibilityChange={(visible) => setLabelStyle(s => ({ ...s, visible }))} onOpacityChange={(opacity) => setLabelStyle(s => ({ ...s, opacity }))}
+        onSelectedOnlyChange={(selected_only) => setLabelStyle(s => ({ ...s, selected_only }))} onLocateObject={locateLabel}
+        onCorrectObject={() => { if (verifiedLabels && selectedLabel) onCorrectLabel?.(selectedLabel, Math.max(0, Math.min(verifiedLabels.payload.dimensions_xyz[2] - 1, (crosshair?.source[2] ?? verifiedLabels.payload.source_offset_xyz[2]) - verifiedLabels.payload.source_offset_xyz[2]))); }}
+        onClearSelection={() => onSelectLabel(null)} /> : null}
+      {meshError ? <p className="raw-volume-export-status" role="status">{meshError}</p> : null}
       {exportError ? <p className="raw-volume-export-status raw-volume-export-error" role="alert">{exportError}</p> : null}
       {exportStatus ? <p className="raw-volume-export-status" role="status">{exportStatus}</p> : null}
       {(showFour || mode === "mpr") && volume ? (
         <div className="raw-volume-slices">
-          {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>{label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.dimensions_xyz[axis] - 1} value={slices[axis]} onChange={(event) => { invalidateFigureCapture(); setSlices((current) => current.map((value, index) => index === axis ? Number(event.target.value) : value) as [number, number, number]); }} /><output aria-label={`${label} source index`}>{crosshair?.source[axis]}</output></label>)}
+          {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>{label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.source_dimensions_xyz[axis] - 1} value={crosshair?.source[axis] ?? 0} onChange={(event) => {
+            invalidateFigureCapture(); const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Number(event.target.value) : n) as Vec3;
+            setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point).map(Math.round) as Vec3);
+          }} /><output aria-label={`${label} source index`}>{crosshair?.source[axis]}</output></label>)}
           {crosshair ? <span className="raw-volume-world">World {crosshair.world.map((value) => value.toFixed(3)).join(", ")} {volume.context.unit}</span> : null}
         </div>
       ) : null}
@@ -1689,6 +2029,7 @@ export function RawVolumeViewport({
                 onExpand={() => togglePane(plane.id)}
                 onCrosshair={moveCrosshair}
                 onSwap={() => swapWithNext(plane.id)}
+                labels={verifiedLabels} labelStyle={labelStyle} selectedLabel={selectedLabel} onSelectLabel={onSelectLabel}
               />
             ) : null}
           </div>
@@ -1728,10 +2069,11 @@ export function RawVolumeViewport({
             tabIndex={0} onKeyDown={onStageKeyDown} onPointerDown={invalidateFigureCapture}
             onWheel={invalidateFigureCapture} onContextMenu={(event) => event.preventDefault()}>
             <div className="raw-volume-frame-label">Rotating source XYZ axes · {activePayload?.frame ?? "image"} frame</div>
-            <p className="raw-volume-help">{mode === "volume"
-              ? "Left-drag or Alt-drag to orbit · right-drag or Shift-drag to pan · scroll / pinch to zoom · Ctrl-drag to zoom · R reset"
-              : "Arrow keys move X/Y · Page Up/Down moves Z · left-drag to orient · right-drag to pan · scroll to zoom · R reset"}</p>
           </div>
+          <footer className="mpr-pane-footer" aria-label="3D display sampling">
+            <span>{activePayload ? `3D display · L${activePayload.level}` : "3D display unavailable"}</span>
+            {verifiedLabels && labelStyle.visible && <span title="Bounded voxel surface for display, not native measurement geometry">Labels: bounded surface</span>}
+          </footer>
         </section>
         {showFour && !expandedPane && (
           <>
@@ -1768,7 +2110,6 @@ export function RawVolumeViewport({
           </>
         )}
       </div>
-      {showFour ? <p className="raw-volume-reslice-note">{activePayload?.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements</p> : null}
       {transfers.length > 0 ? <div className="raw-volume-channels" aria-label="Volume channels">{transfers.map((component) => {
         const defaults = volume?.context.components.find((item) => item.channel_index === component.channel_index);
         const histogram = contextHistograms.find((item) => item.channel_index === component.channel_index);

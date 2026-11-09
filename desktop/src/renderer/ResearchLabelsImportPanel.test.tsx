@@ -88,7 +88,7 @@ describe("checked external-label import", () => {
   it("rejects preview identity mismatches and unsupported grids", () => {
     expect(() => checkedLabelsPreview({ ...preview, source_sha256: "0".repeat(64) }, source, selection, preview.working_bytes)).toThrow(/exact native source plane/);
     expect(() => checkedLabelsPreview({ ...preview, measurement_channel: { ...preview.measurement_channel, index: 0 } }, source, selection, preview.working_bytes)).toThrow();
-    expect(labelsImportUnavailable(source, { ...selection, z_stop: 2 })).toMatch(/full level-0/);
+    expect(labelsImportUnavailable(source, { ...selection, z_stop: 2 })).toMatch(/at least two planes/);
     expect(labelsImportUnavailable({ ...source, metadata: { ...source.metadata, sample_semantics: "rgb" } }, selection)).toMatch(/RGB/);
   });
   it("sends only explicit native-plane keys after leaving a volume", async () => {
@@ -96,5 +96,62 @@ describe("checked external-label import", () => {
     render(<ResearchLabelsImportPanel {...props} />); fireEvent.click(screen.getByText("Import labels"));
     await screen.findByText("Import on this plane");
     expect(Object.keys(picker.mock.calls[0][0].selection).sort()).toEqual(["c", "height", "level", "t", "width", "x", "y", "z"]);
+  });
+});
+
+describe("exact native volume label import", () => {
+  const volumeSource: ResearchSource = { ...source, metadata: { ...source.metadata, dimensions: { ...source.metadata.dimensions!, z: 9 } } };
+  const volumeSelection: ResearchSelection = { ...selection, z: 2, z_stop: 7 };
+  const volumePreview: ResearchLabelsImportPreview = { ...preview, selection: volumeSelection, axes: "ZYX", shape: [5, 4, 8], profile: "scalar-native-zyx/v1",
+    preview: { plane: "XY", index: 2, source_z: 4, selection: { ...selection, z: 4 }, basis: "single-native-plane-overlay" } };
+  const volumeResult: ResearchResult = { ...result, selection: volumeSelection };
+
+  it("keeps the explicit Z range, identifies the middle plane and adopts the captured ZYX alignment", async () => {
+    const { props, picker, execute } = setup({ source: volumeSource, selection: volumeSelection });
+    picker.mockResolvedValue(volumePreview); execute.mockResolvedValue({ result: volumeResult, measurements: [] });
+    render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("Import labels"));
+    expect(await screen.findByAltText(/middle XY plane, source Z 4/)).toBeVisible();
+    expect(screen.getByText("Preview: middle XY plane only · source Z 4 · plane 3 of 5.")).toBeVisible();
+    expect(screen.getByText("uint32 · 5 × 4 × 8 ZYX")).toBeVisible();
+    expect(picker).toHaveBeenCalledWith(expect.objectContaining({ selection: volumeSelection }));
+    fireEvent.click(screen.getByRole("button", { name: "Import on this volume" }));
+    await waitFor(() => expect(props.onResult).toHaveBeenCalledWith(volumeResult, [], expect.any(Function)));
+    expect(execute).toHaveBeenCalledWith("labels_import", expect.objectContaining({ grant_id: volumePreview.grant_id, alignment: "same-native-zyx-grid" }));
+  });
+  it.each([
+    { axes: "YX" }, { profile: "scalar-native-yx/v1" }, { shape: [4, 8] }, { shape: [4, 5, 8] },
+    { preview: undefined },
+    { preview: { ...volumePreview.preview!, index: 1 } },
+    { preview: { ...volumePreview.preview!, source_z: 2 } },
+    { preview: { ...volumePreview.preview!, selection: { ...selection, z: 4, z_stop: 7 } } },
+    { preview: { ...volumePreview.preview!, selection: { ...selection, z: 3 } } },
+    { preview: { ...volumePreview.preview!, basis: "maximum-projection" } },
+  ])("rejects inconsistent volume preview metadata %#", (patch) => {
+    expect(() => checkedLabelsPreview({ ...volumePreview, ...patch } as ResearchLabelsImportPreview,
+      volumeSource, volumeSelection, preview.working_bytes)).toThrow(/exact native source volume/);
+  });
+  it("does not accept a volume descriptor for a plane profile", () => {
+    expect(() => checkedLabelsPreview({ ...preview, preview: volumePreview.preview }, source, selection, preview.working_bytes)).toThrow(/exact native source plane/);
+  });
+  it.each([
+    { z: 2, z_stop: 3 }, { z: 2, z_stop: 10 }, { z: -1, z_stop: 4 },
+    { z: 2, z_stop: 6.5 }, { z: 2, z_stop: Number.NaN },
+  ])("rejects invalid volume bounds %# before opening the picker", (range) => {
+    const { props, picker } = setup({ source: volumeSource, selection: { ...selection, ...range } });
+    render(<ResearchLabelsImportPanel {...props} />);
+    expect(screen.getByRole("button", { name: "Import labels" })).toBeDisabled();
+    expect(picker).not.toHaveBeenCalled();
+  });
+  it("discards a late volume preview if the Z extent changes", async () => {
+    let finish!: (value: ResearchLabelsImportPreview) => void;
+    const { props, picker } = setup({ source: volumeSource, selection: volumeSelection });
+    picker.mockReturnValue(new Promise<ResearchLabelsImportPreview>((resolve) => { finish = resolve; }));
+    const view = render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("Import labels"));
+    view.rerender(<ResearchLabelsImportPanel {...props} selection={{ ...volumeSelection, z_stop: 6 }} />);
+    finish(volumePreview);
+    await waitFor(() => expect(props.onBusy).toHaveBeenLastCalledWith(null, expect.any(String)));
+    expect(screen.queryByRole("button", { name: "Import on this volume" })).toBeNull();
   });
 });

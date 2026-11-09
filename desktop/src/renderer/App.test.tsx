@@ -1604,7 +1604,11 @@ describe("Loci renderer", () => {
   it("applies inspected percentile levels with Auto and compares the untouched preview", async () => {
     render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open images" }));
+    // Finish the asynchronous import and its source-change effects before
+    // starting the hold gesture; finding the title alone can precede them.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open images" }));
+    });
     await screen.findAllByText("plate-a.tif");
 
     const sourcePreview = screen.getByAltText("Biological image plate-a.tif");

@@ -454,6 +454,20 @@ describe("native research bridge", () => {
     expect(mocks.request.mock.calls.some(([method]) => method === "research_execute")).toBe(false);
   });
 
+  it("accepts an explicit ZYX range through the pinned native picker and refuses a singleton depth", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Volume labels.loci-study") });
+    await call("create"); mocks.request.mockClear();
+    const base = labelBinding();
+    const binding = { ...base, selection: { ...base.selection, z: 2, z_stop: 8 } };
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: ["/selected/volume.tif"] });
+    await call("labels-import-preview", binding);
+    expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ title: "Import labels on this volume" }));
+    expect(mocks.request).toHaveBeenCalledWith("research_labels_import_grant", expect.objectContaining(binding), 0);
+    mocks.open.mockClear();
+    await expect(call("labels-import-preview", { ...binding, selection: { ...binding.selection, z_stop: 3 } })).rejects.toThrow(/at least two/);
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
 
   it("binds native vision handoff publication to the selected source and sanitizes its receipt", async () => {
     const project = path.join(root, "Vision study.loci-study");

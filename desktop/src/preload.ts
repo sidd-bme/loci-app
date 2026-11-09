@@ -1,5 +1,6 @@
 import type { ImageWindowApi } from "./shared/image-window-api";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { createAgentWorkspaceApi } from "./agent-workspace-preload";
 
 import type { LociDesktopApi } from "./shared/contracts";
 import type { ResearchDesktopApi } from "./shared/research-contracts";
@@ -387,3 +388,4 @@ const imageWindows: ImageWindowApi = {
   },
 };
 contextBridge.exposeInMainWorld("lociImageWindows", imageWindows);
+contextBridge.exposeInMainWorld("lociAgentWorkspace", createAgentWorkspaceApi(ipcRenderer));

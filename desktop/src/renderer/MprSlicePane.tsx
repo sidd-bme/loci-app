@@ -2,6 +2,7 @@ import { ArrowLeftRight, Maximize2, Minimize2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import type { RawVolumeComponent, RawVolumePayload } from "./RawVolumeViewport";
 import { dot, planeGrid, planePoint, renderMpr, type MprPlane, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { compositeLabelPlane, labelAtWorld, mprCanvasSignature, type VerifiedVolumeLabels, type VolumeLabelStyle } from "./volume-label-display";
 
 type Props = {
   payload: RawVolumePayload; values: MprScalars; plane: MprPlane; crosshair: Vec3;
@@ -9,9 +10,14 @@ type Props = {
   visible?: boolean;
   onCrosshair: (point: Vec3) => void;
   onSwap?: () => void;
+  labels?: VerifiedVolumeLabels | null;
+  labelStyle?: VolumeLabelStyle;
+  selectedLabel?: number | null;
+  onSelectLabel?: (label: number | null) => void;
 };
 
-export function MprSlicePane({ payload, values, plane, crosshair, transfers, expanded, visible = true, onExpand, onCrosshair, onSwap }: Props) {
+export function MprSlicePane({ payload, values, plane, crosshair, transfers, expanded, visible = true, onExpand, onCrosshair, onSwap,
+  labels, labelStyle, selectedLabel = null, onSelectLabel }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -31,16 +37,19 @@ export function MprSlicePane({ payload, values, plane, crosshair, transfers, exp
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("The slice canvas is unavailable.");
       const pixels = renderMpr(payload, values, plane, grid, transfers);
+      if (labels && labelStyle) compositeLabelPlane(pixels, labels, plane, grid, labelStyle, selectedLabel);
       canvas.width = grid.width; canvas.height = grid.height;
       const frame = ctx.createImageData(grid.width, grid.height);
       frame.data.set(pixels); ctx.putImageData(frame, 0, 0); setError(null);
+      canvas.dataset.renderBinding = mprCanvasSignature(payload, plane, crosshair, transfers, labels, labelStyle, selectedLabel);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not render this slice."); }
-  }, [grid, payload, plane, transfers, values, visible]);
+  }, [grid, payload, plane, transfers, values, visible, labels, labelStyle, selectedLabel]);
   const horizontal = grid.uMax === grid.uMin ? 0.5 : (dot(crosshair, plane.u) - grid.uMin) / (grid.uMax - grid.uMin);
   const vertical = grid.vMax === grid.vMin ? 0.5 : (dot(crosshair, plane.v) - grid.vMin) / (grid.vMax - grid.vMin);
   // One step moves at least one context voxel even for anisotropic/oblique grids.
+  const navigation = labels?.payload ?? payload;
   const step = 1 / Math.max(...[0, 1, 2].map((col) => Math.abs(dot(plane.normal,
-    payload.direction_3x3.slice(col * 3, col * 3 + 3) as Vec3)) / payload.spacing_xyz[col]));
+    navigation.direction_3x3.slice(col * 3, col * 3 + 3) as Vec3)) / navigation.spacing_xyz[col]));
   const aspect = Math.max(grid.uMax - grid.uMin, Math.min(...payload.spacing_xyz)) / Math.max(grid.vMax - grid.vMin, Math.min(...payload.spacing_xyz));
   const imageHeight = Math.min(size.height, size.width / aspect);
   const move = (delta: number) => onCrosshair(crosshair.map((value, axis) => value + plane.normal[axis] * step * delta) as Vec3);
@@ -55,10 +64,16 @@ export function MprSlicePane({ payload, values, plane, crosshair, transfers, exp
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
   }, []);
-  const position = (event: PointerEvent<HTMLCanvasElement>) => {
+  const position = (event: PointerEvent<HTMLCanvasElement>, pick = false) => {
     const rect = event.currentTarget.getBoundingClientRect();
-    if (rect.width && rect.height) onCrosshair(planePoint(plane, grid,
-      Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height))));
+    if (rect.width && rect.height) {
+      const point = planePoint(plane, grid, Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)), Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)));
+      onCrosshair(point);
+      if (pick && labels && labelStyle?.visible && labelStyle.opacity > 0) {
+        const label = labelAtWorld(labels, point);
+        if (!labelStyle.selected_only || label === selectedLabel) onSelectLabel?.(label || null);
+      }
+    }
   };
   return <section className={`mpr-pane mpr-pane-${plane.id}`} aria-label={`${plane.label} view`} data-pane={plane.id}>
     <header className="mpr-pane-header"><span className="mpr-plane-mark" /><strong>{plane.label}</strong>
@@ -86,7 +101,7 @@ export function MprSlicePane({ payload, values, plane, crosshair, transfers, exp
         <canvas ref={canvasRef} aria-label={`${plane.label} resliced image`} onPointerDown={(event) => {
           if (event.button !== 0) return;
           stageRef.current?.focus({ preventScroll: true });
-          event.currentTarget.setPointerCapture?.(event.pointerId); position(event);
+          event.currentTarget.setPointerCapture?.(event.pointerId); position(event, true);
         }} onPointerMove={(event) => { if (event.buttons === 1) position(event); }} />
         <span className="mpr-crosshair-horizontal" style={{ top: `${vertical * 100}%` }} />
         <span className="mpr-crosshair-vertical" style={{ left: `${horizontal * 100}%` }} />
@@ -94,6 +109,9 @@ export function MprSlicePane({ payload, values, plane, crosshair, transfers, exp
       {plane.edges.map((label, index) => <span key={index} className={`mpr-orientation mpr-orientation-${index}`}>{label}</span>)}
       {error ? <p className="mpr-slice-error" role="alert">{error}</p> : null}
     </div>
-    <footer className="mpr-pane-footer">Drag crosshair · scroll / ↑↓ to slice <span>Linear · level {payload.level}</span></footer>
+    <footer className="mpr-pane-footer" aria-label={`${plane.label} sampling`}>
+      <span title={`Raw data uses linear interpolation at display level ${payload.level}`}>Raw: linear · L{payload.level}</span>
+      {labels && <span title="Label IDs use nearest native sampling">Labels: native</span>}
+    </footer>
   </section>;
 }

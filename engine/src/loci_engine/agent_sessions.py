@@ -71,6 +71,10 @@ READ_ONLY_TOOLS = frozenset(
         "result_view",
         "source_image",
         "source_display",
+        "volume_view",
+        "volume_view_image",
+        "volume_view_request_status",
+        "cancel_volume_view_request",
         "review_history",
         "study_results",
         "validate_action",
@@ -88,6 +92,7 @@ APPROVAL_GATED_TOOLS = frozenset(
         "submit_action",
         "workflow_graph_control",
         "set_source_display",
+        "set_volume_view",
         "export_vision_handoff",
         "review_result",
         "export_result",
@@ -1137,6 +1142,11 @@ def _extract_binding(
             params_summary["channels"] = [
                 item.get("channel") for item in inner["channels"] if isinstance(item, dict)
             ]
+    elif operation == "set_volume_view":
+        token = inner.get("expected_live", {})
+        display_revision = token.get("display_revision")
+        if isinstance(inner.get("patch"), dict):
+            params_summary["scene_fields"] = sorted(inner["patch"])
 
     if result_id is not None:
         try:
@@ -1193,7 +1203,7 @@ def _extract_binding(
     category = "execution"
     if action_name in {"correct_result", "correct_tracks", "roi_add", "large_result_delete"}:
         category = "correction"
-    elif operation == "set_source_display":
+    elif operation in {"set_source_display", "set_volume_view"}:
         category = "display"
     elif operation == "review_result":
         category = "review"

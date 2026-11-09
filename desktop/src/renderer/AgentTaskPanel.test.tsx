@@ -28,6 +28,26 @@ function setup(record = task(), control = vi.fn().mockResolvedValue(true)) {
 }
 
 describe("External agent task presentation", () => {
+  it("restores a transferred draft and refuses to apply it to a newer task revision", () => {
+    const record = task({ revision: 4 });
+    const onChange = vi.fn(), control = vi.fn();
+    render(<AgentTaskPanel tasks={[record]} snapshot={snapshot} canControl onControl={control}
+      presentation={{ selectedTaskId: record.id, draft: { taskId: record.id, baseRevision: 3, goal: "Transferred human draft",
+        steps: [{ id: "inspect", title: "My unfinished inspection" }] } }} onPresentationChange={onChange} />);
+    expect(screen.getByLabelText("Goal")).toHaveValue("Transferred human draft");
+    expect(screen.getByRole("button", { name: "Save plan" })).toBeDisabled();
+    expect(screen.getByText(/task changed while you were editing/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
+    expect(onChange).toHaveBeenCalledWith({ selectedTaskId: record.id, draft: null });
+    expect(control).not.toHaveBeenCalled();
+  });
+  it("does not substitute a different task when the transferred draft target disappears", () => {
+    render(<AgentTaskPanel tasks={[task({ id: "different-task" })]} snapshot={snapshot} canControl onControl={vi.fn()}
+      presentation={{ selectedTaskId: "missing", draft: { taskId: "missing", baseRevision: 1, goal: "Unsaved original",
+        steps: [{ id: "a", title: "Inspect original" }] } }} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("cannot be applied to another task");
+    expect(screen.queryByRole("button", { name: "Save plan" })).not.toBeInTheDocument();
+  });
   it("keeps save and cancel before a long plan and cancels editing without changing the task", () => {
     const steps = Array.from({ length: 20 }, (_, index) => ({ id: `step-${index}`, title: `Inspect region ${index + 1}`, state: "planned" as const, note: "", targets: [] }));
     const { control } = setup(task({ steps }));

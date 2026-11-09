@@ -61,7 +61,14 @@ from .export import _rename_noreplace
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
 from .research_process import research_command
 from .research_project import ResearchProject, checked_id, parse_json, timestamp
-from .research_tool_schemas import ReviewResultRequest, SourceImageRequest, tool_request_schema
+from .research_tool_schemas import (
+    ReviewResultRequest,
+    SetVolumeViewRequest,
+    SourceImageRequest,
+    VolumeViewImageRequest,
+    tool_request_schema,
+)
+from .volume_view_errors import VolumeViewError
 from .workbench import Workbench, runtime_record
 
 _TOOL_CATALOG = (
@@ -126,6 +133,33 @@ _VISION_TOOL_CATALOG = (
         "export_vision_handoff",
         "Write a provisional visualization handoff to an exact granted .loci-vision filename; "
         "no scientific review is created.",
+    ),
+)
+_VOLUME_TOOL_CATALOG = (
+    (
+        "volume_view",
+        "Read one exact source-bound saved 3D scene and current GUI token. "
+        "Requires separate view authority.",
+    ),
+    (
+        "set_volume_view",
+        "Queue a typed scene patch at the exact saved/display/live token. "
+        "Human edits invalidate it; source channels and numerical results are unchanged.",
+    ),
+    (
+        "volume_view_image",
+        "Request actual current GUI volume/MPR panes at an exact token. Returns a request ID; "
+        "poll volume_view_request_status for the native image. No GUI means unavailable.",
+    ),
+    (
+        "volume_view_request_status",
+        "Read one session-owned GUI request. Completed captures are native protocol PNG "
+        "images with their exact scene receipt.",
+    ),
+    (
+        "cancel_volume_view_request",
+        "Cancel only this session's exact pending GUI request. A committed scene awaiting "
+        "rendering is retained and reported separately.",
     ),
 )
 _STUDY_TOOL_CATALOG = (
@@ -264,6 +298,8 @@ def protocol_image_result(value, *, required=True, retained_preview=False):
             }
     elif "image" in value:
         extract(value, "image", "/image")
+    elif isinstance(value.get("response"), dict) and "image" in value["response"]:
+        extract(value["response"], "image", "/response/image")
     elif required:
         raise ValueError("The research response has no image")
     if not images:
@@ -719,6 +755,31 @@ class PolicyAgent:
     def job_owner(self) -> dict[str, Any]:
         return {"policy_sha256": self.policy.content_sha256, "session_id": self.session_id}
 
+    def volume_view(self, source_id):
+        from .agent_volume_view import volume_view
+
+        return volume_view(self, source_id)
+
+    def set_volume_view(self, request):
+        from .agent_volume_view import submit
+
+        return submit(self, "set", request)
+
+    def volume_view_image(self, request):
+        from .agent_volume_view import submit
+
+        return submit(self, "image", request)
+
+    def volume_view_request_status(self, request_id):
+        from .agent_volume_view import request_status
+
+        return request_status(self, request_id)
+
+    def cancel_volume_view_request(self, request_id):
+        from .agent_volume_view import request_status
+
+        return request_status(self, request_id, cancel=True)
+
     def _workbench(self, operation: str) -> Workbench:
         self._recheck_session()
         self.policy.require_operation(operation)
@@ -1141,6 +1202,7 @@ class PolicyAgent:
                     + (_VISION_TOOL_CATALOG if self.policy.schema in VISION_POLICY_SCHEMAS else ())
                     + (_REMOTE_TOOL_CATALOG if self.policy.remote_grants else ())
                     + (_STUDY_TOOL_CATALOG if self.policy.delegation is not None else ())
+                    + (_VOLUME_TOOL_CATALOG if self.policy.volume_views is not None else ())
                 )
             ],
             "dataset_contents_included": False,
@@ -2088,7 +2150,11 @@ def build_server(policy_path: str | Path) -> MCPServer:
         lifespan=lifespan,
     )
     descriptions = dict(
-        _TOOL_CATALOG + _REMOTE_TOOL_CATALOG + _VISION_TOOL_CATALOG + _STUDY_TOOL_CATALOG
+        _TOOL_CATALOG
+        + _REMOTE_TOOL_CATALOG
+        + _VISION_TOOL_CATALOG
+        + _STUDY_TOOL_CATALOG
+        + _VOLUME_TOOL_CATALOG
     )
 
     def annotations(name: str) -> ToolAnnotations:
@@ -2103,6 +2169,9 @@ def build_server(policy_path: str | Path) -> MCPServer:
             "result_view",
             "source_image",
             "source_display",
+            "volume_view",
+            "volume_view_image",
+            "volume_view_request_status",
             "review_history",
             "action_guide",
             "study_results",
@@ -2120,6 +2189,8 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "export_result",
                 "export_vision_handoff",
                 "set_source_display",
+                "set_volume_view",
+                "volume_view_image",
                 "review_result",
                 "agent_task_write",
             },
@@ -2165,6 +2236,11 @@ def build_server(policy_path: str | Path) -> MCPServer:
                 "workflow_graph_control": ({"operation", "request"}, {"operation", "request"}),
                 "agent_task_read": ({"operation", "request"}, {"operation", "request"}),
                 "agent_task_write": ({"operation", "request"}, {"operation", "request"}),
+                "volume_view": ({"source_id"}, {"source_id"}),
+                "set_volume_view": ({"request"}, {"request"}),
+                "volume_view_image": ({"request"}, {"request"}),
+                "volume_view_request_status": ({"request_id"}, {"request_id"}),
+                "cancel_volume_view_request": ({"request_id"}, {"request_id"}),
                 "submit_action": (
                     {"operation", "request", "request_key"},
                     {"operation", "request", "request_key"},
@@ -2338,7 +2414,7 @@ def build_server(policy_path: str | Path) -> MCPServer:
                         last_error=None,
                     )
             return result
-        except (AgentSessionApprovalError, TaskRevisionConflict) as exc:
+        except (AgentSessionApprovalError, TaskRevisionConflict, VolumeViewError) as exc:
             if agent.session_id is not None and not observation_only:
                 with suppress(Exception):
                     heartbeat_session(
@@ -2783,6 +2859,58 @@ def build_server(policy_path: str | Path) -> MCPServer:
         )
         def remote_attach(grant_key: str) -> dict[str, Any]:
             return invoke(lambda: agent.remote_operation(grant_key, "attach"))
+
+    if agent.policy.volume_views is not None:
+
+        @server.tool(
+            name="volume_view",
+            structured_output=True,
+            description=descriptions["volume_view"],
+            annotations=annotations("volume_view"),
+        )
+        def read_volume_view(source_id: str) -> dict[str, Any]:
+            return invoke(lambda: agent.volume_view(source_id))
+
+        @server.tool(
+            name="set_volume_view",
+            structured_output=True,
+            description=descriptions["set_volume_view"],
+            annotations=annotations("set_volume_view"),
+        )
+        def set_volume_view(request: SetVolumeViewRequest) -> dict[str, Any]:
+            return invoke(lambda: agent.set_volume_view(request))
+
+        @server.tool(
+            name="volume_view_image",
+            structured_output=True,
+            description=descriptions["volume_view_image"],
+            annotations=annotations("volume_view_image"),
+        )
+        def volume_view_image(request: VolumeViewImageRequest) -> dict[str, Any]:
+            return invoke(lambda: agent.volume_view_image(request))
+
+        @server.tool(
+            name="volume_view_request_status",
+            structured_output=True,
+            description=descriptions["volume_view_request_status"],
+            annotations=annotations("volume_view_request_status"),
+        )
+        def volume_view_request_status(request_id: str) -> dict[str, Any]:
+            return invoke(
+                lambda: protocol_image_result(
+                    agent.volume_view_request_status(request_id), required=False
+                ),
+                observation_only=True,
+            )
+
+        @server.tool(
+            name="cancel_volume_view_request",
+            structured_output=True,
+            description=descriptions["cancel_volume_view_request"],
+            annotations=annotations("cancel_volume_view_request"),
+        )
+        def cancel_volume_view_request(request_id: str) -> dict[str, Any]:
+            return invoke(lambda: agent.cancel_volume_view_request(request_id))
 
     return server
 
