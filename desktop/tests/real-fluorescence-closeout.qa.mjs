@@ -242,7 +242,7 @@ async function applyCorrection(entry) {
   const sy = affine ? Math.hypot(...affine.slice(0, 3).map(row => row[1])) : calibration?.at(-2);
   const aspectY = sx && sy && sx > 0 && sy > 0 ? sy / sx : 1;
   const mapping = await viewer.evaluate((element, { point, aspectY }) => {
-    const camera = JSON.parse(element.getAttribute("data-camera")), box = element.getBoundingClientRect();
+    const camera = JSON.parse(element.getAttribute("data-camera")), box = element.querySelector("canvas").getBoundingClientRect();
     const x = box.left + box.width / 2 + (point.x + .5 - camera.x) * camera.scale;
     const y = box.top + box.height / 2 + (point.y + .5 - camera.y) * camera.scale * aspectY;
     const target = document.elementFromPoint(x, y);

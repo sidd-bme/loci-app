@@ -10,7 +10,10 @@ import type {
 import type { ViewerChannel } from "./ImageViewport";
 import { SourceExportPanel } from "./SourceExportPanel";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  document.documentElement.removeAttribute("data-theme");
+});
 
 const sources: ResearchSource[] = ["a", "c"].map((value, index) => ({
   id: value.repeat(32),
@@ -88,7 +91,8 @@ describe("SourceExportPanel", () => {
     })));
   });
 
-  it("describes a rendered PNG exactly, binds the display request, and treats cancellation as no export", async () => {
+  it.each(["graphite", "black"])("keeps the exact rendered PNG request and cancellation behavior in %s", async (theme) => {
+    document.documentElement.dataset.theme = theme;
     const exportSourceView = vi.fn().mockResolvedValue(null);
     const onError = vi.fn();
     render(panel(bridge(exportSourceView), sources[0], onError));

@@ -706,6 +706,25 @@ describe("Loci renderer", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it("opens the dedicated Settings window from the title bar and keyboard when its bridge is available", () => {
+    const openSettingsWindow = vi.fn().mockResolvedValue(undefined);
+    window.loci = mockApi({ openSettingsWindow });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    fireEvent.keyDown(window, { key: ",", metaKey: true });
+    expect(openSettingsWindow).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull();
+  });
+
+  it("shows a recoverable window error when native Settings cannot open", async () => {
+    window.loci = mockApi({ openSettingsWindow: vi.fn().mockRejectedValue(new Error("native failure")) });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not open");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss command error" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it.each([
     ["onImportRequested", "open-images"],
     ["onFolderImportRequested", "open-folder"],
@@ -1715,7 +1734,8 @@ describe("Loci renderer", () => {
     }));
   });
 
-  it("exports a full-resolution adjusted view without segmentation", async () => {
+  it.each(["graphite", "black"])("exports a full-resolution adjusted view without segmentation in %s", async (theme) => {
+    localStorage.setItem("loci.preferences.v1", JSON.stringify({ theme }));
     const exportView = vi.fn().mockResolvedValue({
       path: "/lab/export/plate-a_loci_view.png",
       format: "png",
@@ -1740,6 +1760,7 @@ describe("Loci renderer", () => {
     });
     window.loci = mockApi({ exportView });
     render(<App />);
+    expect(document.documentElement).toHaveAttribute("data-theme", theme);
 
     fireEvent.click(screen.getByRole("button", { name: "Open images" }));
     await screen.findAllByText("plate-a.tif");
@@ -1770,19 +1791,24 @@ describe("Loci renderer", () => {
     expect(screen.queryByText(/\/lab\/export/)).not.toBeInTheDocument();
   });
 
-  it("opens persisted appearance and export preferences from the title bar", () => {
+  it.each(["midnight", "black"])("opens persisted appearance and export preferences from the title bar in %s", (theme) => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
-    fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: "midnight" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: theme } });
     fireEvent.click(screen.getByRole("radio", { name: /Large/i }));
+    expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    fireEvent.click(screen.getByRole("radio", { name: "Comfortable" }));
     fireEvent.click(screen.getByRole("tab", { name: "Saving & export" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Default figure DPI" }), { target: { value: "600" } });
     fireEvent.blur(screen.getByRole("textbox", { name: "Default figure DPI" }));
 
-    expect(document.documentElement).toHaveAttribute("data-theme", "midnight");
+    expect(document.documentElement).toHaveAttribute("data-theme", theme);
+    expect(window.localStorage.getItem("loci.preferences.v1")).toContain(`"theme":"${theme}"`);
     expect(document.documentElement).toHaveAttribute("data-text-size", "large");
+    expect(document.documentElement).toHaveAttribute("data-density", "comfortable");
+    expect(window.localStorage.getItem("loci.preferences.v1")).toContain('"density":"comfortable"');
     expect(window.localStorage.getItem("loci.preferences.v1")).toContain('"figureDpi":600');
   });
 

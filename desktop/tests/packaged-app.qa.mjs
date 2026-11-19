@@ -184,7 +184,7 @@ async function changedFrom(parent, label) {
   await page.locator(`button[data-result-id="${next.id}"][aria-pressed="true"]`).waitFor();
   await until(() => page.getByLabel("Correction tool", { exact: true }).isEnabled(), Boolean, label + " correction readiness");
   await viewerReady();
-  await moveNavigationAway();
+  await assertNavigationOutsideImage();
   return next;
 }
 async function reviewAndExport(result, destination) {
@@ -217,7 +217,7 @@ async function imagePoint(u, v, click = true) {
     priorPoints = Number(pointStatus?.match(/\b(\d+)\s+drawn points$/)?.[1]);
     assert.ok(Number.isSafeInteger(priorPoints), "The exact correction draft must report its point count");
   }
-  const viewport = page.locator('.image-viewport'), b = await viewport.boundingBox();
+  const viewport = page.locator('.image-viewport'), b = await viewport.locator("canvas").boundingBox();
   const c = JSON.parse(await viewport.getAttribute('data-camera'));
   assert.ok(b); const point = { x: b.x + b.width / 2 + (u + 0.5 - c.x) * c.scale, y: b.y + b.height / 2 + (v + 0.5 - c.y) * c.scale };
   assert.ok(point.x >= b.x && point.y >= b.y && point.x < b.x + b.width && point.y < b.y + b.height, "Correction point is outside the visible source");
@@ -231,14 +231,13 @@ async function imagePoint(u, v, click = true) {
   }
   return point;
 }
-async function moveNavigationAway() {
-  const viewport = await page.locator('.image-viewport').boundingBox();
-  const handle = await page.getByRole('button', { name: 'Move navigation toolbar', exact: true }).boundingBox();
-  assert.ok(viewport && handle);
-  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(viewport.x + viewport.width / 2, viewport.y + viewport.height - 60, { steps: 8 });
-  await page.mouse.up();
+async function assertNavigationOutsideImage() {
+  const viewport = page.locator('.image-viewport');
+  const image = await viewport.locator('canvas').boundingBox();
+  const toolbar = await viewport.locator('.image-view-tools').boundingBox();
+  assert.ok(image && toolbar && image.width > 0 && image.height > 0 && toolbar.height > 0);
+  assert.ok(toolbar.y + toolbar.height <= image.y + 0.5 || image.y + image.height <= toolbar.y + 0.5,
+    "The navigation toolbar must stay outside the scientific image field");
 }
 async function correctionReady() {
   await selectWorkbenchTool(page, "Correction");
@@ -246,7 +245,7 @@ async function correctionReady() {
   await page.locator('.image-viewport').waitFor();
   await viewerReady();
   await correctionInputReady();
-  await moveNavigationAway();
+  await assertNavigationOutsideImage();
 }
 async function selectBatchSources(sources, selectedIds) {
   const selected = new Set(selectedIds);

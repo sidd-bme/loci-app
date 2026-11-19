@@ -569,6 +569,7 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
             "spatial_density_export_grant",
             "wound_closure_export_grant",
             "labels_import_grant",
+            "usam_handoff",  # Older development records carry no local export authority.
             "controlled_method_authority",
             "controlled_method_output_grant",
         ):
@@ -982,6 +983,11 @@ def _validate_result(record: Any, expected_id: str) -> dict[str, Any]:
     unhashed = {key: value for key, value in record.items() if key != "revision_hash"}
     if _sha256_bytes(canonical_json(unhashed).encode()) != record.get("revision_hash"):
         raise ValueError("Interchanged result revision hash is invalid")
+    external = record["provenance"].get("external_labels")
+    if isinstance(external, dict) and "handoff" in external:
+        from .research_usam_handoff import validate_historical_return
+
+        validate_historical_return(record, external)
     _reject_absolute_strings(record, "result record")
     from .research_result_extensions import validator
 
@@ -1200,8 +1206,18 @@ def _validate_document_crossrefs(
         raise ValueError("Source-scoped document has no matching source")
     if kind == "channels":
         source = sources[document["id"]]
+        from .research_channels import validate_declarations
+
         if data.get("source_sha256") != source["sha256"]:
             raise ValueError("Channel document source fingerprint is stale")
+        original = source["metadata"].get("channel_names") or ["Intensity"]
+        if (
+            set(data) != {"source_sha256", "original_names", "channels"}
+            or not isinstance(original, list)
+            or data["original_names"] != original
+        ):
+            raise ValueError("Invalid interchanged channel document")
+        validate_declarations(data["channels"], len(original))
     if kind == "selection":
         selected = results.get(data.get("result_id"))
         if (

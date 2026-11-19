@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { ExternalLink, Eye, PanelsTopLeft, Pause, Play, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
+import { ArrowRight, CircleAlert, ExternalLink, PanelsTopLeft, Pause, Play, Shield, X } from "lucide-react";
 import type {
   ResearchAgentApprovalRecord, ResearchAgentControlRequest, ResearchAgentPermissionMode,
   ResearchAgentPolicyRecord, ResearchAgentSessionRecord, ResearchAgentSessionState,
@@ -45,6 +45,12 @@ const LIVE_SESSION_STATES = new Set<ResearchAgentSessionState>([
   "paused",
 ]);
 
+const PERMISSION_LABELS: Record<ResearchAgentPermissionMode, string> = {
+  inspect_only: "Read-only",
+  ask_approval: "Ask for approval",
+  full_access: "Full access within grant",
+};
+
 export function stateTone(
   state: ResearchAgentSessionState | "none" | "revoked",
 ): "neutral" | "connected" | "processing" | "warning" | "danger" {
@@ -66,7 +72,6 @@ export function stateTone(
 
 export function pillSummary(
   overallState: ResearchAgentSessionState | "none",
-  pendingCount: number,
   activeOperation: string | null,
 ): string {
   switch (overallState) {
@@ -79,7 +84,7 @@ export function pillSummary(
         ? `Agent executing · ${activeOperation}`
         : "Agent executing";
     case "awaiting_approval":
-      return `Approval needed (${pendingCount})`;
+      return "Approval needed";
     case "paused":
       return "Agent session paused";
     case "interrupted":
@@ -133,6 +138,21 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   const controlPending = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const [expiredFeedback, setExpiredFeedback] = useState<typeof feedback>(null);
+  const pendingHeadingId = useId();
+  const permissionsId = useId();
+  const followDescriptionId = useId();
+  const activeSection = useRef<HTMLButtonElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const pendingHeading = useRef<HTMLHeadingElement>(null);
+  const permissions = useRef<HTMLDetailsElement>(null);
+  const decidingApproval = useRef<string | null>(null);
+  useEffect(() => {
+    if (!feedback || feedback.kind !== "status" || commandBusy || controlBusy) return;
+    const timeout = window.setTimeout(() => setExpiredFeedback(feedback), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [feedback, commandBusy, controlBusy]);
+  const displayedFeedback = feedback === expiredFeedback ? null : feedback;
   const agentSessions = snapshot.agent_sessions ?? EMPTY_SESSIONS;
 
   const activePolicies = agentSessions.policies.filter(
@@ -147,6 +167,12 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   );
   const primarySession = liveSessions.length === 1 ? liveSessions[0] : null;
   const primaryPolicy = activePolicies.length === 1 ? activePolicies[0] : null;
+  const permissionModes = new Set(liveSessions.length > 0
+    ? liveSessions.map((session) => session.permission_mode)
+    : activePolicies.map((policy) => policy.permission_mode));
+  const permissionSummary = permissionModes.size > 1 ? "Mixed permission modes"
+    : permissionModes.size === 1 ? PERMISSION_LABELS[[...permissionModes][0]] : "No access grant";
+  const followDescription = "Open inspected views and completed results while you are idle. Editing and drafts take priority.";
   const activeOperation =
     liveSessions.find((session) => session.current_operation)?.current_operation ??
     null;
@@ -154,11 +180,15 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
     (job) => job.state === "running" || job.state === "queued",
   );
   const tone = refreshError ? "warning" : stateTone(overallState);
-  const label = refreshError ? "Agent status unavailable" : pillSummary(
-    overallState,
-    pendingApprovals.length,
-    activeOperation,
-  );
+  const label = refreshError ? "Agent status unavailable"
+    : overallState === "awaiting_approval" && liveSessions.length > 0 ? "MCP connected · Awaiting approval"
+    : pillSummary(overallState, activeOperation);
+
+  useEffect(() => {
+    if (!decidingApproval.current || pendingApprovals.some((approval) => approval.id === decidingApproval.current)) return;
+    decidingApproval.current = null;
+    if (document.activeElement === document.body) (pendingHeading.current ?? activeSection.current)?.focus();
+  }, [pendingApprovals]);
 
   const dispatchControl = async (request: ResearchAgentControlRequest): Promise<boolean> => {
     if (!onControl || controlPending.current || refreshError || commandBusy) return false;
@@ -180,6 +210,11 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   };
 
   const locked = controlBusy || commandBusy || Boolean(refreshError);
+  const decideApproval = async (action: "approve_request" | "deny_request", id: string) => {
+    if (locked || controlPending.current || !onControl) return;
+    decidingApproval.current = id;
+    if (!await dispatchControl({ action, approval_id: id })) decidingApproval.current = null;
+  };
   const navigation: AgentActivityNavigation = { currentTargets, onOpenSource, onOpenResult, onReviewResult, onOpenJob, onOpenWorkflow, onInspectPreview, inspectablePreviewJobIds };
 
   const renderApproval = (approval: ResearchAgentApprovalRecord) => {
@@ -199,11 +234,10 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
           </span>
         </div>
         <dl className="agent-approval-meta">
+          <dt>Requested by</dt><dd>{approval.client_id} (declared identity)</dd>
           <dt>Operation</dt>
           <dd>
-            {approval.action_name
-              ? `${approval.operation} (${approval.action_name})`
-              : approval.operation}
+            <code>{approval.operation}</code>{approval.action_name && approval.action_name !== approval.operation && <> (<code>{approval.action_name}</code>)</>}
           </dd>
           {sourceLabel && (
             <>
@@ -215,13 +249,13 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
             <>
               <dt>Result revision</dt>
               <dd>
-                {approval.result_id.slice(0, 8)} · rev{" "}
-                {approval.revision_hash?.slice(0, 8) ?? "none"}
+                <code>{approval.result_id.slice(0, 8)}</code> · rev{" "}
+                <code>{approval.revision_hash?.slice(0, 8) ?? "none"}</code>
               </dd>
             </>
           )}
           {approval.source_id && <><dt>Source identity</dt><dd title={approval.source_sha256 ?? undefined}>
-            {approval.source_id.slice(0, 8)}{approval.source_sha256 ? ` · SHA-256 ${approval.source_sha256.slice(0, 8)}` : " · fingerprint not recorded"}
+            <code>{approval.source_id.slice(0, 8)}</code>{approval.source_sha256 ? <> · SHA-256 <code>{approval.source_sha256.slice(0, 8)}</code></> : " · fingerprint not recorded"}
           </dd></>}
           {approval.display_revision !== null && <><dt>Display revision</dt><dd>{approval.display_revision}</dd></>}
           {approval.destination_name && (
@@ -238,12 +272,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
             className="research-primary"
             disabled={locked || !onControl}
             aria-label={`Approve ${approval.operation}`}
-            onClick={() =>
-              void dispatchControl({
-                action: "approve_request",
-                approval_id: approval.id,
-              })
-            }
+            onClick={() => void decideApproval("approve_request", approval.id)}
           >
             Approve once
           </button>
@@ -251,12 +280,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
             type="button"
             disabled={locked || !onControl}
             aria-label={`Deny ${approval.operation}`}
-            onClick={() =>
-              void dispatchControl({
-                action: "deny_request",
-                approval_id: approval.id,
-              })
-            }
+            onClick={() => void decideApproval("deny_request", approval.id)}
           >
             Deny
           </button>
@@ -267,60 +291,65 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
 
   return <section className={`agent-workspace-surface agent-workspace-surface--${host}`} aria-label="Agent workspace">
           <header className="agent-session-drawer__header">
-            <div>
-              <h2>Agent workspace</h2>
-              <p className="agent-workspace-study">{snapshot.project.title}</p>
-              <p className={`agent-session-drawer__status tone-${tone}`}><span className="agent-session-pill__dot" aria-hidden="true" />{label}</p>
-              <p className="agent-session-drawer__subtitle">
-                {agentSessions.connected_count > 0
-                  ? `${liveSessions.length} connected ${liveSessions.length === 1 ? "session" : "sessions"}`
-                  : "No MCP client is currently connected."}
-              </p>
+            <div className="agent-workspace-identity">
+              <div className="agent-workspace-title"><h2>Agent workspace</h2><p className="agent-workspace-study" title={snapshot.project.title}>{snapshot.project.title}</p></div>
+              <div className="agent-workspace-session">
+                <p className={`agent-session-drawer__status tone-${tone}`}><span className="agent-session-pill__dot" aria-hidden="true" />{label}</p>
+                {!refreshError && primarySession && <span className="agent-workspace-client" title={`${primarySession.client_id} (declared client)`}>{primarySession.client_id}</span>}
+                {!refreshError && liveSessions.length > 1 && <span className="agent-workspace-client">{liveSessions.length} connected sessions</span>}
+                {!refreshError && <button type="button" className="agent-workspace-scope" aria-controls={permissionsId}
+                  aria-label={`Connection and permissions, ${permissionSummary}`} onClick={() => {
+                    if (permissions.current) {
+                      permissions.current.open = true;
+                      permissions.current.querySelector("summary")?.focus();
+                    }
+                  }}><Shield size={13} aria-hidden="true" />{permissionSummary}</button>}
+              </div>
             </div>
-            <div className="agent-workspace-window-actions">
+            <div className="agent-workspace-header-actions">
+              <label className="agent-session-follow" title={followDescription}>
+                <input type="checkbox" role="switch" aria-describedby={followDescriptionId} checked={followAgent} disabled={locked}
+                  onChange={(event) => onFollowAgentChange(event.target.checked)} />
+                <span className="agent-session-follow__track" aria-hidden="true" />Follow agent
+              </label>
+              <span id={followDescriptionId} hidden>{followDescription}</span>
+              {primaryPolicy && <button type="button" className="agent-session-pause" disabled={locked || !onControl}
+                onClick={() => void dispatchControl({ action: primaryPolicy.paused ? "resume_session" : "pause_session", policy_sha256: primaryPolicy.policy_sha256 })}>
+                {primaryPolicy.paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}
+                {primaryPolicy.paused ? "Resume access" : "Pause access"}
+              </button>}
               {onDetach && <button type="button" disabled={controlBusy || commandBusy} onClick={onDetach} title="Open agent workspace in a separate window"><ExternalLink size={16} aria-hidden="true" />Pop out</button>}
               {onDock && <button type="button" disabled={controlBusy || commandBusy} onClick={onDock}><PanelsTopLeft size={16} aria-hidden="true" />Return to workspace</button>}
-              {onClose && <button type="button" ref={closeButtonRef} className="workbench-jobs__close"
-                aria-label="Close agent session drawer" onClick={onClose}><X size={16} aria-hidden="true" /></button>}
+              {onClose && <button type="button" ref={closeButtonRef} className="agent-workspace-close"
+                aria-label="Close agent session drawer" title="Close agent workspace" onClick={onClose}><X size={16} aria-hidden="true" /></button>}
             </div>
           </header>
-          <div className="agent-session-toolbar">
-            <label className="agent-session-follow" title={followAgent
-              ? "Inspected sources, planes, regions and completed results open while you are idle. Display colours stay yours; editing and drafts take priority."
-              : "Your source, result, camera and drafts stay undisturbed."}>
-              <Eye size={15} strokeWidth={1.5} aria-hidden="true" />
-              <input type="checkbox" aria-label="Follow agent" checked={followAgent} disabled={locked}
-                onChange={(event) => onFollowAgentChange(event.target.checked)} />
-              Follow agent
-            </label>
-            {primaryPolicy && <button type="button" className="agent-session-pause"
-              disabled={locked || !onControl}
-              onClick={() => void dispatchControl({ action: primaryPolicy.paused ? "resume_session" : "pause_session", policy_sha256: primaryPolicy.policy_sha256 })}>
-              {primaryPolicy.paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}
-              {primaryPolicy.paused ? "Resume access" : "Pause access"}
-            </button>}
-          </div>
-          <p className="agent-session-follow-note">{followAgent ? "Following inspected views and completed results. Editing and drafts take priority." : "Your current view stays in place."}</p>
           <nav className="agent-workspace-sections" aria-label="Agent workspace sections">
             {(["overview", "plan", "activity", "approvals"] as const).map(section => <button key={section} type="button"
-              aria-pressed={currentPresentation.section === section} onClick={() => changePresentation({ ...currentPresentation, section })}>
-              {section === "overview" ? "Overview" : section === "plan" ? "Plan & evidence" : section === "activity" ? "Activity" : `Approvals${pendingApprovals.length ? ` (${pendingApprovals.length})` : ""}`}
+              ref={currentPresentation.section === section ? activeSection : undefined}
+              aria-pressed={currentPresentation.section === section} onClick={() => {
+                changePresentation({ ...currentPresentation, section });
+                if (content.current) content.current.scrollTop = 0;
+              }}>
+              {section === "overview" ? "Overview" : section === "plan" ? "Plan & evidence" : section === "activity" ? "Activity" : "Approvals"}
             </button>)}
           </nav>
-          <div className="agent-session-drawer__content agent-workspace-content">
-            {feedback && <p className="agent-workspace-feedback" role={feedback.kind === "error" ? "alert" : "status"}>{feedback.message}</p>}
+          {pendingApprovals.length > 0 && <div className="agent-workspace-decision-strip">
+            <CircleAlert size={15} aria-hidden="true" />
+            <span role="status">{pendingApprovals.length} {pendingApprovals.length === 1 ? "approval" : "approvals"} {refreshError ? "in last received state" : "needed"}</span>
+            <button type="button" aria-controls={pendingHeadingId} onClick={() => pendingHeading.current?.focus()}>
+              {pendingApprovals.length === 1 ? "Review request" : "Review requests"}<ArrowRight size={14} aria-hidden="true" />
+            </button>
+          </div>}
+          <div ref={content} className="agent-session-drawer__content agent-workspace-content">
+            {displayedFeedback?.kind === "error" && <p className="agent-workspace-error" role="alert">{displayedFeedback.message}</p>}
             {refreshError && <p className="agent-session-refresh-error" role="alert">
               {refreshError} The details below are the last received state.
             </p>}
 
-
             {pendingApprovals.length > 0 && (
-              <section
-                className="agent-session-section"
-                aria-label="Pending agent approvals"
-                hidden={!["overview", "approvals"].includes(currentPresentation.section)}
-              >
-                <h3>Pending approvals ({pendingApprovals.length})</h3>
+              <section className="agent-session-section agent-workspace-decisions" aria-label="Pending agent approvals" id={pendingHeadingId}>
+                <h3 tabIndex={-1} ref={pendingHeading}>Pending approvals ({pendingApprovals.length})</h3>
                 {pendingApprovals.map(renderApproval)}
               </section>
             )}
@@ -343,7 +372,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
               </div>
             </div>
 
-            <details className="agent-session-disclosure">
+            <details className="agent-session-disclosure" ref={permissions} id={permissionsId}>
               <summary>Connection and permissions</summary>
               {onConfigureAccess && <button type="button" disabled={locked} onClick={onConfigureAccess}>Configure access in workspace</button>}
             <section
@@ -401,11 +430,20 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
                       <details>
                         <summary>Connection details</summary>
                         <dl className="agent-policy-meta">
-                          <dt>Policy SHA-256</dt><dd>{policy.policy_sha256}</dd>
+                          <dt>Policy SHA-256</dt><dd><code>{policy.policy_sha256}</code></dd>
                           {policyLiveSessions.map((session) => <div className="agent-session-technical" key={session.session_id}>
-                            <dt>Session</dt><dd>{session.session_id}</dd>
+                            <dt>Session</dt><dd><code>{session.session_id}</code></dd>
                             <dt>Last activity</dt><dd><RecordedTime value={session.last_heartbeat_at} /></dd>
                           </div>)}
+                        </dl>
+                      </details>
+                      <details>
+                        <summary>Granted scope</summary>
+                        <dl className="agent-policy-meta">
+                          <dt>Sources</dt><dd>{policy.source_ids.length ? policy.source_ids.map((id) => sourceLabelForId(snapshot.sources, id)).join(", ") : "None recorded"}</dd>
+                          <dt>Operations</dt><dd><code>{policy.operations.join(", ") || "None recorded"}</code></dd>
+                          {policy.actions.length > 0 && <><dt>Actions</dt><dd><code>{policy.actions.join(", ")}</code></dd></>}
+                          {policy.disclosures.length > 0 && <><dt>Disclosures</dt><dd>{policy.disclosures.map((item) => item.replaceAll("_", " ")).join(", ")}</dd></>}
                         </dl>
                       </details>
                       {!policy.revoked && (
@@ -534,6 +572,9 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
                 </ul>
               </details>
             )}
+          </div>
+          <div className="agent-workspace-toast" role="status">
+            {displayedFeedback?.kind === "status" && <p>{displayedFeedback.message}</p>}
           </div>
   </section>;
 }

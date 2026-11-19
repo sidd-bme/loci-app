@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { _electron as electron } from "playwright";
+import { escapeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -270,13 +271,8 @@ try {
       for (const textSize of ["standard", "large"])
         for (const motion of ["no-preference", "reduce"]) {
           await page.emulateMedia({ reducedMotion: motion });
-          await page
-            .getByRole("button", { name: "Open settings", exact: true })
-            .click();
-          const settings = page.getByRole("dialog", {
-            name: "Settings",
-            exact: true,
-          });
+          const surface = await openSettings(app, page, { requireNative: true });
+          const settings = surface.dialog;
           await settings
             .getByRole("combobox", { name: "Application theme" })
             .selectOption(theme);
@@ -285,8 +281,9 @@ try {
               name: textSize === "large" ? /^Large/ : /^Standard/,
             })
             .click();
-          await page.keyboard.press("Escape");
-          await settings.waitFor({ state: "hidden" });
+          await page.waitForFunction(({ theme, textSize }) => document.documentElement.dataset.theme === theme &&
+            document.documentElement.dataset.textSize === textSize, { theme, textSize });
+          await escapeSettings(surface);
           const key = `${bounds.width}-${theme}-${textSize}-${motion}`;
           for (const tool of ["Analyze", "Annotate", "Info"]) {
             await selectWorkbenchTool(page, tool);

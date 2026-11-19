@@ -14,7 +14,7 @@ html.detached-window-root #root {
   overflow: hidden;
   background: var(--graphite-925);
   color: var(--ink);
-  font: var(--type-md)/1.45 var(--font-ui);
+  font: var(--type-md)/var(--leading-md) var(--font-ui);
 }
 
 .detached-image-window button,
@@ -29,16 +29,17 @@ html.detached-window-root #root {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  gap: 7px;
-  padding: 6px 10px;
+  min-height: var(--control-height);
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--graphite-800);
   color: var(--ink-secondary);
   box-shadow: var(--shadow-control);
   cursor: pointer;
-  transition: background-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out;
+  transition: background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
 }
 
 .detached-image-window button:hover:not(:disabled),
@@ -52,6 +53,13 @@ html.detached-window-root #root {
 .detached-control-panel button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.detached-image-window button:active:not(:disabled),
+.detached-control-panel button:active:not(:disabled) {
+  background: var(--surface-pressed);
+  box-shadow: var(--shadow-press);
+  transition-duration: var(--motion-press);
 }
 
 .detached-image-window button svg,
@@ -97,16 +105,16 @@ html.detached-window-root #root {
   flex: 0 1 auto;
   justify-content: flex-end;
   align-items: center;
-  gap: 6px;
+  gap: var(--density-gap);
   max-width: 48%;
   -webkit-app-region: no-drag;
 }
 
 .detached-image-window-actions button {
-  width: 30px;
-  min-width: 30px;
-  min-height: 30px;
-  padding: 5px;
+  width: var(--control-height-compact);
+  min-width: var(--control-height-compact);
+  min-height: var(--control-height-compact);
+  padding: var(--space-1);
 }
 
 .detached-image-header strong,
@@ -328,19 +336,19 @@ html.detached-window-root #root {
 
 .detached-open-source > div {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
-  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) var(--control-height);
+  gap: var(--density-gap);
 }
 
 .detached-control-panel select,
 .detached-control-panel input:not([type="checkbox"]):not([type="range"]):not([type="color"]) {
   width: 100%;
   min-width: 0;
-  height: 32px;
-  padding: 5px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  background: var(--graphite-850);
+  min-height: var(--control-height);
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }
@@ -919,19 +927,7 @@ html.detached-window-root #root {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .detached-image-window *,
-  .detached-control-panel * {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
-}
-
 .detached-control-panel input:not([type="range"]):not([type="checkbox"]):not([type="color"]):focus-visible,
 .detached-image-window input:not([type="range"]):not([type="checkbox"]):not([type="color"]):focus-visible {
-  outline: none;
-  border-color: var(--processing);
-  box-shadow: inset 0 0 0 1px var(--processing);
+  border-color: var(--focus);
 }

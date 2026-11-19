@@ -134,9 +134,11 @@ describe("AgentSessionIndicator", () => {
     render(<AgentSessionIndicator api={makeApi(control)} snapshot={makeSnapshot(wire)}
       followAgent={false} onFollowAgentChange={vi.fn()} onSnapshot={vi.fn()} onError={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
-    expect(screen.getByText("1 connected session")).toBeVisible();
+    expect(screen.getByText("MCP connected · Awaiting approval")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Agent session status" })).toHaveAccessibleDescription(/1 pending approval/);
     expect(within(screen.getByLabelText("Pending approval for review_result")).getByText(wire.approvals[0].summary)).toBeVisible();
-    expect(screen.getByText(`${wire.approvals[0].result_id!.slice(0, 8)} · rev ${wire.approvals[0].revision_hash!.slice(0, 8)}`)).toBeVisible();
+    expect(screen.getByText("Result revision").nextElementSibling).toHaveTextContent(
+      `${wire.approvals[0].result_id!.slice(0, 8)} · rev ${wire.approvals[0].revision_hash!.slice(0, 8)}`);
     fireEvent.click(screen.getByLabelText("Approve review_result"));
     await waitFor(() => expect(control).toHaveBeenCalledWith({ action: "approve_request", approval_id: wire.approvals[0].id }));
     expect(screen.getByText(wire.events[0].summary)).toBeInTheDocument();
@@ -162,7 +164,7 @@ describe("AgentSessionIndicator", () => {
     expect(pill).toHaveTextContent("Agent bundle ready · Not connected");
     fireEvent.click(pill);
     expect(
-      screen.getByText("No MCP client is currently connected."),
+      within(screen.getByRole("region", { name: "Agent session and approvals" })).getByText("Agent bundle ready · Not connected"),
     ).toBeVisible();
     fireEvent.click(screen.getByText("Connection and permissions"));
     expect(screen.getByText("codex (not connected)")).toBeVisible();
@@ -260,7 +262,8 @@ describe("AgentSessionIndicator", () => {
     );
 
     const pill = screen.getByRole("button", { name: "Agent session status" });
-    expect(pill).toHaveTextContent("Approval needed (1)");
+    expect(pill).toHaveTextContent("Approval needed");
+    expect(pill).toHaveAccessibleDescription(/1 pending approval/);
     fireEvent.click(pill);
 
     expect(

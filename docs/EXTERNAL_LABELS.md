@@ -126,3 +126,53 @@ not record a passing run of the current public candidate.
   segment ranges, stale bindings, cancellation and prepublication mutations.
   Reopen, correction, export and portable interchange preserve canonical arrays
   and provenance without retaining the private input grant in public archives.
+
+## Offline standalone μSAM interchange
+
+1. In **Analyze → Import existing labels → μSAM (standalone)**, select the
+   original native YX plane or a full XY grid over a half-open Z range. Choose
+   **Export native TIFF for μSAM** and an absent directory. Open its README for
+   the selection-specific command and writer. The bundle contains the original
+   scalar intensities in `input.tif` and a path-free `manifest.json`.
+2. Open the TIFF in your separately managed micro-sam v2.0.1 environment (Python ≥3.11).
+   Provision a trusted checkpoint there before working offline. Loci runs no
+   inference and installs no weights. The tagged upstream loader uses pickle.
+   [Upstream v2.0.1 source](https://github.com/computational-cell-analytics/micro-sam/tree/d45ab70ece93a9eb3ca1e237b9067767b0a18263)
+3. Confirm the label array corresponds to the exported native grid and axis
+   order. Keep zero as background. If the producer returns signed integers,
+   check every ID is within `0..4294967295` before explicitly converting to
+   `uint32`. Save a scalar TIFF with `photometric="minisblack"` and explicit
+   `metadata={"axes": "YX"}` or `{"axes": "ZYX"}`. The default imageio writer
+   can tag three or four planes as RGB(A) and longer stacks as ambiguous QYX.
+   Loci rejects both. The bundle README includes a checked writer for the
+   original integer array.
+4. In the exporting study, choose **Return labels for selected handoff** or
+   **Return labels with manifest…**, select the labels, inspect their overlay,
+   and confirm alignment before adoption. Record the actual external producer,
+   version, model, mode and checkpoint when known. Loci checks the original
+   export, source fingerprint, channel declaration, selection and geometry.
+   The mask origin remains user-declared and model validation remains unknown.
+
+The local export registry survives closing and reopening the study and **Save
+study as**. A portable study ZIP retains an adopted result's historical
+provenance and measurements. Starting a new bound return requires the
+exporting local study or its Save as copy. Unbound manual import remains
+available with explicit alignment.
+
+If an interrupted export leaves a folder but its handoff is missing from the
+study's saved list, export the selection again to a new folder and use that
+manifest for the return.
+
+For CLI use, supply the same source identity and selection to both steps.
+
+```sh
+loci usam-handoff --project "$STUDY" --source "$SOURCE_ID" --source-sha256 "$SHA256" \
+  --selection "$SELECTION_JSON" --destination "$PWD/usam-input"
+loci import-labels --project "$STUDY" --source "$SOURCE_ID" --source-sha256 "$SHA256" \
+  --selection "$SELECTION_JSON" --path "$PWD/labels.tif" \
+  --handoff-manifest "$PWD/usam-input/manifest.json" --json
+```
+
+Review the preview, then submit the `labels_import` operation with its
+`grant_id` and the matching `same-native-yx-grid` or `same-native-zyx-grid`
+alignment. A handoff UUID may also be supplied with `--handoff-id`.

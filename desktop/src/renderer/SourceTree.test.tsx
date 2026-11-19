@@ -37,6 +37,14 @@ it("renders compact folder controls, counts and exact source identity with full 
 });
 function onTreeImageCount(element: HTMLElement) { return element.querySelector(".source-browser__count")?.textContent; }
 
+it("retains the full accessible filename when the flat list abbreviates it visually", () => {
+  const name = "Long kidney acquisition.ome.tiff";
+  setup([{ ...image("first"), name }]);
+  const row = screen.getByRole("button", { name });
+  expect(row).toHaveAccessibleDescription("Channels 1, Z planes 1");
+  expect(row).toHaveAttribute("data-source-id", "first");
+});
+
 it("filters by folder and filename, retains ancestors and reveals the active source without activating another image", () => {
   const { onActivate } = setup();
   const search = screen.getByRole("searchbox", { name: "Search images and folders" });
@@ -123,4 +131,22 @@ it("aborts pointer cancellation and view changes without persisting a reorder or
   drag(); fireEvent.click(screen.getByRole("button", { name: "Folder tree" }));
   fireEvent(window, new MouseEvent("pointerup", { clientY: 90 }));
   expect(onReorder).not.toHaveBeenCalled(); expect(document.body.style.cursor).toBe("");
+});
+
+it("progressively discloses search and view controls only when multiple images or folders exist", () => {
+  const single = [image("solo")];
+  const { props, rerender } = setup(single, "solo");
+  expect(screen.queryByRole("searchbox", { name: "Search images and folders" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Folder tree" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Reveal current image" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "solo.tif" })).toHaveAttribute("aria-current", "true");
+
+  rerender(<SourceTree {...props} sources={[image("solo", "Batch/solo.tif")]} />);
+  expect(screen.getByRole("searchbox", { name: "Search images and folders" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Folder tree" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Reveal current image" })).toBeEnabled();
+
+  rerender(<SourceTree {...props} sources={[image("solo"), image("second")]} />);
+  expect(screen.getByRole("searchbox", { name: "Search images and folders" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Flat list" })).toHaveAttribute("aria-pressed", "true");
 });

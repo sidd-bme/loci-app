@@ -202,6 +202,38 @@ _SETUP_KEYS = {
 }
 
 
+def _remember(
+    project: ResearchProject, source: dict[str, Any], expected_revision: int
+) -> dict[str, Any]:
+    alias = source["data"]["alias"]
+    if not _ALIAS.fullmatch(alias) or source["id"] != remote._profile_id(alias):
+        raise ValueError("Choose one saved study target")
+    data = deepcopy(source["data"])
+    data.pop("app_target", None)
+    known_hosts = Path(data["private_profile"]["known_hosts_file"])
+    if known_hosts.stat().st_size > 4 * 1024**2:
+        raise ValueError("The SSH host file exceeds the supported import size")
+    digest, size = _sha256_file_stable(known_hosts, reject_symlink=True)
+    with os.fdopen(os.open(known_hosts, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+        content = stream.read(4 * 1024**2 + 1)
+    if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+        raise ValueError("The SSH host file changed while it was being saved")
+    data["private_profile"]["known_hosts_file"] = str(_pin_file(project, content))
+    existing = remote._profiles(project)
+    if (
+        not any(item["id"] == source["id"] for item in existing)
+        and len(existing) >= remote.MAX_REMOTE_PROFILES
+    ):
+        raise ValueError("The saved compute target limit has been reached")
+    saved = project.put_document(
+        "policy",
+        source["id"],
+        data,
+        expected_revision=expected_revision,
+    )
+    return {"profile": remote._public_profile(saved)}
+
+
 def dispatch(
     directory: str, operation: str, request: dict[str, Any], study: ResearchProject | None = None
 ) -> dict[str, Any]:
@@ -266,37 +298,14 @@ def dispatch(
         )
         return remote._save_profile(holder, values)
     if operation == "remember":
-        remote._exact(request, {"alias", "expected_revision"}, "Remember study target")
-        if study is None:
+        remote._exact(request, {"id", "revision", "expected_revision"}, "Remember study target")
+        if study is None or study.database.samefile(project.database):
             raise ValueError("Open the study containing this target first")
-        if not isinstance(request["alias"], str) or not _ALIAS.fullmatch(request["alias"]):
-            raise ValueError("Choose one saved study target")
-        source = remote._load_profile(study, request["alias"])
-        remote._profile_from_data(source["data"])
-        data = deepcopy(source["data"])
-        data.pop("app_target", None)
-        known_hosts = Path(data["private_profile"]["known_hosts_file"])
-        if known_hosts.stat().st_size > 4 * 1024**2:
-            raise ValueError("The SSH host file exceeds the supported import size")
-        digest, size = _sha256_file_stable(known_hosts, reject_symlink=True)
-        with os.fdopen(os.open(known_hosts, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
-            content = stream.read(4 * 1024**2 + 1)
-        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
-            raise ValueError("The SSH host file changed while it was being saved")
-        data["private_profile"]["known_hosts_file"] = str(_pin_file(project, content))
-        existing = remote._profiles(project)
-        if (
-            not any(item["id"] == source["id"] for item in existing)
-            and len(existing) >= remote.MAX_REMOTE_PROFILES
-        ):
-            raise ValueError("The saved compute target limit has been reached")
-        saved = project.put_document(
-            "policy",
-            source["id"],
-            data,
-            expected_revision=_revision(request["expected_revision"], zero=True),
-        )
-        return {"profile": remote._public_profile(saved)}
+        # Hold the source revision until the application store commits its checked revision.
+        with study.connection() as guard:
+            guard.execute("BEGIN IMMEDIATE")
+            source = _target(study, request)
+            return _remember(project, source, _revision(request["expected_revision"], zero=True))
     remote._exact(
         request,
         {"id", "revision", "resources"} if operation == "resources" else {"id", "revision"},

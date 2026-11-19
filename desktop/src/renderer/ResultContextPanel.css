@@ -7,7 +7,9 @@
 .result-context-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .result-context-body section > h3 { margin: 0 0 12px; }
 .result-context-body ol { padding-left: 18px; margin: 0; }
-.result-context-body > button { justify-self: start; }
+.result-context-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .result-context-body p { margin: 0; }
 .result-context-body > details { padding-top: 8px; border-top: 1px solid var(--line); }
 .result-context-body > details[open] > :not(summary) { margin-top: 12px; }
+.result-context-command { margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font-family: var(--font-mono); font-size: 0.85em; line-height: 1.5; color: var(--ink); }
+.result-context-note { color: var(--ink-muted); }

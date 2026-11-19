@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sanitizeRendererError } from "./ContextHelp";
 import type {
   ResearchDesktopApi,
@@ -196,7 +196,13 @@ export function ResearchRemotePanel({
   const [selected, setSelected] = useState<string[]>(sources[0] ? [sources[0].id] : []);
   const [mappings, setMappings] = useState<Record<string, RemoteMapping>>({});
   const [requestKey, setRequestKey] = useState(randomKey);
-  const [activeKey, setActiveKey] = useState("");
+  const [runSelection, setRunSelection] = useState<{ requestKey: string; resultId: string | null }>({
+    requestKey: "", resultId: null,
+  });
+  const activeKey = runSelection.requestKey;
+  const setActiveKey = useCallback((requestKey: string) => {
+    setRunSelection((current) => current.requestKey === requestKey ? current : { requestKey, resultId: null });
+  }, []);
   const [stderr, setStderr] = useState(false);
   const [logText, setLogText] = useState("");
   const [runtimeReceipt, setRuntimeReceipt] = useState<
@@ -206,8 +212,6 @@ export function ResearchRemotePanel({
       value: RuntimeReceipt | null;
     }
   >({ state: "none", resultId: null, value: null });
-  const [runtimeResultId, setRuntimeResultId] = useState("");
-
   const activeProfile = profiles.find((profile) => profile.alias === alias);
   const activeRun = runs.find((run) => run.request_key === activeKey);
   const selectedCellposeModel = CELLPOSE_MODELS[cellposeProfile];
@@ -215,6 +219,15 @@ export function ResearchRemotePanel({
   const attachedResultIds = (activeRun?.attachment?.task_results ?? [])
     .map((item) => item.local_result_id)
     .filter((item): item is string => typeof item === "string" && item.length > 0);
+  const runtimeResultId = runSelection.resultId && attachedResultIds.includes(runSelection.resultId)
+    ? runSelection.resultId
+    : attachedResultIds[0] ?? "";
+  const runtimePending = Boolean(runtimeResultId) &&
+    (runtimeReceipt.resultId !== runtimeResultId || runtimeReceipt.state === "loading");
+  const selectRuntimeResult = (resultId: string) => {
+    if (!attachedResultIds.includes(resultId)) return;
+    setRunSelection((current) => current.requestKey === activeKey ? { requestKey: activeKey, resultId } : current);
+  };
 
   useEffect(() => {
     let current = true;
@@ -233,11 +246,7 @@ export function ResearchRemotePanel({
     return () => {
       current = false;
     };
-  }, [api]);
-
-  useEffect(() => {
-    setRuntimeResultId(attachedResultIds[0] ?? "");
-  }, [activeRun?.request_key, attachedResultIds.join("|")]);
+  }, [api, setActiveKey]);
 
   useEffect(() => {
     let current = true;
@@ -266,7 +275,7 @@ export function ResearchRemotePanel({
     return () => {
       current = false;
     };
-  }, [activeRun?.attachment, api, runtimeResultId]);
+  }, [activeRun?.attachment, activeKey, api, runtimeResultId]);
 
   useEffect(() => {
     setSelected((current) => current.filter((id) => sources.some((source) => source.id === id)));
@@ -555,7 +564,7 @@ export function ResearchRemotePanel({
         {activeRun && <div className="research-remote-receipt"><strong>{activeRun.state}</strong><span>job {activeRun.remote_job_id ?? "not submitted"}</span><code>{activeRun.request_sha256}</code>
           <span className="wide">Run requested resources: {activeRun.resources ? `${activeRun.resources.cpus} CPU · ${activeRun.resources.memory_mb} MiB · ${activeRun.resources.gpus} GPU · ${activeRun.resources.wall_minutes} min` : "unknown"}</span>
           {attachedResultIds.length > 1
-            ? <label className="wide">Attached runtime result<select aria-label="Attached runtime result" value={runtimeResultId} onChange={(event) => setRuntimeResultId(event.target.value)}>{attachedResultIds.map((id) => <option key={id} value={id}>{id.slice(0, 8)}</option>)}</select></label>
+            ? <label className="wide">Attached runtime result<select aria-label="Attached runtime result" value={runtimeResultId} onChange={(event) => selectRuntimeResult(event.target.value)}>{attachedResultIds.map((id) => <option key={id} value={id}>{id.slice(0, 8)}</option>)}</select></label>
             : runtimeResultId && <span className="wide">Exact attached result: {runtimeResultId.slice(0, 8)}</span>}
           {runtimeReceipt.state === "loaded" && runtimeReceipt.value
             && runtimeReceipt.resultId === runtimeResultId
@@ -566,7 +575,7 @@ export function ResearchRemotePanel({
                 <div><dt>Resolved device</dt><dd>{runtimeReceipt.value.resolved_device ?? "unknown"}</dd></div>
                 <div><dt>Fallback</dt><dd>{runtimeReceipt.value.fallback_recorded ? runtimeReceipt.value.fallback_reason ?? "none" : "unknown"}</dd></div>
               </dl>
-            : <span className="wide">Attached result runtime: {runtimeReceipt.state === "loading" ? "loading exact result…" : "unknown"}</span>}
+            : <span className="wide">Attached result runtime: {runtimePending ? "loading exact result…" : "unknown"}</span>}
           {activeRun.status_detail && <p>{activeRun.status_detail}</p>}
         </div>}
         <div className="research-remote-actions"><button disabled={disabled || activeRun?.state !== "staged"} onClick={() => void runOperation("submit")}>Submit or recover</button><button disabled={disabled || !activeRun?.remote_job_id || activeRun.state === "cleaned"} onClick={() => void runOperation("status")}>Refresh status</button><button disabled={disabled || !activeRun?.remote_job_id || ["retrieved", "attached", "cleaned"].includes(activeRun.state)} onClick={() => void runOperation("cancel")}>Cancel job</button></div>

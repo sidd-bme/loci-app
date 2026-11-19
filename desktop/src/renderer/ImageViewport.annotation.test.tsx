@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
@@ -16,9 +16,10 @@ beforeEach(() => {
     "setTransform", "fillRect", "drawImage", "beginPath", "moveTo", "lineTo",
     "closePath", "arc", "stroke", "strokeText", "fillText", "setLineDash", "save", "restore", "ellipse", "fill",
   ].map((name) => [name, vi.fn()])) as typeof context;
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-    context as unknown as CanvasRenderingContext2D,
-  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    context.canvas = this;
+    return context as unknown as CanvasRenderingContext2D;
+  });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       const width = this.classList?.contains("image-viewport") ? 400 : 0;
@@ -126,6 +127,181 @@ function click(canvas: HTMLElement, pointerId: number, clientX: number, clientY:
   fireEvent.pointerDown(canvas, { pointerId, button: 0, clientX, clientY });
   fireEvent.pointerUp(canvas, { pointerId, button: 0, clientX, clientY });
 }
+
+describe("docked source navigation", () => {
+  it("retains calibrated sub-millimetre precision on the scale bar", async () => {
+    const calibrated = { ...source, metadata: { ...source.metadata,
+      physical_calibration: { spacing: [1, 0.000002, 0.000001], unit: "mm" } } };
+    render(<ImageViewport dockedControls api={api(calibrated)} source={calibrated} selection={selection} channels={channels}
+      initialCamera={{ x: 200, y: 75, scale: 1 }} onError={vi.fn()} />);
+    const bar = document.querySelector(".image-scale-bar")!;
+    const distance = Number(bar.textContent?.split(" ")[0]);
+    expect(distance).toBeGreaterThan(0);
+    expect(distance).toBeLessThanOrEqual(0.0001);
+    expect(bar.textContent).toMatch(/ mm$/u);
+    expect(parseFloat(bar.querySelector("i")!.style.width)).toBeCloseTo(distance / 0.000001);
+  });
+  it.each([360, 900])("maps points against the actual painted area at %i CSS pixels", async (width) => {
+    const stageLeft = 28, stageTop = 60, stageHeight = 360;
+    const fieldTop = stageTop + 36, fieldHeight = stageHeight - 36 - 28;
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      const field = this instanceof HTMLCanvasElement;
+      return new DOMRect(stageLeft, field ? fieldTop : stageTop, width, field ? fieldHeight : stageHeight);
+    });
+    const onPoint = vi.fn(), onViewportSize = vi.fn();
+    render(<ImageViewport dockedControls api={api()} source={source} selection={selection} channels={channels}
+      onViewportSize={onViewportSize} drawingMode="point" onPoint={onPoint} onError={vi.fn()} />);
+    const canvas = await preparedCanvas();
+    const viewer = screen.getByLabelText(`Image viewer: ${source.name}`);
+    expect(onViewportSize).toHaveBeenCalledWith({ width, height: fieldHeight });
+    const scale = Math.min(width / 400, fieldHeight / 300) * 0.96;
+    expect(JSON.parse(viewer.dataset.camera!)).toEqual({ x: 200, y: 75, scale });
+    expect(screen.getByText("Reduced · smoothed")).toBeVisible();
+    expect(context.imageSmoothingEnabled).toBe(true);
+    const x = stageLeft + width / 2 + 24 * scale, y = fieldTop + fieldHeight / 2 + 14 * 2 * scale;
+    click(canvas, 1, x, y);
+    expect(onPoint.mock.lastCall?.[0].x).toBeCloseTo(224);
+    expect(onPoint.mock.lastCall?.[0].y).toBeCloseTo(89);
+    fireEvent.wheel(canvas, { clientX: x, clientY: y, deltaY: -100 });
+    click(canvas, 2, x, y);
+    expect(onPoint.mock.lastCall?.[0].x).toBeCloseTo(224);
+    expect(onPoint.mock.lastCall?.[0].y).toBeCloseTo(89);
+    expect(screen.getByText("Beyond native · nearest pixel")).toBeVisible();
+    expect(context.imageSmoothingEnabled).toBe(false);
+    const toolbar = screen.getByLabelText("Image navigation");
+    const before = viewer.dataset.camera;
+    fireEvent.wheel(toolbar, { clientX: x, clientY: stageTop, deltaY: 100 });
+    expect(viewer.dataset.camera).toBe(before);
+    fireEvent.click(screen.getByRole("button", { name: "Move navigation toolbar" }));
+    expect(viewer).toHaveAttribute("data-toolbar-dock", "top");
+    fireEvent.click(screen.getByRole("button", { name: "1:1" }));
+    expect(within(screen.getByLabelText("Image dimensions and display sampling")).getByText("Nearest pixel")).toBeVisible();
+    expect(context.imageSmoothingEnabled).toBe(false);
+  });
+
+  it("applies the 1:1 native-pixel threshold at device pixel ratio 2 and repaints cached pixels immediately", async () => {
+    vi.stubGlobal("devicePixelRatio", 2);
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const drawSamples: Array<{ src: string; smooth: unknown; args: unknown[] }> = [];
+    (context.drawImage as ReturnType<typeof vi.fn>).mockImplementation((image: HTMLImageElement, ...args: unknown[]) => {
+      drawSamples.push({ src: image.src, smooth: context.imageSmoothingEnabled, args });
+    });
+    const service = api();
+    const execute = vi.mocked(service.execute);
+    render(<ImageViewport dockedControls api={service} source={source} selection={selection} channels={channels}
+      initialCamera={{ x: 200, y: 75, scale: 0.45 }} onError={vi.fn()} />);
+
+    await preparedCanvas();
+    const viewer = screen.getByLabelText(`Image viewer: ${source.name}`);
+    const canvas = screen.getByLabelText("Source image and bound annotations");
+    const samplingGroup = screen.getByRole("group", { name: "Display sampling" });
+    const readout = screen.getByLabelText("Image dimensions and display sampling");
+    const autoBtn = within(samplingGroup).getByRole("button", { name: "Auto" });
+    const nearestBtn = within(samplingGroup).getByRole("button", { name: "Nearest pixel" });
+    const smoothBtn = within(samplingGroup).getByRole("button", { name: "Smooth" });
+
+    expect(canvas.contains(samplingGroup)).toBe(false);
+    expect(canvas.contains(readout)).toBe(false);
+    nearestBtn.focus();
+    expect(document.activeElement).toBe(nearestBtn);
+    expect(autoBtn).toHaveAttribute("aria-pressed", "true");
+    expect(nearestBtn).toHaveAttribute("aria-pressed", "false");
+    expect(smoothBtn).toHaveAttribute("aria-pressed", "false");
+    expect(within(readout).getByText("Reduced · smoothed")).toBeVisible();
+    expect(drawSamples.at(-1)?.smooth).toBe(true);
+
+    const tilesAfterInit = execute.mock.calls.length;
+    const cameraAtReduced = viewer.dataset.camera;
+    const drawsBeforeNearest = drawSamples.length;
+    fireEvent.click(nearestBtn);
+    expect(nearestBtn).toHaveAttribute("aria-pressed", "true");
+    expect(drawSamples.length).toBeGreaterThan(drawsBeforeNearest);
+    expect(drawSamples.at(-1)?.smooth).toBe(false);
+    expect(within(readout).getByText("Reduced · nearest pixel")).toBeVisible();
+    expect(viewer.dataset.camera).toBe(cameraAtReduced);
+    expect(execute).toHaveBeenCalledTimes(tilesAfterInit);
+
+    // Return to Auto and step across the exact 1:1 physical-pixel threshold (scale * dpr === 1 at scale 0.5).
+    fireEvent.click(autoBtn);
+    expect(drawSamples.at(-1)?.smooth).toBe(true);
+    expect(within(readout).getByText("Reduced · smoothed")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "1:1" }));
+    expect(JSON.parse(viewer.dataset.camera!)).toEqual({ x: 200, y: 75, scale: 0.5 });
+    expect(drawSamples.at(-1)?.smooth).toBe(false);
+    expect(within(readout).getByText("Nearest pixel")).toBeVisible();
+
+    const tilesAtNative = execute.mock.calls.length;
+    fireEvent.click(smoothBtn);
+    expect(smoothBtn).toHaveAttribute("aria-pressed", "true");
+    expect(drawSamples.at(-1)?.smooth).toBe(true);
+    expect(within(readout).getByText("Smoothed")).toBeVisible();
+    expect(JSON.parse(viewer.dataset.camera!)).toEqual({ x: 200, y: 75, scale: 0.5 });
+    expect(execute).toHaveBeenCalledTimes(tilesAtNative);
+
+    // Zoom beyond native (scale = 0.625, scale * dpr = 1.25 > 1.01) under Smooth, then switch back to Auto.
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(drawSamples.at(-1)?.smooth).toBe(true);
+    expect(within(readout).getByText("Beyond native · smoothed")).toBeVisible();
+
+    const tilesAboveNative = execute.mock.calls.length;
+    const cameraAboveNative = viewer.dataset.camera;
+    fireEvent.click(autoBtn);
+    expect(drawSamples.at(-1)?.smooth).toBe(false);
+    expect(within(readout).getByText("Beyond native · nearest pixel")).toBeVisible();
+    expect(viewer.dataset.camera).toBe(cameraAboveNative);
+    expect(execute).toHaveBeenCalledTimes(tilesAboveNative);
+  });
+
+  it("keeps coordinates, scale bar, and annotation-tool switches stable across sampling modes and leaves floating viewers untouched", async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const drawSamples: Array<{ smooth: unknown; args: unknown[] }> = [];
+    (context.drawImage as ReturnType<typeof vi.fn>).mockImplementation((_image: HTMLImageElement, ...args: unknown[]) => {
+      drawSamples.push({ smooth: context.imageSmoothingEnabled, args });
+    });
+    const onPoint = vi.fn();
+    function DockedToolHarness() {
+      const [mode, setMode] = useState<AnnotationTool>("point");
+      const [sampling, setSampling] = useState<"auto" | "nearest" | "smooth">("auto");
+      return <>
+        <button type="button" onClick={() => setMode("rectangle")}>Switch to rectangle</button>
+        <button type="button" onClick={() => setMode("point")}>Switch to point</button>
+        <ImageViewport dockedControls api={api()} source={source} selection={selection} channels={channels}
+          initialCamera={{ x: 200, y: 75, scale: 0.5 }} drawingMode={mode} onPoint={onPoint}
+          displaySampling={sampling} onDisplaySamplingChange={setSampling} onError={vi.fn()} />
+      </>;
+    }
+    const { unmount } = render(<DockedToolHarness />);
+    const canvas = await preparedCanvas();
+    const scaleBarWidthBefore = document.querySelector<HTMLElement>(".image-scale-bar i")!.style.width;
+    const drawBoundsBefore = drawSamples.at(-1)!.args;
+
+    click(canvas, 1, 224, 178);
+    const pointAuto = onPoint.mock.lastCall?.[0];
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Display sampling" })).getByRole("button", { name: "Nearest pixel" }));
+    expect(drawSamples.at(-1)?.smooth).toBe(false);
+    expect(drawSamples.at(-1)?.args).toEqual(drawBoundsBefore);
+    expect(document.querySelector<HTMLElement>(".image-scale-bar i")!.style.width).toBe(scaleBarWidthBefore);
+
+    click(canvas, 2, 224, 178);
+    expect(onPoint.mock.lastCall?.[0]).toEqual(pointAuto);
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch to rectangle" }));
+    fireEvent.click(screen.getByRole("button", { name: "Switch to point" }));
+    expect(within(screen.getByRole("group", { name: "Display sampling" })).getByRole("button", { name: "Nearest pixel" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(drawSamples.at(-1)?.smooth).toBe(false);
+
+    unmount();
+    drawSamples.length = 0;
+    render(<ImageViewport api={api()} source={source} selection={selection} channels={channels}
+      initialCamera={{ x: 200, y: 75, scale: 0.5 }} onError={vi.fn()} />);
+    await preparedCanvas();
+    expect(screen.queryByRole("group", { name: "Display sampling" })).not.toBeInTheDocument();
+    expect(drawSamples.at(-1)?.smooth).toBe(true);
+  });
+});
 
 describe("ImageViewport annotation labels", () => {
   const transect: NonNullable<ImageAnnotation["transect"]> = {

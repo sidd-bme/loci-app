@@ -181,7 +181,10 @@ OPERATION_CATALOG = {
     },
     "labels_import": {
         "mutates": True,
-        "summary": "Adopt a checked external scalar TIFF label plane on its declared native grid",
+        "summary": (
+            "Adopt a checked external scalar TIFF label plane or ZYX volume on its "
+            "declared native grid"
+        ),
     },
     "workflow_validate": {"mutates": False, "summary": "Validate a typed linear workflow"},
     "workflow_save": {"mutates": True, "summary": "Save a source-independent workflow revision"},

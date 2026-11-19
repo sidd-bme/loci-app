@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import sqlite3
 import struct
 from copy import deepcopy
 from pathlib import Path
@@ -20,13 +21,16 @@ def binding(profile):
     return {"id": profile["id"], "revision": profile["revision"]}
 
 
+def remember_request(store, study):
+    [profile] = targets.dispatch(store, "list", {}, study)["study_profiles"]
+    return {**binding(profile), "expected_revision": 0}
+
+
 def test_saved_targets_cross_studies_without_sources_or_implicit_transfers(tmp_path):
     study, workbench, _ = _project(tmp_path)
     workbench.execute("remote_profile_save", _profile_request(tmp_path))
     store = str(tmp_path / "settings.loci-study")
-    saved = targets.dispatch(store, "remember", {"alias": "vanda", "expected_revision": 0}, study)[
-        "profile"
-    ]
+    saved = targets.dispatch(store, "remember", remember_request(store, study), study)["profile"]
     public = targets.dispatch(store, "list", {})
     assert str(tmp_path) not in json.dumps(public)
     assert public["targets"] == [saved] and public["study_profiles"] == []
@@ -51,14 +55,58 @@ def test_saved_targets_cross_studies_without_sources_or_implicit_transfers(tmp_p
     assert len(remote._profiles(second)) == 1
 
 
+def test_remember_checks_the_listed_study_revision_and_the_global_revision_separately(tmp_path):
+    study, workbench, _ = _project(tmp_path)
+    profile = _profile_request(tmp_path)
+    workbench.execute("remote_profile_save", profile)
+    store = str(tmp_path / "settings.loci-study")
+    first = remember_request(store, study)
+    workbench.execute(
+        "remote_profile_save",
+        {**profile, "resources": {**profile["resources"], "cpus": 6}, "expected_revision": 1},
+    )
+    with pytest.raises(ValueError, match="Compute target changed"):
+        targets.dispatch(store, "remember", first, study)
+    with pytest.raises(remote.ResearchRemoteError, match="missing fields"):
+        targets.dispatch(store, "remember", {"alias": "vanda", "expected_revision": 0}, study)
+    assert targets.dispatch(store, "list", {})["targets"] == []
+    current = remember_request(store, study)
+    assert current["revision"] == 2 and current["expected_revision"] == 0
+    saved = targets.dispatch(store, "remember", current, study)["profile"]
+    assert saved["resources"]["cpus"] == 6 and saved["revision"] == 1
+    with pytest.raises(ValueError, match="document changed"):
+        targets.dispatch(store, "remember", current, study)
+    assert targets.dispatch(store, "list", {})["targets"] == [saved]
+
+
+def test_remember_reserves_the_source_revision_through_global_publication(tmp_path, monkeypatch):
+    study, workbench, _ = _project(tmp_path)
+    workbench.execute("remote_profile_save", _profile_request(tmp_path))
+    store = str(tmp_path / "settings.loci-study")
+    request = remember_request(store, study)
+    put = ResearchProject.put_document
+
+    def check_source_lock(project, *args, **kwargs):
+        assert project.root == Path(store).resolve()
+        with (
+            study.connection(timeout=0) as other_writer,
+            pytest.raises(sqlite3.OperationalError, match="locked"),
+        ):
+            other_writer.execute("BEGIN IMMEDIATE")
+        return put(project, *args, **kwargs)
+
+    monkeypatch.setattr(ResearchProject, "put_document", check_source_lock)
+    assert targets.dispatch(store, "remember", request, study)["profile"]["id"] == request["id"]
+    with study.connection(timeout=0) as other_writer:
+        other_writer.execute("BEGIN IMMEDIATE")
+
+
 def test_future_target_edits_preserve_submitted_run_settings_and_global_revision(
     tmp_path, monkeypatch
 ):
     study, workbench, _, state, _, _, authorized = setup(tmp_path, monkeypatch)
     store = str(tmp_path / "settings.loci-study")
-    saved = targets.dispatch(store, "remember", {"alias": "vanda", "expected_revision": 0}, study)[
-        "profile"
-    ]
+    saved = targets.dispatch(store, "remember", remember_request(store, study), study)["profile"]
     targets.dispatch(store, "use", binding(saved), study)
     authorized["plan_sha256"] = workbench.execute("remote_analysis_plan", authorized["analysis"])[
         "plan"
@@ -189,9 +237,7 @@ def test_revision_and_rpc_boundaries_fail_closed(tmp_path):
     study, workbench, _ = _project(tmp_path)
     workbench.execute("remote_profile_save", _profile_request(tmp_path))
     store = str(tmp_path / "settings.loci-study")
-    saved = targets.dispatch(store, "remember", {"alias": "vanda", "expected_revision": 0}, study)[
-        "profile"
-    ]
+    saved = targets.dispatch(store, "remember", remember_request(store, study), study)["profile"]
     for operation in ("use", "test", "forget", "resources"):
         request = {**binding(saved), "revision": saved["revision"] + 1}
         if operation == "resources":

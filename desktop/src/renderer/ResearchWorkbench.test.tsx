@@ -47,7 +47,7 @@ beforeEach(() => {
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
-      if (this.classList?.contains("image-viewport")) {
+      if (this.matches(".image-viewport > canvas")) {
         return {
           left: 0,
           top: 0,
@@ -973,18 +973,24 @@ describe("ResearchWorkbench", () => {
     });
     const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Results", "Study", "samples");
+    const taskGroups = within(screen.getByRole("navigation", { name: "Task groups" }));
+    const inspector = within(container.querySelector<HTMLElement>(".research-inspector")!);
     const row = container.querySelector<HTMLTableRowElement>(`tr[data-source-id="${resultB.source_id}"]`)!;
     const details = within(row).getByText("Results (1)").closest("details")!; details.open = true; fireEvent(details, new Event("toggle"));
     fireEvent.click(within(row).getByRole("button", { name: "Inspect result" }));
     await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent("Second specimen"));
-    await openTool("View", "Display");
+    await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("viewer_defaults",
+      expect.objectContaining({ source_id: resultB.source_id })));
+    expect(await inspector.findByRole("heading", { name: "Review & export" })).toBeVisible();
+    fireEvent.click(taskGroups.getByRole("button", { name: "View" }));
     await act(async () => releaseDefaults());
     await waitFor(() => expect(screen.getByLabelText("Image viewer: Second specimen")).toHaveAttribute("data-prepared", "true"));
     expect(execute).not.toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id }));
     fireEvent.click(container.querySelector<HTMLButtonElement>(`button[data-source-id="${study.sources[0].id}"]`)!);
     await selectHistoryResult();
-    await openTool("Results", "Info");
-    if (screen.queryByRole("button", { name: "Export" })) fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(taskGroups.getByRole("button", { name: "Results" }));
+    const sections = within(inspector.getByRole("group", { name: "Result sections" }));
+    fireEvent.click(sections.getByRole("button", { name: "Export" }));
     exportChoice("Data export result scope", "study");
     fireEvent.click(await exportPanel().findByRole("button", { name: /^Inspect result: Second specimen/ }));
     await waitFor(() => expect(execute).toHaveBeenCalledWith("result", expect.objectContaining({ result_id: resultB.id })));
@@ -1213,6 +1219,59 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByRole("button", { name: "Save annotation" })).toBeDisabled();
   });
 
+  it.each([
+    ["Kidney section", false],
+    ["Kidney section.ome", false],
+    ["Renal atlas", true],
+  ])("shows the study breadcrumb only when it distinguishes the image in %s", async (title, distinct) => {
+    const file = "Kidney section.ome.tiff";
+    const study = {
+      ...snapshot,
+      project: { ...snapshot.project, title },
+      sources: [{ ...snapshot.sources[0], name: file }],
+    };
+    const { container } = render(<ResearchWorkbench api={api({ getSnapshot: vi.fn().mockResolvedValue(study) })} onBack={vi.fn()} />);
+    const activeImage = await screen.findByLabelText("Active image");
+    expect(activeImage).toHaveTextContent(file);
+    const documentHeader = container.querySelector(".workbench-document");
+    expect(documentHeader?.getAttribute("data-loci-help") ?? documentHeader?.getAttribute("title")).toBe(title);
+    expect(container.querySelector(".workbench-study-title")?.textContent ?? null).toBe(distinct ? title : null);
+  });
+
+  it("keeps the source and inspector mounted through layout shortcuts and tool search", async () => {
+    const { container } = render(<ResearchWorkbench api={api()} onBack={vi.fn()} />);
+    const sourceToggle = await screen.findByRole("button", { name: "Hide image list" });
+    const toolsToggle = screen.getByRole("button", { name: "Hide tools panel" });
+    const rail = container.querySelector("#research-image-list")!;
+    const inspector = container.querySelector("#research-tools-pane")!;
+    const stage = container.querySelector("#research-image-stage")!;
+    fireEvent.keyDown(document.body, { key: "[", metaKey: true });
+    expect(rail).toHaveAttribute("hidden");
+    expect(sourceToggle).toHaveFocus();
+    fireEvent.keyDown(document.body, { key: "]", metaKey: true });
+    expect(inspector).toHaveAttribute("hidden");
+    expect(toolsToggle).toHaveFocus();
+    expect(stage).not.toHaveAttribute("hidden");
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    const search = await screen.findByRole("combobox", { name: "Search all tools" });
+    expect(search).toHaveFocus();
+    expect(inspector).not.toHaveAttribute("hidden");
+    fireEvent.keyDown(search, { key: "]", metaKey: true });
+    expect(inspector).not.toHaveAttribute("hidden");
+    fireEvent.keyDown(search, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "3", metaKey: true });
+    expect(screen.getByRole("combobox", { name: "Analyze tool" })).toBeVisible();
+    fireEvent.click(sourceToggle);
+    expect(rail).not.toHaveAttribute("hidden");
+    expect(container.querySelector("#research-image-stage")).toBe(stage);
+    const layers = screen.getByRole("button", { name: "Layers & results" });
+    const result = container.querySelector("[data-result-id]")!;
+    fireEvent.click(layers);
+    expect(result.parentElement).toHaveAttribute("hidden");
+    fireEvent.click(layers);
+    expect(container.querySelector("[data-result-id]")).toBe(result);
+  });
+
   it("shows readable result and review state while rejecting contradictory review receipts", async () => {
     const active = structuredClone(snapshot);
     active.results[0].review = { disposition: "reviewed" };
@@ -1227,6 +1286,8 @@ describe("ResearchWorkbench", () => {
     expect(first.title).not.toContain(active.results[0].id);
     const second = screen.getByRole("button", { name: /pending review$/ });
     expect(second).toHaveAttribute("data-review-state", "pending");
+    expect(second).toHaveTextContent("1 object · To review");
+    expect(second).not.toHaveTextContent("Reviewed");
   });
 
   it.each([
@@ -2778,7 +2839,9 @@ describe("ResearchWorkbench", () => {
       relinkSource: vi.fn().mockRejectedValue(new Error("Relink rejected: selected bytes do not exactly match the source")),
     });
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Relink exact source" }));
+    const viewer = await screen.findByLabelText(`Image viewer: ${missing.sources[0].name}`);
+    const relink = within(viewer).getByRole("button", { name: "Relink exact source" });
+    fireEvent.click(relink);
     expect(await screen.findByRole("alert")).toHaveTextContent("do not exactly match");
     expect(bridge.relinkSource).toHaveBeenCalledWith(snapshot.sources[0].id, picker);
     expect(await screen.findByText(/This source needs an exact local copy/)).toBeVisible();
@@ -2802,9 +2865,16 @@ describe("ResearchWorkbench", () => {
         : { image: "data:image/png;base64,view" },
     );
     const bridge = api({ execute });
-    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
-    fireEvent.click(await screen.findByText("Load linked orthogonal crop"));
+    const { container } = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    expect(container.querySelector(".research-orthogonal")).toBeNull();
+    const loadButton = await screen.findByRole("button", { name: "Load linked orthogonal crop" });
+    await waitFor(() => expect(loadButton).toBeEnabled());
+    expect(loadButton.closest(".research-stage-actions")).not.toBeNull();
+    expect(loadButton).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(loadButton);
     const pane = await screen.findByAltText("XZ orthogonal plane");
+    expect(loadButton).toHaveAttribute("aria-pressed", "true");
+    expect(container.querySelector(".research-orthogonal")).not.toBeNull();
     expect(await screen.findByAltText("XY orthogonal plane")).toHaveAttribute(
       "src",
       "data:image/png;base64,xy",
@@ -2824,6 +2894,19 @@ describe("ResearchWorkbench", () => {
       ),
     );
     expect(screen.getByText(/value: 42/)).toBeVisible();
+    // A delayed refresh must not reopen a crop dismissed while pixels were loading.
+    let releaseRefresh!: () => void;
+    const refresh = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    execute.mockImplementationOnce(async () => {
+      await refresh;
+      return { planes: { xy: "stale", xz: "stale", yz: "stale" }, shape: [3, 48, 64],
+        crosshair: [1, 24, 32], world_xyz: [32, 24, 1], value: 99 };
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh crop" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hide orthogonal crop" }));
+    await act(async () => { releaseRefresh(); await refresh; });
+    expect(container.querySelector(".research-orthogonal")).toBeNull();
+    expect(loadButton).toHaveAttribute("aria-pressed", "false");
   });
 
   it("explains why a multi-Z RGB source cannot enter scalar 3D volume rendering", async () => {
@@ -3008,10 +3091,15 @@ describe("ResearchWorkbench", () => {
     await waitFor(() => expect(screen.getByText("Save validated recipe")).toBeEnabled());
     await openTool("Analyze", "Analyze");
     fireEvent.change(screen.getByLabelText("Threshold"), { target: { value: "-0.123456789" } });
+    const minimum = screen.getByLabelText("Minimum object measure");
+    fireEvent.change(minimum, { target: { value: "-0.75" } });
+    expect(minimum).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
+    fireEvent.change(minimum, { target: { value: "0.75" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Run recipe" }));
     await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("run_recipe",
-      expect.objectContaining({ recipe: expect.objectContaining({ segmentation: expect.objectContaining({ threshold: -0.123456789 }) }) })));
+      expect.objectContaining({ recipe: expect.objectContaining({ segmentation: expect.objectContaining({ threshold: -0.123456789, min_size: 0.75 }) }) })));
   });
   it("previews ordered edits without adopting them and preserves the parameter", async () => {
     const bridge = api();
@@ -3272,14 +3360,14 @@ describe("ResearchWorkbench", () => {
       await waitFor(() => expect(input).toBeEnabled());
       expect(within(input).getAllByRole("option").map((option) => option.textContent?.trim())).toEqual(
         matchingDeclaration ? ["1: Declared GFP", "2: Declared DNA"] : ["1: Stored GFP", "2: Stored DNA"]);
-      fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "1" } });
-      fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+      fireEvent.click(screen.getByRole("button", { name: "Adjust Stored DNA display" }));
+      fireEvent.click(within(screen.getByRole("group", { name: "Stored DNA display settings" })).getByRole("button", { name: "Solo" }));
       expect(input).toHaveValue("0");
       input.focus(); expect(input).toHaveFocus();
       fireEvent.change(input, { target: { value: "1" } });
       expect(input).toHaveValue("1");
-      fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "0" } });
-      fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+      fireEvent.click(screen.getByRole("button", { name: "Adjust Stored GFP display" }));
+      fireEvent.click(within(screen.getByRole("group", { name: "Stored GFP display settings" })).getByRole("button", { name: "Solo" }));
       expect(input).toHaveValue("1");
       await waitFor(() => expect(screen.getByRole("button", { name: "Segment image" })).toBeEnabled());
       fireEvent.click(screen.getByRole("button", { name: "Segment image" }));
@@ -3334,14 +3422,17 @@ describe("ResearchWorkbench", () => {
     await waitFor(() => expect(segmentation).toBeEnabled());
     expect(within(segmentation).getAllByRole("option").map((option) => ({ text: option.textContent?.trim(), value: (option as HTMLOptionElement).value })))
       .toEqual([{ text: "1: Recorded structural", value: "0" }, { text: "2: Recorded signal", value: "1" }, { text: "3: Channel 3", value: "2" }]);
-    expect(screen.getByText(range ? "Raw source channel · T 2 · Z 3–5" : "Raw source channel · T 2 · Z 3")).toBeVisible();
+    const scopeDescription = range ? "Raw source channel · T 2 · Z 3–5" : "Raw source channel · T 2 · Z 3";
+    expect(screen.getByText(scopeDescription)).toBeVisible();
+    expect(segmentation).toHaveAccessibleDescription(scopeDescription);
     fireEvent.change(segmentation, { target: { value: "1" } });
-    fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value: "2" } });
-    fireEvent.click(screen.getByRole("button", { name: "Solo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Adjust Recorded structural display" }));
+    const display = within(screen.getByRole("group", { name: "Recorded structural display settings" }));
+    fireEvent.click(display.getByRole("button", { name: "Solo" }));
     expect(segmentation).toHaveValue("1");
     fireEvent.change(screen.getByRole("combobox", { name: "Measurement channel" }), { target: { value: "2" } });
     expect(segmentation).toHaveValue("1");
-    expect(screen.getByRole("combobox", { name: "Display channel" })).toHaveValue("2");
+    expect(display.getByRole("button", { name: "Restore" })).toHaveAttribute("aria-pressed", "true");
     await openTool("Results", "Study");
     fireEvent.click(screen.getByRole("tab", { name: "Batch" }));
     fireEvent.click(screen.getByRole("button", { name: "Save validated recipe" }));

@@ -315,17 +315,20 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
     imported = provenance.get("external_labels")
     label_import = (
         {
-            key: imported[key]
-            for key in (
-                "file_name",
-                "producer",
-                "format",
-                "profile",
-                "source_sha256",
-                "file_sha256",
-                "original_dtype",
-                "shape",
-            )
+            **{
+                key: imported[key]
+                for key in (
+                    "file_name",
+                    "producer",
+                    "format",
+                    "profile",
+                    "source_sha256",
+                    "file_sha256",
+                    "original_dtype",
+                    "shape",
+                )
+            },
+            **({"handoff": imported["handoff"]} if "handoff" in imported else {}),
         }
         if imported
         else None

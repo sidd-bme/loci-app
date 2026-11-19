@@ -13,14 +13,15 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import type { ManagedSessionState, ManagedSessionSummary, ResearchDesktopApi, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
 import BrandMark from "./BrandMark";
 import "./WorkbenchChrome.css";
 
 export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Workflow" | "Quantify" | "Density" | "Population" | "Correction" |
   "Temporal" | "Wound" | "Morphology" | "Tissue model" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
-type Group = "View" | "Annotate" | "Analyze" | "Results";
+const GROUPS = ["View", "Annotate", "Analyze", "Results"] as const;
+type Group = typeof GROUPS[number];
 const tabId = (tab: WorkbenchTab) => tab.replaceAll(" ", "-");
 const ADVANCED_LABELS: Partial<Record<Group, string>> = {
   View: "Import & conversion", Analyze: "Connections", Results: "Portable results",
@@ -74,8 +75,18 @@ const TOOL_HELP: Record<WorkbenchTab, string> = {
   "Vendor import": "Inspect a supported vendor source and convert it with an explicitly installed decoder.",
 };
 
-export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults = hasResult }: {
+export const workbenchModifier = () => /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl+";
+
+export function workbenchShortcutAvailable(event: globalThis.KeyboardEvent) {
+  return (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && !event.repeat &&
+    !event.defaultPrevented && !event.isComposing && !document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])') &&
+    !(event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"], [inert], .agent-workspace')) &&
+    !document.querySelector("main.research-workbench[inert]");
+}
+
+export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults = hasResult, layoutControl, onReveal }: {
   tab: WorkbenchTab; onTab: (tab: WorkbenchTab) => void; source: ResearchSource | null; hasResult: boolean; hasStudyResults?: boolean;
+  layoutControl?: ReactNode; onReveal?: () => void;
 }) {
   const [search, setSearch] = useState<string | null>(null);
   const [activeSearchTab, setActiveSearchTab] = useState<WorkbenchTab | null>(null);
@@ -130,18 +141,33 @@ export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults 
       closeSearch();
     }
   };
+  function openGroup(item: Group) {
+    const remembered = lastTools.current[item];
+    const next = remembered && !reason(remembered) ? remembered
+      : TOOLS.find((tool) => tool.group === item && !tool.advanced)!.tab;
+    onTab(next);
+    setSearch(null);
+    setActiveSearchTab(null);
+  }
+  useEffect(() => {
+    const shortcut = (event: globalThis.KeyboardEvent) => {
+      if (!workbenchShortcutAvailable(event) || !(event.key.toLowerCase() === "k" || /^[1-4]$/.test(event.key))) return;
+      event.preventDefault();
+      onReveal?.();
+      if (event.key.toLowerCase() === "k") {
+        setSearch(""); setActiveSearchTab(null);
+        searchInputRef.current?.focus();
+      } else openGroup(GROUPS[Number(event.key) - 1]);
+    };
+    window.addEventListener("keydown", shortcut);
+    return () => window.removeEventListener("keydown", shortcut);
+  });
   return <div className="workbench-tools">
     <nav className="task-groups" aria-label="Task groups">
-      {(["View", "Annotate", "Analyze", "Results"] as Group[]).map((item) => <button key={item}
+      {GROUPS.map((item, index) => <button key={item}
         aria-pressed={group === item} className={group === item ? "active" : ""}
-        onClick={() => {
-          const remembered = lastTools.current[item];
-          const next = remembered && !reason(remembered) ? remembered
-            : TOOLS.find((tool) => tool.group === item && !tool.advanced)!.tab;
-          onTab(next);
-          setSearch(null);
-          setActiveSearchTab(null);
-        }}>{item}</button>)}
+        title={`${item} (${workbenchModifier()}${index + 1})`}
+        onClick={() => openGroup(item)}>{item}</button>)}
     </nav>
     <div className="task-tool-row">
       {search === null ? <ToolSelect
@@ -157,9 +183,10 @@ export function WorkbenchTools({ tab, onTab, source, hasResult, hasStudyResults 
         onChange={(event) => { setSearch(event.target.value); setActiveSearchTab(null); }}
         onKeyDown={onSearchKeyDown}
       />}
-      <button ref={searchToggleRef} aria-label={search === null ? "Search all tools" : "Close tool search"} title="Find tools across all task groups" onClick={() => {
+      <button ref={searchToggleRef} aria-label={search === null ? "Search all tools" : "Close tool search"} title={`Find tools (${workbenchModifier()}K)`} onClick={() => {
         if (search === null) { setSearch(""); setActiveSearchTab(null); } else closeSearch();
       }}>{search === null ? <Search /> : <X />}</button>
+      {layoutControl}
     </div>
     {search !== null && <>
       <div id={searchId} className="tool-search-results" role="listbox" aria-label="All tools" onKeyDown={onSearchKeyDown}>
@@ -395,8 +422,7 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
   };
   const visibleRecent = showAllRecent ? recent : recent.slice(0, 5);
   return <div className={`image-welcome${dragActive ? " is-drag-active" : ""}`} aria-busy={busy || undefined}>
-    <div className="welcome-heading"><WelcomeEmblem /></div>
-    <h1>{dragActive ? "Drop to open" : "Open data"}</h1>
+    <div className="welcome-heading"><WelcomeEmblem /><h1>{dragActive ? "Drop to open" : "Open data"}</h1></div>
     {dragActive && <p role="status">Release to let Loci validate and open the selected files.</p>}
     {state.status === "recoverable" && <div className="session-recovery" role="status">
       <strong>{state.title} is unavailable</strong>
@@ -404,10 +430,12 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
       <button disabled={busy} onClick={onStudy}><FolderOpen /> Locate study</button>
       <span>Opening new images keeps the previous session available for recovery.</span>
     </div>}
+    <div className="welcome-columns">
+    <section className="welcome-open-section" aria-label="Open data">
     <div className="welcome-main-actions">
-      <button aria-label="Open images" className="welcome-open" disabled={busy} onClick={() => onOpen()}><ImagePlus /><span>Open images</span></button>
-      <button aria-label="Open folder" disabled={busy} onClick={() => onOpen("folder")}><FolderOpen /><span>Open folder</span></button>
-      <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span>Open study</span></button>
+      <button aria-label="Open images" className="welcome-open" disabled={busy} onClick={() => onOpen()}><ImagePlus /><span>Open images</span><kbd aria-hidden="true">{workbenchModifier()}O</kbd></button>
+      <button aria-label="Open folder" disabled={busy} onClick={() => onOpen("folder")}><FolderOpen /><span>Open folder</span><kbd aria-hidden="true">{workbenchModifier()}⇧O</kbd></button>
+      <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span>Open study</span><kbd aria-hidden="true">{workbenchModifier()}⇧P</kbd></button>
     </div>
     <div className="welcome-secondary-actions">
       {onExample && <button disabled={busy} onClick={onExample}>Try a synthetic example</button>}
@@ -422,6 +450,7 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
         {onEmptyStudy && <button className="welcome-source-option" aria-label="New empty study" disabled={busy} onClick={onEmptyStudy}><FilePlus2 /><span><strong>New empty study</strong><small>Start without importing data</small></span></button>}
       </div></div>
     </div>
+    </section>
     <div className="welcome-researcher-panels">
       <section className="recent-sessions" aria-labelledby="recent-work-heading">
         <header><h2 id="recent-work-heading">Recent work</h2>{recent.length > 5 && <button disabled={busy} onClick={() => setShowAllRecent((shown) => !shown)}>{showAllRecent ? "Show fewer" : "View all"}<ChevronRight /></button>}</header>
@@ -434,6 +463,7 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
             }}><X /></button>}
           </div>)}</div>}
       </section>
+    </div>
     </div>
     {undo && <div role="status">Session discarded. <button disabled={busy} onClick={() => {
       void api.recoveryUndo?.(undo).then(async () => { setUndo(null); onRecovery(await api.getSnapshot()); }).catch((error) => onError(error.message));

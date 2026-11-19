@@ -98,11 +98,8 @@ import SettingsDialog from "./SettingsDialog";
 import UserGuideDialog from "./UserGuideDialog";
 import WelcomeWorkspace from "./WelcomeWorkspace";
 import WorkspaceRecommendationPanel from "./WorkspaceRecommendationPanel";
-import {
-  loadPreferences,
-  savePreferences,
-  type UserPreferences,
-} from "./preferences";
+import { useUserPreferences } from "./use-user-preferences";
+import { notifyComputeTargetsChanged } from "./compute-target-events";
 import {
   createProjectManifest,
   restoredDisplayRecipes,
@@ -577,7 +574,7 @@ export default function App(): React.JSX.Element {
   const [openModelSections, setOpenModelSections] = useState(
     () => new Set(["Input", "Mask filtering", "Dynamics"]),
   );
-  const [preferences, setPreferences] = useState<UserPreferences>(() => loadPreferences());
+  const [preferences, setPreferences, preferenceError] = useUserPreferences();
   const [manualOpen, setManualOpen] = useState(false);
   const [manualSection, setManualSection] = useState<string | undefined>();
   useEffect(() => {
@@ -2176,13 +2173,7 @@ export default function App(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = preferences.theme;
-    document.documentElement.dataset.textSize = preferences.textSize;
-    document.documentElement.dataset.font = preferences.font ?? "system";
-    document.documentElement.dataset.motion = preferences.motion;
-    savePreferences(preferences);
-  }, [preferences]);
+  useEffect(() => api?.onComputeTargetsChanged?.(notifyComputeTargetsChanged), [api]);
 
   useEffect(() => {
     api?.updateSessionState({
@@ -2332,10 +2323,15 @@ export default function App(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [isWorkspaceOrProjectBusy, projectStateSignature, saveCurrentProject]);
 
-  useEffect(() => {
-    if (!api) return undefined;
-    return api.onSettingsRequested(() => setSettingsOpen(true));
+  const openSettings = useCallback((page?: "appearance" | "compute") => {
+    if (api?.openSettingsWindow) {
+      void api.openSettingsWindow(page).catch(() => setNativeCommandError("Settings could not open. Try opening the window again."));
+      return;
+    }
+    setSettingsCompute(page === "compute");
+    setSettingsOpen(true);
   }, [api]);
+  useEffect(() => api?.onSettingsRequested(() => openSettings()), [api, openSettings]);
 
   useEffect(() => api?.onGuideRequested?.(() => {
     setSettingsOpen(false); setManualSection(undefined); setManualOpen(true);
@@ -2388,7 +2384,7 @@ export default function App(): React.JSX.Element {
       const isTyping = target instanceof Element && target.matches("input, select, textarea, [contenteditable='true']");
       if ((event.metaKey || event.ctrlKey) && event.key === ",") {
         event.preventDefault();
-        setSettingsOpen(true);
+        openSettings();
       } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
         void importFolder();
@@ -2476,7 +2472,7 @@ export default function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cancelSegmentation, cancelVertexEdit, commitVertexEdit, correctionTarget, correctionTool, drawPoints.length, importFolder, importImages, isRunning, nudgeSelectedVertex, redoCorrection, runSegmentation, settingsOpen, manualOpen, researchOpen, sourceMenu, undoCorrection, vertexEdit, workspaceMode]);
+  }, [cancelSegmentation, cancelVertexEdit, commitVertexEdit, correctionTarget, correctionTool, drawPoints.length, importFolder, importImages, isRunning, nudgeSelectedVertex, openSettings, redoCorrection, runSegmentation, settingsOpen, manualOpen, researchOpen, sourceMenu, undoCorrection, vertexEdit, workspaceMode]);
 
   const handleDragEnter = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -2747,6 +2743,7 @@ export default function App(): React.JSX.Element {
       onClick={() => setNativeCommandError(null)}><X size={15} /></button>
   </div>;
   const settingsDialog = <>{settingsOpen ? (
+    <>{preferenceError && <div className="error-banner" role="alert">{preferenceError}</div>}
     <SettingsDialog
       preferences={preferences}
       computeApi={window.lociResearch}
@@ -2755,7 +2752,7 @@ export default function App(): React.JSX.Element {
       onClose={() => { setSettingsOpen(false); setSettingsCompute(false); }}
       onQuit={() => api?.requestQuit()}
       onOpenGuide={(sectionId) => { setSettingsOpen(false); setManualSection(sectionId); setManualOpen(true); }}
-    />
+    /></>
   ) : null}{manualOpen && <UserGuideDialog initialSection={manualSection} onClose={() => setManualOpen(false)} />}</>;
 
   if (researchOpen && window.lociResearch && window.lociImageWindows && imageWindowsState?.views.length) {
@@ -2771,8 +2768,8 @@ export default function App(): React.JSX.Element {
           api={window.lociResearch}
           preferences={preferences}
           onBack={() => setResearchOpen(false)}
-          onOpenSettings={() => setSettingsOpen(true)}
-          onOpenCompute={() => { setSettingsCompute(true); setSettingsOpen(true); }}
+          onOpenSettings={() => openSettings()}
+          onOpenCompute={() => openSettings("compute")}
         />
         {settingsDialog}
       </>
@@ -2787,6 +2784,7 @@ export default function App(): React.JSX.Element {
       data-text-size={preferences.textSize}
       data-result-restoration-state={isRestoringActiveResult ? "pending" : "settled"}
     >
+      {nativeErrorBanner}
       <header className="titlebar">
         <div className="brand-lockup">
           <BrandMark />
@@ -2824,7 +2822,7 @@ export default function App(): React.JSX.Element {
             type="button"
             title="Settings"
             aria-label="Open settings"
-            onClick={() => setSettingsOpen(true)}
+            onClick={() => openSettings()}
           >
             <Settings2 size={14} />
           </button>

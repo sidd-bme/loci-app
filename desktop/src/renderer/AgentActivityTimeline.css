@@ -5,109 +5,123 @@
   list-style: none;
 }
 
-.agent-activity-list > li {
-  padding: 14px 0;
-  border-top: 1px solid var(--line);
+.agent-activity-row {
+  position: relative;
   display: grid;
-  gap: 8px;
+  grid-template-columns: min-content minmax(0, 1fr);
+  gap: var(--space-2);
+  padding-block: var(--space-3);
 }
-
-.agent-activity-meta {
+.agent-activity-row:first-child { padding-top: var(--space-2); }
+.agent-activity-row + .agent-activity-row { border-top: 1px solid var(--border-subtle); }
+.agent-activity-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--surface-3);
+  color: var(--ink-secondary);
+}
+.agent-activity-row.tone-connected .agent-activity-mark { color: var(--accent); background: var(--accent-wash); }
+.agent-activity-row.tone-warning .agent-activity-mark { color: var(--state-warning); background: var(--warning-wash); }
+.agent-activity-row.tone-danger .agent-activity-mark { color: var(--state-error); background: var(--error-wash); }
+.agent-activity-body { display: grid; gap: var(--space-1); min-width: 0; }
+.agent-activity-heading {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  color: var(--ink-secondary);
-  font-size: var(--type-xs);
-  font-variant-numeric: tabular-nums;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
 }
-
-.agent-activity-meta span:last-child {
-  font-weight: 600;
-}
-
 .agent-activity-summary {
   margin: 0;
   color: var(--ink);
   font-size: var(--type-md);
+  font-weight: 600;
+  line-height: var(--leading-md);
+  text-wrap: pretty;
   overflow-wrap: anywhere;
 }
-
+.agent-activity-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-1) var(--space-2);
+  color: var(--ink-muted);
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.agent-activity-meta > :last-child { margin-inline-start: auto; }
+.agent-activity-context,
 .agent-activity-note,
 .agent-target-reason,
 .agent-approval-consequence {
   margin: 0;
   color: var(--ink-secondary);
-  font-size: var(--type-xs);
-  line-height: 1.5;
+  font-size: var(--type-sm);
+  line-height: var(--leading-sm);
   overflow-wrap: anywhere;
 }
 
-.agent-target-list {
-  display: grid;
-  gap: 8px;
-}
-
+.agent-target-list,
 .agent-target-list > li,
 .agent-approval-inspection {
   display: grid;
-  gap: 8px;
+  gap: var(--space-1);
   min-width: 0;
 }
+.agent-approval-inspection { gap: var(--space-2); }
 
+.agent-workspace-surface .agent-target-link,
 .agent-target-link {
+  display: inline-flex;
+  align-items: center;
   justify-self: start;
-  min-height: 40px;
-  padding: 3px 7px;
-  color: var(--mineral-bright);
-  font-size: var(--type-xs);
+  gap: var(--space-1);
+  min-height: var(--row-height);
+  max-width: 100%;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--type-sm);
+  text-align: start;
+  text-underline-offset: 0.18em;
   overflow-wrap: anywhere;
-  text-align: left;
 }
-
-.agent-target-link span {
-  font-variant-numeric: tabular-nums;
+.agent-workspace-surface .agent-target-link > svg { width: 13px; height: 13px; flex: none; }
+.agent-workspace-surface .agent-target-link:hover:not(:disabled) {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
 }
-
-.agent-target-link:disabled {
-  color: var(--ink-secondary);
-  cursor: default;
-}
+.agent-workspace-surface .agent-target-link:disabled { color: var(--ink-muted); opacity: 1; }
+.agent-target-reason { font-size: var(--type-xs); }
 
 .agent-target-identity,
-.agent-activity-request {
+.agent-activity-request,
+.agent-activity-record,
+.agent-activity-target-record {
   min-width: 0;
   color: var(--ink-secondary);
-  font-size: var(--type-xs);
 }
-
-.agent-target-identity summary,
-.agent-activity-request summary {
-  min-height: 32px;
-  cursor: pointer;
-}
-
+.agent-activity-target-record h4 { margin: 0 0 var(--space-1); font-size: var(--type-xs); font-weight: 600; }
+.agent-workspace-surface .agent-activity-body > details > summary { min-height: var(--row-height); font-size: var(--type-xs); }
 .agent-target-identity[open] > dl,
-.agent-activity-request[open] > .agent-approval-inspection {
-  margin-top: 6px;
-}
-
-.agent-activity button:focus-visible,
-.agent-approval-card button:focus-visible,
-.agent-session-drawer summary:focus-visible {
-  outline: 2px solid var(--mineral);
-  outline-offset: 2px;
-}
-
-.agent-activity-heading { display: flex; align-items: flex-start; gap: 8px; }
-.agent-activity-heading > svg { margin-top: 3px; flex-shrink: 0; color: var(--ink-secondary); }
-.agent-activity-summary { line-height: 1.5; font-weight: 550; text-wrap: pretty; }
-.agent-activity-context { margin: 0; color: var(--ink-secondary); font-size: var(--type-xs); overflow-wrap: anywhere; line-height: 1.5; }
-.agent-activity-record { min-width: 0; }
-.agent-activity-record > summary { color: var(--ink-secondary); }
-.agent-activity-record > summary span { color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.agent-activity-request[open] > :not(summary),
 .agent-activity-record[open] > :not(summary),
-.agent-approval-provenance[open] > :not(summary) { margin-top: 8px; }
-.agent-approval-expiry { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0; color: var(--ink-secondary); font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
-.agent-target-link { display: inline-flex; align-items: center; gap: 4px; background: transparent; }
-.agent-activity-list > li:first-child { border-top: 0; padding-top: 0; }
-.agent-approval-provenance { border-top: 1px solid var(--line); padding-top: 4px; }
+.agent-approval-provenance[open] > :not(summary) { margin-top: var(--space-2); }
+.agent-approval-expiry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-xs);
+  font-variant-numeric: tabular-nums;
+}
+.agent-approval-provenance { border-top: 1px solid var(--border-subtle); padding-top: var(--space-1); }

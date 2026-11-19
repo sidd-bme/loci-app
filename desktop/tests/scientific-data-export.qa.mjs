@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { selectResultSection, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile), root = path.resolve(import.meta.dirname,"../..");
@@ -206,7 +207,11 @@ try{
   await focusedExport.scrollIntoViewIfNeeded();await shot("08-laptop-keyboard-dark");
   await panel().getByRole("region",{name:/^Data preview for/}).first().scrollIntoViewIfNeeded();await shot("08b-laptop-exact-table");
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
-  await page.getByRole("button",{name:"Open settings",exact:true}).click();await page.getByRole("tab",{name:"Appearance",exact:true}).click();await page.getByLabel("Application theme",{exact:true}).selectOption("paper");await page.getByRole("button",{name:"Close settings",exact:true}).click();
+  const settings = await openSettings(app, page);
+  await settings.dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
+  await settings.dialog.getByLabel("Application theme", { exact: true }).selectOption("paper");
+  await closeSettings(settings, "Close settings");
+  await page.waitForFunction(() => document.documentElement.dataset.theme === "paper");
   await shot("09-laptop-paper");await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setBounds({width:1600,height:1000}));await shot("10-large-paper");
   assertions.no_replace_error_recovery_keyboard_laptop_themes=true;
   observations.methods={};

@@ -330,6 +330,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  if (vi.isFakeTimers()) vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -367,7 +368,8 @@ describe("ResearchWorkbench tissue operation lifecycle", () => {
 
     expect(currentSnapshot.jobs).toHaveLength(0);
 
-    // Start in-flight preview; busy === "tissue-model" enables snapshot polling
+    // Keep promise settlement and Testing Library on real time; drive only the app polling interval.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     fireEvent.click(screen.getByRole("button", { name: "Preview candidate mask" }));
     expect(screen.getByRole("button", { name: "Computing preview…" })).toBeDisabled();
 
@@ -387,11 +389,13 @@ describe("ResearchWorkbench tissue operation lifecycle", () => {
     };
     currentSnapshot = makeSnapshot({ jobs: [runningJob] });
 
-    // Open Job Center and wait for polling to surface the running preview job
+    // Opening Job Center alone does not fetch the new job. One busy-state poll must publish it.
     fireEvent.click(screen.getByRole("button", { name: /Jobs/ }));
-    await waitFor(() => {
-      expect(screen.getByText(/tissue model preview/i)).toBeInTheDocument();
-    }, { timeout: 3000 });
+    expect(screen.queryByText(/tissue model preview/i)).not.toBeInTheDocument();
+    const callsBeforePoll = getSnapshot.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(getSnapshot).toHaveBeenCalledTimes(callsBeforePoll + 1);
+    expect(screen.getByText(/tissue model preview/i)).toBeInTheDocument();
     const cancelBtn = screen.getByRole("button", { name: "Cancel" });
     expect(cancelBtn).toBeEnabled();
 

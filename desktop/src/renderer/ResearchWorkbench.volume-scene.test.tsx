@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { webcrypto } from "node:crypto";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
 import type { ResearchAgentSessionsSnapshot, ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
@@ -98,7 +98,7 @@ beforeEach(() => {
     "stroke", "fillText", "setLineDash", "save", "restore", "ellipse", "fill"].map((name) => [name, vi.fn()]));
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const width = this.classList?.contains("image-viewport") ? 640 : 0;
+    const width = this.matches(".image-viewport > canvas") ? 640 : 0;
     const height = width ? 480 : 0;
     return { x: 0, y: 0, left: 0, top: 0, right: width, bottom: height, width, height, toJSON: () => ({}) } as DOMRect;
   });
@@ -492,16 +492,39 @@ describe("Workbench volume scene lifecycle barriers", () => {
     } finally { renderers.get(first.id)!.snapshot.busy = false; if (busyKind === "pointer") endPointer(); }
   });
 
-  it("saves a ready scene before immediate source navigation beats the first debounce", async () => {
-    const f = fixture(); await openVolume(f, false);
+  it("waits for the source display and saves a 3D edit before immediate source navigation", async () => {
+    const f = fixture();
+    const defaults = gate();
+    const execute = f.api.execute;
+    f.api.execute = vi.fn(async (operation, request, options) => {
+      if (operation === "viewer_defaults" && request.source_id === first.id) await defaults.wait();
+      return execute(operation, request, options);
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    const open = await screen.findByRole("button", { name: "3D volume" });
+    try {
+      await waitFor(() => expect(defaults.entered()).toBe(true));
+      expect(open).toBeDisabled();
+      fireEvent.click(open);
+      expect(f.execute).not.toHaveBeenCalledWith("viewer_volume", expect.anything());
+    } finally {
+      await act(async () => defaults.release());
+    }
+    await waitFor(() => expect(open).toBeEnabled());
+    const next = screen.getByRole("button", { name: /Second volume/ });
+    fireEvent.click(open);
+    const renderer = await screen.findByLabelText("Mock volume renderer ready");
+    await waitFor(() => expect(renderers.get(first.id)!.changed).toBeTypeOf("function"));
     expect(f.state().revision).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: "Move mock crosshair" }));
-    fireEvent.click(screen.getByRole("button", { name: /Second volume/ }));
+    fireEvent.click(within(renderer).getByRole("button", { name: "Move mock crosshair" }));
+    fireEvent.click(next);
     await waitFor(() => expect(screen.getByLabelText("Active image")).toHaveTextContent(second.name));
     await waitFor(() => expect(f.events).toContain(`source-defaults:${second.id}`));
     expect(f.state().state?.crosshair_source_xyz).toEqual([11, 3, 1]);
-    expect(f.events.indexOf(`scene-saved:${first.id}:1`)).toBeGreaterThanOrEqual(0);
-    expect(f.events.indexOf(`scene-saved:${first.id}:1`)).toBeLessThan(f.events.indexOf(`source-defaults:${second.id}`));
+    const saved = f.events.indexOf(`scene-saved:${first.id}:1`);
+    expect(saved).toBeGreaterThanOrEqual(0);
+    expect(saved).toBeLessThan(f.events.indexOf(`source-defaults:${second.id}`));
+    expect(f.execute).not.toHaveBeenCalledWith("viewer_volume", expect.objectContaining({ source_id: second.id }));
   });
 
   it("awaits in-flight scene initialization before entering a native picker", async () => {

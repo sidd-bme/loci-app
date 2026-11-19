@@ -39,6 +39,27 @@ describe("preload Cellpose bridge", () => {
     expect(electronMocks.exposeInMainWorld).toHaveBeenCalledWith("loci", expect.any(Object));
   });
 
+  it("offers native Settings launch and target notifications only in the main workspace preload", async () => {
+    expect(api.openSettingsWindow).toBeUndefined();
+    expect(api.onComputeTargetsChanged).toBeUndefined();
+    const argv = process.argv;
+    try {
+      process.argv = [...argv, "--loci-main-workspace"];
+      vi.resetModules();
+      const before = electronMocks.exposeInMainWorld.mock.calls.length;
+      await import("./preload");
+      const main = electronMocks.exposeInMainWorld.mock.calls.slice(before).find(([name]) => name === "loci")![1] as LociDesktopApi;
+      await main.openSettingsWindow!("compute");
+      expect(electronMocks.invoke).toHaveBeenLastCalledWith("loci:open-settings-window", "compute");
+      const callback = vi.fn(), unsubscribe = main.onComputeTargetsChanged!(callback);
+      const [channel, listener] = electronMocks.on.mock.calls.at(-1)!;
+      expect(channel).toBe("loci:compute-targets-changed");
+      listener({ sender: "native event" }, "ignored");
+      expect(callback).toHaveBeenCalledExactlyOnceWith();
+      unsubscribe(); expect(electronMocks.removeListener).toHaveBeenLastCalledWith(channel, listener);
+    } finally { process.argv = argv; }
+  });
+
   it.each([
     ["onGuideRequested", "loci:guide-requested"],
     ["onWorkspaceRequested", "loci:workspace-requested"],
@@ -415,6 +436,21 @@ describe("preload research batch bridge", () => {
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(
       "loci-research:agent-session-control",
       { action: "approve_request", approval_id: "1".repeat(32) },
+    );
+    const usamBinding = {
+      source_id: "c".repeat(32),
+      source_sha256: "d".repeat(64),
+      selection: { x: 0, y: 0, width: 16, height: 12, t: 0, c: 0, z: 0, level: 0 },
+      working_bytes: 64 * 1024 ** 2,
+    };
+    await researchApi.exportUsamHandoff!(usamBinding);
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(
+      "loci-research:usam-handoff-export",
+      usamBinding,
+    );
+    await researchApi.listUsamHandoffs!();
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(
+      "loci-research:usam-handoffs",
     );
   });
 });

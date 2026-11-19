@@ -168,7 +168,8 @@ Analysis
   submit / run         Publish a durable task or execute a queued task
   jobs / job / cancel  Inspect or request cancellation of durable tasks
   review / export      Review and atomically export an exact revision
-  import-labels        Preview an external scalar TIFF label plane
+  usam-handoff         Export a native scalar YX/ZYX TIFF handoff for standalone μSAM
+  import-labels        Preview an external scalar TIFF label plane or ZYX volume
   import-model         Qualify an explicitly selected local model package
 
 Connections
@@ -363,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         "import",
         "import-model",
         "import-labels",
+        "usam-handoff",
         "execute",
         "submit",
         "run",

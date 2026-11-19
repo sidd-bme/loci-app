@@ -3,7 +3,16 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { PopulationMetric, PopulationResponse } from "./ResearchPopulationExplorer";
 import { chartTicks, displayedFraction, fullChartView, isFullChartView, panChartView, populationNumber, viewedDomain, zoomChartView, domainValue, type ChartView } from "./population-chart-view";
 
-export const populationDisplayUnit = (unit: string): string => ({ "um": "µm", "um^2": "µm²", "um^3": "µm³", "pixel^2": "pixel²", "pixel^3": "pixel³" }[unit] ?? unit);
+const displayUnits = new Map([
+  ["um", "µm"], ["μm", "µm"],
+  ["um^2", "µm²"], ["µm^2", "µm²"], ["μm^2", "µm²"], ["μm²", "µm²"],
+  ["um^3", "µm³"], ["µm^3", "µm³"], ["μm^3", "µm³"], ["μm³", "µm³"],
+  ["pixel", "px"],
+  ["pixel^2", "px²"], ["pixel²", "px²"], ["pixel2", "px²"], ["px^2", "px²"],
+  ["pixel^3", "px³"], ["pixel³", "px³"], ["pixel3", "px³"], ["px^3", "px³"],
+]);
+
+export const populationDisplayUnit = (unit: string): string => displayUnits.get(unit.trim()) ?? unit;
 export const populationMetricName = (metric: PopulationMetric | undefined): string =>
   metric ? `${metric.label}${metric.unit ? ` (${populationDisplayUnit(metric.unit)})` : ""}` : "No metric";
 

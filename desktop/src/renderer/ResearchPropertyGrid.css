@@ -1,0 +1,95 @@
+.research-property-grid {
+  container: inspector-properties / inline-size;
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+}
+
+.research-property-grid + .research-property-grid {
+  margin-block-start: var(--space-2);
+}
+
+.research-panel .research-property-grid > label:not(.research-check),
+.research-panel .research-property-grid > .research-segmentation-input > label {
+  display: grid;
+  grid-template-columns: minmax(0, 42fr) minmax(0, 58fr);
+  align-items: baseline;
+  gap: var(--space-1) var(--density-gap);
+  margin: 0;
+  font-size: var(--type-sm);
+  line-height: var(--leading-sm);
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+
+.research-property-grid > .research-segmentation-input {
+  margin: 0;
+}
+
+.research-panel .research-property-grid > .research-check {
+  min-height: var(--control-height);
+  margin: 0;
+}
+
+.image-first-workbench.research-workbench .research-panel .research-property-grid label > :is(input:not([type]), select) {
+  width: 100%;
+  min-height: var(--control-height);
+  padding-block: var(--space-1);
+  border-color: var(--border-control);
+  border-radius: var(--radius-control);
+  background-color: var(--surface-2);
+  font-size: var(--type-md);
+  line-height: var(--leading-md);
+}
+
+.research-panel .research-property-grid label > input:not([type]) {
+  padding-inline: var(--space-2);
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.research-panel .research-property-grid label > select {
+  text-align: start;
+  text-overflow: ellipsis;
+}
+
+.research-workbench .research-panel .research-property-grid label > :is(input:not([type]), select):focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+
+.research-workbench .research-panel .research-property-grid label > input[aria-invalid="true"] {
+  border-color: var(--state-error);
+}
+
+.research-panel .research-property-grid label > small {
+  grid-column: 2;
+  font-size: var(--type-xs);
+  line-height: var(--leading-xs);
+  color: var(--ink-muted);
+  text-align: start;
+  text-wrap: pretty;
+}
+
+.research-panel .research-property-grid label > small[role="alert"] {
+  color: var(--state-error);
+}
+
+.source-channel-settings > .research-property-grid,
+.source-tone-settings > .research-property-grid {
+  grid-column: 1 / -1;
+}
+
+@container inspector-properties (max-width: 14rem) {
+  .research-panel .research-property-grid > label:not(.research-check),
+  .research-panel .research-property-grid > .research-segmentation-input > label {
+    grid-template-columns: minmax(0, 1fr);
+    text-align: start;
+  }
+
+  .research-panel .research-property-grid label > small {
+    grid-column: 1;
+  }
+}

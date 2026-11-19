@@ -197,7 +197,7 @@ async function drawer() {
   await trigger.waitFor();
   if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
   await page.getByRole('region', { name: 'Agent session and approvals', exact: true }).waitFor();
-  const follow = page.getByRole('checkbox', { name: 'Follow agent', exact: true });
+  const follow = page.getByRole('switch', { name: 'Follow agent', exact: true });
   if (await follow.isChecked()) await follow.uncheck();
   return page.getByRole('region', { name: 'External agent plans and assessments', exact: true });
 }

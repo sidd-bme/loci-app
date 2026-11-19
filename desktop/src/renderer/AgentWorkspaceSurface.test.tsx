@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchAgentSessionsSnapshot, ResearchSnapshot } from "../shared/research-contracts";
 import { AgentWorkspaceSurface, EMPTY_AGENT_PRESENTATION, type AgentWorkspacePresentation } from "./AgentWorkspaceSurface";
@@ -22,7 +22,7 @@ describe("Shared agent workspace surface", () => {
     render(<AgentWorkspaceSurface {...base} snapshot={value} onConfigureAccess={configure} onControl={control} host="detached" />);
     expect(screen.getByRole("heading", { name: "Agent workspace" })).toBeVisible();
     expect(screen.getByText("Shared study")).toBeVisible();
-    expect(screen.getByText("No MCP client is currently connected.")).toBeVisible();
+    expect(screen.getByText("No active agent")).toBeVisible();
     fireEvent.click(within(screen.getByRole("region", { name: "No agent plan" })).getByRole("button", { name: "Configure access in workspace" }));
     expect(configure).toHaveBeenCalledOnce();
     expect(control).not.toHaveBeenCalled();
@@ -32,11 +32,61 @@ describe("Shared agent workspace surface", () => {
     const control = vi.fn();
     render(<AgentWorkspaceSurface {...base} snapshot={snapshot()} onControl={control} refreshError="Connection to the study is unavailable." />);
     expect(screen.getByRole("button", { name: `Approve ${wire.approvals[0].operation}` })).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "Follow agent" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Follow agent" })).toBeDisabled();
     fireEvent.click(screen.getByText("Connection and permissions"));
     expect(screen.getByRole("combobox", { name: "Agent permission mode" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Revoke access" })).toBeDisabled();
     expect(control).not.toHaveBeenCalled();
+  });
+
+  it.each(["docked", "detached"] as const)("keeps the exact pending decision available in any %s section", async (host) => {
+    const control = vi.fn().mockResolvedValue(true);
+    render(<AgentWorkspaceSurface {...base} snapshot={snapshot()} onControl={control} host={host} />);
+    const approvalName = `Approve ${wire.approvals[0].operation}`;
+    for (const name of ["Plan & evidence", "Activity", "Approvals", "Overview"]) {
+      const section = screen.getByRole("button", { name });
+      fireEvent.click(section);
+      expect(section).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("button", { name: approvalName })).toBeVisible();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review request" }));
+    expect(screen.getByRole("heading", { name: "Pending approvals (1)" })).toHaveFocus();
+    const approval = screen.getByRole("region", { name: "Pending agent approvals" });
+    expect(within(approval).getByText(`${wire.approvals[0].client_id} (declared identity)`, { selector: ".agent-approval-card > dl > dd" })).toBeVisible();
+    expect(within(approval).getByText(wire.approvals[0].operation)).toBeVisible();
+    expect(within(approval).getByText(/subject to scope and revision checks/)).toBeVisible();
+    expect(control).not.toHaveBeenCalled();
+    fireEvent.click(within(approval).getByRole("button", { name: `Deny ${wire.approvals[0].operation}` }));
+    await waitFor(() => expect(control).toHaveBeenCalledExactlyOnceWith({ action: "deny_request", approval_id: wire.approvals[0].id }));
+  });
+
+  it("opens existing permission settings without changing the declared mode or scope", () => {
+    const control = vi.fn();
+    render(<AgentWorkspaceSurface {...base} snapshot={snapshot()} onControl={control} />);
+    expect(screen.getByText(wire.sessions[0].client_id)).toBeVisible();
+    const chip = screen.getByRole("button", { name: "Connection and permissions, Ask for approval" });
+    fireEvent.click(chip);
+    expect(screen.getByText("Connection and permissions")).toHaveFocus();
+    expect(screen.getByRole("combobox", { name: "Agent permission mode" })).toHaveValue("ask_approval");
+    expect(control).not.toHaveBeenCalled();
+  });
+
+  it("expires acknowledgments after the command finishes and retains errors", () => {
+    vi.useFakeTimers();
+    try {
+      const feedback = { kind: "status", message: "Approval decision recorded." } as const;
+      const props = { ...base, snapshot: snapshot() };
+      const view = render(<AgentWorkspaceSurface {...props} feedback={feedback} commandBusy />);
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByText(feedback.message)).toBeVisible();
+      view.rerender(<AgentWorkspaceSurface {...props} feedback={feedback} />);
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.queryByText(feedback.message)).not.toBeInTheDocument();
+      view.rerender(<AgentWorkspaceSurface {...props} feedback={{ kind: "error", message: "Approval is unavailable." }} />);
+      act(() => { vi.advanceTimersByTime(3000); });
+      expect(screen.getByRole("alert")).toHaveTextContent("Approval is unavailable.");
+    } finally { vi.useRealTimers(); }
   });
 
   it("retains unsaved plan edits while changing sections and remounting into another host", async () => {

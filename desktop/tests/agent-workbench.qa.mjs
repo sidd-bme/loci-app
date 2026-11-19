@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { closeSettings, openSettings } from './settings-qa-helpers.mjs';
 import { selectResultSection, selectWorkbenchTool, setSelectionField } from './workbench-qa-helpers.mjs';
 
 const exec = promisify(execFile);
@@ -296,7 +297,11 @@ try {
   assert.equal(await hash(fixture.source), fixture.sha256); receipt.checks.push('native-and-mcp-four-artifact-provisional-handoffs');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 768 }));
   for (const theme of ['graphite', 'paper']) {
-    await page.getByRole('button', { name: 'Open settings', exact: true }).click(); await page.getByLabel('Application theme', { exact: true }).selectOption(theme); await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+    const settings = await openSettings(app, page);
+    await settings.dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
+    await settings.dialog.getByLabel('Application theme', { exact: true }).selectOption(theme);
+    await closeSettings(settings, 'Close settings');
+    await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
     for (const surface of ['vision', 'connection']) {
       await selectWorkbenchTool(page, 'Agent');
       if (surface === 'connection') await configureScope();

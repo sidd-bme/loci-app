@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, escapeSettings, openSettings, resolveSettings } from "./settings-qa-helpers.mjs";
 
 // Presentation qualification only. Analysis/result-integrity journeys remain
 // the authority for numerical behavior; this harness never inserts results.
@@ -32,7 +33,7 @@ const artifacts = {
   asar: path.join(appPath, "Contents/Resources/app.asar"),
   worker: path.join(appPath, "Contents/Resources/loci-engine/loci-engine"),
 };
-const themes = ["graphite", "midnight", "paper", "aurora", "ember", "lagoon", "fiji"];
+const themes = ["graphite", "midnight", "black", "paper", "aurora", "ember", "lagoon", "fiji"];
 const sizes = [{ width: 1280, height: 800 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }];
 const categories = ["Appearance", "Viewing & help", "Saving & export", "Capabilities", "User guide"];
 const startedAt = new Date().toISOString();
@@ -281,17 +282,13 @@ async function resize({ width, height }) {
     mode: constrained ? "simulated-larger-monitor-renderer-viewport" : "native-content-resize",
     emulation: constrained ? "CDP Emulation.setDeviceMetricsOverride; deviceScaleFactor=1; mobile=false" : null });
 }
-async function settings() {
-  await page.getByRole("button", { name: "Open settings", exact: true }).click();
-  await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
-}
 async function appearance(theme, textSize) {
-  await settings();
-  await page.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(theme);
-  await page.getByRole("radio", { name: textSize === "large" ? "Large" : "Standard", exact: true }).click();
+  const surface = await openSettings(app, page, { requireNative: true });
+  await surface.dialog.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(theme);
+  await surface.dialog.getByRole("radio", { name: textSize === "large" ? "Large" : "Standard", exact: true }).click();
   await page.waitForFunction((value) => document.documentElement.dataset.theme === value.theme &&
     document.documentElement.dataset.textSize === value.textSize, { theme, textSize });
-  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await closeSettings(surface);
 }
 async function selectTool(group, label) {
   await page.getByRole("navigation", { name: "Task groups" }).getByRole("button", { name: group, exact: true }).click();
@@ -432,9 +429,10 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
   });
   await step("02-native-settings", async () => {
     await nativeMenu("app", "Settings…");
-    await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
-    await audit("native-settings-dialog"); await capture("native-settings-dialog");
-    await page.keyboard.press("Escape");
+    const surface = await resolveSettings(app, page, { requireNative: true });
+    await audit("native-settings-dialog", surface.page);
+    await capture("native-settings-dialog", true, surface.page);
+    await escapeSettings(surface);
   });
   await step("03-native-open-images-research-route", async () => {
     await nativeMenu("File", "Open images…");
@@ -620,22 +618,23 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
   }
   await resize(sizes[0]); await appearance("graphite", "large");
   for (const category of categories) await step(`settings-${category.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`, async () => {
-    await settings();
-    await page.getByRole("tab", { name: category, exact: true }).click();
-    await page.getByRole("tabpanel", { name: category, exact: true }).waitFor();
+    const surface = await openSettings(app, page, { requireNative: true });
+    await surface.dialog.getByRole("tab", { name: category, exact: true }).click();
+    await surface.dialog.getByRole("tabpanel", { name: category, exact: true }).waitFor();
     if (category === "Saving & export") {
-      const dpi = page.getByRole("textbox", { name: "Default figure DPI", exact: true });
+      const dpi = surface.dialog.getByRole("textbox", { name: "Default figure DPI", exact: true });
       await dpi.fill("invalid draft"); await dpi.press("Enter");
       assert.equal(await dpi.inputValue(), "invalid draft");
       assert.equal(await dpi.getAttribute("aria-invalid"), "true");
-      await page.getByRole("alert").filter({ hasText: "Enter a whole number" }).waitFor();
-      await capture("dpi-invalid-draft");
+      await surface.dialog.getByRole("alert").filter({ hasText: "Enter a whole number" }).waitFor();
+      await capture("dpi-invalid-draft", true, surface.page);
       await dpi.press("Escape");
       assert.equal(await dpi.inputValue(), "300");
-      assert.equal(await page.getByRole("dialog", { name: "Settings", exact: true }).isVisible(), true);
+      assert.equal(await surface.dialog.isVisible(), true);
     }
-    await audit(`settings-${category}-dialog`); await capture(`settings-${category.replaceAll(/[^a-zA-Z]+/g, "-")}-dialog`);
-    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await audit(`settings-${category}-dialog`, surface.page);
+    await capture(`settings-${category.replaceAll(/[^a-zA-Z]+/g, "-")}-dialog`, true, surface.page);
+    await closeSettings(surface);
   });
 
   for (const group of ["View", "Annotate", "Analyze", "Results"]) {
@@ -691,12 +690,21 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     await page.locator(".research-inspector").evaluate((element) => { element.scrollTop = 0; });
   });
   await step("compact-settings-and-guide", async () => {
-    await settings(); await audit("compact-settings"); await capture("compact-settings");
-    await page.getByRole("tab", { name: "User guide", exact: true }).click();
-    await page.getByRole("button", { name: "Open user guide", exact: true }).click();
-    await page.getByRole("dialog", { name: "User manual", exact: true }).waitFor();
-    await audit("compact-guide"); await capture("compact-guide");
-    await page.keyboard.press("Escape");
+    const surface = await openSettings(app, page, { requireNative: true });
+    const settingsWindow = await app.browserWindow(surface.page);
+    await settingsWindow.evaluate(win => win.setContentSize(1100, 720));
+    await surface.page.waitForFunction(() => innerWidth === 1100 && innerHeight === 720);
+    await audit("compact-settings", surface.page);
+    await capture("compact-settings", true, surface.page);
+    await surface.dialog.getByRole("tab", { name: "User guide", exact: true }).click();
+    await surface.dialog.getByRole("button", { name: "Open user guide", exact: true }).click();
+    const guide = surface.page.getByRole("dialog", { name: "User manual", exact: true });
+    await guide.waitFor();
+    await audit("compact-guide", surface.page);
+    await capture("compact-guide", true, surface.page);
+    await surface.page.keyboard.press("Escape");
+    await guide.waitFor({ state: "hidden" });
+    await closeSettings(surface);
   });
   await resize(sizes[0]);
   let savedBindings;

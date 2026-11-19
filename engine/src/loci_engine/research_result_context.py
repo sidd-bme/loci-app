@@ -10,9 +10,29 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from .quantitative import exact_keys
+import numpy as np
+
+from .native_image import (
+    NativeDimensions,
+    NativeImageError,
+    NativeLevel,
+    PhysicalCalibration,
+    native_geometry,
+)
+from .quantitative import (
+    MAX_OBJECTS,
+    MAX_WORKING_BYTES,
+    Geometry,
+    apply_marker_gates,
+    exact_keys,
+    processing_step_provenance,
+    segment_scalar,
+    validate_processing_steps,
+)
+from .research_channels import validate_declarations
 from .research_project import ResearchProject, canonical_json, checked_id
 
 if TYPE_CHECKING:
@@ -21,6 +41,60 @@ if TYPE_CHECKING:
 MAX_ANCESTRY = 32
 MAX_FIELDS = 256
 MAX_RESPONSE_BYTES = 64 * 1024
+CLI_RECIPE_ROUTE = "native-2d-level0-cpu-components-run-recipe"
+_COMPONENTS_SEG_KEYS = frozenset(
+    {
+        "method",
+        "dimensions",
+        "threshold",
+        "threshold_method",
+        "polarity",
+        "connectivity",
+        "min_size",
+        "size_unit",
+        "split_height",
+        "distance_unit",
+        "exclude_border",
+        "count",
+        "scientific_validation",
+    }
+)
+_REQUIRED_CLI_PROVENANCE = frozenset(
+    {
+        "geometry",
+        "selection",
+        "recipe",
+        "recipe_sha256",
+        "channel_metadata",
+        "processing",
+        "segmentation",
+        "measurements",
+        "measurement_basis",
+        "runtime",
+        "estimated_working_bytes",
+    }
+)
+_ALLOWED_CLI_PROVENANCE = _REQUIRED_CLI_PROVENANCE | {"job_id"}
+_FORBIDDEN_CLI_PROVENANCE = (
+    "legacy_import",
+    "tissue_model",
+    "external_labels",
+    "stain_separation",
+    "compartment_measurement",
+    "model",
+    "model_preview",
+    "morphometrics",
+    "perinuclear",
+    "spatial",
+    "correction",
+    "tracking",
+    "registration",
+    "field_assay",
+    "puncta",
+    "annotation_evaluation",
+    "annotation_reference",
+    "controlled_method",
+)
 _SELECTION = ("x", "y", "width", "height", "t", "c", "z", "z_stop", "level", "elapsed_time_s")
 _SEGMENTATION = (
     "method",
@@ -487,6 +561,443 @@ def _replay(workbench: Workbench, result: dict[str, Any]) -> dict[str, Any]:
     return unsupported
 
 
+def _native_level0(record: Any) -> NativeLevel | None:
+    """Parse level-zero native metadata purely from persisted source JSON."""
+    if (
+        not isinstance(record, dict)
+        or not {"index", "dimensions", "calibration"}
+        <= set(record)
+        <= {"index", "dimensions", "calibration", "origin_xyz"}
+        or type(record.get("index")) is not int
+        or record["index"] != 0
+    ):
+        return None
+    dims = record.get("dimensions")
+    if (
+        not isinstance(dims, dict)
+        or set(dims) != {"t", "c", "z", "y", "x", "s"}
+        or any(type(dims[key]) is not int or dims[key] < 1 for key in dims)
+    ):
+        return None
+    cal_raw = record.get("calibration")
+    calibration: PhysicalCalibration | None = None
+    if cal_raw is not None:
+        if not isinstance(cal_raw, dict) or set(cal_raw) != {"axes", "spacing", "unit"}:
+            return None
+        axes = cal_raw.get("axes")
+        spacing = cal_raw.get("spacing")
+        unit = cal_raw.get("unit")
+        if (
+            axes not in {"YX", "ZYX"}
+            or not isinstance(spacing, (list, tuple))
+            or len(spacing) != len(axes)
+            or any(
+                type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                for value in spacing
+            )
+            or not isinstance(unit, str)
+            or not unit
+        ):
+            return None
+        calibration = PhysicalCalibration(
+            axes=axes,
+            spacing=tuple(float(value) for value in spacing),
+            unit=unit,
+        )
+    origin_raw = record.get("origin_xyz")
+    origin_xyz: tuple[float, float, float] | None = None
+    if origin_raw is not None:
+        if (
+            not isinstance(origin_raw, (list, tuple))
+            or len(origin_raw) != 3
+            or any(
+                type(value) not in (int, float) or not math.isfinite(value) for value in origin_raw
+            )
+        ):
+            return None
+        origin_xyz = (float(origin_raw[0]), float(origin_raw[1]), float(origin_raw[2]))
+    return NativeLevel(
+        index=0,
+        dimensions=NativeDimensions(**dims),
+        calibration=calibration,
+        origin_xyz=origin_xyz,
+    )
+
+
+def _matches_processing_record(actual: Any, expected: dict[str, Any]) -> bool:
+    if not isinstance(actual, dict) or set(actual) != set(expected):
+        return False
+    for key, exp_val in expected.items():
+        act_val = actual[key]
+        if isinstance(exp_val, bool):
+            if type(act_val) is not bool or act_val is not exp_val:
+                return False
+        elif isinstance(exp_val, float):
+            if (
+                type(act_val) not in (int, float)
+                or not math.isfinite(act_val)
+                or float(act_val) != exp_val
+            ):
+                return False
+        elif isinstance(exp_val, (list, tuple)):
+            if (
+                not isinstance(act_val, list)
+                or len(act_val) != len(exp_val)
+                or any(
+                    type(a) not in (int, float) or not math.isfinite(a) or float(a) != float(e)
+                    for a, e in zip(act_val, exp_val, strict=True)
+                )
+            ):
+                return False
+        elif type(act_val) is not str or act_val != exp_val:
+            return False
+    return True
+
+
+def _cli_recipe(
+    workbench: Workbench,
+    result: dict[str, Any],
+    source: dict[str, Any],
+    selection: dict[str, Any] | None,
+    geometry: dict[str, Any] | None,
+    replay: dict[str, Any],
+) -> dict[str, Any]:
+    """Gate CLI-ready recipe copy to verified 2D level-zero CPU Components runs."""
+    from .workbench import geometry_from_dict, runtime_record
+
+    def deny(reason: str) -> dict[str, Any]:
+        return {
+            "status": "unsupported",
+            "route": None,
+            "operation": None,
+            "recipe_sha256": None,
+            "reason": reason,
+        }
+
+    if (
+        result.get("schema") != "loci.research-result/v1"
+        or result.get("parent_id") is not None
+        or result.get("kind") != "segmentation"
+    ):
+        return deny(
+            "CLI recipe copy supports only original 2D Threshold segmentation results "
+            "without parents or corrections."
+        )
+    provenance = result["provenance"]
+    if provenance.get("workflow"):
+        return deny("Workflow-generated results require their saved workflow context.")
+    if provenance.get("exploration") is not None:
+        return deny("Exploration-adopted results are outside the direct CLI recipe route.")
+    if provenance.get("remote_attachment") is not None:
+        return deny("Remote-attached results are outside the local CLI recipe route.")
+    if provenance.get("source_derivation") is not None or source.get("derivation") is not None:
+        return deny("Results on derived or converted sources are outside the CLI recipe route.")
+    if any(key in provenance for key in _FORBIDDEN_CLI_PROVENANCE):
+        return deny(
+            "Only direct run_recipe Threshold segmentation results support CLI recipe copy."
+        )
+    if (
+        replay.get("status") != "available"
+        or replay.get("operation") != "run_recipe"
+        or not isinstance(replay.get("request"), dict)
+    ):
+        return deny("This result does not have a verified run_recipe request.")
+    recipe = provenance.get("recipe")
+    recipe_sha256 = provenance.get("recipe_sha256")
+    if (
+        not isinstance(recipe, dict)
+        or not isinstance(recipe_sha256, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", recipe_sha256)
+        or hashlib.sha256(canonical_json(recipe).encode()).hexdigest() != recipe_sha256
+    ):
+        return deny("Persisted recipe provenance or hash is incomplete.")
+    if "references" in recipe or "references" in provenance:
+        return deny("Recipes with reference-image dependencies are outside this CLI route.")
+    if any(
+        isinstance(step, dict) and step.get("op") == "flatfield" for step in recipe.get("steps", [])
+    ):
+        return deny("Flat-field recipes require reference-image bindings.")
+    if "input_transform" in recipe or "input_transform" in provenance:
+        return deny("Derived RGB input transforms are outside the scalar CLI recipe route.")
+    if "derived_measurement_arrays" in provenance or "derived_measurement_prefix" in provenance:
+        return deny("Results with derived channel prefixes are outside this CLI recipe route.")
+    if provenance.get("measurement_basis") != "raw-selected-channel-values-on-result-grid":
+        return deny("CLI recipe copy requires raw selected-channel pixel basis.")
+    if not (_REQUIRED_CLI_PROVENANCE <= set(provenance) <= _ALLOWED_CLI_PROVENANCE):
+        return deny(
+            "Result provenance is incomplete or includes unsupported context for CLI recipe copy."
+        )
+    if set(recipe) != {
+        "steps",
+        "segmentation",
+        "measurement_channels",
+        "gates",
+        "working_bytes",
+    }:
+        return deny("Persisted recipe contains unsupported fields for this CLI route.")
+    if (
+        set(replay["request"]) != {"source_id", "selection", "recipe"}
+        or replay["request"]["source_id"] != result["source_id"]
+        or replay["request"]["selection"] != selection
+        or replay["request"]["recipe"] != recipe
+    ):
+        return deny("Persisted replay request disagrees with recorded recipe provenance.")
+    if "job_id" in provenance:
+        try:
+            job_id = checked_id(provenance["job_id"])
+            job = workbench.project.job(job_id)
+        except ValueError:
+            return deny("The producing job record is missing or invalid.")
+        if (
+            job.get("operation") != "run_recipe"
+            or job.get("state") != "succeeded"
+            or str(job.get("request_key", "")).startswith("graph-v2:")
+            or result["id"] not in (job.get("result_ids") or [])
+            or job.get("request") != replay["request"]
+        ):
+            return deny("The producing job does not match a standalone run_recipe execution.")
+    if source.get("source_kind") != "native" or source.get("locator_state") == "relink-required":
+        return deny("CLI recipe copy requires a local native scalar source.")
+    metadata = source.get("metadata")
+    if not isinstance(metadata, dict):
+        return deny("Registered source metadata is incomplete.")
+    if type(metadata.get("selected_series")) is not int or metadata["selected_series"] < 0:
+        return deny("Registered source series metadata is incomplete.")
+    dimensions = metadata.get("dimensions")
+    if (
+        not isinstance(dimensions, dict)
+        or type(dimensions.get("s")) is not int
+        or dimensions.get("s") != 1
+        or metadata.get("sample_semantics") != "none"
+        or metadata.get("palette") is not None
+        or "S" in str(metadata.get("axes", ""))
+        or bool(metadata.get("rgb_samples"))
+        or bool(metadata.get("is_rgb"))
+    ):
+        return deny(
+            "CLI recipe copy requires a native scalar image without RGB or palette samples."
+        )
+    levels = metadata.get("levels")
+    level0 = _native_level0(levels[0]) if isinstance(levels, list) and levels else None
+    if level0 is None or level0.dimensions.s != 1 or dimensions != asdict(level0.dimensions):
+        return deny("Level-zero native source dimensions or calibration are invalid.")
+    if selection is None or "z_stop" in selection:
+        return deny("CLI recipe copy supports only single-plane 2D analyses.")
+    if set(selection) != {"x", "y", "width", "height", "t", "c", "z", "level"}:
+        return deny("Result selection is missing required 2D coordinates.")
+    if selection["level"] != 0:
+        return deny("CLI recipe copy supports only full-resolution level-zero analyses.")
+    if (
+        selection["x"] + selection["width"] > level0.dimensions.x
+        or selection["y"] + selection["height"] > level0.dimensions.y
+        or selection["t"] >= level0.dimensions.t
+        or selection["c"] >= level0.dimensions.c
+        or selection["z"] >= level0.dimensions.z
+    ):
+        return deny("Result selection exceeds the registered level-zero source bounds.")
+    arrays = result.get("arrays")
+    expected_shape = [selection["height"], selection["width"]]
+    if (
+        not isinstance(arrays, dict)
+        or set(arrays) != {"image", "labels"}
+        or not isinstance(arrays["labels"], dict)
+        or not isinstance(arrays["image"], dict)
+        or arrays["labels"].get("shape") != expected_shape
+        or arrays["labels"].get("dtype") != "uint32"
+        or arrays["image"].get("shape") != expected_shape
+        or arrays["image"].get("dtype") != "float64"
+    ):
+        return deny("Result array metadata does not match a 2D single-plane segmentation.")
+    if (
+        not isinstance(geometry, dict)
+        or set(geometry) != {"axes", "affine", "unit", "frame"}
+        or geometry.get("axes") != "YX"
+        or geometry.get("frame") != "image"
+        or not isinstance(geometry.get("affine"), list)
+        or len(geometry["affine"]) != 4
+        or any(
+            not isinstance(row, list)
+            or len(row) != 4
+            or any(type(val) not in (int, float) or not math.isfinite(val) for val in row)
+            for row in geometry["affine"]
+        )
+    ):
+        return deny("Result calibration must declare complete 2D YX image geometry.")
+    try:
+        saved_geometry = geometry_from_dict(geometry)
+        saved_geometry.orthogonal_spacing()
+        expected_geometry = native_geometry((level0,), selection, False)
+    except (ValueError, NativeImageError):
+        return deny("Result calibration disagrees with level-zero source geometry.")
+    if saved_geometry != expected_geometry:
+        return deny("Result calibration disagrees with level-zero source geometry.")
+    seg_req = recipe.get("segmentation")
+    seg_prov = provenance.get("segmentation")
+    if not isinstance(seg_req, dict) or not isinstance(seg_prov, dict):
+        return deny("CLI recipe copy requires Components threshold segmentation.")
+    if (
+        seg_req.get("method", "components") != "components"
+        or seg_prov.get("method") != "components"
+    ):
+        return deny("CLI recipe copy supports only Components threshold segmentation.")
+    if (
+        set(seg_prov) != _COMPONENTS_SEG_KEYS
+        or type(seg_prov["dimensions"]) is not int
+        or seg_prov["dimensions"] != 2
+        or type(seg_prov["connectivity"]) is not int
+        or seg_prov["connectivity"] != 1
+        or seg_prov["split_height"] is not None
+        or seg_prov["polarity"] not in {"bright", "dark"}
+        or seg_prov["threshold_method"] not in {"user-defined", "otsu-on-selected-scalar-array"}
+        or type(seg_prov["threshold"]) not in (int, float)
+        or not math.isfinite(seg_prov["threshold"])
+        or type(seg_prov["min_size"]) not in (int, float)
+        or not math.isfinite(seg_prov["min_size"])
+        or type(seg_prov["exclude_border"]) is not bool
+        or seg_prov["size_unit"] != f"{saved_geometry.unit}^2"
+        or seg_prov["distance_unit"] != saved_geometry.unit
+        or seg_prov["scientific_validation"] != "unvalidated-research-method"
+        or type(seg_prov["count"]) is not int
+        or not 0 <= seg_prov["count"] <= MAX_OBJECTS
+    ):
+        return deny("Persisted segmentation provenance is incomplete or incompatible.")
+    req_min_size = seg_req.get("min_size", 0)
+    if (
+        seg_req.get("polarity", "bright") != seg_prov["polarity"]
+        or seg_req.get("exclude_border", False) is not seg_prov["exclude_border"]
+        or type(req_min_size) not in (int, float)
+        or not math.isfinite(req_min_size)
+        or float(req_min_size) != float(seg_prov["min_size"])
+    ):
+        return deny(
+            "Persisted segmentation settings disagree with recorded segmentation provenance."
+        )
+    req_threshold = seg_req.get("threshold", "otsu")
+    if req_threshold == "otsu":
+        if seg_prov["threshold_method"] != "otsu-on-selected-scalar-array":
+            return deny(
+                "Persisted threshold method disagrees with recorded segmentation provenance."
+            )
+    elif (
+        type(req_threshold) not in (int, float)
+        or not math.isfinite(req_threshold)
+        or seg_prov["threshold_method"] != "user-defined"
+        or float(req_threshold) != float(seg_prov["threshold"])
+    ):
+        return deny("Persisted threshold disagrees with recorded segmentation provenance.")
+    try:
+        segment_scalar(np.ones((3, 3), dtype=np.float64), Geometry.diagonal((1.0, 1.0)), seg_req)
+        validate_processing_steps(recipe["steps"], geometry=saved_geometry)
+    except ValueError:
+        return deny("Persisted recipe processing or segmentation settings are invalid.")
+    processing_prov = provenance.get("processing")
+    if not isinstance(processing_prov, list) or len(processing_prov) != len(recipe["steps"]):
+        return deny("Persisted processing steps disagree with the recorded recipe.")
+    for step, record in zip(recipe["steps"], processing_prov, strict=True):
+        try:
+            expected_step = processing_step_provenance(step, saved_geometry)
+        except ValueError:
+            return deny("Persisted processing step parameters are invalid.")
+        if not _matches_processing_record(record, expected_step):
+            return deny("Persisted processing parameter evidence disagrees with the recipe.")
+    channels = recipe["measurement_channels"]
+    if (
+        not isinstance(channels, list)
+        or not 1 <= len(channels) <= 32
+        or len(set(channels)) != len(channels)
+        or any(type(ch) is not int or not 0 <= ch < level0.dimensions.c for ch in channels)
+    ):
+        return deny("Persisted channel selection is invalid for this source.")
+    gates = recipe["gates"]
+    try:
+        apply_marker_gates([], gates)
+        current_cm = workbench.channel_metadata(source["id"])
+    except ValueError:
+        return deny("Persisted marker gates or study channel metadata are invalid.")
+    recorded_cm = provenance.get("channel_metadata")
+    if (
+        not isinstance(recorded_cm, dict)
+        or set(recorded_cm)
+        != {"source_id", "source_sha256", "original_names", "revision", "channels", "basis"}
+        or recorded_cm["source_id"] != source["id"]
+        or recorded_cm["source_sha256"] != source["sha256"]
+        or recorded_cm["original_names"] != current_cm["original_names"]
+        or recorded_cm["basis"] != current_cm["basis"]
+        or type(recorded_cm["revision"]) is not int
+        or recorded_cm["revision"] < 0
+        or len(current_cm["channels"]) != level0.dimensions.c
+    ):
+        return deny("Recorded channel metadata is incomplete or incompatible with this source.")
+    try:
+        recorded_channels = validate_declarations(recorded_cm["channels"], level0.dimensions.c)
+    except ValueError:
+        return deny("Recorded channel declarations are incomplete or invalid.")
+    if recorded_cm["channels"] != recorded_channels:
+        return deny("Recorded channel declarations are incomplete or invalid.")
+    checked_channels = set(channels) | {selection["c"]}
+    if any(recorded_channels[ch] != current_cm["channels"][ch] for ch in checked_channels):
+        return deny("Recorded channel declarations no longer match the study channel metadata.")
+    expected_channel_labels = {f"{ch + 1}: {recorded_channels[ch]['name']}" for ch in channels}
+    if gates and any(gate.get("channel") not in expected_channel_labels for gate in gates):
+        return deny("Marker gate channel labels no longer match the study channel metadata.")
+    measurements = provenance.get("measurements")
+    expected_gate_names = {gate["name"] for gate in gates}
+    if (
+        not isinstance(measurements, list)
+        or len(measurements) != seg_prov["count"]
+        or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("intensity"), dict)
+            or set(row["intensity"]) != expected_channel_labels
+            or not isinstance(row.get("marker_gates"), dict)
+            or set(row["marker_gates"]) != expected_gate_names
+            or row.get("index_axes") != "YX"
+            or row.get("distance_unit") != saved_geometry.unit
+            or row.get("measure_kind") != "area"
+            or row.get("measure_unit") != f"{saved_geometry.unit}^2"
+            or row.get("world_frame") != saved_geometry.frame
+            for row in measurements
+        )
+    ):
+        return deny(
+            "Recorded measurement metadata disagrees with the verified recipe and channels."
+        )
+    working_bytes = recipe["working_bytes"]
+    estimated_bytes = selection["width"] * selection["height"] * (96 + 8 * len(channels))
+    if (
+        type(working_bytes) is not int
+        or not 1024 <= working_bytes <= MAX_WORKING_BYTES
+        or estimated_bytes > working_bytes
+        or type(provenance.get("estimated_working_bytes")) is not int
+        or provenance["estimated_working_bytes"] != estimated_bytes
+    ):
+        return deny("Persisted working-memory budget is insufficient or inconsistent.")
+    current_runtime = runtime_record()
+    runtime = provenance.get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or runtime != current_runtime
+        or any(
+            not isinstance(runtime[key], str)
+            or not runtime[key]
+            or _value(runtime[key]) != runtime[key]
+            for key in ("engine", "numpy", "scipy", "scikit_image")
+        )
+        or runtime["engine"] != result.get("engine_version")
+        or runtime["resolved_device"] != "cpu"
+        or runtime["backend"] != "numpy-scipy-cpu"
+        or runtime["fallback_reason"] is not None
+    ):
+        return deny("Result runtime is incomplete or incompatible with this local CPU engine.")
+    return {
+        "status": "available",
+        "route": CLI_RECIPE_ROUTE,
+        "operation": "run_recipe",
+        "recipe_sha256": recipe_sha256,
+        "reason": None,
+    }
+
+
 def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     exact_keys(request, {"result_id", "revision_hash"}, "result description")
     result_id = checked_id(request.get("result_id"))
@@ -530,7 +1041,9 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
                 raise ValueError("Association parent revision binding is missing or mismatched")
             bound = True
         elif current["kind"] in {
-            "controlled-method", "annotation-reference", "annotation-agreement"
+            "controlled-method",
+            "annotation-reference",
+            "annotation-agreement",
         }:
             from .research_result_extensions import validate_project
 
@@ -780,8 +1293,19 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
     if isinstance(external, dict):
         _fields(
             external.get("producer"),
-            ("name", "version"),
+            ("name", "version", "model", "mode", "checkpoint", "checkpoint_digest"),
             "provenance.external_labels.producer",
+            importer,
+        )
+        _fields(
+            external.get("handoff"),
+            (
+                "handoff_id",
+                "manifest_sha256",
+                "exported_input_file_sha256",
+                "export_identity_basis",
+            ),
+            "provenance.external_labels.handoff",
             importer,
         )
         _fields(
@@ -858,6 +1382,8 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
         for index, parent in enumerate(lineage)
         if not parent["revision_bound"]
     )
+    replay = _replay(workbench, result)
+    cli_recipe = _cli_recipe(workbench, result, source, selection, geometry, replay)
     output = {
         "schema": "loci.result-context/v1",
         "result_id": result_id,
@@ -879,7 +1405,8 @@ def describe_result(workbench: Workbench, request: dict[str, Any]) -> dict[str, 
         "parents": lineage,
         "correction": correction_fields,
         "unavailable": unavailable,
-        "replay": _replay(workbench, result),
+        "replay": replay,
+        "cli_recipe": cli_recipe,
     }
     if len(canonical_json(output).encode()) > MAX_RESPONSE_BYTES:
         raise ValueError("Result context exceeds its bounded response limit")

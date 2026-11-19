@@ -5,7 +5,7 @@ import type {
 } from "../shared/agent-workspace-api";
 import type { ResearchAgentControlRequest, ResearchAgentTargetReference } from "../shared/research-contracts";
 import { AgentWorkspaceSurface, EMPTY_AGENT_PRESENTATION } from "./AgentWorkspaceSurface";
-import { loadPreferences } from "./preferences";
+import { applyAppearancePreferences, loadPreferences } from "./preferences";
 import "./AgentWorkspaceSurface.css";
 
 function bindingKey(value: AgentWorkspaceBinding | null): string {
@@ -36,11 +36,7 @@ export function DetachedAgentWorkspace({ api }: { api: AgentWorkspaceApi }): Rea
   const preferences = loadPreferences();
 
   useEffect(() => {
-    const applyAppearance = () => {
-      const next = loadPreferences();
-      Object.assign(document.documentElement.dataset, { theme: next.theme, textSize: next.textSize,
-        font: next.font ?? "system", motion: next.motion });
-    };
+    const applyAppearance = () => applyAppearancePreferences(loadPreferences());
     applyAppearance();
     document.documentElement.classList.add("agent-workspace-detached-root");
     window.addEventListener("storage", applyAppearance);

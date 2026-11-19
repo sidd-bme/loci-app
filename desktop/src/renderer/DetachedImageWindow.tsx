@@ -12,7 +12,7 @@ import type { ResearchDesktopApi } from "../shared/research-contracts";
 import { ImageViewport, type ImagePoint } from "./ImageViewport";
 import { RawVolumeViewport, type RawVolumeRefinementRequest, type RawVolumeResponse } from "./RawVolumeViewport";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
-import { loadPreferences } from "./preferences";
+import { applyAppearancePreferences, loadPreferences } from "./preferences";
 import type { VolumeDisplayControls } from "./raw-volume-display";
 import "./detached-windows.css";
 
@@ -83,11 +83,7 @@ export function DetachedImageWindow({ api }: { api: ImageWindowApi }) {
   const volumeToken = useRef(0);
 
   useEffect(() => {
-    const applyAppearance = () => {
-      const preferences = loadPreferences();
-      Object.assign(document.documentElement.dataset, { theme: preferences.theme, textSize: preferences.textSize,
-        font: preferences.font ?? "system", motion: preferences.motion });
-    };
+    const applyAppearance = () => applyAppearancePreferences(loadPreferences());
     applyAppearance();
     window.addEventListener("storage", applyAppearance);
     document.documentElement.classList.add("detached-window-root");
@@ -353,6 +349,7 @@ export function DetachedImageWindow({ api }: { api: ImageWindowApi }) {
           <RefreshCw aria-hidden="true" /> Retry volume
         </button>}
       </> : <ImageViewport
+        dockedControls
         key={targetKey(target)}
         api={viewportApi}
         source={entry.source}

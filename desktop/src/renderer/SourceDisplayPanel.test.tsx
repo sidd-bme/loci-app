@@ -25,6 +25,17 @@ function mount(overrides: Partial<Parameters<typeof SourceDisplayPanel>[0]> = {}
   return { ...render(<SourceDisplayPanel {...props} />), onRgbMapping, onInterpretation, props };
 }
 describe("image information disclosure", () => {
+  it("keeps channel visibility separate from the display settings disclosure", () => {
+    const { props } = mount();
+    const channelVisibility = screen.getByRole("checkbox", { name: "Channel 1 visible" });
+    const channelRow = channelVisibility.closest("details")!;
+    fireEvent.click(channelVisibility.closest("label")!);
+    expect(props.onChannels).toHaveBeenCalledExactlyOnceWith([
+      { ...props.channels[0], visible: false }, props.channels[1], props.channels[2],
+    ]);
+    expect(channelRow.open).toBe(false);
+  });
+
   it("selects logical RGB channels and edits the selected tone without recoloring the lookup table", async () => {
     const rgb: ResearchSource = { ...source, metadata: { ...source.metadata, sample_semantics: "RGB",
       dimensions: { ...source.metadata.dimensions!, c: 2, z: 3, s: 3 }, channel_dtypes: ["uint16", "uint16"],
@@ -424,7 +435,6 @@ describe("batch channel colors (Milestone 5A)", () => {
       onBatchApplied,
     });
 
-    // "Copy colours to images…" button is visible in channel heading without trailing ellipsis
     const applyColorsBtn = screen.getByRole("button", { name: "Copy colours to images… (2)" });
     expect(applyColorsBtn).toBeTruthy();
 

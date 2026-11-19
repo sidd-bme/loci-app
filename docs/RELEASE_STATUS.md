@@ -7,6 +7,24 @@ contains the application, checksums, software inventories and dependency licence
 
 ## Source development after this download
 
+The image stays in the center while the source list and tool panel can collapse.
+The current source adds a dedicated Settings window, linked A/B navigation,
+and automatic, nearest-pixel or smooth display per image. Display sampling
+leaves the measured pixels unchanged.
+
+An original, full-resolution, single-plane CPU Components result can supply
+its verified recipe. Open **Results → Review & export → Review → Analysis
+details**, copy the recipe and preflight it against the same saved study.
+Running it with a fresh request key creates a new result for review. The
+[CLI guide](CLI.md) covers the supported scope and retry behavior.
+
+For standalone μSAM, export one original scalar channel as a native TIFF,
+then return an instance-label TIFF for the same plane or Z range. Loci
+checks the saved source and grid, previews the labels and measures the raw
+channel. Segmentation runs in the researcher's separate μSAM installation.
+The [external-label guide](EXTERNAL_LABELS.md) covers the commands, supported
+TIFF layouts and how to record a model or checkpoint.
+
 The source tree includes newer shared researcher/agent workflows, named actions,
 retained image previews and comparisons, activity targets, expiring approvals and
 explicit Follow controls, plus scientific data packages and study intensity

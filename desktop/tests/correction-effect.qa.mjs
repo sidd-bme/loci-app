@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 
 // Successful scientific actions use the real packaged controls. Read-only
@@ -424,9 +425,10 @@ async function restore(receipt) {
   await panel().getByText("Historical snapshot", { exact: false }).waitFor();
 }
 async function theme(value) {
-  await page.getByRole("button", { name: "Open settings", exact: true }).click();
-  await page.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(value);
-  await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  const settings = await openSettings(app, page);
+  await settings.dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
+  await settings.dialog.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(value);
+  await closeSettings(settings, "Close settings");
   await wait(() => page.locator("html").getAttribute("data-theme"), actual => actual === value, "applied real theme");
 }
 

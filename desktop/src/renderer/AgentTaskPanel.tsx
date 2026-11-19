@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Check, Circle, CircleAlert, CircleDot, Pencil, Plus, Trash2 } from "lucide-react";
 import type { ResearchAgentControlRequest, ResearchAgentTaskRecord, ResearchSnapshot } from "../shared/research-contracts";
 import { agentTargetState, AgentTargetLinks, RecordedTime, type AgentActivityNavigation } from "./AgentActivityTimeline";
 import "./AgentTaskPanel.css";
@@ -10,7 +10,12 @@ type Assessment = ResearchAgentTaskRecord["assessments"][number];
 export type AgentTaskDraft = NonNullable<AgentWorkspacePresentation["draft"]>;
 export type AgentTaskPresentation = { selectedTaskId: string | null; draft: AgentTaskDraft | null };
 const taskState = { active: "In progress", awaiting_review: "Ready for your review", complete: "Reported complete", cancelled: "Plan cancelled" };
-const stepState = { planned: "Planned", in_progress: "In progress", complete: "Reported complete", blocked: "Blocked" };
+const stepStates = {
+  planned: { label: "Planned", icon: Circle, tone: "neutral" },
+  in_progress: { label: "In progress", icon: CircleDot, tone: "processing" },
+  complete: { label: "Reported complete", icon: Check, tone: "connected" },
+  blocked: { label: "Blocked", icon: CircleAlert, tone: "warning" },
+};
 
 function AssessmentView({ assessment, snapshot, navigation, unavailable }: {
   assessment: Assessment; snapshot: ResearchSnapshot; navigation: AgentActivityNavigation; unavailable: boolean;
@@ -32,7 +37,7 @@ function AssessmentView({ assessment, snapshot, navigation, unavailable }: {
     <p className="agent-task-note">Agent interpretation. Scientific review is recorded on the result.</p>
     <details><summary>Assessment record</summary><dl className="agent-approval-meta">
       <dt>Recorded</dt><dd><RecordedTime value={assessment.created_at} /></dd>
-      <dt>Assessment</dt><dd>{assessment.id}</dd><dt>Session</dt><dd>{assessment.session_id}</dd>
+      <dt>Assessment</dt><dd><code>{assessment.id}</code></dd><dt>Session</dt><dd><code>{assessment.session_id}</code></dd>
     </dl></details>
   </section>;
 }
@@ -47,6 +52,7 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
   const setDraft = (next: AgentTaskDraft | null | ((current: AgentTaskDraft | null) => AgentTaskDraft | null)) =>
     onDraftChange(typeof next === "function" ? next(draft) : next);
   const [saveError, setSaveError] = useState("");
+  const cancelDescriptionId = useId();
   const submitting = useRef(false);
   const editButton = useRef<HTMLButtonElement>(null);
   const returnFocus = useRef(false);
@@ -88,7 +94,7 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
   });
   return <article className="agent-task" aria-label={`Agent task: ${task.goal}`}>
     <div className="agent-task-heading"><h3>Task plan</h3><span className="agent-session-badge">{taskState[task.state]}</span></div>
-    <p className="agent-task-note">{task.client_id} · Agent-reported plan{task.updated_by === "human" ? " · Updated by you" : ""}</p>
+    <p className="agent-task-note">Agent-reported plan · {task.client_id}{task.updated_by === "human" ? " · Updated by you" : ""}</p>
     {retained && <p className="agent-task-note">Retained plan · {session ? session.state.replaceAll("_", " ") : "session unavailable"}. Continuing requires an explicit resume from the external agent.</p>}
     {task.stale && <p className="agent-task-warning" role="note">A recorded source or result has changed. Inspect the exact evidence before continuing.</p>}
     {draft ? <form className="agent-task-editor" aria-label="Edit agent plan" onSubmit={event => { event.preventDefault(); void save(); }}>
@@ -115,29 +121,37 @@ function TaskView({ task, snapshot, navigation, unavailable, busy, canControl, o
       <p className="agent-task-note">Changed steps return to planned. Saving does not run the plan.</p>
     </form> : <>
       <p className="agent-task-goal">{task.goal}</p>
-      <ol className="agent-task-steps" aria-label="Agent-reported steps">{task.steps.map(step => <li key={step.id}>
-        <div className="agent-task-step-heading"><strong>{step.title}</strong><span>{stepState[step.state]}</span></div>
-        {step.note && <p className="agent-task-note">{step.note}</p>}
-        {step.targets.length > 0 && <details><summary>Step evidence</summary><AgentTargetLinks targets={step.targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} /></details>}
-      </li>)}</ol>
+      <ol className="agent-task-steps" aria-label="Agent-reported steps">{task.steps.map(step => {
+        const { label, icon: Icon, tone } = stepStates[step.state];
+        return <li className={`agent-task-step tone-${tone}`} key={step.id}>
+          <span className="agent-task-step-mark"><Icon size={14} strokeWidth={1.6} aria-hidden="true" /></span>
+          <div className="agent-task-step-body">
+            <div className="agent-task-step-heading"><strong>{step.title}</strong><span>{label}</span></div>
+            {step.note && <p className="agent-task-note">{step.note}</p>}
+            {step.targets.length > 0 && <details><summary>Step evidence</summary><AgentTargetLinks targets={step.targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} /></details>}
+          </div>
+        </li>;
+      })}</ol>
       {task.state !== "cancelled" && <div className="agent-task-actions">
         <button ref={editButton} type="button" disabled={!editable} onClick={edit}><Pencil size={14} aria-hidden="true" />Edit plan</button>
-        {task.state !== "complete" && <button type="button" disabled={locked} onClick={() => void onControl({ action: "cancel_task", task_id: task.id, expected_revision: task.revision })}>Cancel plan</button>}
+        {task.state !== "complete" && <button type="button" disabled={locked} aria-describedby={cancelDescriptionId} onClick={() => void onControl({ action: "cancel_task", task_id: task.id, expected_revision: task.revision })}>Cancel plan</button>}
       </div>}
     </>}
     {runningJobs.length > 0 && <section className="agent-task-jobs" aria-label="Confirmed task jobs">
       <h4>Running jobs</h4>{runningJobs.map(job => <div className="agent-task-job" key={job.id}>
-        <span>{job.operation.replaceAll("_", " ")} · {job.state} · {job.id.slice(0, 8)}</span>
+        <span><code>{job.operation}</code> · {job.state} · <code>{job.id.slice(0, 8)}</code></span>
         <button type="button" disabled={busy || unavailable || !canControl || job.cancel_requested}
           aria-label={`Stop job ${job.id}`} onClick={() => void onControl({ action: "stop_job", job_id: job.id, session_id: task.session_id })}>
           {job.cancel_requested ? "Stop requested" : "Stop job"}</button>
       </div>)}
     </section>}
-    {!draft && <p className="agent-task-note">Cancelling this plan leaves running jobs active. Use Stop job to request cancellation.</p>}
+    {!draft && task.state !== "cancelled" && task.state !== "complete" && <p className="agent-task-note" id={cancelDescriptionId}>
+      Cancelling this plan leaves running jobs active. Use Stop job to request cancellation.
+    </p>}
     <details><summary>Task sources &amp; record</summary>
       <AgentTargetLinks targets={task.targets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
       <dl className="agent-approval-meta"><dt>Updated</dt><dd><RecordedTime value={task.updated_at} /></dd>
-        <dt>Task</dt><dd>{task.id}</dd><dt>Revision</dt><dd>{task.revision}</dd><dt>Session</dt><dd>{task.session_id}</dd></dl>
+        <dt>Task</dt><dd><code>{task.id}</code></dd><dt>Revision</dt><dd>{task.revision}</dd><dt>Session</dt><dd><code>{task.session_id}</code></dd></dl>
     </details>
     {assessments[0] && <AssessmentView assessment={assessments[0]} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
     {assessments.length > 1 && <details className="agent-task-history"><summary>Earlier assessments ({assessments.length - 1})</summary>

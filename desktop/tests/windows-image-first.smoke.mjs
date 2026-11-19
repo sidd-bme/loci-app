@@ -9,6 +9,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
@@ -94,9 +95,8 @@ try {
   await page.keyboard.press("F1");
   await page.getByRole("dialog", { name: "User manual" }).waitFor({ state: "visible" });
   await page.getByLabel("Close user manual").click();
-  await page.getByLabel("Open settings").first().click();
-  await page.getByRole("dialog", { name: "Settings" }).waitFor({ state: "visible" });
-  await page.getByLabel("Close settings").click();
+  const settings = await openSettings(app, page, { trigger: page.getByLabel("Open settings").first() });
+  await closeSettings(settings, "Close settings");
   await page.locator("details.workbench-file-menu summary").click();
   await page.getByRole("button", { name: "Open study", exact: true }).click();
   await page.getByRole("main", { name: "Research workspace" }).waitFor({ state: "visible", timeout: 60_000 });

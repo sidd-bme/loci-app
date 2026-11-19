@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentWorkspaceApi, AgentWorkspaceFlushRequest, AgentWorkspaceState } from "../shared/agent-workspace-api";
 import type { ResearchAgentSessionsSnapshot } from "../shared/research-contracts";
 import { DetachedAgentWorkspace } from "./DetachedAgentWorkspace";
+import { DEFAULT_PREFERENCES, PREFERENCES_STORAGE_KEY, savePreferences } from "./preferences";
 import engineFixture from "./__fixtures__/agent-sessions-snapshot.json";
 
 afterEach(() => { cleanup(); localStorage.clear(); });
@@ -122,14 +123,19 @@ describe("Detached agent workspace", () => {
   });
 
   it("uses the local appearance preferences and renders stale snapshots without live controls", async () => {
-    localStorage.setItem("loci.preferences.v1", JSON.stringify({ theme: "paper", textSize: "large", motion: "reduced" }));
+    const preferences = { ...DEFAULT_PREFERENCES, theme: "paper", textSize: "large", motion: "reduced" } as const;
+    savePreferences(preferences);
     const h = harness({ ...initialState(), freshness: "stale", refreshError: "Current study state is unavailable." });
     render(<DetachedAgentWorkspace api={h.api} />);
-    expect(await screen.findByRole("checkbox", { name: "Follow agent" })).toBeDisabled();
+    expect(await screen.findByRole("switch", { name: "Follow agent" })).toBeDisabled();
     expect(document.documentElement.dataset.theme).toBe("paper");
     expect(document.documentElement.dataset.motion).toBe("reduced");
+    savePreferences({ ...preferences, theme: "black" });
+    fireEvent(window, new StorageEvent("storage", { key: PREFERENCES_STORAGE_KEY, storageArea: window.localStorage }));
+    expect(document.documentElement.dataset.theme).toBe("black");
     const activity = screen.getByRole("region", { name: "Agent activity timeline" });
     expect(within(activity).getByRole("button", { name: `Open source ${sourceId}` })).toBeDisabled();
     expect(h.api.navigate).not.toHaveBeenCalled();
+    expect(h.api.updatePresentation).not.toHaveBeenCalled();
   });
 });

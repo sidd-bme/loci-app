@@ -323,7 +323,7 @@ describe("native research bridge", () => {
     selection: { x: 0, y: 0, width: 8, height: 4, t: 0, c: 1, z: 0, level: 0 }, working_bytes: 64 * 1024 ** 2 });
 
   it("keeps compute settings in the main-owned application directory and restricts operations", async () => {
-    await call("compute-targets", "list", {});
+    expect(await call("compute-targets", "list", {})).toMatchObject({ study_binding: null });
     expect(mocks.request).toHaveBeenCalledWith("research_compute_targets", {
       directory: path.join(root, "compute-targets-v1.loci-study"), operation: "list", request: {}, project: null,
     }, 0);
@@ -333,6 +333,53 @@ describe("native research bridge", () => {
     mocks.request.mockClear();
     await expect(call("compute-targets", "list", {})).rejects.toThrow("Untrusted sender");
     expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it("binds identical profile rows to their listed study, including after reopening or closing it", async () => {
+    const a = path.join(root, "First.loci-study"), b = path.join(root, "Second.loci-study");
+    const row = { alias: "cluster", id: "a".repeat(32), revision: 1 };
+    const worker = mocks.clients[3].request;
+    worker.mockResolvedValue({ targets: [], study_profiles: [row] });
+    const list = () => call("compute-targets", "list", {}) as Promise<{
+      study_binding: string; study_profiles: typeof row[];
+    }>;
+    const save = (study_binding: string) => call("compute-targets", "remember", {
+      study_binding, id: row.id, revision: row.revision, expected_revision: 0,
+    });
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: a });
+    await call("create");
+    const first = await list();
+    expect(first.study_binding).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.stringify(first)).not.toContain(root);
+    let finishList!: (response: unknown) => void;
+    worker.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve; }));
+    const pending = list();
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: b });
+    await call("create");
+    const second = await list();
+    expect(second.study_profiles).toEqual(first.study_profiles);
+    expect(second.study_binding).not.toBe(first.study_binding);
+    finishList({ targets: [], study_profiles: [row] });
+    await expect(pending).rejects.toThrow("study changed");
+    worker.mockClear();
+    await expect(save(first.study_binding)).rejects.toThrow("study changed");
+    expect(worker).not.toHaveBeenCalled();
+    worker.mockResolvedValueOnce({ profile: row });
+    expect(await save(second.study_binding)).toEqual({ profile: row });
+    expect(worker).toHaveBeenCalledWith("research_compute_targets", {
+      directory: path.join(root, "compute-targets-v1.loci-study"), operation: "remember",
+      project: b, request: { id: row.id, revision: row.revision, expected_revision: 0 },
+    }, 0);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [a] });
+    await call("open");
+    const reopened = await list();
+    expect(reopened.study_binding).not.toBe(first.study_binding);
+    worker.mockClear();
+    await expect(save(first.study_binding)).rejects.toThrow("study changed");
+    await expect(save(second.study_binding)).rejects.toThrow("study changed");
+    await call("new-session");
+    await expect(save(reopened.study_binding)).rejects.toThrow("study changed");
+    expect(worker).not.toHaveBeenCalled();
   });
 
   it("exports the exact correction receipt through a trusted native destination and returns only bounded fields", async () => {
@@ -465,6 +512,153 @@ describe("native research bridge", () => {
     expect(mocks.request).toHaveBeenCalledWith("research_labels_import_grant", expect.objectContaining(binding), 0);
     mocks.open.mockClear();
     await expect(call("labels-import-preview", { ...binding, selection: { ...binding.selection, z_stop: 3 } })).rejects.toThrow(/at least two/);
+    expect(mocks.open).not.toHaveBeenCalled();
+  });
+
+  it("exports μSAM handoffs through the native save dialog and supports bound manifest and handoff_id returns", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "uSAM.loci-study") });
+    await call("create");
+    const project = mocks.request.mock.calls.find(([method]) => method === "research_create")![1].path;
+    mocks.request.mockClear();
+
+    const base = labelBinding();
+    const handoffId = "d".repeat(32);
+    const receipt = {
+      schema: "loci.usam-handoff-receipt/v1",
+      basename: "Loci-uSAM-plane",
+      handoff_id: handoffId,
+      manifest_sha256: sha,
+      export_origin: "verified-loci-native-export",
+      source_id: base.source_id,
+      source_sha256: base.source_sha256,
+      selection: base.selection,
+      measurement_channel: { index: 1, name: "2: Marker", basis: "raw-source-channel-values" },
+      geometry: { axes: "YX", frame: "image", unit: "pixel", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] },
+      calibration: { status: "unknown", unit: "pixel", axes: "YX", spacing: null },
+      input: {
+        file_name: "input.tif",
+        file_sha256: sha,
+        file_size_bytes: 256,
+        array_sha256: sha,
+        dtype: "uint16",
+        shape: [4, 8],
+        axes: "YX",
+        compression: "deflate",
+        value_preservation: "exact-original-native-scalar-samples",
+      },
+      label_profile: {
+        profile: "scalar-native-yx/v1",
+        alignment: "same-native-yx-grid",
+        axes: "YX",
+        shape: [4, 8],
+        allowed_dtypes: ["uint8", "uint16", "uint32"],
+        background_value: 0,
+        format: "TIFF",
+      },
+      validation: "not-established",
+      artifacts: {
+        "input.tif": { sha256: sha, size_bytes: 256 },
+        "manifest.json": { sha256: sha, size_bytes: 512 },
+        "README.md": { sha256: sha, size_bytes: 1024 },
+      },
+    };
+
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("usam-handoff-export", base)).toBeNull();
+    expect(mocks.request).not.toHaveBeenCalled();
+
+    await expect(call("usam-handoff-export", { ...base, path: "/private/out" })).rejects.toThrow(/Invalid label-import/);
+    await expect(call("usam-handoff-export", { ...base, handoff_id: handoffId })).rejects.toThrow(/Invalid label-import/);
+    expect(mocks.save).toHaveBeenCalledTimes(2);
+
+    let finishSave!: (value: { canceled: boolean; filePath?: string }) => void;
+    mocks.save.mockReturnValueOnce(new Promise((resolve) => { finishSave = resolve; }));
+    mocks.request.mockResolvedValueOnce(receipt);
+    const pendingExport = call("usam-handoff-export", base);
+    await expect(call("create")).rejects.toThrow(/Finish|Wait/);
+    await expect(call("execute", "labels_import", { source_id: base.source_id })).rejects.toThrow(/finish opening/);
+    finishSave({ canceled: false, filePath: path.join(root, "Loci-uSAM-plane") });
+    expect(await pendingExport).toEqual(receipt);
+    expect(mocks.request).toHaveBeenCalledWith("research_usam_handoff_export", {
+      project,
+      destination: path.join(root, "Loci-uSAM-plane"),
+      ...base,
+    }, 0);
+
+    let finishEpochSave!: (value: { canceled: boolean; filePath?: string }) => void;
+    mocks.save.mockReturnValueOnce(new Promise((resolve) => { finishEpochSave = resolve; }));
+    const staleExport = call("usam-handoff-export", base);
+    (bridge as unknown as { viewDocumentEpoch: number }).viewDocumentEpoch += 1;
+    finishEpochSave({ canceled: false, filePath: path.join(root, "Stale-bundle") });
+    await expect(staleExport).rejects.toThrow(/active study changed/);
+
+    const record = {
+      schema: "loci.usam-handoff/v1",
+      handoff_id: handoffId,
+      export_origin: "verified-loci-native-export",
+      source_id: base.source_id,
+      source_sha256: base.source_sha256,
+      source_name: "sample.ome.tif",
+      selection: base.selection,
+      measurement_channel: receipt.measurement_channel,
+      geometry: receipt.geometry,
+      calibration: receipt.calibration,
+      input: receipt.input,
+      label_profile: receipt.label_profile,
+      upstream_reference: { tool: "micro-sam", version: "2.0.1", commit: "d45ab70ece93a9eb3ca1e237b9067767b0a18263" },
+      validation: "not-established",
+      manifest_sha256: sha,
+    };
+    mocks.request.mockResolvedValueOnce({ handoffs: [record] });
+    expect(await call("usam-handoffs")).toEqual([record]);
+    expect(mocks.request).toHaveBeenLastCalledWith("research_usam_handoffs", { project }, 0);
+    await expect(call("usam-handoffs", "extra")).rejects.toThrow(/Invalid μSAM handoff query/);
+
+    mocks.open.mockClear();
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: ["/selected/handoff-labels.tif"] });
+    mocks.request.mockResolvedValueOnce({ grant_id: "e".repeat(32) });
+    await call("labels-import-preview", { ...base, handoff_id: handoffId });
+    expect(mocks.request).toHaveBeenLastCalledWith("research_labels_import_grant", {
+      project,
+      path: "/selected/handoff-labels.tif",
+      ...base,
+      handoff_id: handoffId,
+    }, 0);
+
+    mocks.open.mockClear();
+    mocks.request.mockClear();
+    mocks.open
+      .mockResolvedValueOnce({ canceled: false, filePaths: ["/selected/manifest.json"] })
+      .mockResolvedValueOnce({ canceled: false, filePaths: ["/selected/manifest-labels.tif"] });
+    mocks.request.mockResolvedValueOnce({ grant_id: "f".repeat(32) });
+    await call("labels-import-preview", { ...base, use_handoff_manifest: true });
+    expect(mocks.open).toHaveBeenCalledTimes(2);
+    expect(mocks.open).toHaveBeenNthCalledWith(1, expect.objectContaining({ title: "Select μSAM handoff manifest.json" }));
+    expect(mocks.request).toHaveBeenLastCalledWith("research_labels_import_grant", {
+      project,
+      path: "/selected/manifest-labels.tif",
+      ...base,
+      handoff_manifest_path: "/selected/manifest.json",
+    }, 0);
+
+    mocks.open.mockClear();
+    mocks.request.mockClear();
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    expect(await call("labels-import-preview", { ...base, use_handoff_manifest: true })).toBeNull();
+    expect(mocks.open).toHaveBeenCalledTimes(1);
+    expect(mocks.request).not.toHaveBeenCalled();
+
+    mocks.open.mockClear();
+    mocks.open
+      .mockResolvedValueOnce({ canceled: false, filePaths: ["/selected/manifest.json"] })
+      .mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    expect(await call("labels-import-preview", { ...base, use_handoff_manifest: true })).toBeNull();
+    expect(mocks.open).toHaveBeenCalledTimes(2);
+    expect(mocks.request).not.toHaveBeenCalled();
+
+    mocks.open.mockClear();
+    await expect(call("labels-import-preview", { ...base, handoff_id: handoffId, use_handoff_manifest: true }))
+      .rejects.toThrow(/Invalid label-import/);
     expect(mocks.open).not.toHaveBeenCalled();
   });
 

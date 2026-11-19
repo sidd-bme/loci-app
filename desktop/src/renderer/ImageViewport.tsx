@@ -1,9 +1,10 @@
-import { Maximize, Minus, Plus, RotateCcw, Scan } from "lucide-react";
+import { GripVertical, Maximize, Minus, PanelBottom, PanelTop, Plus, RotateCcw, Scan } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { boundedCamera, fitCamera, imageExtent, screenToSource, sourceLevels,
   sourceToScreen, visibleTiles, zoomCamera, type Camera, type Tile } from "./viewer-camera";
 import { sourcePointToResultPixel, type ResolvedResultPlaneOverlay } from "./result-plane-overlay";
+import { drawSmoothSourceTile } from "./smooth-source-tiles";
 import type { CorrectionPreview } from "./ResearchCorrectionPanel";
 import {
   createPlaneNavigationState,
@@ -14,10 +15,13 @@ import {
 } from "./plane-navigation";
 import "./ImageViewport.css";
 
+const DEFAULT_STAGE_BACKGROUND = "#151515";
+
 export type ViewerChannel = {
   channel: number; low?: number; high?: number; gamma: number;
   visible: boolean; color: string; opacity?: number;
 };
+export type DisplaySamplingMode = "auto" | "nearest" | "smooth";
 export type ImagePoint = { x: number; y: number };
 export type AnnotationTool = "navigate" | "point" | "line" | "polygon" | "freehand" | "rectangle" | "transect";
 export type EpidermalTransectMetadata = {
@@ -49,8 +53,24 @@ export function annotationDisplayLabel(annotation: Pick<ImageAnnotation, "label"
 }
 
 type CachedTile = { tile: Tile; image: HTMLImageElement; bytes: number; maxEdge?: number };
+type DisplayedPlane = {
+  z: number | null; t: number | null; isMatching: boolean; isPreview: boolean;
+  analysisPreviewDrawn: boolean; labelsDrawn: boolean;
+};
 const CACHE_BYTES = 64 * 1024 ** 2;
 const OVERVIEW_KEY = "overview";
+
+function smoothSource(mode: DisplaySamplingMode, nativeZoom: number) {
+  return mode === "smooth" || (mode === "auto" && nativeZoom < 1);
+}
+
+function samplingReadout(nativeZoom: number, smoothed: boolean, withAnalysisPreview: boolean) {
+  const method = smoothed ? "smoothed" : "nearest pixel";
+  if (withAnalysisPreview) return `Source · ${method}`;
+  if (nativeZoom < 1) return `Reduced · ${method}`;
+  if (nativeZoom > 1.01) return `Beyond native · ${method}`;
+  return smoothed ? "Smoothed" : "Nearest pixel";
+}
 
 function loadedImage(uri: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -66,8 +86,9 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onError, onPoint, annotations = [], draft = [], drawingMode = "navigate", onDraftChange,
   showRegion = false, overrideImage = null,
   resultOverlay = null, onResultPoint, resultDrawing = null, resultCentroid = null, resultGroupCentroids = [],
-  initialCamera = null, controlledCamera = null, onCamera, onViewportSize, onViewReady, onResultRendered, onRegion, paused = false,
-  showScaleBar = true, showNavigator = true, requestLane, overlayRight = 0,
+  initialCamera = null, controlledCamera = null, cameraLinked = false, onCamera, onCameraGesture, onViewportSize, onViewReady, onResultRendered, onRegion, paused = false,
+  showScaleBar = true, showNavigator = true, dockedControls = false, requestLane, overlayRight = 0,
+  displaySampling, onDisplaySamplingChange,
   onObjectClick, onRelinkSource, relinkBusy = false,
 }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection;
@@ -82,7 +103,11 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   resultCentroid?: { u: number; v: number } | null;
   resultGroupCentroids?: Array<{ u: number; v: number }>;
   initialCamera?: Camera | null; controlledCamera?: Camera | null;
+  /** Keep the linked camera fixed across independent pane layout changes. */
+  cameraLinked?: boolean;
   onCamera?: (camera: Camera) => void;
+  /** Explicit navigation only. Applying a peer camera or resizing does not emit a gesture. */
+  onCameraGesture?: (camera: Camera) => void;
   onViewportSize?: (size: { width: number; height: number }) => void;
   onViewReady?: (key: string) => void;
   /** Reports an exact overlay only after its verified bitmap was drawn on this source grid. */
@@ -90,10 +115,14 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   onRegion?: (region: { x: number; y: number; width: number; height: number }) => void;
   paused?: boolean;
   showScaleBar?: boolean; showNavigator?: boolean;
+  /** Reserve chrome outside the painted area in the main workbench. */
+  dockedControls?: boolean;
   /** Stable main-process scheduling identity for this viewport instance. */
   requestLane?: string;
   /** Right overlay inset (e.g. translucent inspector sidebar) for visible centering */
   overlayRight?: number;
+  displaySampling?: DisplaySamplingMode;
+  onDisplaySamplingChange?: (sampling: DisplaySamplingMode) => void;
   /** Called on click when navigating to pick objects */
   onObjectClick?: (point: { x: number; y: number }) => void;
   onRelinkSource?: () => void;
@@ -106,6 +135,27 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [camera, setCamera] = useState<Camera>(initialCamera ?? { x: extent.width / 2, y: extent.height / 2, scale: 1 });
   const [fitted, setFitted] = useState(!initialCamera);
+  const latestCamera = useRef(camera);
+  const applyCamera = useCallback((next: Camera) => {
+    const previous = latestCamera.current;
+    if (previous.x === next.x && previous.y === next.y && previous.scale === next.scale) return;
+    latestCamera.current = next;
+    setCamera(next);
+  }, []);
+  const navigate = useCallback((update: (previous: Camera) => Camera, fit = false) => {
+    const next = update(latestCamera.current);
+    setFitted(fit);
+    applyCamera(next);
+    onCameraGesture?.(next);
+  }, [applyCamera, onCameraGesture]);
+  const [uncontrolledDisplaySampling, setUncontrolledDisplaySampling] = useState<DisplaySamplingMode>("auto");
+  const activeDisplaySampling: DisplaySamplingMode = dockedControls
+    ? (displaySampling ?? uncontrolledDisplaySampling)
+    : "auto";
+  const selectDisplaySampling = useCallback((next: DisplaySamplingMode) => {
+    if (displaySampling === undefined) setUncontrolledDisplaySampling(next);
+    onDisplaySamplingChange?.(next);
+  }, [displaySampling, onDisplaySamplingChange]);
   const [loading, setLoading] = useState(false);
   const [prepared, setPrepared] = useState(false);
   const [settled, setSettled] = useState(true);
@@ -120,19 +170,10 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const prevPlaneRef = useRef<{ sourceScope: string; projection: string; z: number; t: number } | null>(null);
   const policyState = useRef<PlaneNavigationState>(createPlaneNavigationState(1024));
   const scopePlanes = useRef<Map<string, { z: number; t: number }>>(new Map());
-  const [displayedPlane, setDisplayedPlane] = useState<{
-    z: number | null;
-    t: number | null;
-    isMatching: boolean;
-    isPreview: boolean;
-  } | null>(null);
-  const displayedPlaneRef = useRef<{
-    z: number | null;
-    t: number | null;
-    isMatching: boolean;
-    isPreview: boolean;
-  } | null>(null);
+  const [displayedPlane, setDisplayedPlane] = useState<DisplayedPlane | null>(null);
+  const displayedPlaneRef = useRef<DisplayedPlane | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [dockAtBottom, setDockAtBottom] = useState(true);
   const [toolsPosition, setToolsPosition] = useState<{ x: number; y: number } | null>(null);
   const [navPosition, setNavPosition] = useState<{ x: number; y: number } | null>(null);
   const [navWidth, setNavWidth] = useState(130);
@@ -143,6 +184,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const [draftLimitReached, setDraftLimitReached] = useState(false);
   const toolsDrag = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const frame = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
+  const smoothTileScratch = useRef<HTMLCanvasElement | null>(null);
+  const stageBackground = useRef(DEFAULT_STAGE_BACKGROUND);
   const sourceScope = JSON.stringify([source.id, source.sha256, source.locator_state, selection.c, projection, channels]);
   const cache = useRef<{
     scope: string;
@@ -209,9 +252,9 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const dpr = window.devicePixelRatio || 1;
   const scope = JSON.stringify([source.id, source.sha256, source.locator_state, selection.t,
     selection.z, selection.c, projection, projection === "plane" ? null : selection.z_stop, channels]);
-  const current = useRef({ camera, size, extent, scope, annotations, draft, regionDraft,
+  const current = useRef({ camera, size, extent, scope, displaySampling: activeDisplaySampling, annotations, draft, regionDraft,
     draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid, resultGroupCentroids });
-  current.current = { camera, size, extent, scope, annotations, draft, regionDraft,
+  current.current = { camera, size, extent, scope, displaySampling: activeDisplaySampling, annotations, draft, regionDraft,
     draftClosed, drawingMode, selection, showRegion, resultOverlay, resultDrawing, resultCentroid, resultGroupCentroids };
 
   const draw = useCallback(() => {
@@ -221,7 +264,9 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (!surface) return;
       const state = current.current;
       const ratio = window.devicePixelRatio || 1;
-      const paintGeometry = JSON.stringify([state.camera, state.size, state.extent, ratio]);
+      const autoSmoothed = state.camera.scale * ratio < 1;
+      const sourceSmoothed = smoothSource(state.displaySampling, state.camera.scale * ratio);
+      const paintGeometry = JSON.stringify([state.camera, state.size, state.extent, ratio, stageBackground.current, sourceSmoothed]);
       // Retain already painted source pixels during a plane replacement. Re-uploading
       // the unchanged fallback canvas competes with input at exactly the wrong time.
       // Any camera, size, source/display or overlay change takes the normal draw path.
@@ -244,23 +289,23 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       const context = surface.getContext("2d", { alpha: false });
       if (!context) return;
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      context.fillStyle = "#151515";
+      context.fillStyle = stageBackground.current;
       context.fillRect(0, 0, state.size.width, state.size.height);
 
-      let tilesToDraw = cache.current.scope === state.scope ? [...cache.current.tiles.values()] : [];
+      let displayedTiles = cache.current.scope === state.scope ? cache.current.tiles : undefined;
       let isFallback = false;
       let fallbackScope = "";
 
-      if (tilesToDraw.length === 0 && cache.current.sourceScope === sourceScope && cache.current.lastRenderedScope) {
+      if (!displayedTiles?.size && cache.current.sourceScope === sourceScope && cache.current.lastRenderedScope) {
         const fallback = cache.current.recentScopes.get(cache.current.lastRenderedScope);
         if (fallback && fallback.size > 0) {
-          tilesToDraw = [...fallback.values()];
+          displayedTiles = fallback;
           isFallback = true;
           fallbackScope = cache.current.lastRenderedScope;
         }
       }
 
-      if (tilesToDraw.length === 0) {
+      if (!displayedTiles?.size) {
         paintedScope.current = "";
         displayedPlaneRef.current = null;
         setDisplayedPlane(null);
@@ -293,54 +338,56 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         currentOverview.maxEdge < Math.max(state.extent.width, state.extent.height)
       );
 
-      const nextPlaneInfo = {
-        z: dispZ,
-        t: dispT,
-        isMatching: isMatchingPlane,
-        isPreview: isCoarsePreview,
-      };
-      displayedPlaneRef.current = nextPlaneInfo;
-      setDisplayedPlane((prev) => {
-        if (
-          prev &&
-          prev.z === nextPlaneInfo.z &&
-          prev.t === nextPlaneInfo.t &&
-          prev.isMatching === nextPlaneInfo.isMatching &&
-          prev.isPreview === nextPlaneInfo.isPreview
-        ) {
-          return prev;
-        }
-        return nextPlaneInfo;
-      });
-
-      context.imageSmoothingEnabled = state.camera.scale * ratio < 1;
-      const tiles = tilesToDraw.sort((a, b) =>
+      let analysisPreviewDrawn = false;
+      const tiles = [...displayedTiles.values()].sort((a, b) =>
         a.tile.key === "preview" ? 1 : b.tile.key === "preview" ? -1 :
           b.tile.sourceWidth / b.tile.width - a.tile.sourceWidth / a.tile.width);
-      for (const { tile, image } of tiles) {
+      for (const item of tiles) {
+        const { tile, image } = item;
         const point = sourceToScreen(state.camera, state.size, state.extent, tile.left, tile.top);
         const w = tile.sourceWidth * state.camera.scale, h = tile.sourceHeight * state.camera.scale * state.extent.aspectY;
-        if (point.x > state.size.width || point.y > state.size.height || point.x + w < 0 || point.y + h < 0) continue;
-        context.drawImage(image, point.x, point.y, w, h);
+        if (point.x >= state.size.width || point.y >= state.size.height || point.x + w <= 0 || point.y + h <= 0) continue;
+        const preview = tile.key === "preview";
+        context.imageSmoothingEnabled = preview ? autoSmoothed : sourceSmoothed;
+        if (state.displaySampling === "smooth" && !autoSmoothed && !preview && tile.key !== OVERVIEW_KEY) {
+          drawSmoothSourceTile(context, item, displayedTiles, smoothTileScratch, point.x, point.y, w, h, ratio);
+        } else {
+          context.drawImage(image, point.x, point.y, w, h);
+        }
+        if (preview) analysisPreviewDrawn = true;
       }
-      reusablePaintGeometry.current = isMatchingPlane && !state.annotations.length && !state.draft.length &&
+      context.imageSmoothingEnabled = sourceSmoothed;
+      reusablePaintGeometry.current = !state.annotations.length && !state.draft.length &&
         !state.regionDraft.length && !state.resultOverlay && !state.showRegion &&
         !tiles.some(item => item.tile.key === "preview") ? paintGeometry : "";
-      paintedScope.current = isMatchingPlane && currentOverview ? state.scope : "";
-      setPrepared(Boolean(paintedScope.current));
-      onViewReady?.(paintedScope.current ? `${source.id}:${source.sha256}:${state.selection.t}:${state.selection.z}` : "");
       const overlay = state.resultOverlay;
       const overlayImage = resultOverlayImage.current;
+      let labelsDrawn = false;
       if (isMatchingPlane && overlay && overlayImage?.key === overlay.key) {
         const origin = sourceToScreen(state.camera, state.size, state.extent, overlay.left, overlay.top);
         context.save();
+        context.imageSmoothingEnabled = false;
         context.globalAlpha = overlay.opacity;
         context.drawImage(overlayImage.image, origin.x, origin.y,
           overlay.width * state.camera.scale,
           overlay.height * state.camera.scale * state.extent.aspectY);
         context.restore();
+        context.imageSmoothingEnabled = sourceSmoothed;
+        labelsDrawn = true;
       }
-      onResultRendered?.(isMatchingPlane && overlay && overlayImage?.key === overlay.key ? overlay.key : null);
+      const previous = displayedPlaneRef.current;
+      if (!previous || previous.z !== dispZ || previous.t !== dispT || previous.isMatching !== isMatchingPlane ||
+          previous.isPreview !== isCoarsePreview || previous.analysisPreviewDrawn !== analysisPreviewDrawn ||
+          previous.labelsDrawn !== labelsDrawn) {
+        const nextPlane = { z: dispZ, t: dispT, isMatching: isMatchingPlane, isPreview: isCoarsePreview,
+          analysisPreviewDrawn, labelsDrawn };
+        displayedPlaneRef.current = nextPlane;
+        setDisplayedPlane(nextPlane);
+      }
+      paintedScope.current = isMatchingPlane && currentOverview ? state.scope : "";
+      setPrepared(Boolean(paintedScope.current));
+      onViewReady?.(paintedScope.current ? `${source.id}:${source.sha256}:${state.selection.t}:${state.selection.z}` : "");
+      onResultRendered?.(labelsDrawn && overlay ? overlay.key : null);
       const point = (p: ImagePoint) => sourceToScreen(state.camera, state.size, state.extent, p.x, p.y);
       const outline = (points: ImagePoint[], color: string, closed: boolean, label?: string, labelHalo = false) => {
         if (!points.length) return;
@@ -460,6 +507,25 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     });
   }, [onViewReady, onResultRendered, source]);
 
+  const redraw = useRef(draw);
+  redraw.current = draw;
+  useLayoutEffect(() => {
+    const viewport = frame.current;
+    if (!viewport) return;
+    // The viewport backing paint is local to this canvas. Export uses the
+    // verified source and display recipe independently of the workbench theme.
+    const updateStageBackground = () => {
+      const color = getComputedStyle(viewport).getPropertyValue("--image-stage-background").trim() || DEFAULT_STAGE_BACKGROUND;
+      if (stageBackground.current === color) return;
+      stageBackground.current = color;
+      redraw.current();
+    };
+    updateStageBackground();
+    const observer = new MutationObserver(updateStageBackground);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => {
     alive.current = true;
     return () => { alive.current = false; request.current.generation++; cancelAnimationFrame(drawFrame.current);
@@ -527,7 +593,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         // Clear synchronously before paint: another source or channel setting can
         // never remain visible while its replacement is being decoded.
         const context = canvas.current?.getContext("2d");
-        if (context && canvas.current) { context.fillStyle = "#151515"; context.fillRect(0, 0, canvas.current.width, canvas.current.height); }
+        if (context && canvas.current) { context.fillStyle = stageBackground.current; context.fillRect(0, 0, canvas.current.width, canvas.current.height); }
       }
 
       cache.current.scope = scope;
@@ -580,7 +646,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   useEffect(() => { if (size.width > 0 && size.height > 0) onCamera?.(camera); }, [camera, size, onCamera]);
   useEffect(() => { if (size.width > 0 && size.height > 0) onViewportSize?.(size); }, [size, onViewportSize]);
   useEffect(() => {
-    const element = frame.current;
+    const element = dockedControls ? canvas.current : frame.current;
     if (!element) return;
     const measure = () => {
       const bounds = element.getBoundingClientRect();
@@ -588,24 +654,21 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     };
     measure();
     const observer = new ResizeObserver(measure); observer.observe(element);
-    const changed = () => { setFullscreen(document.fullscreenElement === element); measure(); };
+    const changed = () => { setFullscreen(document.fullscreenElement === frame.current); measure(); };
     document.addEventListener("fullscreenchange", changed);
     return () => { observer.disconnect(); document.removeEventListener("fullscreenchange", changed); };
-  }, []);
+  }, [dockedControls]);
   useLayoutEffect(() => {
-    if (fitted && size.width > 0 && size.height > 0) setCamera(fitCamera(extent, size, insets));
-  }, [fitted, size, extent, insets]);
+    if (!fitted) return;
+    if (cameraLinked) setFitted(false);
+    else if (size.width > 0 && size.height > 0) applyCamera(fitCamera(extent, size, insets));
+  }, [applyCamera, cameraLinked, fitted, size, extent, insets]);
   useLayoutEffect(() => {
     if (!controlledCamera || size.width <= 0 || size.height <= 0) return;
     setFitted(false);
-    setCamera((previous) => {
-      const next = boundedCamera(controlledCamera, extent, size, insets);
-      return previous.x === next.x && previous.y === next.y && previous.scale === next.scale
-        ? previous
-        : next;
-    });
-  }, [controlledCamera?.x, controlledCamera?.y, controlledCamera?.scale, extent, size, insets]);
-  useLayoutEffect(draw, [camera, size, draw, annotations, draft, draftClosed, drawingMode,
+    applyCamera(boundedCamera(controlledCamera, extent, size, insets));
+  }, [applyCamera, controlledCamera?.x, controlledCamera?.y, controlledCamera?.scale, extent, size, insets]);
+  useLayoutEffect(draw, [camera, size, draw, activeDisplaySampling, annotations, draft, draftClosed, drawingMode,
     regionDraft, showRegion, selection, resultDrawing, resultCentroid, resultGroupCentroids]);
 
   useLayoutEffect(() => {
@@ -802,37 +865,41 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     return () => { active = false; removeTile("preview"); };
   }, [overrideImage, scope, selection, source, draw, onError]);
 
-  const changeZoom = (factor: number, x?: number, y?: number) => {
-    setFitted(false); setCamera((old) => zoomCamera(old, extent, size, factor, x, y, insets));
-  };
-  useEffect(() => {
-    const element = frame.current;
+  const fitView = () => navigate(() => fitCamera(extent, size, insets), !cameraLinked);
+  const zoomToNative = () => navigate((old) => ({ ...old, scale: 1 / dpr }));
+  const changeZoom = (factor: number, x?: number, y?: number) =>
+    navigate((old) => zoomCamera(old, extent, size, factor, x, y, insets));
+  useLayoutEffect(() => {
+    const element = dockedControls ? canvas.current : frame.current;
     if (!element) return;
     const wheel = (event: WheelEvent) => {
-      event.preventDefault(); setFitted(false);
+      event.preventDefault();
       if (event.ctrlKey || !event.deltaX && Math.abs(event.deltaY) >= 40) {
         const bounds = element.getBoundingClientRect();
         const factor = Math.exp(-Math.max(-150, Math.min(150, event.deltaY)) * (event.ctrlKey ? 0.015 : 0.004));
-        setCamera((old) => zoomCamera(old, extent, size, factor, event.clientX - bounds.left, event.clientY - bounds.top, insets));
-      } else setCamera((old) => boundedCamera({ ...old, x: old.x + event.deltaX / old.scale,
+        navigate((old) => zoomCamera(old, extent, size, factor, event.clientX - bounds.left, event.clientY - bounds.top, insets));
+      } else navigate((old) => boundedCamera({ ...old, x: old.x + event.deltaX / old.scale,
         y: old.y + event.deltaY / (old.scale * extent.aspectY) }, extent, size, insets));
     };
-    element.addEventListener("wheel", wheel, { passive: false });
-    return () => element.removeEventListener("wheel", wheel);
-  }, [extent, size, insets]);
+    const wheelTarget: HTMLElement = element;
+    wheelTarget.addEventListener("wheel", wheel, { passive: false });
+    return () => wheelTarget.removeEventListener("wheel", wheel);
+  }, [extent, size, insets, dockedControls, navigate]);
   const first = screenToSource(camera, size, extent, 0, 0);
   const last = screenToSource(camera, size, extent, size.width, size.height);
   const calibration = source.metadata.physical_calibration;
   const affine = source.metadata.geometry?.affine;
   const spacingX = affine ? Math.hypot(...affine.slice(0, 3).map((row) => row[0])) : calibration?.spacing?.at(-1);
   const spacingUnit = source.metadata.geometry?.unit ?? calibration?.unit;
-  const scaleLength = spacingX ? 100 * spacingX / camera.scale : null;
+  const scaleLength = spacingX && spacingX > 0 ? 100 * spacingX / camera.scale : null;
   const niceScale = scaleLength && Number.isFinite(scaleLength) ?
-    [1, 2, 5, 10].map((n) => n * 10 ** Math.floor(Math.log10(scaleLength))).filter((n) => n <= scaleLength).at(-1) : null;
+    [1, 2, 5, 10].map((n) => n * 10 ** Math.floor(Math.log10(scaleLength))).filter((n) => n <= scaleLength * (1 + 4 * Number.EPSILON)).at(-1) : null;
   const freehandPointLimit = Math.max(0, Math.min(2048,
     10_000 - annotations.reduce((total, annotation) => total + annotation.points.length, 0)));
+  const fieldBounds = (element: HTMLDivElement) =>
+    (dockedControls && canvas.current ? canvas.current : element).getBoundingClientRect();
   const pointerSourcePoint = (element: HTMLDivElement, activeCamera: Camera, clientX: number, clientY: number) => {
-    const bounds = element.getBoundingClientRect();
+    const bounds = fieldBounds(element);
     return screenToSource(activeCamera, size, extent, clientX - bounds.left, clientY - bounds.top);
   };
   const pointInsideSource = (point: ImagePoint) =>
@@ -845,6 +912,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     if (state.annotation) onDraftChange?.(state.annotation.previous);
   };
 
+  const hasNavigator = showNavigator && extent.width * extent.height > 4_000_000;
   const isCurrentPlaneReady = prepared && paintedScope.current === scope;
   const isStale = Boolean(
     displayedPlane &&
@@ -872,7 +940,15 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       })
     : (loading ? (prepared ? "Refining…" : "Preparing view…") : null);
 
+  const nativeZoom = camera.scale * dpr;
+  const sourceSmoothed = smoothSource(activeDisplaySampling, nativeZoom);
+  const previewDrawn = displayedPlane?.analysisPreviewDrawn === true;
+
   return <div className={`image-viewport ${fullscreen ? "is-fullscreen" : ""}`} ref={frame}
+    data-controls={dockedControls ? "docked" : "floating"} data-toolbar-dock={dockAtBottom ? "bottom" : "top"}
+    data-overview-rail={dockedControls && hasNavigator ? "true" : undefined}
+    data-display-sampling={dockedControls ? activeDisplaySampling : undefined}
+    data-effective-sampling={dockedControls ? (sourceSmoothed ? "smooth" : "nearest") : undefined}
     tabIndex={0} aria-label={`Image viewer: ${source.name}`} data-viewer-source={source.id}
     data-result-overlay={resultOverlay?.key}
     data-group-highlight-count={resultGroupCentroids.length}
@@ -889,7 +965,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
         camera, moved: false, button: event.button, scientificScope: isCurrentPlaneReady ? scope : undefined };
       if (isCurrentPlaneReady && event.button === 0 && resultDrawing?.kind === "vertices" && resultOverlay) {
-        const bounds = event.currentTarget.getBoundingClientRect();
+        const bounds = fieldBounds(event.currentTarget);
         const distances = resultDrawing.points.map((p) => {
           const q = sourceToScreen(camera, size, extent,
             resultOverlay.left + (p.u + 0.5) / resultOverlay.pixelWidth * resultOverlay.width,
@@ -920,7 +996,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       state.moved ||= Math.hypot(dx, dy) > 3;
       if (isCurrentPlaneReady && state.scientificScope === scope && resultDrawing?.kind === "vertices" && resultOverlay && state.button === 0) {
         if (state.vertex !== undefined) {
-          const bounds = event.currentTarget.getBoundingClientRect();
+          const bounds = fieldBounds(event.currentTarget);
           const p = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
           const uv = sourcePointToResultPixel(resultOverlay, p);
           if (uv) resultDrawing.onMoveVertex(state.vertex, uv);
@@ -951,13 +1027,13 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         return;
       }
       if (isCurrentPlaneReady && state.scientificScope === scope && onRegion && state.button === 0) {
-        const bounds = event.currentTarget.getBoundingClientRect();
+        const bounds = fieldBounds(event.currentTarget);
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
         setRegionDraft([a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]); return;
       }
       if ((onPoint || onResultPoint) && state.button === 0) return;
-      setFitted(false); setCamera(boundedCamera({ ...state.camera,
+      navigate(() => boundedCamera({ ...state.camera,
         x: state.camera.x - dx / state.camera.scale,
         y: state.camera.y - dy / (state.camera.scale * extent.aspectY) }, extent, size, insets));
     }} onPointerUp={(event) => {
@@ -968,7 +1044,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         event.currentTarget.releasePointerCapture?.(event.pointerId);
       if (isCurrentPlaneReady && state.scientificScope === scope && resultDrawing?.kind === "vertices" && state?.button === 0) return;
       if (isCurrentPlaneReady && state.scientificScope === scope && state && state.moved && state.button === 0 && onRegion) {
-        const bounds = event.currentTarget.getBoundingClientRect();
+        const bounds = fieldBounds(event.currentTarget);
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
         const x = Math.max(0, Math.floor(Math.min(a.x, b.x))), y = Math.max(0, Math.floor(Math.min(a.y, b.y)));
@@ -1013,7 +1089,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (!onPoint && !onResultPoint) return;
       if (isCurrentPlaneReady && state.scientificScope === scope && drawingMode === "polygon" && draft.length >= 3) {
         const start = sourceToScreen(state.camera, size, extent, draft[0].x, draft[0].y);
-        const bounds = event.currentTarget.getBoundingClientRect();
+        const bounds = fieldBounds(event.currentTarget);
         if (Math.hypot(start.x - event.clientX + bounds.left,
           start.y - event.clientY + bounds.top) <= 10) {
           setDraftClosed(true); return;
@@ -1049,13 +1125,15 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (["+", "=", "-", "f", "0", "1", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) event.preventDefault();
       if (event.key === "+" || event.key === "=") changeZoom(1.25);
       else if (event.key === "-") changeZoom(0.8);
-      else if (event.key === "f" || event.key === "0") { setFitted(true); setCamera(fitCamera(extent, size, insets)); }
-      else if (event.key === "1") { setFitted(false); setCamera((old) => ({ ...old, scale: 1 / dpr })); }
+      else if (event.key === "f" || event.key === "0") fitView();
+      else if (event.key === "1") zoomToNative();
       else if (event.key.startsWith("Arrow")) {
-        const step = event.shiftKey ? 1 : 80 / camera.scale;
-        setFitted(false); setCamera((old) => boundedCamera({ ...old,
-          x: old.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0),
-          y: old.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0) }, extent, size, insets));
+        navigate((old) => {
+          const step = event.shiftKey ? 1 : 80 / old.scale;
+          return boundedCamera({ ...old,
+            x: old.x + (event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0),
+            y: old.y + (event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0) }, extent, size, insets);
+        });
       }
     }}>
     <canvas ref={canvas} aria-label="Source image and bound annotations" />
@@ -1063,9 +1141,14 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       <p>This source needs an exact local copy. Its existing results and review are preserved.</p>
       {onRelinkSource && <button disabled={paused || relinkBusy} onClick={onRelinkSource}>Relink exact source</button>}
     </div>}
-    <div className="image-view-tools" aria-label="Image navigation"
-      style={toolsPosition ? { left: toolsPosition.x, top: toolsPosition.y, transform: "none" } : undefined}>
-      <button aria-label="Move navigation toolbar" title="Drag to move; arrow keys move the toolbar" className="toolbar-handle"
+    <div className="image-view-command-rail">
+    <div className="image-view-tools" role="group" aria-label="Image navigation"
+      style={!dockedControls && toolsPosition ? { left: toolsPosition.x, top: toolsPosition.y, transform: "none" } : undefined}>
+      {dockedControls ? <button type="button" className="image-toolbar-dock" aria-label="Move navigation toolbar"
+        title={dockAtBottom ? "Dock navigation above image" : "Dock navigation below image"}
+        onClick={() => setDockAtBottom((bottom) => !bottom)}>
+        {dockAtBottom ? <PanelTop /> : <PanelBottom />}
+      </button> : <button aria-label="Move navigation toolbar" title="Drag to move; arrow keys move the toolbar" className="toolbar-handle"
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           const bounds = event.currentTarget.parentElement!.getBoundingClientRect(), parent = frame.current!.getBoundingClientRect();
@@ -1081,14 +1164,31 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           const bounds = event.currentTarget.parentElement!.getBoundingClientRect(), parent = frame.current!.getBoundingClientRect();
           setToolsPosition({ x: Math.max(0, Math.min(size.width - bounds.width, bounds.left - parent.left + (event.key === "ArrowLeft" ? -10 : event.key === "ArrowRight" ? 10 : 0))),
             y: Math.max(0, Math.min(size.height - bounds.height, bounds.top - parent.top + (event.key === "ArrowUp" ? -10 : event.key === "ArrowDown" ? 10 : 0))) });
-        }}>⠿</button>
-      <button title="Fit the complete image (F)" aria-label="Fit image" onClick={() => { setFitted(true); setCamera(fitCamera(extent, size, insets)); }}><Scan /></button>
-      <button title="Reset camera" aria-label="Reset camera" onClick={() => { setFitted(true); setCamera(fitCamera(extent, size, insets)); }}><RotateCcw /></button>
-      <button title="One source pixel per display pixel (1)" onClick={() => { setFitted(false); setCamera((old) => ({ ...old, scale: 1 / dpr })); }}>1:1</button>
+        }}><GripVertical /></button>}
+      <button title="Fit the complete image (F)" aria-label="Fit image" onClick={fitView}><Scan />{dockedControls && <span>Fit</span>}</button>
+      <button title="Reset camera" aria-label="Reset camera" onClick={fitView}><RotateCcw /></button>
+      <button title="One source pixel per display pixel (1)" onClick={zoomToNative}>1:1</button>
       <button title="Zoom out (−)" aria-label="Zoom out" onClick={() => changeZoom(0.8)}><Minus /></button>
       <output aria-label="Native pixel zoom" title="100% is one original pixel per physical display pixel">{Math.round(camera.scale * dpr * 100)}%</output>
       <button title="Zoom in (+)" aria-label="Zoom in" onClick={() => changeZoom(1.25)}><Plus /></button>
       <button title="Toggle fullscreen" aria-label="Toggle fullscreen" onClick={() => { void (document.fullscreenElement ? document.exitFullscreen() : frame.current?.requestFullscreen()); }}><Maximize /></button>
+      {dockedControls && <div className="image-display-sampling" role="group" aria-label="Display sampling">
+        {([
+          ["auto", "Auto", "Smooth below 1:1 native pixels and use nearest pixels at or above 1:1"],
+          ["nearest", "Nearest pixel", "Nearest-pixel source display at every zoom"],
+          ["smooth", "Smooth", "Smoothed source display at every zoom"],
+        ] as const).map(([mode, label, title]) => (
+          <button
+            key={mode}
+            type="button"
+            aria-pressed={activeDisplaySampling === mode}
+            title={title}
+            onClick={() => selectDisplaySampling(mode)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>}
     </div>
     {(viewStopped || statusText || cacheLimited) && <div className="image-view-loading" role="status">
       {stoppedStatus ?? statusText ?? "Overview retained · visible detail exceeds the view cache. Zoom in to refine."}
@@ -1109,22 +1209,28 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         ? "Freehand needs at least three available vertices. Remove saved annotations before drawing another region."
         : `Sampling stopped at the ${freehandPointLimit.toLocaleString()}-point limit; the rest of the trace was not captured. Release, then save or clear it.`}
     </div>}
-    <div className="image-view-readout">
-      <span>{extent.width.toLocaleString()} × {extent.height.toLocaleString()}</span>
-      {camera.scale * dpr > 1.01 && <span>Beyond native · nearest pixel</span>}
-      {showScaleBar && niceScale && spacingX && spacingUnit && spacingUnit !== "pixel" && <span className="image-scale-bar"><i style={{ width: niceScale / spacingX * camera.scale }} />{Number(niceScale.toPrecision(3)).toLocaleString()} {spacingUnit}</span>}
     </div>
-    {showNavigator && prepared && extent.width * extent.height > 4_000_000 && (
+    <div className="image-view-readout" aria-label="Image dimensions and display sampling">
+      <span>{extent.width.toLocaleString()} × {extent.height.toLocaleString()}{dockedControls && " px"}</span>
+      {dockedControls ? <span className="image-source-sampling-readout"
+        data-alternate-sampling={samplingReadout(nativeZoom, !sourceSmoothed, previewDrawn)}>
+        <span>{samplingReadout(nativeZoom, sourceSmoothed, previewDrawn)}</span>
+      </span> : nativeZoom > 1.01 && <span>Beyond native · nearest pixel</span>}
+      {dockedControls && previewDrawn && <span>Preview · {nativeZoom < 1 ? "smoothed" : "nearest pixel"}</span>}
+      {dockedControls && displayedPlane?.labelsDrawn && <span>Labels · nearest pixel</span>}
+      {showScaleBar && niceScale && spacingX && spacingUnit && spacingUnit !== "pixel" && <span className="image-scale-bar"><i style={{ width: niceScale / spacingX * camera.scale }} />{niceScale.toLocaleString(undefined, { maximumSignificantDigits: 3 })} {spacingUnit}</span>}
+    </div>
+    {hasNavigator && prepared && (
       <div
         className="image-navigator-panel image-navigator"
         style={{
           width: navWidth,
-          ...(navPosition
+          ...(!dockedControls && navPosition
             ? { left: navPosition.x, top: navPosition.y, right: "auto", bottom: "auto" }
             : {}),
         }}
       >
-        <div
+        {dockedControls ? <span className="image-navigator-caption">Navigator</span> : <div
           className="image-navigator-header"
           onPointerDown={(event) => {
             event.currentTarget.setPointerCapture(event.pointerId);
@@ -1165,17 +1271,28 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           >
             ↺
           </button>
-        </div>
+        </div>}
         <div
           className="image-navigator-body"
           role="button"
           tabIndex={0}
           aria-label="Overview navigator"
-          title="Click to navigate the full image"
+          title="Click to navigate the full image. Use the arrow keys to pan, Home to center."
+          onKeyDown={(event) => {
+            const directions: Record<string, [number, number]> = {
+              ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1],
+            };
+            const direction = directions[event.key];
+            if (!direction && event.key !== "Home" && event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault(); event.stopPropagation();
+            navigate((old) => ({ ...old,
+              x: direction ? Math.min(extent.width, Math.max(0, old.x + direction[0] * extent.width / 10)) : extent.width / 2,
+              y: direction ? Math.min(extent.height, Math.max(0, old.y + direction[1] * extent.height / 10)) : extent.height / 2,
+            }));
+          }}
           onClick={(event) => {
             const bounds = event.currentTarget.getBoundingClientRect();
-            setFitted(false);
-            setCamera((old) => ({
+            navigate((old) => ({
               ...old,
               x: (event.clientX - bounds.left) / bounds.width * extent.width,
               y: (event.clientY - bounds.top) / bounds.height * extent.height,
@@ -1193,7 +1310,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
             }}
           />
         </div>
-        <div
+        {!dockedControls && <div
           className="image-navigator-resize-handle"
           title="Drag to resize navigator"
           onPointerDown={(event) => {
@@ -1214,7 +1331,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
           }}
           onPointerUp={() => { navResizeDrag.current = null; }}
           onPointerCancel={() => { navResizeDrag.current = null; }}
-        />
+        />}
       </div>
     )}
   </div>;

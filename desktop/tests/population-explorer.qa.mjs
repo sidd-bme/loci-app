@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { closeSettings, openSettings } from './settings-qa-helpers.mjs';
 import { selectWorkbenchTool } from './workbench-qa-helpers.mjs';
 
 const appPath = process.env.LOCI_PACKAGED_APP;
@@ -95,7 +96,7 @@ try {
   await page.waitForFunction((id) => document.querySelector(`[data-viewer-source="${id}"]`)?.getAttribute('data-prepared') === 'true', source.id);
   const point = await viewer.evaluate((element, pixel) => {
     const camera = JSON.parse(element.getAttribute('data-camera'));
-    const bounds = element.getBoundingClientRect();
+    const bounds = element.querySelector("canvas").getBoundingClientRect();
     return { x: bounds.left + bounds.width / 2 + (pixel[1] + 0.5 - camera.x) * camera.scale,
       y: bounds.top + bounds.height / 2 + (pixel[0] + 0.5 - camera.y) * camera.scale };
   }, located.point_index);
@@ -155,10 +156,14 @@ try {
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1050, height: 760 }));
   await page.screenshot({ path: path.join(output, '05-compact-new-result.png') });
   for (const theme of ['graphite', 'midnight', 'paper', 'aurora', 'ember', 'lagoon', 'fiji']) {
-    await page.getByRole('button', { name: 'Open settings', exact: true }).click();
-    await page.getByLabel('Application theme', { exact: true }).selectOption(theme);
-    if (theme === 'paper') await page.getByRole('radio', { name: 'Large', exact: true }).click();
-    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+    const settings = await openSettings(app, page);
+    const { dialog } = settings;
+    await dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
+    await dialog.getByLabel('Application theme', { exact: true }).selectOption(theme);
+    if (theme === 'paper') await dialog.getByRole('radio', { name: 'Large', exact: true }).click();
+    await closeSettings(settings, 'Close settings');
+    await page.waitForFunction(theme => document.documentElement.dataset.theme === theme &&
+      (theme !== 'paper' || document.documentElement.dataset.textSize === 'large'), theme);
     await page.screenshot({ path: path.join(output, `theme-${theme}.png`) });
     const overflow = await panel.evaluate((element) => element.scrollWidth > element.clientWidth + 2);
     assert.equal(overflow, false, `${theme} population inspector overflows`);

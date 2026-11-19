@@ -55,7 +55,7 @@ def parser() -> argparse.ArgumentParser:
     import_model.add_argument("--path", required=True)
     import_model.add_argument("--working-bytes", type=int, default=512 * 1024**2)
     labels = sub.add_parser(
-        "import-labels", help="Preview an explicit external scalar TIFF label plane"
+        "import-labels", help="Preview an explicit external scalar TIFF label plane or ZYX volume"
     )
     labels.add_argument("--project", required=True)
     labels.add_argument("--path", required=True)
@@ -63,6 +63,26 @@ def parser() -> argparse.ArgumentParser:
     labels.add_argument("--source-sha256", required=True)
     labels.add_argument("--selection", required=True, help="Explicit native T/C/Z/level JSON")
     labels.add_argument("--working-bytes", type=int, default=512 * 1024**2)
+    labels.add_argument(
+        "--handoff-id", default=None, help="Immutable μSAM study handoff ID to bind against"
+    )
+    labels.add_argument(
+        "--handoff-manifest",
+        default=None,
+        help="Path to the exported μSAM manifest.json to verify and bind against",
+    )
+    usam = sub.add_parser(
+        "usam-handoff",
+        help="Atomically export an original native scalar YX/ZYX TIFF handoff for standalone μSAM",
+    )
+    usam.add_argument("--project", required=True)
+    usam.add_argument("--source", required=True)
+    usam.add_argument("--source-sha256", required=True)
+    usam.add_argument(
+        "--selection", required=True, help="Explicit native T/C/Z[/z_stop]/level JSON"
+    )
+    usam.add_argument("--destination", required=True, help="Absent absolute destination folder")
+    usam.add_argument("--working-bytes", type=int, default=512 * 1024**2)
     for name in ("snapshot", "jobs"):
         command = sub.add_parser(name)
         command.add_argument("--project", required=True)
@@ -331,10 +351,25 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
 
             return create_import_grant(
                 workbench,
-                str(Path(args.path).absolute()),
+                os.path.abspath(args.path),
                 args.source,
                 args.source_sha256,
                 _request(args.selection),
+                args.working_bytes,
+                handoff_id=args.handoff_id,
+                handoff_manifest_path=(
+                    os.path.abspath(args.handoff_manifest) if args.handoff_manifest else None
+                ),
+            )
+        if args.command == "usam-handoff":
+            from .research_usam_handoff import export_usam_handoff
+
+            return export_usam_handoff(
+                workbench,
+                args.source,
+                args.source_sha256,
+                _request(args.selection),
+                args.destination,
                 args.working_bytes,
             )
         if args.command == "snapshot":

@@ -46,6 +46,8 @@ The source stays in a separate app-owned directory when its managed study is dis
 
 The left column contains **Images**, then **Layers & results** for the selected image. Use **Folder tree** to browse nested imports or **Flat list** for the image list. **Find images or folders** searches relative paths; **Reveal current image** clears the search and opens its ancestors. The image breadcrumb identifies its relative location without exposing the source filesystem prefix. Arrow keys navigate the tree, Enter opens an image, and Space selects images. In **Study & batch → Batch**, folder selection includes its descendant images; check the selected image count before running. Result rows show method names, object counts and review state, with creation-time or sequence labels when needed to distinguish similar results. Open **Review & export → Review → Technical identity** for the full result ID and revision hash. Choose **Original image** to inspect source display, or select a result to inspect one exact derived revision. The centre is the image or volume viewport. The right inspector groups work under **View**, **Annotate**, **Analyze**, and **Results**. Each group remembers its last tool. Its selector includes advanced routes such as portability, vendor conversion, remote compute, and assistant connection. Search all tools by name; use arrow keys and Enter to choose, or Escape to return.
 
+Use **⌘K** on macOS or **Ctrl+K** on Windows to search all tools. **⌘1–4** selects View, Annotate, Analyze or Results in order. **⌘[** toggles the image list and **⌘]** toggles the tools panel. Use Ctrl in place of ⌘ on Windows. The two panel buttons in the title bar expose the same controls. The image and the active tool keep their state when you hide a panel.
+
 In **Segment & measure** and ordinary **Review & export**, choose **Focus panel** to give the inspector the image area, then **Show image** to return. This layout change keeps the current controls, drafts and prepared export preview mounted. Changing tools returns to the normal layout. Study and Statistics retain their own focus controls.
 
 Native **File** commands open images, folders and studies in the active workspace.
@@ -83,7 +85,16 @@ For a direct inspection, select a source, choose **Fit** to show its whole plane
 | Reset camera | `0` |
 | Pan | Arrow keys |
 
-At **1:1**, one source X pixel is presented for one physical display pixel; declared Y spacing is respected. Once the effective display scale reaches native resolution and beyond, the viewport uses nearest-pixel replication. The readout says **Beyond native · nearest pixel**. This makes individual stored pixels easy to inspect; it does not create detail. At lower display scales the viewport may smooth a reduced display. Large images first show a bounded overview and then load finer tiles. The navigator, when enabled, shows the full extent and current field of view.
+At **1:1**, one source X pixel spans one physical display pixel. Loci respects
+the declared Y spacing. The **Display sampling** control applies to each 2D
+view, including either pane of an A/B comparison. **Auto** smooths the image
+below native scale and shows individual pixels at or above it. Choose
+**Nearest pixel** to inspect pixel boundaries at any zoom, or **Smooth** for
+a continuous display. The readout names the active sampling. These settings
+affect the image display only. Label overlays retain nearest-pixel sampling,
+and measurements use the original source values.
+
+The navigation toolbar docks above or below the image and the scale readout has its own space outside the pixel field. Large images first show a bounded overview and then load finer tiles. The navigator, when enabled, shows the full extent and current field of view.
 
 Use the Z and Time sliders when the source declares those axes. **Play** advances a time series; pause it before inspecting a plane histogram. For Z data, the **View** menu selects **Single plane**, **Maximum projection**, or **Mean projection**. A projection is an explicit display operation over the shown Z range. It is not a raw plane, and it should not be treated as a three-dimensional object count or measurement.
 
@@ -105,7 +116,7 @@ decode may still finish. **Retry view** resumes that view after a stop or error.
 
 ### Scalar channels, RGB, and medical windows
 
-In current source, compact **Display channels** controls above a scalar image provide visibility, solo and selected-channel range controls; RGB sources use **Image tone**. **More display** opens additional quick controls. **View → Image & channels** retains the detailed display and histogram controls. Selecting a display channel does not change the analysis channel. Exact native 2D result labels can overlay the source display; unsupported result grids retain the result viewer.
+Above a scalar image, expand **Display channels** and use the eye beside a channel to toggle its visibility. Select the channel name to adjust its range, gamma, LUT colour or opacity, or to show it alone with **Solo**. RGB sources use **Image tone**. Choose **Full display options** to inspect histograms in **View → Image & channels**. The analysis channel is selected separately in the analysis tool. Exact native 2D result labels can overlay the source display. Other result grids open in the result viewer.
 
 For scalar sources, expand a channel under **View → Image & channels**. Set visibility, colour, **Low**, **High**, **Gamma**, and opacity. Low and high define the displayed range; gamma changes the mapping through it. **Auto** sets stable channel ranges from the selected source, T index, and Z plane. It does not calculate a range from a projection, current camera crop, or pan position. Selecting another plane or time point then pressing Auto deliberately gives a range for that selected plane.
 
@@ -189,6 +200,13 @@ The tool computes the calibrated Euclidean distance from physical pixel calibrat
 ## Run practical analysis workflows
 
 ### Cells with classical methods or Adaptive Watershed
+
+For **standalone μSAM**, choose a full native plane or Z range in one original
+channel. Open **Analyze → Segment & measure → Import existing labels → μSAM
+(standalone)** to export it. After segmentation in your μSAM environment,
+preview the returned label TIFF on the same image and confirm the import.
+Loci measures the original channel and creates an unreviewed result. The
+[external-label guide](EXTERNAL_LABELS.md) covers the 2D and 3D file formats.
 
 For a transparent scalar workflow, select the source and set its display only for comfortable viewing. Define the analysis region, then open **Analyze → Segment & measure → Classical methods**. Choose **Segmentation input** by its recorded source channel name and numbered index; its adjacent T/Z scope uses one-based labels. Submitted indices remain zero-based. **Raw measurement channel** chooses the channel to measure independently; **Display channel** and **Solo** change presentation only. These controls do not infer a stain or fluorophore.
 
@@ -317,7 +335,9 @@ Open **Analyze → Register & resample** when a declared transform or resampling
 
 ## Settings, recovery, and help
 
-Open **Settings** from the header. Under **Appearance**, choose one of seven interface themes: **Graphite**, **Midnight**, **Paper**, **Aurora**, **Ember**, **Lagoon**, or **FIJI**. Use the theme dropdown and choose System, Arial, or Verdana interface font. Choose Standard or Large interface text, and Follow system or Reduce motion. These affect the application interface, never source values or analysis.
+Open **Settings** from the header or press **⌘,** on macOS. It opens in its own resizable window and fills the current display’s work area. Select a category in the sidebar or use **Search settings** to jump to a control. Back and Forward revisit categories. **Done** returns you to the workspace.
+
+Under **Appearance**, select a preview or use the theme menu. **Black** gives the interface and the 2D image surround a pure black background, with neutral gray surfaces for controls. **Graphite** is the default. **Midnight**, **Paper**, **Aurora**, **Ember**, **Lagoon** and **FIJI** are also available. Appearance applies to open workspaces and persists on this device. Source intensities, channel colors and figure exports keep their own settings. You can also choose the interface font, control density, text size and motion preference.
 
 Numeric display and region fields apply with Enter or when focus leaves the field; Escape restores the last applied value. Analysis numbers accept valid edits immediately. Empty or unfinished numbers block analysis and recipe saving until corrected; **Restore applied numbers** discards those unfinished edits. Invalid entries remain visible with a specific reason instead of becoming zero.
 
@@ -333,7 +353,7 @@ Open **Analyze → Connect an assistant**. Choose **Inspect**, **Analyze**, or *
 
 ### Follow work and edit a plan
 
-Open the agent indicator in the workspace header to see the connection, task plan, assessments and recent work. **Follow agent** brings inspected views into the workspace; turning it off leaves your current view in place. In **Settings → External agents**, choose the default for new workspaces and whether newly shown activity records start expanded. These are display preferences and grant no access.
+Open the agent indicator in the bottom status bar to see the connection, permission mode, task plan, assessments and recent work. Pending decisions stay accessible from every agent section. Inspect the requested operation, source and recorded identity before approving or denying it. **Follow agent** brings inspected views into the workspace; turning it off leaves your current view in place. In **Settings → External agents**, choose the default for new workspaces and whether newly shown activity records start expanded. These are display preferences and grant no access.
 
 When the external agent records a task, its goal and steps appear under **Task plan**. **Edit plan** lets you change the goal, add or remove steps, and reorder them. **Save plan** records the edit without executing it. Changed steps return to Planned. The agent must read the new revision before continuing. If someone changes the plan during your edit, your draft remains visible and saving is blocked; cancel editing to load the latest plan.
 

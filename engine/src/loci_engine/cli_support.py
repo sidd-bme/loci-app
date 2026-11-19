@@ -81,7 +81,7 @@ def operation(name: str) -> dict[str, Any]:
                 "source_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
                 "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
                 "grant_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
-                "alignment": {"const": "same-native-yx-grid"},
+                "alignment": {"enum": ["same-native-yx-grid", "same-native-zyx-grid"]},
                 "producer": {
                     "type": ["object", "null"],
                     "additionalProperties": False,
@@ -89,14 +89,27 @@ def operation(name: str) -> dict[str, Any]:
                     "properties": {
                         "name": {"type": "string", "minLength": 1, "maxLength": 128},
                         "version": {"type": ["string", "null"], "maxLength": 128},
+                        "model": {"type": ["string", "null"], "maxLength": 128},
+                        "mode": {"type": ["string", "null"], "maxLength": 64},
+                        "checkpoint": {"type": ["string", "null"], "maxLength": 128},
+                        "checkpoint_digest": {
+                            "type": ["string", "null"],
+                            "pattern": (
+                                "^(?:(?:sha256|SHA256):[a-fA-F0-9]{64}"
+                                "|(?:xxh128|XXH128):[a-fA-F0-9]{32}"
+                                "|[a-fA-F0-9]{64})$"
+                            ),
+                        },
                     },
                 },
             },
         }
         receipt["guidance"].append(
             "First run loci import-labels with --path, --source, --source-sha256 and explicit "
-            "--selection JSON to inspect a private preview grant; use its grant_id here. "
-            "The alignment declaration asserts correspondence; matching shape does not prove it."
+            "--selection JSON (include z_stop >= z + 2 for a ZYX volume; optionally add "
+            "--handoff-manifest or --handoff-id for a μSAM handoff) to inspect a private preview "
+            "grant; use its grant_id here. The alignment declaration asserts correspondence "
+            "(same-native-yx-grid or same-native-zyx-grid); matching shape does not prove it."
         )
         receipt["request_schema"]["examples"] = [
             {
@@ -104,7 +117,13 @@ def operation(name: str) -> dict[str, Any]:
                 "source_sha256": "SOURCE_SHA256",
                 "grant_id": "PREVIEW_GRANT_ID",
                 "alignment": "same-native-yx-grid",
-            }
+            },
+            {
+                "source_id": "SOURCE_ID",
+                "source_sha256": "SOURCE_SHA256",
+                "grant_id": "PREVIEW_GRANT_ID",
+                "alignment": "same-native-zyx-grid",
+            },
         ]
     elif name in RECIPE_OPERATIONS:
         from .research_recipe_guide import recipe_guide
@@ -210,7 +229,7 @@ _loci_complete() {{
     completion) words='bash zsh fish' ;;
     --kind) words='files dicom' ;;
     --disposition) words='reviewed excluded pending' ;;
-    --project|--request|--destination|--path|--candidate|--policy)
+    --project|--request|--destination|--path|--candidate|--policy|--handoff-manifest)
       COMPREPLY=()
       while IFS= read -r token; do COMPREPLY+=("$token"); done < <(compgen -f -- "$cur")
       return ;;
@@ -239,7 +258,8 @@ _loci() {{
     completion) candidates=(bash zsh fish) ;;
     --kind) candidates=(files dicom) ;;
     --disposition) candidates=(reviewed excluded pending) ;;
-    --project|--request|--destination|--path|--candidate|--policy) _files; return ;;
+    --project|--request|--destination|--path|--candidate|--policy|--handoff-manifest)
+      _files; return ;;
     {value_pattern}) return ;;
   esac
   compadd -- $candidates

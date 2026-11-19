@@ -69,6 +69,10 @@ have their own sections. Inspect exact result identities, object labels and stor
 values when you need them. These additions are available when building from source;
 see the [release record](docs/RELEASE_STATUS.md) for downloadable availability.
 
+When building from source, you can repeat a saved, single-plane CPU Components
+analysis from the command line or send one native channel to standalone μSAM
+and return its instance labels for measurement. [Replay a desktop result](docs/CLI.md#repeat-a-desktop-components-result) · [Use standalone μSAM](docs/EXTERNAL_LABELS.md#offline-standalone-μsam-interchange)
+
 ## Work your way
 
 Use the desktop for exploration and the command line for repeatable work. Discover commands, inspect a study and run supported operations from a local terminal.

@@ -1,6 +1,6 @@
 import { isLociManualLink } from "./main/manual-links";
 import { nativeAboutIdentity } from "./main/about-identity";
-import { BrowserWindow, Menu, app, dialog, ipcMain, session, shell } from "electron";
+import { BrowserWindow, Menu, app, dialog, ipcMain, screen, session, shell } from "electron";
 import type {
   IpcMainEvent,
   IpcMainInvokeEvent,
@@ -11,6 +11,7 @@ import started from "electron-squirrel-startup";
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { SettingsWindowCoordinator } from "./main/settings-window-coordinator";
 import { ImageWindowLayoutStore } from "./main/image-window-layout";
 import { ImageWindowCoordinator } from "./main/image-window-coordinator";
 import { AgentWorkspaceCoordinator } from "./main/agent-workspace-coordinator";
@@ -201,6 +202,14 @@ const agentWorkspace = new AgentWorkspaceCoordinator(researchBridge, createAgent
   new AgentWorkspaceLayoutStore(path.join(app.getPath("userData"), "agent-workspace-layouts")));
 const engineResultResidency = new EngineResultResidencyCoordinator();
 let mainWindow: BrowserWindow | null = null;
+const settingsWindow = new SettingsWindowCoordinator(createSettingsWindow,
+  (operation, request) => researchBridge.computeTargets(operation, request),
+  () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed())
+      mainWindow.webContents.send("loci:compute-targets-changed");
+  },
+  () => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close(); else app.quit(); },
+);
 const MAX_DISCOVERED_SOURCES = MAX_PROJECT_SOURCES;
 const SUPPORTED_EXTENSIONS = new Set([".tif", ".tiff", ".png", ".jpg", ".jpeg", ".ims"]);
 const SHUTDOWN_GRACE_MILLISECONDS = 15_000;
@@ -3530,6 +3539,11 @@ function registerIpc(): void {
   researchBridge.register(assertTrustedSender);
   imageWindows.registerIpc();
   agentWorkspace.registerIpc();
+  settingsWindow.registerIpc();
+  ipcMain.handle("loci:open-settings-window", (event, page: unknown) => {
+    assertTrustedSender(event);
+    return settingsWindow.open(page);
+  });
   ipcMain.handle("loci:create-project", (event, manifest: unknown) => {
     assertTrustedSender(event);
     return rendererSafeProjectOperation(
@@ -4102,7 +4116,7 @@ function installMenu(): void {
     mainWindow.show();
     mainWindow.focus();
   };
-  const requestInControlPanel = (channel: "loci:settings-requested" | "loci:guide-requested" |
+  const requestInControlPanel = (channel: "loci:guide-requested" |
     "loci:workspace-requested" | "loci:open-project-requested" | "loci:save-project-requested" |
     "loci:import-requested" | "loci:folder-import-requested") => {
     focusControlPanel();
@@ -4119,7 +4133,7 @@ function installMenu(): void {
               {
                 label: "Settings…",
                 accelerator: "CmdOrCtrl+,",
-                click: () => requestInControlPanel("loci:settings-requested"),
+                click: () => { void settingsWindow.open().catch(() => dialog.showErrorBox("Settings", "The Settings window could not be opened.")); },
               },
               { type: "separator" as const },
               { role: "hide" as const },
@@ -4169,7 +4183,7 @@ function installMenu(): void {
               {
                 label: "Settings…",
                 accelerator: "CmdOrCtrl+,",
-                click: () => requestInControlPanel("loci:settings-requested"),
+                click: () => { void settingsWindow.open().catch(() => dialog.showErrorBox("Settings", "The Settings window could not be opened.")); },
               },
             ]),
         { type: "separator" },
@@ -4391,6 +4405,27 @@ function createAgentWorkspaceWindow(): { window: BrowserWindow; load: () => Prom
   return { window, load };
 }
 
+function createSettingsWindow(): { window: BrowserWindow; load: () => Promise<void> } {
+  const workspace = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+  const display = workspace ? screen.getDisplayMatching(workspace.getBounds()) : screen.getPrimaryDisplay();
+  const window = new BrowserWindow({
+    ...display.workArea, minWidth: Math.min(520, display.workArea.width), minHeight: Math.min(360, display.workArea.height),
+    fullscreen: workspace?.isFullScreen() ?? false, fullscreenable: true, show: false,
+    title: "Loci · Settings", backgroundColor: "#111614",
+    webPreferences: { preload: path.join(__dirname, "settings-preload.cjs"),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isLociManualLink(url)) void shell.openExternal(url);
+    return { action: "deny" };
+  });
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+  return { window, load };
+}
+
 async function createWindow(): Promise<void> {
   const state = await readWindowState();
   const { fullscreen, maximized, ...bounds } = state;
@@ -4403,6 +4438,7 @@ async function createWindow(): Promise<void> {
     backgroundColor: "#111614",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: ["--loci-main-workspace"],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

@@ -7,6 +7,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
@@ -186,27 +187,37 @@ async function auditWelcomeGeometry(label) {
     const options = welcome?.querySelector(".welcome-options-toggle");
     const recent = welcome?.querySelector(".recent-sessions");
     const secondary = welcome?.querySelector(".welcome-secondary-actions");
+    const opening = welcome?.querySelector(".welcome-open-section");
     const actions = [...(welcome?.querySelectorAll(".welcome-main-actions > button") ?? [])];
-    const boxes = [welcome, heading, primary, options, recent, secondary, ...actions].map((element) => {
+    const boxes = [welcome, heading, primary, options, recent, secondary, opening, ...actions].map((element) => {
       const box = element?.getBoundingClientRect();
       return box ? { left: box.left, top: box.top, right: box.right, bottom: box.bottom,
         width: box.width, height: box.height } : null;
     });
-    const actionTops = actions.map((element) => element.getBoundingClientRect().top);
+    const actionBoxes = actions.map((element) => {
+      const { left, top, right, bottom } = element.getBoundingClientRect();
+      return { left, top, right, bottom };
+    });
+    const openingBox = opening?.getBoundingClientRect();
     const welcomeBox = welcome?.getBoundingClientRect();
     const headingBox = heading?.getBoundingClientRect();
     const recentBox = recent?.getBoundingClientRect();
     const secondaryBox = secondary?.getBoundingClientRect();
     return { boxes, heading_text: heading?.textContent?.trim() ?? "",
-      action_count: actions.length, action_tops: actionTops,
-      action_labels: actions.map((element) => element.textContent.trim()),
+      action_count: actions.length, action_boxes: actionBoxes,
+      action_labels: actions.map((element) => element.querySelector("span")?.textContent.trim()),
+      action_shortcuts: actions.map((element) => {
+        const hint = element.querySelector("kbd");
+        return { text: hint?.textContent?.trim(), visible: Boolean(hint?.getClientRects().length), aria_hidden: hint?.getAttribute("aria-hidden") };
+      }),
       action_subtitle_count: actions.reduce((count, element) => count + element.querySelectorAll("small").length, 0),
       tip_count: welcome?.querySelectorAll(".welcome-tips").length ?? 0,
       heading_bottom: headingBox?.bottom ?? null,
       actions_bottom: actions.length ? Math.max(...actions.map((element) => element.getBoundingClientRect().bottom)) : null,
       secondary_top: secondaryBox?.top ?? null, secondary_bottom: secondaryBox?.bottom ?? null,
-      recent_top: recentBox?.top ?? null, recent_width: recentBox?.width ?? null,
-      welcome_width: welcomeBox?.width ?? null,
+      opening_left: openingBox?.left ?? null, opening_right: openingBox?.right ?? null,
+      recent_top: recentBox?.top ?? null, recent_left: recentBox?.left ?? null, recent_right: recentBox?.right ?? null,
+      welcome_left: welcomeBox?.left ?? null, welcome_right: welcomeBox?.right ?? null,
       recent_empty: recent?.querySelector(".recent-empty")?.textContent?.trim() ?? "",
       viewport: { width: innerWidth, height: innerHeight },
       document_width: document.documentElement.scrollWidth,
@@ -214,24 +225,38 @@ async function auditWelcomeGeometry(label) {
   });
   assert.ok(geometry.main_width > 0, `${label}: welcome main is absent.`);
   assert.equal(geometry.heading_text, "Open data", `${label}: welcome heading is not functional.`);
-  assert.equal(geometry.action_count, 3, `${label}: main opening action row is incomplete.`);
-  assert.ok(Math.max(...geometry.action_tops) - Math.min(...geometry.action_tops) <= 1,
-    `${label}: main opening actions are not in one row.`);
+  assert.equal(geometry.action_count, 3, `${label}: main opening choices are incomplete.`);
+  for (const [index, row] of geometry.action_boxes.entries()) {
+    assert.ok(Math.abs(row.left - geometry.action_boxes[0].left) <= 1 &&
+      Math.abs(row.right - geometry.action_boxes[0].right) <= 1,
+    `${label}: opening choices do not align within their column.`);
+    if (index) assert.ok(row.top >= geometry.action_boxes[index - 1].bottom,
+      `${label}: stacked opening choices overlap.`);
+  }
   assert.deepEqual(geometry.action_labels, ["Open images", "Open folder", "Open study"],
     `${label}: opening choices no longer name their native actions.`);
+  assert.deepEqual(geometry.action_shortcuts.map(hint => hint.text), ["⌘O", "⌘⇧O", "⌘⇧P"],
+    `${label}: opening shortcuts do not match their macOS native commands.`);
+  assert.ok(geometry.action_shortcuts.every(hint => hint.visible && hint.aria_hidden === "true"),
+    `${label}: shortcut hints must be visible without changing action names.`);
   assert.equal(geometry.action_subtitle_count, 0, `${label}: redundant opening subtitles returned.`);
   assert.equal(geometry.tip_count, 0, `${label}: the duplicate opening tip panel returned.`);
-  assert.ok(geometry.heading_bottom !== null && geometry.heading_bottom <= Math.min(...geometry.action_tops),
+  assert.ok(geometry.heading_bottom !== null && geometry.heading_bottom <= geometry.action_boxes[0].top,
     `${label}: opening choices overlap the heading.`);
   assert.ok(geometry.secondary_top !== null && geometry.actions_bottom !== null &&
     geometry.secondary_top >= geometry.actions_bottom,
   `${label}: optional sources overlap the primary opening choices.`);
-  assert.ok(geometry.recent_top !== null && geometry.secondary_bottom !== null &&
-    geometry.recent_top >= geometry.secondary_bottom,
-  `${label}: recent work overlaps the optional sources.`);
-  assert.ok(geometry.recent_width !== null && geometry.welcome_width !== null &&
-    Math.abs(geometry.recent_width - geometry.welcome_width) <= 1,
-  `${label}: recent work does not use the welcome column width.`);
+  if (geometry.viewport.width >= 760) {
+    assert.ok(geometry.recent_left !== null && geometry.opening_right !== null && geometry.recent_left >= geometry.opening_right,
+      `${label}: recent work must occupy a separate column to the right of opening choices.`);
+  } else {
+    assert.ok(geometry.recent_top !== null && geometry.secondary_bottom !== null && geometry.recent_top >= geometry.secondary_bottom,
+      `${label}: recent work overlaps the optional sources in the stacked layout.`);
+    assert.ok(Math.abs(geometry.recent_left - geometry.opening_left) <= 1 && Math.abs(geometry.recent_right - geometry.opening_right) <= 1,
+      `${label}: recent work does not use the opening column width in the stacked layout.`);
+  }
+  assert.ok(geometry.recent_left >= geometry.welcome_left && geometry.recent_right <= geometry.welcome_right + 1,
+    `${label}: recent work is outside the welcome content.`);
   assert.match(geometry.recent_empty, /No recent work yet/,
     `${label}: recent work lacks its truthful empty state.`);
   assert.ok(geometry.document_width <= geometry.viewport.width + 1, `${label}: horizontal overflow.`);
@@ -424,11 +449,12 @@ try {
     await setContentViewport(viewport.width, viewport.height);
     for (const theme of ["Graphite", "Midnight", "Paper"]) {
       for (const textSize of ["Standard", "Large"]) {
-        await page.getByRole("button", { name: "Open settings", exact: true }).click();
-        const dialog = page.getByRole("dialog", { name: "Settings" });
+        const settings = await openSettings(app, page);
+        const { dialog } = settings;
+        await dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
         await dialog.getByRole("combobox", { name: "Application theme" }).selectOption(theme.toLowerCase());
         await dialog.getByRole("radio", { name: new RegExp(`^${textSize}`) }).click();
-        await dialog.getByRole("button", { name: "Done" }).click();
+        await closeSettings(settings);
         const key = `${viewport.width}x${viewport.height}-${theme.toLowerCase()}-${textSize.toLowerCase()}`;
         await page.waitForFunction(([themeId, sizeId]) =>
           document.documentElement.dataset.theme === themeId &&
