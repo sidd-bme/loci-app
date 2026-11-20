@@ -48,7 +48,7 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Portability", label: "Import & share results", group: "Results", advanced: true },
   { tab: "Agent", label: "Connect an assistant", group: "Analyze", advanced: true },
   { tab: "Remote", label: "Remote compute", group: "Analyze", advanced: true },
-  { tab: "Vendor import", label: "Convert vendor images", group: "View", advanced: true },
+  { tab: "Vendor import", label: "Convert image format", group: "View", advanced: true },
 ];
 const TOOL_HELP: Record<WorkbenchTab, string> = {
   Workflow: "Build, preview and run a saved analysis workflow with exact review checkpoints.",
@@ -72,7 +72,7 @@ const TOOL_HELP: Record<WorkbenchTab, string> = {
   Portability: "Import or export portable result bundles with source and revision bindings.",
   Agent: "Prepare explicitly granted local analysis tools for an assistant connection.",
   Remote: "Connect a configured compute host and review data-transfer consent before submitting work.",
-  "Vendor import": "Inspect a supported vendor source and convert it with an explicitly installed decoder.",
+  "Vendor import": "Convert a study image to an open microscopy format or import a supported vendor file.",
 };
 
 export const workbenchModifier = () => /Mac/i.test(navigator.platform) ? "⌘" : "Ctrl+";

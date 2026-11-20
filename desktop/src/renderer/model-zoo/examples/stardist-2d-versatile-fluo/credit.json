@@ -1,0 +1,156 @@
+{
+  "modelId": "stardist-2d-versatile-fluo",
+  "modelVersion": "2D_versatile_fluo · stardist-models v0.1",
+  "kind": "prediction",
+  "subject": "Fluorescence microscopy of nuclei from the 2018 Data Science Bowl. The full field is the versatile-model example in the official StarDist notebook.",
+  "attribution": "Image contributors to BBBC038v1, curated by the Broad Institute Imaging Platform (Caicedo et al., 2019). Field selected by the StarDist authors for their prediction notebook. WebP renditions and StarDist prediction contours prepared by Loci.",
+  "imageLicense": "CC0-1.0",
+  "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "sourceUrl": "https://bbbc.broadinstitute.org/BBBC038",
+  "publicationUrl": "https://doi.org/10.1007/978-3-030-00934-2_30",
+  "displayTransform": "Full native 640 × 512 field. Original and Overlay use the same linear grayscale window of 4–70 in recorded uint8 intensity, with endpoint clipping. The overlay adds a one-pixel inner contour to each predicted instance. The thumbnail shows the same overlay at 512 × 410. The unwindowed source pixels are preserved in source.png.",
+  "predictionOrigin": "External StarDist CPU inference for Loci using the exact versatile fluorescence checkpoint and its supplied thresholds. The notebook’s 1st to 99.8th percentile normalization is applied to the model input. The contours show 48 predicted instances. Dataset annotations are separate artifacts.",
+  "datasetPublicationUrl": "https://doi.org/10.1038/s41592-019-0612-7",
+  "sourceArchive": "dsb2018.zip",
+  "sourceArchiveUrl": "https://github.com/stardist/stardist/releases/download/0.1.0/dsb2018.zip",
+  "sourceMember": "dsb2018/test/images/a5e695fce80dc03efb6665a9ec14500ab47f4ee9f6437531388dd3cc32c90db1.tif",
+  "sourceSha256": "0a1d1b18915c58b2d885a0d1229131e379722629f5b14a62a58ee7b6ea9bc476",
+  "archiveSha256": "e44921950edce378063aa4457e625581ba35b4c2dbd9a07c19d48900129f386f",
+  "sourceExampleUrl": "https://github.com/stardist/stardist/blob/main/examples/2D/3_prediction.ipynb",
+  "sourceNotebookInputIndex": 30,
+  "modelRepositoryUrl": "https://github.com/stardist/stardist",
+  "modelReleaseUrl": "https://github.com/stardist/stardist-models/releases/tag/v0.1",
+  "modelWeightsUrl": "https://github.com/stardist/stardist-models/releases/download/v0.1/python_2D_versatile_fluo.zip",
+  "modelArchiveSha256": "4ad678d0758eed6e55625f1b5ae30771e59adb79f1239e09b9772eac8846c3dd",
+  "modelWeightsMember": "weights_best.h5",
+  "modelWeightsSha256": "42202bd269c8106782316f1a2c75afb3f5ffa65e525c2e155ee0ced3a95da349",
+  "modelWeightsLicense": "BSD-3-Clause",
+  "runtimeVersions": {
+    "python": "3.12.13",
+    "stardist": "0.9.2",
+    "csbdeep": "0.8.2",
+    "tensorflow": "2.16.2",
+    "keras": "3.15.1",
+    "numpy": "1.26.4",
+    "scikit-image": "0.26.0",
+    "scipy": "1.17.1"
+  },
+  "execution": {
+    "device": "CPU",
+    "arch": "arm64",
+    "intraOpThreads": 1,
+    "interOpThreads": 1,
+    "determinismEnabled": true
+  },
+  "predictionSettings": {
+    "normalization": {
+      "percentiles": [
+        1,
+        99.8
+      ],
+      "axes": "YX",
+      "clip": false
+    },
+    "probThreshold": 0.479071463157368,
+    "nmsThreshold": 0.3
+  },
+  "predictionRunReceiptSha256": "06b35e5377df7eb64c0f95ba80be74e6dbd2f4f3ea22ebea61a1f727cc233c43",
+  "predictedLabelsNpySha256": "fa2109ca58ea163920164ca3e81d99063bded26e65268901a232f3515eeac225",
+  "predictedInstanceCount": 48,
+  "predictedForegroundPixels": 46727,
+  "sourceShapeYX": [
+    512,
+    640
+  ],
+  "cropYXHW": [
+    0,
+    0,
+    512,
+    640
+  ],
+  "sourceAxes": "YX",
+  "sourceDtype": "uint8",
+  "sourceScale": {
+    "unit": "pixel",
+    "spacingYX": [
+      1,
+      1
+    ],
+    "physicalCalibration": null
+  },
+  "sourcePixelArraySha256": "f94d0d602cba1abf3625be847ccd667b4df9ec8d3800438a5845c457cfb19c68",
+  "predictedLabelArraySha256": "095e57e18165187dacee4bc99fdb26330bbe43309809f6a4a9e56cdfc54c21b9",
+  "labelPng": {
+    "axes": "YX",
+    "dtype": "uint16",
+    "backgroundId": 0,
+    "sha256Basis": "C-order little-endian uint16 decoded samples"
+  },
+  "overlayContour": {
+    "widthPx": 1,
+    "inward": true,
+    "connectivity": 4,
+    "rgb": [
+      70,
+      219,
+      184
+    ],
+    "opacity": 0.82
+  },
+  "files": {
+    "original.webp": {
+      "sha256": "310ba58961604793166cda9cfe74deb85c936e75fd8363058f0c7c9c4ad384a2",
+      "dimensionsXY": [
+        640,
+        512
+      ]
+    },
+    "overlay.webp": {
+      "sha256": "8dcf3ed406624924a59bf22148abf132229065871285143152c96a0ce158c352",
+      "dimensionsXY": [
+        640,
+        512
+      ]
+    },
+    "prediction.png": {
+      "sha256": "a36d1582ea80ff483c7facc32cb054ffaa7b60b0029ec9d3c8d1c757fe03c8c8",
+      "dimensionsXY": [
+        640,
+        512
+      ]
+    },
+    "thumbnail.webp": {
+      "sha256": "5058682d3fa29cc79230d1eb59739b525cb1a61f2a66aee5b6b939f9c97159f7",
+      "dimensionsXY": [
+        512,
+        410
+      ]
+    },
+    "source.png": {
+      "sha256": "d9f5b2b19eeb6648374eafbbb686289bb05c70110d311765ecdabb859463b194",
+      "dimensionsXY": [
+        640,
+        512
+      ]
+    }
+  },
+  "displayWindow": {
+    "inputLimits": [
+      4,
+      70
+    ],
+    "inputUnit": "native uint8 intensity",
+    "outputLimits": [
+      0,
+      255
+    ],
+    "gamma": 1,
+    "sourceSamples": "source.png"
+  },
+  "cardDisplay": {
+    "source": "overlay.webp",
+    "resampling": "Lanczos at recorded thumbnail dimensions",
+    "encoding": "lossless WebP",
+    "field": "same full-resolution field as the detail viewer"
+  }
+}

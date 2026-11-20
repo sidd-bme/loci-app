@@ -7,10 +7,29 @@ contains the application, checksums, software inventories and dependency licence
 
 ## Source development after this download
 
-The image stays in the center while the source list and tool panel can collapse.
-The current source adds a dedicated Settings window, linked A/B navigation,
-and automatic, nearest-pixel or smooth display per image. Display sampling
-leaves the measured pixels unchanged.
+Open Settings with **⌘,** on macOS or **Ctrl+,** on Windows. The inset panel
+opens over the current image. **F1** opens the offline user manual with search,
+a topic outline and reading history. Linked A/B navigation and per-view
+nearest-pixel or smooth sampling preserve the underlying measurements.
+
+Under **View → Import & conversion → Convert image format**, export a supported
+full-resolution scalar study series to tiled OME-TIFF or chunked OME-Zarr 0.4.
+Loci reopens the output and checks every pixel before publishing the new folder.
+With the supported Bio-Formats runtime you can also convert a CZI, LIF or ND2
+series, a C/Z/T range, or a cropped plane to OME-TIFF. The [converter guide](VENDOR_CONVERSION.md)
+covers the formats, bounds, channel order, plane timing and stage coordinates.
+
+**File → Model Zoo…** opens five microscopy profiles. Inspect credited microscopy
+images and compare original pixels with four verified model outputs. The μSAM
+entry shows a native confocal input section. Each
+entry links to the publisher and opens its supported workflow. Cellpose-SAM v2,
+the BioImage.IO nuclei boundary model and the PUMA tissue profile use separately
+provisioned runtimes. μSAM and StarDist use externally generated labels.
+The [Model Zoo guide](MODEL_LIBRARY.md) records checkpoint identities, source images and usage terms.
+
+**Analyze → Preprocess** presents the recipe as ordered, editable steps. Choose
+**Add processing step** to add a filter, select a row to adjust its parameters,
+and preview the selected region before running a saved analysis.
 
 An original, full-resolution, single-plane CPU Components result can supply
 its verified recipe. Open **Results → Review & export → Review → Analysis

@@ -216,6 +216,19 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             handoff_id=params.get("handoff_id"),
             handoff_manifest_path=params.get("handoff_manifest_path"),
         )
+    if method == "research_image_convert":
+        from .image_conversion import convert_image
+
+        exact_keys(
+            params, {"project", "source_id", "source_sha256", "format", "destination"}, method
+        )
+        return convert_image(
+            _open(params["project"]),
+            params["source_id"],
+            params["source_sha256"],
+            params["format"],
+            params["destination"],
+        )
     if method == "research_usam_handoff_export":
         from .research_usam_handoff import export_usam_handoff
 

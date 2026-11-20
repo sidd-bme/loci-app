@@ -905,7 +905,7 @@ def _validate_source(record: Any, expected_id: str) -> dict[str, Any]:
     if "derivation" in record:
         from .research_vendor import validate_derivation
 
-        validate_derivation(record["derivation"], record["sha256"])
+        validate_derivation(record["derivation"], record["sha256"], record["metadata"])
     metadata_identity = record["metadata"].get("sha256")
     if metadata_identity is not None and metadata_identity != record["sha256"]:
         raise ValueError("Interchanged source metadata fingerprint is inconsistent")

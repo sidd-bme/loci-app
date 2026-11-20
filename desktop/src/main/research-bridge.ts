@@ -1,7 +1,9 @@
+import { checkedImageConversion, checkedImageConversionReceipt } from "../shared/image-conversion";
 import { checkedMethodInput, checkedMethodRights } from "../shared/controlled-method-contracts";
 import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
-import { app, dialog, ipcMain } from "electron";
+import { app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { openModelLibraryLink } from "./model-library-links";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -238,7 +240,7 @@ export class ResearchBridge {
   private computeStudyBinding: string | null = null;
   private readonly viewDocumentListeners = new Set<() => void>();
   private vendorGrants = new Map<string, {
-    project: string; source: string; jar: string; java: string; sourceSha256: string;
+    project: string; source: string; jar: string; java: string; sourceSha256: string; javaSha256: string;
   }>();
   private readonly viewAccess = new ResearchViewAccess({
     documentState: () => ({
@@ -1438,6 +1440,10 @@ export class ResearchBridge {
       );
     };
     handle("recipe-resources", async () => recipeResources(totalmem()));
+    handle("model-library-link", async (...args) => {
+      if (args.length !== 1) throw new Error("Choose a registered official model-library source.");
+      await openModelLibraryLink(args[0], (url) => shell.openExternal(url));
+    });
     handle("compute-targets", (operation, request) => this.computeTargets(operation, request));
     handle("create", () => this.choose(true));
     handle("open", () => this.choose(false));
@@ -1605,6 +1611,7 @@ export class ResearchBridge {
       const project = this.requireProject();
       if (this.running || this.switching) throw new Error("Finish the active study operation first.");
       this.switching = true;
+      this.vendorGrants.clear();
       try {
         const source = await dialog.showOpenDialog({
           title: "Inspect a vendor file for explicit conversion",
@@ -1624,18 +1631,17 @@ export class ResearchBridge {
           properties: ["openFile", "showHiddenFiles"],
         });
         if (java.canceled || !java.filePaths[0]) return null;
-        const inspection = await this.control.request<{ source_sha256: string }>(
+        const inspection = await this.control.request<{ source_sha256: string; runtime: { java_sha256: string } }>(
           "research_vendor_inspect", {
             source: source.filePaths[0], jar: jar.filePaths[0], java: java.filePaths[0],
           }, 0,
         );
-        if (!/^[a-f0-9]{64}$/.test(inspection.source_sha256))
+        if (!/^[a-f0-9]{64}$/.test(inspection.source_sha256) || !/^[a-f0-9]{64}$/.test(inspection.runtime?.java_sha256))
           throw new Error("Vendor inspection returned an invalid fingerprint.");
         const grantId = randomUUID();
-        this.vendorGrants.clear();
         this.vendorGrants.set(grantId, {
           project, source: source.filePaths[0], jar: jar.filePaths[0],
-          java: java.filePaths[0], sourceSha256: inspection.source_sha256,
+          java: java.filePaths[0], sourceSha256: inspection.source_sha256, javaSha256: inspection.runtime.java_sha256,
         });
         return { grant_id: grantId, source_name: path.basename(source.filePaths[0]),
           source_sha256: inspection.source_sha256, inspection };
@@ -1661,7 +1667,7 @@ export class ResearchBridge {
         return await this.control.request("research_vendor_convert", {
           project, source: grant.source, jar: grant.jar, java: grant.java,
           destination: destination.filePath, request: selection,
-          expected_source_sha256: grant.sourceSha256,
+          expected_source_sha256: grant.sourceSha256, expected_java_sha256: grant.javaSha256,
         }, 0);
       } finally { this.switching = false; }
     });
@@ -2033,6 +2039,32 @@ export class ResearchBridge {
         if (this.project !== project || this.viewDocumentEpoch !== epoch)
           throw new Error("The label-import study changed while checking the file.");
         return output;
+      } finally {
+        this.switching = false;
+      }
+    });
+    handle("convert-study-image", async (binding, ...extra) => {
+      if (extra.length) throw new Error("Invalid conversion request.");
+      const project = this.requireProject();
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+      const input = checkedImageConversion(binding);
+      const epoch = this.viewDocumentEpoch;
+      const current = () => {
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The active study changed during image conversion.");
+      };
+      this.switching = true;
+      try {
+        const picked = await dialog.showSaveDialog({
+          title: "Save converted image", defaultPath: "Converted image", buttonLabel: "Convert",
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        current();
+        const output = await this.control.request("research_image_convert", {
+          ...input, project, destination: picked.filePath,
+        }, 0);
+        current();
+        return checkedImageConversionReceipt(output, input.format);
       } finally {
         this.switching = false;
       }

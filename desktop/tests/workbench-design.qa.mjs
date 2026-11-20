@@ -117,8 +117,8 @@ async function audit(name, target = page) {
       root_scroll_width: document.documentElement.scrollWidth,
       body_scroll_width: document.body.scrollWidth,
       inspector: scrolling,
-      overlays: [...document.querySelectorAll('[role="dialog"], [role="listbox"], details.workbench-file-menu[open] > div, details.source-information[open] > .source-information-content, .context-tooltip')]
-        .filter(visible).map((element) => ({ role: element.getAttribute("role") ?? "popover",
+      overlays: [...document.querySelectorAll('dialog[open], [role="dialog"], [role="listbox"], details.workbench-file-menu[open] > div, details.source-information[open] > .source-information-content, .context-tooltip')]
+        .filter(visible).map((element) => ({ role: element.getAttribute("role") ?? (element.matches("dialog") ? "dialog" : "popover"),
           label: element.getAttribute("aria-label") ?? element.className, ...rect(element) })),
       task_buttons: [...document.querySelectorAll('[aria-label="Task groups"] button')]
         .filter(visible).map((element) => ({ text: element.textContent.trim(), ...rect(element) })),
@@ -283,11 +283,19 @@ async function resize({ width, height }) {
     emulation: constrained ? "CDP Emulation.setDeviceMetricsOverride; deviceScaleFactor=1; mobile=false" : null });
 }
 async function appearance(theme, textSize) {
-  const surface = await openSettings(app, page, { requireNative: true });
+  const surface = await openSettings(app, page);
   await surface.dialog.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(theme);
   await surface.dialog.getByRole("radio", { name: textSize === "large" ? "Large" : "Standard", exact: true }).click();
   await page.waitForFunction((value) => document.documentElement.dataset.theme === value.theme &&
     document.documentElement.dataset.textSize === value.textSize, { theme, textSize });
+  const geometry = await surface.dialog.evaluate((element) => {
+    const { x, y, right, bottom } = element.getBoundingClientRect();
+    const pane = element.querySelector(".settings-pane");
+    return { x, y, right, bottom, width: innerWidth, height: innerHeight, paneOverflow: pane.scrollWidth - pane.clientWidth };
+  });
+  assert.ok(geometry.x > 0 && geometry.y > 0 && geometry.right < geometry.width && geometry.bottom < geometry.height,
+    `${theme}/${textSize}: Settings must fit inside the workbench`);
+  assert.ok(geometry.paneOverflow <= 1, `${theme}/${textSize}: Settings pane clips horizontally`);
   await closeSettings(surface);
 }
 async function selectTool(group, label) {
@@ -420,16 +428,19 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     await nativeMenu("Help", "User guide");
     const guide = page.getByRole("dialog", { name: "User manual", exact: true });
     await guide.waitFor();
-    await guide.getByRole("textbox", { name: "Search user manual" }).fill("qa-no-such-workflow-78291");
+    const search = guide.getByRole("searchbox", { name: "Search user manual" });
+    await search.fill("qa-no-such-workflow-78291");
     await guide.getByRole("status").filter({ hasText: "No matching section" }).waitFor();
     await audit("native-guide-no-results");
     await capture("native-guide-no-results");
+    await search.press("Escape");
+    assert.equal(await search.inputValue(), "");
     await page.keyboard.press("Escape");
     await guide.waitFor({ state: "hidden" });
   });
   await step("02-native-settings", async () => {
     await nativeMenu("app", "Settings…");
-    const surface = await resolveSettings(app, page, { requireNative: true });
+    const surface = await resolveSettings(app, page);
     await audit("native-settings-dialog", surface.page);
     await capture("native-settings-dialog", true, surface.page);
     await escapeSettings(surface);
@@ -618,7 +629,7 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
   }
   await resize(sizes[0]); await appearance("graphite", "large");
   for (const category of categories) await step(`settings-${category.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`, async () => {
-    const surface = await openSettings(app, page, { requireNative: true });
+    const surface = await openSettings(app, page);
     await surface.dialog.getByRole("tab", { name: category, exact: true }).click();
     await surface.dialog.getByRole("tabpanel", { name: category, exact: true }).waitFor();
     if (category === "Saving & export") {
@@ -655,7 +666,7 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     }
   }
   assert.equal(toolCoverage.length, 16, "Every current primary and advanced tool must remain discoverable");
-  for (const advanced of ["Connect an assistant", "Remote compute", "Import & share results", "Convert vendor images"])
+  for (const advanced of ["Connect an assistant", "Remote compute", "Import & share results", "Convert image format"])
     assert.ok(toolCoverage.some((item) => item.label === advanced && !item.disabled), `Missing advanced tool: ${advanced}`);
 
   await step("search-keyboard-no-results", async () => {
@@ -690,10 +701,7 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     await page.locator(".research-inspector").evaluate((element) => { element.scrollTop = 0; });
   });
   await step("compact-settings-and-guide", async () => {
-    const surface = await openSettings(app, page, { requireNative: true });
-    const settingsWindow = await app.browserWindow(surface.page);
-    await settingsWindow.evaluate(win => win.setContentSize(1100, 720));
-    await surface.page.waitForFunction(() => innerWidth === 1100 && innerHeight === 720);
+    const surface = await openSettings(app, page);
     await audit("compact-settings", surface.page);
     await capture("compact-settings", true, surface.page);
     await surface.dialog.getByRole("tab", { name: "User guide", exact: true }).click();

@@ -490,7 +490,10 @@ class Workbench:
                 from .zarr_adapter import ZarrAdapter
 
                 session = ZarrAdapter(
-                    **source["private_zarr_selection"], expected_sha256=source["sha256"]
+                    **source["private_zarr_selection"],
+                    expected_sha256=source["sha256"],
+                    # Preserve names bound by studies created before OMERO label support.
+                    registered_channel_names=tuple(source["metadata"].get("channel_names", ())),
                 )
             elif source.get("source_kind") == "whole_slide":
                 from .slide_adapter import SlideAdapter

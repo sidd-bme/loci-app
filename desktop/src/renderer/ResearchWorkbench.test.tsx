@@ -2971,18 +2971,19 @@ describe("ResearchWorkbench", () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Process");
-    fireEvent.click(screen.getByText("Gaussian blur", { exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add processing step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gaussian blur" }));
     const sigma = screen.getByLabelText("Step 1 sigma");
     fireEvent.change(sigma, { target: { value: "" } });
     expect(sigma).toHaveValue("");
-    expect(screen.getByText("Preview selected crop")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
     expect(bridge.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
     for (const text of ["1", "1.", "1.25"]) {
       fireEvent.change(sigma, { target: { value: text } });
       expect(sigma).toHaveValue(text);
     }
-    await waitFor(() => expect(screen.getByText("Preview selected crop")).toBeEnabled());
-    fireEvent.click(screen.getByText("Preview selected crop"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Preview selected crop" }));
     await waitFor(() => expect(bridge.execute).toHaveBeenCalledWith("preview_recipe",
       expect.objectContaining({ recipe: expect.objectContaining({ steps: [{ op: "gaussian", sigma: 1.25 }] }) })));
   });
@@ -3105,11 +3106,12 @@ describe("ResearchWorkbench", () => {
     const bridge = api();
     render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
     await openTool("Analyze", "Process");
-    fireEvent.click(screen.getByText("Gaussian blur", { exact: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Add processing step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gaussian blur" }));
     fireEvent.change(screen.getByLabelText("Step 1 sigma"), {
       target: { value: "2.5" },
     });
-    fireEvent.click(screen.getByText("Preview selected crop"));
+    fireEvent.click(screen.getByRole("button", { name: "Preview selected crop" }));
     await waitFor(() =>
       expect(bridge.execute).toHaveBeenCalledWith(
         "preview_recipe",
@@ -3123,6 +3125,97 @@ describe("ResearchWorkbench", () => {
     expect(bridge.execute).not.toHaveBeenCalledWith(
       "run_recipe",
       expect.anything(),
+    );
+  });
+
+  it("handles Preprocess scope/cancel/source switch, reordered preview, and collapsed bottom Memory section", async () => {
+    const secondSource = {
+      ...snapshot.sources[0],
+      id: "c".repeat(32),
+      sha256: "d".repeat(64),
+      name: "Second 2D",
+      metadata: {
+        ...snapshot.sources[0].metadata,
+        dimensions: { x: 128, y: 96, z: 1, t: 1, c: 1 },
+        levels: [
+          {
+            index: 0,
+            dimensions: { x: 128, y: 96, z: 1, t: 1, c: 1 },
+            calibration: null,
+          },
+        ],
+      },
+    };
+    const twoSourceStudy: ResearchSnapshot = {
+      ...structuredClone(snapshot),
+      sources: [snapshot.sources[0], secondSource],
+    };
+    const bridge = api({
+      getSnapshot: vi.fn().mockResolvedValue(twoSourceStudy),
+    });
+    render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Process");
+
+    // 1. Scope shows actual dimensions + Z for multi-Z source, and contextual drawing/cancel preserves scope
+    const scopeRegion = screen.getByRole("region", { name: "Analysis scope" });
+    expect(within(scopeRegion).getByRole("button", { name: "Whole image" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(scopeRegion).getByText("64 × 48 px · 1 plane")).toBeInTheDocument();
+    expect(within(scopeRegion).getByText("Z 2/3")).toBeInTheDocument();
+
+    fireEvent.click(within(scopeRegion).getByRole("button", { name: "Region" }));
+    expect(within(scopeRegion).getByText("Drag a rectangle on the image. Right-drag still pans.")).toBeInTheDocument();
+    expect(within(scopeRegion).getByRole("button", { name: "Whole image" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(within(scopeRegion).getByRole("button", { name: "Cancel drawing" }));
+    expect(within(scopeRegion).queryByText("Drag a rectangle on the image. Right-drag still pans.")).not.toBeInTheDocument();
+
+    // Switching sources while drawing cancels drawing and updates scope readout (omitting Z for 2D source)
+    fireEvent.click(within(scopeRegion).getByRole("button", { name: "Region" }));
+    expect(within(scopeRegion).getByRole("button", { name: "Cancel drawing" })).toBeInTheDocument();
+    fireEvent.click(document.querySelector<HTMLButtonElement>(`button[data-source-id="${secondSource.id}"]`)!);
+    await waitFor(() =>
+      expect(within(screen.getByRole("region", { name: "Analysis scope" })).getByText("128 × 96 px · 1 plane")).toBeInTheDocument(),
+    );
+    const updatedScope = screen.getByRole("region", { name: "Analysis scope" });
+    expect(within(updatedScope).queryByRole("button", { name: "Cancel drawing" })).not.toBeInTheDocument();
+    expect(within(updatedScope).queryByText(/^Z \d/)).not.toBeInTheDocument();
+
+    // 2. Memory sits after Preview selected crop and starts collapsed
+    const previewBtn = screen.getByRole("button", { name: "Preview selected crop" });
+    const memorySection = screen.getByRole("region", { name: "Recipe resources" });
+    expect(
+      previewBtn.compareDocumentPosition(memorySection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    const memoryDetails = memorySection.querySelector("details")!;
+    expect(memoryDetails.open).toBe(false);
+    fireEvent.click(memorySection.querySelector("summary")!);
+    expect(memoryDetails.open).toBe(true);
+
+    // 3. Reordered pipeline steps with clip_negative on/off across duplicate ops send exact sequence to preview_recipe
+    fireEvent.click(screen.getByRole("button", { name: "Add processing step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Subtract constant" }));
+    fireEvent.change(screen.getByLabelText("Step 1 value"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Clip negative values to zero" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add processing step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Subtract constant" }));
+    fireEvent.change(screen.getByLabelText("Step 2 value"), { target: { value: "12" } });
+    expect(screen.getByText("step 1 intensity")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Move step 2 up" }));
+    expect(screen.getByText("source intensity")).toBeInTheDocument();
+
+    fireEvent.click(previewBtn);
+    await waitFor(() =>
+      expect(bridge.execute).toHaveBeenCalledWith(
+        "preview_recipe",
+        expect.objectContaining({
+          source_id: secondSource.id,
+          recipe: expect.objectContaining({
+            steps: [
+              { op: "subtract_constant", value: 12 },
+              { op: "subtract_constant", value: 5, clip_negative: true },
+            ],
+          }),
+        }),
+      ),
     );
   });
   it.each([false, true])("persists the exact example display through the existing source-view API (saved=%s)", async (saved) => {

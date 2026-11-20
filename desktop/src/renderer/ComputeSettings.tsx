@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchDesktopApi } from "../shared/research-contracts";
 import { sanitizeRendererError } from "./ContextHelp";
-import { notifyComputeTargetsChanged } from "./compute-target-events";
+import { notifyComputeTargetsChanged, subscribeComputeTargetsChanged } from "./compute-target-events";
 import "./ComputeSettings.css";
 
 type Resources = { cpus: number; memory_mb: number; wall_minutes: number; gpus: number };
@@ -37,10 +37,15 @@ function ResourceFields({ value, onChange }: { value: Resources; onChange: (valu
   </>;
 }
 
-export default function ComputeSettings({ api }: { api?: Pick<ResearchDesktopApi, "computeTargets"> }) {
+export default function ComputeSettings({ api, onStudyChanged }: {
+  api?: Pick<ResearchDesktopApi, "computeTargets">;
+  onStudyChanged?: (listener: () => void) => () => void;
+}) {
+  const service = api?.computeTargets;
   const [listing, setListing] = useState<TargetList>({ targets: [], study_profiles: [], study_binding: null });
   const { targets, study_profiles: studyProfiles, study_binding: studyBinding } = listing;
-  const [listingPending, setListingPending] = useState(false);
+  const [listingPending, setListingPending] = useState(Boolean(service));
+  const [hasListed, setHasListed] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +64,7 @@ export default function ComputeSettings({ api }: { api?: Pick<ResearchDesktopApi
   const [editing, setEditing] = useState<Target | null>(null);
   const mounted = useRef(false);
   const listSequence = useRef(0);
-  const service = api?.computeTargets;
+  const performing = useRef(false);
   const updateTarget = async (
     operation: "save" | "test" | "resources" | "remember" | "forget",
     request: Record<string, unknown>,
@@ -81,6 +86,7 @@ export default function ComputeSettings({ api }: { api?: Pick<ResearchDesktopApi
         throw new Error("Compute settings could not be read.");
       setListing(result);
       setListError(null);
+      setHasListed(true);
     } catch (value) {
       if (sequence !== listSequence.current) return;
       setListing(previous => ({ ...previous, study_profiles: [], study_binding: null }));
@@ -92,20 +98,36 @@ export default function ComputeSettings({ api }: { api?: Pick<ResearchDesktopApi
   useEffect(() => {
     mounted.current = true;
     void refresh();
+    // A write can finish after its Settings pane unmounts. Refresh a newer pane
+    // when that happens; an operation in this pane refreshes in its finally block.
+    const stopTargets = subscribeComputeTargetsChanged(() => { if (!performing.current) void refresh(); });
+    const stopStudy = onStudyChanged?.(refresh);
     window.addEventListener("focus", refresh);
-    return () => { mounted.current = false; listSequence.current++; window.removeEventListener("focus", refresh); };
-  }, [refresh]);
+    return () => {
+      mounted.current = false;
+      listSequence.current++;
+      stopTargets();
+      stopStudy?.();
+      window.removeEventListener("focus", refresh);
+    };
+  }, [onStudyChanged, refresh]);
   const perform = async (label: string, action: () => Promise<void>) => {
-    if (!service || busy) return;
+    if (!service || busy || performing.current) return;
+    performing.current = true;
     setBusy(label); setError(null); setMessage("");
     try { await action(); }
     catch (value) { if (mounted.current) setError(sanitizeRendererError(value instanceof Error ? value.message : String(value))); }
-    finally { await refresh(); if (mounted.current) setBusy(null); }
+    finally {
+      performing.current = false;
+      await refresh();
+      if (mounted.current) setBusy(null);
+    }
   };
   const studyOnly = studyProfiles.filter(profile => !targets.some(target => target.alias === profile.alias));
   return <div className="compute-settings">
     <p>Save a cluster once, then choose it under Run on in any study.</p>
     {!service ? <p>Compute settings require the desktop app.</p> : <>
+      {listingPending && !hasListed && <p role="status">Loading compute targets…</p>}
       <ul className="compute-settings__targets" aria-label="Saved compute targets">
         {targets.map(target => <li key={target.id} data-target-id={target.id}>
           <div className="compute-settings__target-heading"><strong>{target.alias}</strong><span>
@@ -142,7 +164,7 @@ export default function ComputeSettings({ api }: { api?: Pick<ResearchDesktopApi
             if (mounted.current) setMessage(`${target.alias} is now available in every study.`);
           })}>Save for all studies</button></div>)}
       </div>}
-      {!adding && <button disabled={busy !== null} onClick={() => {
+      {!adding && <button disabled={busy !== null || listingPending || listError !== null} onClick={() => {
         setAdding(true); setEditing(null); setDraft(null); setAlias(""); setResources({ ...CPU });
         setRuntime(""); setProjectRoot(""); setOutputRoot(""); setScheduler("pbspro");
         setSchedulerBin(""); setQueue(""); setAccount("");

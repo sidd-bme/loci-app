@@ -34,7 +34,7 @@ const toolGroup = {
   Registration: "Analyze", Population: "Results", Density: "Results", Info: "Results", Study: "Results",
 };
 const advancedLabel = { Agent: "Connect an assistant", Remote: "Remote compute",
-  Portability: "Import & share results", "Vendor import": "Convert vendor images" };
+  Portability: "Import & share results", "Vendor import": "Convert image format" };
 const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
   Analyze: "Segment & measure", Process: "Preprocess", Workflow: "Workflow builder", Model: "Use a model", Quantify: "Fluorescence & field assay",
   Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Density: "Spatial donor density", Info: "Review & export", Study: "Study & batch" };

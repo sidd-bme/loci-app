@@ -1,10 +1,11 @@
 # Epidermis tissue model
 
-**Analyze → Epidermis model** provides an optional, bounded PUMA research
-candidate for explicitly declared H&E images. It produces tissue regions, not
-cell counts. A predicted epidermis class does not identify the basal boundary,
-define the dermis, or establish a tissue-thickness measurement. The recorded
-model scores are not calibrated confidence estimates.
+**Analyze → Epidermis model** uses fold 4 of the nnU-Net tissue baseline from
+the PUMA melanoma challenge. Loci's CPU implementation of PlainConvUNet
+predicts six tissue classes in an explicitly declared H&E image and extracts
+class 4 as candidate epidermis. A basal boundary, dermis definition or
+tissue-thickness measurement requires separate evidence. The retained class
+scores are uncalibrated. [Upstream inference code](https://github.com/tueimage/PUMA-challenge-baseline-track1/tree/211782054387f0d28e170ed565cdfb6e8b53d1a7) · [PUMA study](https://doi.org/10.1093/gigascience/giaf011)
 
 ## Provision and preview
 

@@ -73,6 +73,12 @@ When building from source, you can repeat a saved, single-plane CPU Components
 analysis from the command line or send one native channel to standalone μSAM
 and return its instance labels for measurement. [Replay a desktop result](docs/CLI.md#repeat-a-desktop-components-result) · [Use standalone μSAM](docs/EXTERNAL_LABELS.md#offline-standalone-μsam-interchange)
 
+From the same workbench you can convert a scalar image to OME-TIFF or OME-Zarr,
+or use Bio-Formats for a CZI, LIF or ND2 series. Conversion verifies the
+output pixels. Open **File → Model Zoo…** to inspect microscopy examples, compare
+model output where available, and find the exact publisher files. **F1** opens the searchable offline manual.
+[Image conversion](docs/USING_LOCI.md#convert-study-images-to-ome-tiff-or-ome-zarr) · [Model Zoo](docs/MODEL_LIBRARY.md)
+
 ## Work your way
 
 Use the desktop for exploration and the command line for repeatable work. Discover commands, inspect a study and run supported operations from a local terminal.

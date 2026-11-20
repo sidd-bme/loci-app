@@ -129,9 +129,12 @@ Loci removes dynamic architecture configuration and upstream imports and adds
 exact tensor-schema and artifact-identity checks. The Apache-2.0 text is retained
 in [LICENSE](LICENSE); the PUMA permission notice follows below.
 
-PUMA model weights and datasets are separate artifacts. The profile records the
-upstream declarations and pinned identities; no weights or datasets are bundled
-by this integration, and derivative redistribution review is incomplete. Explicit
+PUMA model weights are separately provisioned. The profile records the
+upstream declarations and pinned identities. The Model Zoo includes a display
+copy of training region 004 from the authors' CC0 dataset and a Loci-generated
+prediction. The example credit gives the source and transformation. [PUMA image credit](desktop/src/renderer/model-zoo/examples/puma-tissue-cpu/credit.json)
+
+Model-weight redistribution review is incomplete. Explicit
 import does not establish commercial clearance, technical compatibility or
 scientific accuracy. The PUMA code notice does not relicense model or data assets.
 
@@ -156,3 +159,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Microscopy examples in the Model Zoo
+
+The three-channel stem-cell field is BBBC034v1, Thirstrup et al. (2018), from the AICS Microscopy & Image Analysis Team at the Allen Institute for Cell Science, via the Broad Bioimage Benchmark Collection. Loci windowed three channels from one optical section and added contours from its Cellpose-SAM v2 inference. [BBBC034 and image terms](https://bbbc.broadinstitute.org/BBBC034) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) · [Cellpose image credit](desktop/src/renderer/model-zoo/examples/cellpose-sam-v2/credit.json)
+
+The μSAM example is a cropped DAPI optical section from the dataset by Mariusz Marzec, Adam Piórkowski and Arkadiusz Gertych. Loci extracted the section from the upstream sample volume, windowed its intensities for display and resized the thumbnail. [Dataset](https://doi.org/10.5281/zenodo.4462097) · [Publication](https://doi.org/10.1186/s12859-022-04737-4) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) · [μSAM image credit](desktop/src/renderer/model-zoo/examples/micro-sam-vit-b-lm/credit.json)
+
+The StarDist field comes from the 2018 Data Science Bowl contributors through the Broad Bioimage Benchmark Collection, released under CC0. Loci contributors ran the released StarDist weights in a separate CPU environment and overlaid the predicted contours on the authors' example field. [BBBC038](https://bbbc.broadinstitute.org/BBBC038) · [StarDist image credit](desktop/src/renderer/model-zoo/examples/stardist-2d-versatile-fluo/credit.json)
+
+The boundary-model field is Constantin Pape's example in Zenodo record 6647674, supplied under CC BY 4.0. Loci rendered the contours from its recorded ONNX inference. Both displays use an intensity window. The credits record the changes, and the source pixels and predicted instance IDs are retained at native resolution. [Zenodo model deposit](https://zenodo.org/records/6647674) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) · [ONNX image credit](desktop/src/renderer/model-zoo/examples/bioimageio-nuclei-boundary-onnx/credit.json)

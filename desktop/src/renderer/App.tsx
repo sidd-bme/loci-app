@@ -40,6 +40,7 @@ import {
   type CSSProperties,
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type WheelEvent,
   useCallback,
   useEffect,
@@ -94,12 +95,10 @@ import ReviewInspector, {
   type ReviewSort,
   type ReviewSummary,
 } from "./ReviewInspector";
-import SettingsDialog from "./SettingsDialog";
-import UserGuideDialog from "./UserGuideDialog";
+import WorkspaceSettings, { type WorkspaceSettingsHandle } from "./WorkspaceSettings";
 import WelcomeWorkspace from "./WelcomeWorkspace";
 import WorkspaceRecommendationPanel from "./WorkspaceRecommendationPanel";
 import { useUserPreferences } from "./use-user-preferences";
-import { notifyComputeTargetsChanged } from "./compute-target-events";
 import {
   createProjectManifest,
   restoredDisplayRecipes,
@@ -575,21 +574,13 @@ export default function App(): React.JSX.Element {
     () => new Set(["Input", "Mask filtering", "Dynamics"]),
   );
   const [preferences, setPreferences, preferenceError] = useUserPreferences();
-  const [manualOpen, setManualOpen] = useState(false);
-  const [manualSection, setManualSection] = useState<string | undefined>();
-  useEffect(() => {
-    const help = (event: KeyboardEvent) => { if (event.key === "F1") { event.preventDefault(); setManualSection(undefined); setManualOpen(true); setSettingsOpen(false); } };
-    window.addEventListener("keydown", help);
-    return () => window.removeEventListener("keydown", help);
-  }, []);
+  const settingsSurface = useRef<WorkspaceSettingsHandle>(null);
   const [projectSummary, setProjectSummary] = useState<ProjectSummary | null>(null);
   const [projectSessionGeneration, setProjectSessionGeneration] = useState(0);
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>([]);
   const [isProjectBusy, setIsProjectBusy] = useState(false);
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [recoverableBatches, setRecoverableBatches] = useState<DurableBatchSession[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsCompute, setSettingsCompute] = useState(false);
   const [sourceMenu, setSourceMenu] = useState<SourceMenuState | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -2173,8 +2164,6 @@ export default function App(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  useEffect(() => api?.onComputeTargetsChanged?.(notifyComputeTargetsChanged), [api]);
-
   useEffect(() => {
     api?.updateSessionState({
       sourceCount: sources.length,
@@ -2323,19 +2312,7 @@ export default function App(): React.JSX.Element {
     return () => window.clearTimeout(timer);
   }, [isWorkspaceOrProjectBusy, projectStateSignature, saveCurrentProject]);
 
-  const openSettings = useCallback((page?: "appearance" | "compute") => {
-    if (api?.openSettingsWindow) {
-      void api.openSettingsWindow(page).catch(() => setNativeCommandError("Settings could not open. Try opening the window again."));
-      return;
-    }
-    setSettingsCompute(page === "compute");
-    setSettingsOpen(true);
-  }, [api]);
-  useEffect(() => api?.onSettingsRequested(() => openSettings()), [api, openSettings]);
-
-  useEffect(() => api?.onGuideRequested?.(() => {
-    setSettingsOpen(false); setManualSection(undefined); setManualOpen(true);
-  }), [api]);
+  const openSettings = useCallback((page?: "compute") => settingsSurface.current?.open(page), []);
 
   useEffect(() => api?.onWorkspaceRequested?.(() => {
     if (researchOpen && window.lociResearch && imageWindowsState?.views.length) void returnToWorkbench();
@@ -2379,13 +2356,10 @@ export default function App(): React.JSX.Element {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (settingsOpen || manualOpen || (researchOpen && window.lociResearch)) return;
+      if (event.defaultPrevented || settingsSurface.current?.isOpen() || (researchOpen && window.lociResearch)) return;
       const target = event.target;
       const isTyping = target instanceof Element && target.matches("input, select, textarea, [contenteditable='true']");
-      if ((event.metaKey || event.ctrlKey) && event.key === ",") {
-        event.preventDefault();
-        openSettings();
-      } else if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "o") {
         event.preventDefault();
         void importFolder();
       } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
@@ -2472,7 +2446,7 @@ export default function App(): React.JSX.Element {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cancelSegmentation, cancelVertexEdit, commitVertexEdit, correctionTarget, correctionTool, drawPoints.length, importFolder, importImages, isRunning, nudgeSelectedVertex, openSettings, redoCorrection, runSegmentation, settingsOpen, manualOpen, researchOpen, sourceMenu, undoCorrection, vertexEdit, workspaceMode]);
+  }, [cancelSegmentation, cancelVertexEdit, commitVertexEdit, correctionTarget, correctionTool, drawPoints.length, importFolder, importImages, isRunning, nudgeSelectedVertex, redoCorrection, runSegmentation, researchOpen, sourceMenu, undoCorrection, vertexEdit, workspaceMode]);
 
   const handleDragEnter = (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -2742,41 +2716,31 @@ export default function App(): React.JSX.Element {
     <button className="button button-quiet icon-button" type="button" aria-label="Dismiss command error"
       onClick={() => setNativeCommandError(null)}><X size={15} /></button>
   </div>;
-  const settingsDialog = <>{settingsOpen ? (
-    <>{preferenceError && <div className="error-banner" role="alert">{preferenceError}</div>}
-    <SettingsDialog
-      preferences={preferences}
-      computeApi={window.lociResearch}
-      initialPage={settingsCompute ? "compute" : "appearance"}
-      onChange={setPreferences}
-      onClose={() => { setSettingsOpen(false); setSettingsCompute(false); }}
-      onQuit={() => api?.requestQuit()}
-      onOpenGuide={(sectionId) => { setSettingsOpen(false); setManualSection(sectionId); setManualOpen(true); }}
-    /></>
-  ) : null}{manualOpen && <UserGuideDialog initialSection={manualSection} onClose={() => setManualOpen(false)} />}</>;
+  const withSettings = (workspace: ReactNode) => <>
+    {workspace}
+    <WorkspaceSettings ref={settingsSurface} api={api} computeApi={window.lociResearch} preferences={preferences}
+      onChange={setPreferences} preferenceError={preferenceError} />
+  </>;
 
   if (researchOpen && window.lociResearch && window.lociImageWindows && imageWindowsState?.views.length) {
-    return <>{nativeErrorBanner}<DetachedControlPanel api={window.lociImageWindows} researchApi={window.lociResearch}
-      preferences={preferences} onReturn={() => setImageWindowsState(null)} />{settingsDialog}</>;
+    return withSettings(<>{nativeErrorBanner}<DetachedControlPanel api={window.lociImageWindows} researchApi={window.lociResearch}
+      preferences={preferences} onReturn={() => setImageWindowsState(null)} /></>);
   }
   if (researchOpen && window.lociResearch) {
-    return (
-      <>
-        {nativeErrorBanner}
-        <ResearchWorkbench
-          initialSourceId={returnSourceId}
-          api={window.lociResearch}
-          preferences={preferences}
-          onBack={() => setResearchOpen(false)}
-          onOpenSettings={() => openSettings()}
-          onOpenCompute={() => openSettings("compute")}
-        />
-        {settingsDialog}
-      </>
-    );
+    return withSettings(<>
+      {nativeErrorBanner}
+      <ResearchWorkbench
+        initialSourceId={returnSourceId}
+        api={window.lociResearch}
+        preferences={preferences}
+        onBack={() => setResearchOpen(false)}
+        onOpenSettings={() => openSettings()}
+        onOpenCompute={() => openSettings("compute")}
+      />
+    </>);
   }
 
-  return (
+  return withSettings(
     <main
       className="app-shell"
       data-platform={platform}
@@ -4362,8 +4326,6 @@ export default function App(): React.JSX.Element {
           </button>
         </div>
       )}
-
-      {settingsDialog}
     </main>
   );
 }

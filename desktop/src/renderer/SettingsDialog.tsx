@@ -1,10 +1,11 @@
 import { ArrowLeft, ArrowRight, BookOpen, Boxes, Check, ChevronRight, Eye, Palette, Power, Save, Search, Server, Waypoints, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 
 import type { InterfaceTextSize, LociTheme, UserPreferences } from "./preferences";
 import CapabilityOverview from "./CapabilityOverview";
 import ComputeSettings from "./ComputeSettings";
 import type { ResearchDesktopApi } from "../shared/research-contracts";
+import type { LociDesktopApi } from "../shared/contracts";
 import "./SettingsDialog.css";
 
 interface SettingsDialogProps {
@@ -14,8 +15,10 @@ interface SettingsDialogProps {
   onQuit: () => void;
   onOpenGuide?: (sectionId?: string) => void;
   computeApi?: Pick<ResearchDesktopApi, "computeTargets">;
+  onComputeStudyChanged?: LociDesktopApi["onComputeStudyChanged"];
   initialPage?: SettingsPage;
-  standalone?: boolean;
+  active?: boolean;
+  preferenceError?: string;
   navigationRevision?: number;
 }
 
@@ -76,10 +79,6 @@ function moveChoice(event: React.KeyboardEvent<HTMLElement>, selector: string, a
   choices[next].focus();
   choices[next].scrollIntoView?.({ block: "nearest", inline: "nearest" });
   if (activate) choices[next].click();
-}
-
-function PageHeading({ children, id, note }: { children: ReactNode; id?: string; note?: string }): React.JSX.Element {
-  return <header className="settings-pane-heading"><h2 id={id}>{children}</h2>{note && <p>{note}</p>}</header>;
 }
 
 function PreferenceGroup({ title, children, target }: { title: string; children: ReactNode; target?: string }): React.JSX.Element {
@@ -144,8 +143,24 @@ function ThemeChoices({ value, onChange }: { value: LociTheme; onChange: (theme:
 
 type NavigationState = { pages: SettingsPage[]; index: number };
 
-export default function SettingsDialog({ preferences, onChange, onClose, onQuit, onOpenGuide, computeApi,
-  initialPage = "appearance", standalone = false, navigationRevision = 0 }: SettingsDialogProps): React.JSX.Element {
+function ComputePage({ api, onStudyChanged }: {
+  api?: SettingsDialogProps["computeApi"];
+  onStudyChanged?: SettingsDialogProps["onComputeStudyChanged"];
+}) {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    // Give the selected pane a paint before mounting the controls and asking the worker for targets.
+    let initial = requestAnimationFrame(() => {
+      initial = requestAnimationFrame(() => setReady(true));
+    });
+    return () => cancelAnimationFrame(initial);
+  }, []);
+  return ready ? <ComputeSettings api={api} onStudyChanged={onStudyChanged} />
+    : <p role="status" className="settings-loading">Loading compute targets…</p>;
+}
+
+export default function SettingsDialog({ preferences, onChange, onClose, onQuit, onOpenGuide, computeApi, onComputeStudyChanged,
+  initialPage = "appearance", active = true, preferenceError, navigationRevision = 0 }: SettingsDialogProps): React.JSX.Element {
   const [history, setHistory] = useState<NavigationState>({ pages: [initialPage], index: 0 });
   const page = history.pages[history.index];
   const [query, setQuery] = useState("");
@@ -155,9 +170,9 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
   const searchInput = useRef<HTMLInputElement>(null);
   const searchResults = useRef<HTMLUListElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
-  const dialog = useRef<HTMLElement>(null);
-  const queryRef = useRef(query);
-  const onCloseRef = useRef(onClose);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+  const lastFocused = useRef<HTMLElement | null>(null);
   const settingsTitleId = useId();
   const paneId = useId();
   const searchTitleId = useId();
@@ -184,15 +199,13 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
   const dpiDirty = useRef(false);
   const dpiHelpId = useId();
   const dpiErrorId = useId();
-  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
-  useEffect(() => { queryRef.current = query; }, [query]);
   useEffect(() => {
     const media = window.matchMedia?.("(max-width: 480px)");
     const update = () => setHorizontalNav(media?.matches ?? false);
     media?.addEventListener("change", update);
     return () => media?.removeEventListener("change", update);
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     setHistory(current => current.pages[current.index] === initialPage ? current : { pages: [initialPage], index: 0 });
     setQuery("");
     setFocusTarget(null);
@@ -211,32 +224,47 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
     setFocusTarget(null);
   }, [page, focusTarget, terms.length]);
   useEffect(() => { if (!dpiDirty.current) setDpiDraft(String(preferences.figureDpi)); }, [preferences.figureDpi]);
-  useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (standalone) dialog.current?.querySelector<HTMLElement>("[role='tab'][aria-selected='true']")?.focus();
-    else closeButton.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      const shell = dialog.current;
-      if (!shell || shell.closest("[hidden], [inert]")) return;
-      if (event.key === "Escape" && !event.defaultPrevented) {
-        event.preventDefault();
-        if (queryRef.current) { setQuery(""); searchInput.current?.focus(); }
-        else onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || event.defaultPrevented) return;
-      const focusable = [...shell.querySelectorAll<HTMLElement>(
-        "button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], summary, [tabindex]:not([tabindex='-1'])",
-      )].filter(item => item.tabIndex >= 0 && !item.closest("[hidden], [inert]") &&
-        (!item.closest("details:not([open])") || Boolean(item.closest("summary"))));
-      if (!focusable.length) return;
-      const first = focusable[0], last = focusable.at(-1)!;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  useLayoutEffect(() => {
+    const shell = dialog.current;
+    if (!active || !shell) return;
+    if (!returnTo.current && document.activeElement instanceof HTMLElement) returnTo.current = document.activeElement;
+    if (typeof shell.showModal === "function") shell.showModal();
+    else shell.setAttribute("open", "");
+    const focus = lastFocused.current?.isConnected ? lastFocused.current : closeButton.current;
+    focus?.focus({ preventScroll: true });
+    return () => {
+      lastFocused.current = shell.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
+      if (typeof shell.close === "function") shell.close();
+      else shell.removeAttribute("open");
+      if (returnTo.current?.isConnected) returnTo.current.focus({ preventScroll: true });
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => { window.removeEventListener("keydown", onKeyDown); previousFocus?.focus(); };
-  }, [standalone]);
+  }, [active]);
+
+  const escape = () => {
+    if (query) { setQuery(""); searchInput.current?.focus(); }
+    else onClose();
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDialogElement>) => {
+    event.stopPropagation();
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      escape();
+    } else if (event.key === "F1" && onOpenGuide) {
+      event.preventDefault();
+      onOpenGuide();
+    } else if (event.key === "Tab") {
+      const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>(
+        "button, input, select, textarea, a[href], summary, [tabindex]",
+      )].filter(item => item.tabIndex >= 0 && !item.matches(":disabled") &&
+        !item.closest("[hidden], [inert]") && item.checkVisibility?.({ checkVisibilityCSS: true }) !== false);
+      const edge = event.shiftKey ? focusable[0] : focusable.at(-1);
+      if (document.activeElement === edge) {
+        event.preventDefault();
+        (event.shiftKey ? focusable.at(-1) : focusable[0])?.focus();
+      }
+    }
+  };
   const setTheme = (theme: LociTheme) => { if (theme !== preferences.theme) onChange({ ...preferences, theme }); };
   const setTextSize = (textSize: InterfaceTextSize) => onChange({ ...preferences, textSize });
   const setViewer = (key: keyof UserPreferences["viewer"], value: boolean) => onChange({
@@ -253,24 +281,11 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
     } else setDpiError(true);
   };
 
-  return <section ref={dialog} className={`settings-shell${standalone ? " settings-shell--standalone" : ""}`} role="dialog"
-    aria-modal={standalone ? undefined : true} aria-labelledby={settingsTitleId}>
-    <header className="settings-chrome">
-      <div role="group" aria-label="Settings history">
-        <button type="button" className="settings-icon-button" aria-label={history.index ? "Previous settings page" : "Back to workspace"}
-          title={history.index ? "Previous settings page" : "Back to workspace"} onClick={() => history.index ? moveHistory(-1) : onCloseRef.current()}>
-          <ArrowLeft size={17} aria-hidden="true" /></button>
-        <button type="button" className="settings-icon-button" aria-label="Next settings page" title="Next settings page"
-          disabled={history.index === history.pages.length - 1} onClick={() => moveHistory(1)}><ArrowRight size={17} aria-hidden="true" /></button>
-      </div>
-      <button ref={closeButton} className="settings-icon-button" type="button" aria-label="Close settings" title="Close settings (Esc)"
-        onClick={() => onCloseRef.current()}><X size={17} aria-hidden="true" /></button>
-    </header>
-    <div className="settings-layout">
+  return <dialog ref={dialog} className="settings-shell" aria-modal="true" aria-labelledby={settingsTitleId}
+    onCancel={event => { event.preventDefault(); escape(); }} onKeyDown={handleKeyDown}>
       <aside className="settings-sidebar">
         <div className="settings-sidebar-heading">
-          <h1 id={settingsTitleId}>Settings</h1>
-          <label className="settings-search"><Search size={16} aria-hidden="true" />
+          <div className="settings-search"><Search size={16} aria-hidden="true" />
             <input ref={searchInput} type="search" aria-label="Search settings" placeholder="Find a setting…" value={query}
               onChange={event => setQuery(event.target.value)} onKeyDown={event => {
                 if (event.key === "Enter" && matches[0]) { event.preventDefault(); goToSetting(matches[0]); }
@@ -283,7 +298,7 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
             {query && <button type="button" className="settings-icon-button" aria-label="Clear settings search" onClick={() => {
               setQuery(""); searchInput.current?.focus();
             }}><X size={14} aria-hidden="true" /></button>}
-          </label>
+          </div>
         </div>
         <nav className="settings-nav" aria-label="Settings categories" role="tablist" aria-orientation={horizontalNav ? "horizontal" : "vertical"}
           onKeyDown={event => moveChoice(event, "[role='tab']")}>
@@ -298,11 +313,26 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
           </div>)}
         </nav>
       </aside>
+      <header className="settings-chrome">
+        <div className="settings-history" role="group" aria-label="Settings history">
+          <button type="button" className="settings-icon-button" aria-label={history.index ? "Previous settings page" : "Back to workspace"}
+            title={history.index ? "Previous settings page" : "Back to workspace"} onClick={() => history.index ? moveHistory(-1) : onClose()}>
+            <ArrowLeft size={16} aria-hidden="true" /></button>
+          <button type="button" className="settings-icon-button" aria-label="Next settings page" title="Next settings page"
+            disabled={history.index === history.pages.length - 1} onClick={() => moveHistory(1)}><ArrowRight size={16} aria-hidden="true" /></button>
+        </div>
+        <div className="settings-path"><h1 id={settingsTitleId}>Settings</h1>
+          <ChevronRight size={13} aria-hidden="true" />
+          <h2 id={searchTitleId}>{searching ? "Search results" : activeLabel}</h2>
+        </div>
+        <button ref={closeButton} className="settings-icon-button settings-close" type="button" aria-label="Close settings" title="Close settings (Esc)"
+          onClick={onClose}><X size={17} aria-hidden="true" /></button>
+      </header>
       <div ref={pane} className="settings-pane" role="tabpanel" id={paneId}
         aria-labelledby={terms.length ? searchTitleId : tabId(page)} tabIndex={0}>
         <div className="settings-content">
+          {preferenceError && <p className="settings-save-error" role="alert">{preferenceError}</p>}
           {terms.length > 0 ? <div className="settings-search-results">
-            <PageHeading id={searchTitleId}>Search settings</PageHeading>
             <p role="status">{matches.length ? `${matches.length} matching ${matches.length === 1 ? "setting" : "settings"}` :
               "No matching settings. Try a shorter search or browse the categories."}</p>
             {!!matches.length && <ul ref={searchResults} onKeyDown={event => moveChoice(event, "button", false)}>
@@ -314,7 +344,6 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
               </li>)}
             </ul>}
           </div> : <>
-            <PageHeading note={page === "agents" ? "Choose how agent work appears in your workspace." : undefined}>{activeLabel}</PageHeading>
             {page === "appearance" && <>
               <ThemeChoices value={preferences.theme} onChange={setTheme} />
               <PreferenceGroup title="Interface">
@@ -395,7 +424,7 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
               </button>
             </>}
             {page === "capabilities" && <div data-setting="capabilities"><CapabilityOverview /></div>}
-            {page === "compute" && <div data-setting="compute"><ComputeSettings api={computeApi} /></div>}
+            {page === "compute" && <div data-setting="compute"><ComputePage api={computeApi} onStudyChanged={onComputeStudyChanged} /></div>}
             {page === "guide" && <>
               <PreferenceGroup title="Offline guide" target="guide">
                 <div className="settings-row settings-guide-intro"><span className="settings-row-copy"><strong>Using Loci</strong>
@@ -414,10 +443,9 @@ export default function SettingsDialog({ preferences, onChange, onClose, onQuit,
           </>}
         </div>
       </div>
-    </div>
     <footer className="settings-footer"><button className="button button-quiet button-danger-quiet" type="button" onClick={onQuit}>
       <Power size={14} aria-hidden="true" />Quit Loci</button>
-      <button className="button button-quiet" type="button" onClick={() => onCloseRef.current()}>Done</button>
+      <button className="button button-quiet" type="button" onClick={onClose}>Done</button>
     </footer>
-  </section>;
+  </dialog>;
 }

@@ -23,6 +23,15 @@ test("rejects private repository and workstation paths only in documentation", (
   assert.deepEqual(inspect({ "README.md": "https://github.com/sidd-bme/loci-app https://github.com/sidd-bme/Loci-film /Applications/Loci.app", "engine/tests/test_source.py": "/Volumes/private/example.tif", "docs/QUANTIFICATION.md": "Biological validation remains separate from structural checks." }), []);
 });
 
+test("accepts a public documentation URL with a users section and detects local path roots", () => {
+  const guide = "https://bio-formats.readthedocs.io/en/stable/users/comlinetools/conversion.html";
+  assert.deepEqual(inspect({ "README.md": "[Bio-Formats conversion](" + guide + ")" }), []);
+  for (const prefix of ["", "file://", "Output: ", "path="]) {
+    const local = prefix + ["/users", "researcher", "sample.tif"].join("/");
+    assert.match(inspect({ "README.md": local })[0], /local checkout/);
+  }
+});
+
 test("rejects links to removed planning material", () => {
   assert.match(inspect({ "docs/README.md": "See [state](PROJECT_STATE.md)." }).join("\n"), /development coordination/);
 });

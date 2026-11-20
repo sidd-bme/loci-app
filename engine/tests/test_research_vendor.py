@@ -34,7 +34,12 @@ ND2_SHA256 = "77c921fa2d3ebce182c261d28790de97d119062e550029b5e501d6200720eb0d"
 
 def _fixture_root() -> Path:
     root = Path(os.environ.get("LOCI_VENDOR_FIXTURE_DIR", "/tmp/loci-release-run/vendor-reader"))
-    if not (root / "sample.nd2").is_file() or not (root / "bioformats_package.jar").is_file():
+    if (
+        not (root / "sample.nd2").is_file()
+        or not Path(
+            os.environ.get("LOCI_QA_BIOFORMATS_JAR", root / "bioformats_package.jar")
+        ).is_file()
+    ):
         pytest.skip("authorized Bio-Formats qualification fixtures are not available")
     return root
 
@@ -160,11 +165,12 @@ def test_real_nd2_conversion_remains_bound_through_result_export_and_portable_re
 ) -> None:
     fixture = _fixture_root()
     original = fixture / "sample.nd2"
-    jar = fixture / "bioformats_package.jar"
+    jar = Path(os.environ.get("LOCI_QA_BIOFORMATS_JAR", fixture / "bioformats_package.jar"))
+    java = os.environ.get("LOCI_QA_JAVA", "/usr/bin/java")
     original_before = hashlib.sha256(original.read_bytes()).hexdigest()
     assert original_before == ND2_SHA256
 
-    inspection = inspect_vendor(original, jar)
+    inspection = inspect_vendor(original, jar, java)
     project = ResearchProject.create(tmp_path / "vendor.loci-study", "Vendor derivation")
     workbench = Workbench(project)
     converted = tmp_path / "converted-nd2"
@@ -173,7 +179,7 @@ def test_real_nd2_conversion_remains_bound_through_result_export_and_portable_re
         {
             "source": str(original),
             "jar": str(jar),
-            "java": "/usr/bin/java",
+            "java": java,
             "destination": str(converted),
             "expected_source_sha256": inspection["source_sha256"],
             "request": {
@@ -193,9 +199,9 @@ def test_real_nd2_conversion_remains_bound_through_result_export_and_portable_re
     assert str(fixture) not in public_receipt
     assert str(tmp_path) not in public_receipt
 
-    saved = workbench.execute(
-        "run_recipe", {"source_id": source["id"], "recipe": {"steps": []}}
-    )["result"]
+    saved = workbench.execute("run_recipe", {"source_id": source["id"], "recipe": {"steps": []}})[
+        "result"
+    ]
     result = project.result(saved["id"])
     assert result["source_sha256"] == source["sha256"]
     assert result["provenance"]["source_derivation"] == derivation
@@ -224,9 +230,7 @@ def test_real_nd2_conversion_remains_bound_through_result_export_and_portable_re
     assert portable_source["derivation"] == derivation
     with pytest.raises(ValueError, match="relink"):
         restored.source(source["id"], verify=True)
-    relinked = relink_interchanged_source(
-        restored, source["id"], converted / "image.ome.tif"
-    )
+    relinked = relink_interchanged_source(restored, source["id"], converted / "image.ome.tif")
     assert relinked["derivation"] == derivation
     assert restored.source(source["id"], verify=True)["sha256"] == source["sha256"]
     restored_result = restored.result(result["id"])

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_PREFERENCES, LOCI_THEMES, type UserPreferences } from "./preferences";
@@ -50,7 +50,7 @@ describe("SettingsDialog", () => {
     appearance.focus(); fireEvent.keyDown(appearance, { key: "ArrowDown" });
     expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveFocus();
     expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, { key: "Escape" }); expect(onClose).toHaveBeenCalledOnce();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" }); expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("opens contextual manual topics without changing agent permissions or preferences", () => {
@@ -249,11 +249,10 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("textbox", { name: "Default figure DPI" })).toHaveFocus();
   });
 
-  it("adopts a native route without unmounting fields on a repeated request for the same page", () => {
-    const props = { standalone: true, preferences: DEFAULT_PREFERENCES, onChange: vi.fn(), onClose: vi.fn(), onQuit: vi.fn() };
+  it("adopts an explicit route without unmounting fields on a repeated request for the same page", () => {
+    const props = { preferences: DEFAULT_PREFERENCES, onChange: vi.fn(), onClose: vi.fn(), onQuit: vi.fn() };
     const view = render(<SettingsDialog {...props} initialPage="saving" navigationRevision={1} />);
-    expect(screen.getByRole("dialog", { name: "Settings" })).not.toHaveAttribute("aria-modal");
-    expect(screen.getByRole("tab", { name: "Saving & export" })).toHaveFocus();
+    expect(screen.getByRole("dialog", { name: "Settings" })).toHaveAttribute("aria-modal", "true");
     const dpi = screen.getByRole("textbox", { name: "Default figure DPI" });
     dpi.focus(); fireEvent.change(dpi, { target: { value: "invalid" } });
     view.rerender(<SettingsDialog {...props} initialPage="saving" navigationRevision={2} />);
@@ -266,13 +265,51 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("button", { name: "Back to workspace" })).toBeVisible();
   });
 
-  it.each(["hidden", "inert"] as const)("leaves Escape available to an active child route while the settings shell is %s", attribute => {
-    const onClose = vi.fn();
-    const props = { preferences: DEFAULT_PREFERENCES, onChange: vi.fn(), onClose, onQuit: vi.fn(), standalone: true };
-    const view = render(<div><SettingsDialog {...props} /></div>);
-    view.container.firstElementChild!.setAttribute(attribute, "");
-    expect(fireEvent.keyDown(window, { key: "Escape" })).toBe(true);
-    expect(onClose).not.toHaveBeenCalled();
+  it("opens Compute before its worker request and cancels deferred work after a fast switch", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(id => { frames.delete(id); });
+    const paint = () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(performance.now());
+    };
+    const computeTargets = vi.fn().mockResolvedValue({ targets: [], study_profiles: [], study_binding: null });
+    const view = render(<SettingsDialog initialPage="compute" computeApi={{ computeTargets }}
+      preferences={DEFAULT_PREFERENCES} onChange={vi.fn()} onClose={vi.fn()} onQuit={vi.fn()} />);
+    try {
+      expect(screen.getByRole("tabpanel", { name: "Compute" })).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent("Loading compute targets");
+      expect(computeTargets).not.toHaveBeenCalled();
+      act(paint);
+      expect(computeTargets).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+      act(paint);
+      expect(computeTargets).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("tab", { name: "Compute" }));
+      act(paint);
+      await act(async () => paint());
+      expect(computeTargets).toHaveBeenCalledExactlyOnceWith("list", {});
+    } finally {
+      view.unmount();
+      request.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  it("wraps keyboard focus at both edges of the open dialog", () => {
+    show();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    const done = screen.getByRole("button", { name: "Done" });
+    search.focus();
+    fireEvent.keyDown(search, { key: "Tab", shiftKey: true });
+    expect(done).toHaveFocus();
+    fireEvent.keyDown(done, { key: "Tab" });
+    expect(search).toHaveFocus();
   });
 
   it("does not steal focus on preference rerenders and restores prior focus on close", () => {
@@ -287,7 +324,7 @@ describe("SettingsDialog", () => {
     view.rerender(<SettingsDialog preferences={{ ...DEFAULT_PREFERENCES, theme: "aurora" }}
       onChange={vi.fn()} onClose={latestClose} onQuit={vi.fn()} />);
     expect(screen.getByRole("textbox", { name: "Default figure DPI" })).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(latestClose).toHaveBeenCalledOnce();
     view.unmount();
     expect(opener).toHaveFocus();

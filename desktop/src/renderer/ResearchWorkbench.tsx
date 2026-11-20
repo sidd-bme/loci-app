@@ -16,6 +16,7 @@ import { CompactChannelControls } from "./CompactChannelControls";
 import { GuidedExplorationPanel } from "./GuidedExplorationPanel";
 import type { ImageWindowPresentation } from "../shared/image-window-api";
 import { RecipeResourcePanel } from "./RecipeResourcePanel";
+import { PreprocessingPanel, PreprocessingScopeControl } from "./PreprocessingPanel";
 import { ResearchLabelsImportPanel } from "./ResearchLabelsImportPanel";
 import { ResearchCorrectionEffectPanel, type CorrectionEffectSeed } from "./ResearchCorrectionEffectPanel";
 import { SegmentationInputControl } from "./SegmentationInputControl";
@@ -114,7 +115,7 @@ import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewCo
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
 import { ResearchPortabilityPanel } from "./ResearchPortabilityPanel";
-import { ResearchVendorPanel } from "./ResearchVendorPanel";
+import { ImageConversionPanel } from "./ImageConversionPanel";
 import { ResearchRemotePanel } from "./ResearchRemotePanel";
 import { activeComputeRun, ResearchComputeControl, ResearchComputeJobs, useResearchCompute, type ResearchComputeController } from "./ResearchCompute";
 import { ResearchSurfaceView } from "./ResearchSurfaceView";
@@ -149,6 +150,11 @@ import {
   ResearchCellposePanel,
   type ResearchCellposeBatchConfiguration,
 } from "./ResearchCellposePanel";
+import ModelLibraryDialog from "./ModelLibraryDialog";
+import type {
+  ModelLibraryId,
+  ModelLibraryWorkbenchRouteKind,
+} from "../shared/model-library";
 
 type Props = {
   initialSourceId?: string | null;
@@ -1051,6 +1057,12 @@ export default function ResearchWorkbench({
   const [displaySampling, setDisplaySampling] = useState<DisplaySamplingMode>("auto");
   const [viewReadyKey, setViewReadyKey] = useState("");
   const [abCompareMode, setAbCompareMode] = useState(false);
+  const [modelLibraryState, setModelLibraryState] = useState<{
+    initialModelId?: ModelLibraryId;
+  } | null>(null);
+  const externalLabelsDisclosureRef = useRef<HTMLDetailsElement | null>(null);
+  const usamDisclosureRef = useRef<HTMLDetailsElement | null>(null);
+  const [labelDestination, setLabelDestination] = useState<"labels-import" | "labels-usam-handoff" | null>(null);
   const [drawingAnalysisRegion, setDrawingAnalysisRegion] = useState(false);
   const [viewSettingsReady, setViewSettingsReady] = useState(false);
   const [sourcePreparation, setSourcePreparation] = useState<{
@@ -1200,6 +1212,8 @@ export default function ResearchWorkbench({
     // caller has already captured the source/plane and navigation intent.
     ...(desktopApi.labelsImportPreview ? { labelsImportPreview: (request) =>
       switchDocument(() => desktopApi.labelsImportPreview!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.convertStudyImage ? { convertStudyImage: (request) =>
+      switchDocument(() => desktopApi.convertStudyImage!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.exportUsamHandoff ? { exportUsamHandoff: (request) =>
       switchDocument(() => desktopApi.exportUsamHandoff!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.importControlledMethod ? { importControlledMethod: () =>
@@ -1942,6 +1956,36 @@ export default function ResearchWorkbench({
     modelMeasurementChannels,
     modelWorkingBytes,
   ]);
+  useEffect(() => {
+    const labels = externalLabelsDisclosureRef.current;
+    const handoff = usamDisclosureRef.current;
+    if (!labelDestination || tab !== "Analyze" || !labels || !handoff) return;
+    labels.open = true;
+    handoff.open = labelDestination === "labels-usam-handoff";
+    (handoff.open ? handoff : labels).querySelector("summary")?.focus();
+    setLabelDestination(null);
+  }, [labelDestination, tab]);
+  const handleSelectModelLibraryRoute = (
+    route: ModelLibraryWorkbenchRouteKind,
+  ) => {
+    setModelLibraryState(null);
+    if (!source || !dimensions) return;
+    setToolsHidden(false);
+    if (route === "segment-cellpose-v2") {
+      setSegmentationFamily("cellpose-sam-v2");
+      openWorkbenchTab("Analyze");
+    } else if (
+      route === "labels-usam-handoff" ||
+      route === "labels-import"
+    ) {
+      openWorkbenchTab("Analyze");
+      setLabelDestination(route);
+    } else if (route === "onnx-model-package") {
+      openWorkbenchTab("Model");
+    } else if (route === "tissue-epidermis") {
+      openWorkbenchTab("Tissue model");
+    }
+  };
   const refreshModels = useCallback(async () => {
     const output = await report(
       () =>
@@ -3421,7 +3465,7 @@ export default function ResearchWorkbench({
           }
         }}>
         <header className="image-first-header"><div className="brand-lockup"><BrandMark /><span className="brand-name">Loci</span></div>
-          <span />{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
+          <span /><button type="button" className="model-library-header-btn" onClick={() => setModelLibraryState({})}>Model Zoo</button>{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
         <ImageWelcome api={api} onOpen={(kind) => void openImages(kind)}
           onConvert={() => openWorkbenchTab("Vendor import")}
           onExample={api.tryExample ? () => { resetEmptyDrop(); void report(() => api.tryExample!().then(adopt), "Could not create the offline example."); } : undefined}
@@ -3432,6 +3476,20 @@ export default function ResearchWorkbench({
         {(busy || documentSwitching) && <div className="welcome-progress" role="status">{documentSwitching ? "Updating workspace…" : "Opening images…"}</div>}
         {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
         <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
+        {modelLibraryState !== null && (
+          <ModelLibraryDialog
+            onClose={() => setModelLibraryState(null)}
+            initialModelId={modelLibraryState.initialModelId}
+            reducedMotion={preferences.motion === "reduced"}
+            onOpenLink={
+              api.openModelLibraryLink
+                ? (linkId) => api.openModelLibraryLink!(linkId)
+                : undefined
+            }
+            workbenchRouteUnavailableReason="Open an image first to configure this tool in the inspector."
+            onSelectWorkbenchRoute={() => setModelLibraryState(null)}
+          />
+        )}
       </main>
     );
   const changeSegmentationChannel = (channel: number) => {
@@ -3511,6 +3569,7 @@ export default function ResearchWorkbench({
             viewStore.current = null; projectionSourceId.current = null; displayToken.current++;
             setViewSettingsReady(false); setSnapshot(null); void api.sessionState?.().then(setSession);
           }, "Could not open recent work.")}>Recent work</button>
+          <button type="button" onClick={() => setModelLibraryState({})}>Model Zoo…</button>
         </div></details>
         <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
         <button ref={toolsToggle} type="button" className="shell-panel-toggle" aria-controls="research-tools-pane"
@@ -4129,7 +4188,24 @@ export default function ResearchWorkbench({
             </div>
           </div>
         )}
-        {source && dimensions && ["Process", "Analyze", "Quantify", "Model"].includes(tab) && <div className="analysis-scope-control">
+        {source && dimensions && tab === "Process" && (
+          <PreprocessingScopeControl
+            selection={shownSelection}
+            dimensions={dimensions}
+            drawing={drawingAnalysisRegion}
+            onSelectWholeImage={() => {
+              setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 }));
+              setDrawingAnalysisRegion(false);
+            }}
+            onStartDrawRegion={() => {
+              setDrawingAnalysisRegion(true);
+              setRawVolumeOpen(false);
+              setResultId(null);
+            }}
+            onCancelDrawRegion={() => setDrawingAnalysisRegion(false)}
+          />
+        )}
+        {source && dimensions && ["Analyze", "Quantify", "Model"].includes(tab) && <div className="analysis-scope-control">
           <span>Analysis scope</span><strong>{shownSelection.width === dimensions.x && shownSelection.height === dimensions.y ? "Whole image" : "Selected region"}</strong>
           <small>{shownSelection.width.toLocaleString()} × {shownSelection.height.toLocaleString()}{shownSelection.z_stop ? ` × ${shownSelection.z_stop - shownSelection.z} Z` : " · one plane"}</small>
           <div><button aria-pressed={drawingAnalysisRegion} onClick={() => { setDrawingAnalysisRegion((value) => !value); setRawVolumeOpen(false); setResultId(null); }}>{drawingAnalysisRegion ? "Cancel drawing" : "Draw region"}</button>
@@ -4281,17 +4357,37 @@ export default function ResearchWorkbench({
           <p>Finish numeric fields before running analysis or saving a recipe.</p>
           <button disabled={busy !== null} onClick={restoreAppliedNumbers}>Restore applied numbers</button>
         </div>}
-        {source && (tab === "Process" || (tab === "Analyze" && segmentationFamily === "classical")) &&
+        {source && tab === "Analyze" && segmentationFamily === "classical" &&
           <RecipeResourcePanel api={api} source={source} selection={shownSelection} recipe={recipe}
             suspended={documentSwitching} busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
-          <Process
-            key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("process", valid)}
-            recipe={recipe}
-            setRecipe={setRecipe}
-            onPreview={() => void preview()}
-            busy={busy !== null}
-          />
+          <>
+            <PreprocessingPanel
+              key={numberScope}
+              source={source}
+              selection={shownSelection}
+              numberKey={numberKey}
+              configurationValid={configurationValid}
+              onNumberValidity={(valid) => reportNumberValidity("process", valid)}
+              recipe={recipe}
+              setRecipe={setRecipe}
+              onPreview={() => void preview()}
+              busy={busy !== null}
+            />
+            {source && (
+              <div className="preprocess-inspector-memory">
+                <RecipeResourcePanel
+                  api={api}
+                  source={source}
+                  selection={shownSelection}
+                  recipe={recipe}
+                  suspended={documentSwitching}
+                  busy={busy !== null}
+                  onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))}
+                />
+              </div>
+            )}
+          </>
         )}
         {source && dimensions && tab === "Analyze" && (
           <>
@@ -4301,6 +4397,22 @@ export default function ResearchWorkbench({
           <ResearchComputeControl compute={compute} sources={[source]} learned={segmentationFamily.startsWith("cellpose")}
             supported={segmentationFamily === "classical" || segmentationFamily.startsWith("cellpose")}
             busy={busy !== null || documentSwitching} onSetup={onOpenCompute ?? (() => openWorkbenchTab("Remote"))} />
+          <div className="segmentation-model-library-row">
+            <button
+              type="button"
+              className="model-library-launch-btn"
+              onClick={() =>
+                setModelLibraryState({
+                  initialModelId:
+                    segmentationFamily === "cellpose-sam-v2"
+                      ? "cellpose-sam-v2"
+                      : undefined,
+                })
+              }
+            >
+              Browse Model Zoo…
+            </button>
+          </div>
           {segmentationFamily === "large-components" ? <LargeAnalysisPanel api={api} source={source} selection={shownSelection}
             busy={busy !== null} onBusy={setBusy} onError={setError}
             onRunStart={() => largeNavigationIntent.current}
@@ -4402,8 +4514,9 @@ export default function ResearchWorkbench({
               onBusyChange={value => setBusy(current => value ? (current ?? "controlled method") : current === "controlled method" ? null : current)}
               onPublished={publishGeneratedResult} />}
           </details>
-          <details className="external-labels-disclosure"><summary>Import existing labels</summary>
+          <details ref={externalLabelsDisclosureRef} className="external-labels-disclosure"><summary>Import existing labels</summary>
           <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
+            usamDisclosureRef={usamDisclosureRef}
             navigationIntent={() => largeNavigationIntent.current}
             scope={selectionScope} busy={busy !== null || documentSwitching || sourceIsChanging || !viewSettingsReady} onBusy={(message, owner) => {
               if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
@@ -4607,6 +4720,11 @@ export default function ResearchWorkbench({
             api={api}
             models={models}
             onOpenMethods={() => openWorkbenchTab("Analyze")}
+            onOpenModelLibrary={() =>
+              setModelLibraryState({
+                initialModelId: "bioimageio-nuclei-boundary-onnx",
+              })
+            }
             refreshModels={refreshModels}
             report={report}
             modelId={modelId}
@@ -4748,7 +4866,7 @@ export default function ResearchWorkbench({
           ) : <div className="research-panel"><p>Select an image to configure a batch.</p></div>}
         />
         {tab === "Vendor import" && (
-          <ResearchVendorPanel api={api} snapshot={snapshot} report={report}
+          <ImageConversionPanel source={source} api={api} snapshot={snapshot} report={report}
             busy={busy !== null}
             onBusyChange={(value) => setBusy((current) => value ? (current ?? "vendor") :
               current === "vendor" ? null : current)}
@@ -4958,127 +5076,29 @@ export default function ResearchWorkbench({
           )}
         </div>
       </section>}
+      {modelLibraryState !== null && (
+        <ModelLibraryDialog
+          onClose={() => setModelLibraryState(null)}
+          initialModelId={modelLibraryState.initialModelId}
+          reducedMotion={preferences.motion === "reduced"}
+          onOpenLink={
+            api.openModelLibraryLink
+              ? (linkId) => api.openModelLibraryLink!(linkId)
+              : undefined
+          }
+          workbenchRouteUnavailableReason={
+            source && dimensions
+              ? null
+              : "Open an image first to configure this tool in the inspector."
+          }
+          onSelectWorkbenchRoute={handleSelectModelLibraryRoute}
+        />
+      )}
     </main>
   );
 }
 
-const processLabels: Record<string, string> = { gaussian: "Gaussian blur", subtract_background: "Background subtraction", subtract_constant: "Subtract constant", median: "Median filter", opening: "Morphological opening", closing: "Morphological closing" };
-
 type NumericFormProps = { numberKey: string; onNumberValidity: (valid: boolean) => void; configurationValid: boolean };
-
-function Process({
-  recipe,
-  setRecipe,
-  onPreview,
-  busy,
-  numberKey, onNumberValidity, configurationValid,
-}: NumericFormProps & {
-  recipe: typeof DEFAULT_RECIPE;
-  setRecipe: React.Dispatch<React.SetStateAction<typeof DEFAULT_RECIPE>>;
-  onPreview: () => void;
-  busy: boolean;
-}) {
-  const numbers = useNumericValidity(onNumberValidity);
-  const add = (op: string) =>
-    setRecipe((old) => ({
-      ...old,
-      steps: [
-        ...old.steps,
-        op === "gaussian" || op === "subtract_background"
-          ? { op, sigma: 1 }
-          : op === "subtract_constant"
-            ? { op, value: 0 }
-            : { op, radius: 1 },
-      ],
-    }));
-  const patch = (index: number, values: Record<string, unknown>) =>
-    setRecipe((old) => ({
-      ...old,
-      steps: old.steps.map((step, i) =>
-        i === index ? { ...step, ...values } : step,
-      ),
-    }));
-  const move = (index: number, delta: number) =>
-    setRecipe((old) => {
-      const steps = [...old.steps];
-      const target = index + delta;
-      if (target < 0 || target >= steps.length) return old;
-      [steps[index], steps[target]] = [steps[target], steps[index]];
-      return { ...old, steps };
-    });
-  return (
-    <div className="research-panel">
-      <h2>Preprocess</h2>
-      <p>
-        Steps execute in this order. Spatial scales use the selected source
-        geometry units.
-      </p>
-      <div className="research-actions">
-        {[
-          "gaussian",
-          "subtract_background",
-          "subtract_constant",
-          "median",
-          "opening",
-          "closing",
-        ].map((op) => (
-          <button key={op} onClick={() => add(op)}>
-            <Plus size={12} /> {processLabels[op]}
-          </button>
-        ))}
-      </div>
-      <ol>
-        {recipe.steps.map((step, index) => {
-          const parameter =
-            "sigma" in step ? "sigma" : "radius" in step ? "radius" : "value";
-          return (
-            <li key={index}>
-              <strong>{processLabels[String(step.op)] ?? String(step.op)}</strong>
-              <label>
-                {parameter}
-                <ValidatedNumberInput key={`${numberKey}:${index}:${parameter}`}
-                  label={`Step ${index + 1} ${parameter}`} value={Number(step[parameter])}
-                  minimum={parameter === "value" ? -1e15 : 0} maximum={parameter === "value" ? 1e15 : 1e6}
-                  commitOnChange onValidity={(valid) => numbers.setValidity(`step-${index}-${parameter}`, valid)}
-                  onValue={(value) => { patch(index, { [parameter]: value }); return true; }} />
-              </label>
-              <div className="research-actions">
-                <button
-                  aria-label={`Move step ${index + 1} up`}
-                  disabled={index === 0}
-                  onClick={() => move(index, -1)}
-                >
-                  Up
-                </button>
-                <button
-                  aria-label={`Move step ${index + 1} down`}
-                  disabled={index === recipe.steps.length - 1}
-                  onClick={() => move(index, 1)}
-                >
-                  Down
-                </button>
-                <button
-                  aria-label={`Remove ${String(step.op)}`}
-                  onClick={() =>
-                    setRecipe((old) => ({
-                      ...old,
-                      steps: old.steps.filter((_, i) => i !== index),
-                    }))
-                  }
-                >
-                  <X size={12} /> Remove
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-      <button disabled={busy || !numbers.valid || !configurationValid} onClick={onPreview}>
-        Preview selected crop
-      </button>
-    </div>
-  );
-}
 function Analyze({
   recipe,
   channelCount,
@@ -5511,10 +5531,12 @@ function ModelPanel({
   onPreview,
   onAdopt,
   busy,
+  onOpenModelLibrary,
   numberKey, onNumberValidity, configurationValid,
 }: NumericFormProps & {
   api: ResearchDesktopApi;
   onOpenMethods: () => void;
+  onOpenModelLibrary?: () => void;
   models: ModelRecord[];
   refreshModels: () => Promise<void>;
   report: <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
@@ -5636,19 +5658,27 @@ function ModelPanel({
     <div className="research-actions">
       {api.importModel && <button className="research-primary" disabled={busy || importing} onClick={() => void importPackage()}>Import model package…</button>}
       <button onClick={onOpenMethods}>Open Segment &amp; measure</button>
+      {onOpenModelLibrary && <button type="button" onClick={onOpenModelLibrary}>Browse Model Zoo…</button>}
     </div>{resources}{requirements}
   </section>;
   return (
     <div className="research-panel">
       <h2>Use a model</h2>
-      {api.importModel && (
-        <button
-          disabled={busy || importing}
-          onClick={() => void importPackage()}
-        >
-          Import model package…
-        </button>
-      )}
+      <div className="research-actions">
+        {api.importModel && (
+          <button
+            disabled={busy || importing}
+            onClick={() => void importPackage()}
+          >
+            Import model package…
+          </button>
+        )}
+        {onOpenModelLibrary && (
+          <button type="button" onClick={onOpenModelLibrary}>
+            Browse Model Zoo…
+          </button>
+        )}
+      </div>
       {recoverable && <section className="research-prerequisite"><p>This model’s files are unavailable. Re-import the same package to restore it.</p>
         {api.importModel && <button disabled={busy || importing} onClick={() => void importPackage(true)}>Re-import model package…</button>}</section>}
       <label>

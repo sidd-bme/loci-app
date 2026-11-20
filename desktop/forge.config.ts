@@ -471,11 +471,6 @@ const config: ForgeConfig = {
           target: "preload",
         },
         {
-          entry: "src/settings-preload.ts",
-          config: "vite.preload.config.ts",
-          target: "preload",
-        },
-        {
           entry: "src/agent-preload.ts",
           config: "vite.preload.config.ts",
           target: "preload",

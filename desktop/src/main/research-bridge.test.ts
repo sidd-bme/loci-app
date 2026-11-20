@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   open: vi.fn(),
   save: vi.fn(),
   message: vi.fn(),
+  openExternal: vi.fn(),
   prepareLegacy: vi.fn(),
   clients: [] as Array<{ request: ReturnType<typeof vi.fn>; cancelCurrent: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>; forceDispose: ReturnType<typeof vi.fn> }>,
@@ -24,6 +25,7 @@ vi.mock("electron", () => ({
     getVersion: () => "0.1.0",
   },
   dialog: { showOpenDialog: mocks.open, showSaveDialog: mocks.save, showMessageBox: mocks.message },
+  shell: { openExternal: mocks.openExternal },
   ipcMain: {
     handle: (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
       mocks.handlers.set(name, operation),
@@ -252,7 +254,7 @@ describe("native research bridge", () => {
     mocks.clients.length = 0;
     mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === "research_create") await createEngineStudy(params.path as string);
-      if (method === "research_vendor_inspect") return { source_sha256: sha, series: [] };
+      if (method === "research_vendor_inspect") return { source_sha256: sha, runtime: { java_sha256: sha }, series: [] };
       if (method === "research_vendor_convert")
         return { snapshot: {}, conversion: { source_sha256: sha } };
       if (method === "research_project_clone") {
@@ -337,6 +339,8 @@ describe("native research bridge", () => {
 
   it("binds identical profile rows to their listed study, including after reopening or closing it", async () => {
     const a = path.join(root, "First.loci-study"), b = path.join(root, "Second.loci-study");
+    const refreshCompute = vi.fn();
+    const stop = bridge.onViewDocumentChanged(refreshCompute);
     const row = { alias: "cluster", id: "a".repeat(32), revision: 1 };
     const worker = mocks.clients[3].request;
     worker.mockResolvedValue({ targets: [], study_profiles: [row] });
@@ -349,6 +353,7 @@ describe("native research bridge", () => {
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: a });
     await call("create");
     const first = await list();
+    expect(refreshCompute).toHaveBeenCalledExactlyOnceWith();
     expect(first.study_binding).toMatch(/^[0-9a-f-]{36}$/);
     expect(JSON.stringify(first)).not.toContain(root);
     let finishList!: (response: unknown) => void;
@@ -357,6 +362,7 @@ describe("native research bridge", () => {
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: b });
     await call("create");
     const second = await list();
+    expect(refreshCompute).toHaveBeenCalledTimes(2);
     expect(second.study_profiles).toEqual(first.study_profiles);
     expect(second.study_binding).not.toBe(first.study_binding);
     finishList({ targets: [], study_profiles: [row] });
@@ -378,6 +384,8 @@ describe("native research bridge", () => {
     await expect(save(first.study_binding)).rejects.toThrow("study changed");
     await expect(save(second.study_binding)).rejects.toThrow("study changed");
     await call("new-session");
+    expect(refreshCompute).toHaveBeenCalledTimes(4);
+    stop();
     await expect(save(reopened.study_binding)).rejects.toThrow("study changed");
     expect(worker).not.toHaveBeenCalled();
   });
@@ -437,6 +445,30 @@ describe("native research bridge", () => {
     mocks.request.mockClear(); mocks.save.mockResolvedValueOnce({ canceled: false, filePath: "/selected/inputs.zip" });
     await call("method-input-export", methodInput());
     expect(mocks.request).toHaveBeenCalledWith("research_method_input_export", { project, request: methodInput(), destination: "/selected/inputs.zip" }, 0);
+  });
+
+  it("pins study image conversion to a native destination and returns only a verified receipt", async () => {
+    const project = path.join(root, "Convert.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    mocks.save.mockClear();
+    mocks.request.mockClear();
+    const binding = { source_id: "a".repeat(32), source_sha256: "b".repeat(64), format: "ome-zarr" };
+    await expect(call("convert-study-image", { ...binding, destination: "/escaped" })).rejects.toThrow(/current study/i);
+    expect(mocks.save).not.toHaveBeenCalled();
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("convert-study-image", binding)).toBeNull();
+    expect(mocks.request).not.toHaveBeenCalled();
+    const receipt = { format: "ome-zarr", artifact: "image.ome.zarr", axes: "TCZYX", shape: [1, 2, 1, 3, 2],
+      pixel_sha256: "a".repeat(64), output_sha256: "b".repeat(64), dtype: "uint16", bytes: 84 };
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: "/selected/native" });
+    mocks.request.mockResolvedValueOnce({ ...receipt, private_path: "/selected/native" });
+    expect(await call("convert-study-image", binding)).toEqual(receipt);
+    expect(mocks.request).toHaveBeenCalledWith("research_image_convert",
+      { ...binding, project, destination: "/selected/native" }, 0);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: "/selected/wrong" });
+    mocks.request.mockResolvedValueOnce({ ...receipt, format: "ome-tiff" });
+    await expect(call("convert-study-image", binding)).rejects.toThrow(/verified/);
   });
 
   it("keeps cancelled method pickers and unconfirmed rights decisions unpublished", async () => {
@@ -787,7 +819,7 @@ describe("native research bridge", () => {
     expect(mocks.request).toHaveBeenLastCalledWith("research_vendor_convert", {
       project: path.join(root, "Study.loci-study"), source: path.join(root, "sample.nd2"),
       jar: path.join(root, "reader.jar"), java: path.join(root, "java"), destination,
-      request: selection, expected_source_sha256: sha,
+      request: selection, expected_source_sha256: sha, expected_java_sha256: sha,
     }, 0);
   });
 
@@ -2747,6 +2779,22 @@ describe("native research bridge", () => {
     await expect(call("execute", "workflow_graph_cancel", { run_id: fixture.runId })).resolves.toMatchObject({ state: "cancelling" });
     expect(mocks.clients[0].cancelCurrent).toHaveBeenCalled();
     finish(); await expect(advancing).resolves.toMatchObject({ state: "cancelled" });
+  });
+
+  it("opens only fixed-ID model library links and rejects raw URLs or extra arguments", async () => {
+    mocks.openExternal.mockReset().mockResolvedValue(undefined);
+    await call("model-library-link", "cellpose-sam-v2-checkpoint");
+    expect(mocks.openExternal).toHaveBeenCalledExactlyOnceWith(
+      "https://huggingface.co/mouseland/cellpose-sam/blob/7c61431b5fbb078f3296754bd15d9f51b320f837/cpsam_v2",
+    );
+    mocks.openExternal.mockClear();
+    await expect(
+      call("model-library-link", "https://huggingface.co/mouseland/cellpose-sam"),
+    ).rejects.toThrow("Choose a registered official model-library source.");
+    await expect(
+      call("model-library-link", "cellpose-sam-v2-checkpoint", "extra"),
+    ).rejects.toThrow("Choose a registered official model-library source.");
+    expect(mocks.openExternal).not.toHaveBeenCalled();
   });
 
 });

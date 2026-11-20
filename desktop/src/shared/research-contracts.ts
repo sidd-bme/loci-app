@@ -998,8 +998,11 @@ export interface ResearchDesktopApi {
   chooseControlledMethodOutput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ output_grant_id: string; output_sha256: string; preflight_hash: string } | null>;
   exportControlledMethodInput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ basename: string; sha256: string; preflight_hash: string } | null>;
   labelsImportPreview?(binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview | null>;
+  convertStudyImage?(request: import("./image-conversion").ImageConversionRequest): Promise<import("./image-conversion").ImageConversionReceipt | null>;
   exportUsamHandoff?(binding: ResearchLabelsImportBinding): Promise<ResearchUsamHandoffReceipt | null>;
   listUsamHandoffs?(): Promise<ResearchUsamHandoffRecord[]>;
+  /** Opens a pinned official model-library card, weights record, or DOI by fixed ID only. */
+  openModelLibraryLink?(linkId: import("./model-library").ModelLibraryLinkId): Promise<void>;
   recipeResources?(): Promise<import("./recipe-resources").RecipeResources>;
   updateWorkspace?(request: ResearchWorkspaceChange): Promise<ResearchSnapshot>;
   reorderSources?(request: ResearchSourceOrderChange): Promise<ResearchSnapshot>;
@@ -1142,6 +1145,7 @@ export interface ResearchVendorGrant {
 }
 export interface ResearchVendorRequest {
   grant_id: string; series: number; c: number; z: number; t: number;
+  end_exclusive?: { c: number; z: number; t: number };
   crop: { x: number; y: number; width: number; height: number } | null;
   heap_mib: number; timeout_seconds: number; max_output_bytes: number;
 }

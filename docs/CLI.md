@@ -251,6 +251,30 @@ Import registers explicitly selected immutable sources. It does not move or
 edit them. `sources` displays the full source ID needed by subsequent commands;
 the JSON receipt contains exact fingerprints and complete metadata.
 
+## Convert a study image
+
+Use the source ID and SHA-256 from `loci sources --project "$STUDY" --json` for the selected scalar
+series. Choose an output folder that does not yet exist, outside the study and
+source store.
+
+```bash
+loci convert-image --project "$STUDY" --source "$SOURCE_ID" \
+  --source-sha256 "$SOURCE_SHA256" --format ome-zarr \
+  --destination "$OUTPUT/converted" --json
+```
+
+Choose `ome-tiff` for a tiled OME-TIFF (BigTIFF for large outputs) or
+`ome-zarr` for a chunked OME-NGFF 0.4 / Zarr v2 image. Both retain the native
+scalar dtype and all level-zero time points, channels and Z planes in the
+selected series. Loci reopens the output and compares its pixels, channel
+labels and calibration before publishing the folder. `conversion.json` records
+source and output fingerprints, coordinate transforms and recognized acquisition
+metadata. Keep the source for proprietary metadata, other series and pyramid
+levels. RGB, indexed palettes, mixed channel dtypes and non-finite scientific
+samples are outside this conversion path. Native study conversion requires a
+macOS or Linux filesystem with directory-descriptor access and atomic
+no-replace renaming for the completed folder.
+
 ## Prepare, validate and run
 
 Read the recipe guide and create an editable starter request:

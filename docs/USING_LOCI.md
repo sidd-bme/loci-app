@@ -1,22 +1,57 @@
 # Using Loci
 
-Loci is a local-first workbench for inspecting scientific images and creating traceable derived results. It leaves original image files where they are, and keeps display settings, annotations, results, reviews, and exports as separate work. Loci does not identify a stain or fluorophore from appearance, diagnose a sample, or establish biological or clinical validity.
+Loci is a local-first workbench for inspecting scientific images and creating traceable derived results. Original image files stay untouched on disk; display settings, annotations, analysis results, reviews, and exports are stored as separate derived records. Loci does not identify stains or fluorophores from visual appearance, diagnose a sample, or establish biological or clinical validity.
 
-This manual describes the implemented image-first workspace. It is bundled with the application and opens offline with `F1` or **Settings → User guide → Open user guide**. Search the manual by topic or control name, then open a matching topic. The contents pane, links within each topic, and Previous/Next controls keep your place. The [capability matrix](CAPABILITY_MATRIX.md) defines supported source subsets and limits; [release status](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) records published beta status and limitations. Current source can include changes absent from that download; qualification applies to the exact source and app tested.
+> **Core boundaries:** Panning or zooming never crops an analysis. Adjusting display ranges, colour maps, or projections never alters raw pixels or completed measurements. Every derived result stays bound to its exact source fingerprint, geometry, settings, and review state.
+
+### Three independent layers in Loci
+
+| Layer | What it controls | Changes source pixels or saved results? |
+| --- | --- | --- |
+| **Camera** | Area and magnification currently on screen | No |
+| **Display** | How source values map to colour on screen (Low/High, Gamma, Window/Level, LUTs, Z projections, sampling) | No |
+| **Analysis scope & results** | Declared region, native channel/Z/T indices, method settings, labels, measurements, and reviews | Creates new immutable derived records; originals stay read-only |
+
+### Where to go for common tasks
+
+- **New to Loci?** Run the offline synthetic walkthrough in [First study with synthetic shapes](#first-study-with-synthetic-shapes), or orient yourself in [Read the workspace](#read-the-workspace).
+- **Opening or converting images?** See [Start, save, and return](#start-save-and-return) for supported sources, studies, relinking, and native OME-TIFF / OME-Zarr conversion.
+- **Inspecting 2D channels, histograms, or 3D volumes?** See [View images and set display](#view-images-and-set-display), [Use histograms deliberately](#use-histograms-deliberately), and [Inspect scalar volumes and MPR](#inspect-scalar-volumes-and-mpr).
+- **Drawing ROIs, running segmentation, or quantifying assays?** See [Annotate and define analysis scope](#annotate-and-define-analysis-scope) and [Run practical analysis workflows](#run-practical-analysis-workflows).
+- **Reviewing, batching, or exporting data and figures?** See [Review, batch, and export results](#review-batch-and-export-results) and [Export rendered figures](#export-rendered-figures).
+- **Automating with workflows, assistants, or the CLI?** See [Compose and reuse workflows](#compose-and-reuse-workflows), [Work with external agents](#work-with-external-agents), and [Terminal workflows](#terminal-workflows).
+
+This manual is bundled offline inside Loci. Open it anytime with `F1`, **Help → User guide**, or **Settings → User guide → Open user guide**. Use the search bar (`/` or `⌘F` / `Ctrl+F`) to find tools, shortcuts, or concepts; Back/Forward, Contents, and Previous/Next keep your place.
+
+For exact format subsets and resource limits, see the [capability matrix](CAPABILITY_MATRIX.md). For published beta status and limitations, see [release status](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md). Current source can include changes absent from a published download; qualification applies only to the exact source and application tested.
 
 ## Contents
+
+**Start here**
 
 - [Start, save, and return](#start-save-and-return)
 - [First study with synthetic shapes](#first-study-with-synthetic-shapes)
 - [Read the workspace](#read-the-workspace)
+
+**View & display**
+
 - [View images and set display](#view-images-and-set-display)
 - [Use histograms deliberately](#use-histograms-deliberately)
+- [Inspect scalar volumes and MPR](#inspect-scalar-volumes-and-mpr)
+
+**Annotate & analyze**
+
 - [Annotate and define analysis scope](#annotate-and-define-analysis-scope)
 - [Run practical analysis workflows](#run-practical-analysis-workflows)
-- [Inspect scalar volumes and MPR](#inspect-scalar-volumes-and-mpr)
+- [Medical, temporal, and registration work](#medical-temporal-and-registration-work)
+
+**Review & export**
+
 - [Review, batch, and export results](#review-batch-and-export-results)
 - [Export rendered figures](#export-rendered-figures)
-- [Medical, temporal, and registration work](#medical-temporal-and-registration-work)
+
+**Settings & automation**
+
 - [Settings, recovery, and help](#settings-recovery-and-help)
 - [Work with external agents](#work-with-external-agents)
 - [Compose and reuse workflows](#compose-and-reuse-workflows)
@@ -24,373 +59,446 @@ This manual describes the implemented image-first workspace. It is bundled with 
 
 ## Start, save, and return
 
-Select **Open images** or drop local items on the opening window. A single checked item can be a supported image, ordinary image folder, OME-Zarr store, `.loci-study` directory, or legacy `.loci-project` file. A multiple-item drop accepts supported image files only. Loci validates the full selection before changing the study, so an invalid or unsafe item does not leave a partly imported collection.
+### Open images, folders, and stores
 
-Use **Open folder** from the File menu for a recursive collection of ordinary images. Existing published `_loci` bundles are excluded. Use **Open DICOM series** for a deliberate DICOM series choice and **Open OME-Zarr store** for a store. DICOM encountered while opening an ordinary folder remains an explicit-series decision, which avoids silently assembling unrelated acquisitions. Use **Open study** for a saved study and **Open .loci-project** for a legacy project.
+1. Choose **Open images** (`⌘O` / `Ctrl+O`) or drag local items onto the opening window.
+   - A **single dropped item** can be a supported image, an ordinary image folder, an OME-Zarr store, a `.loci-study` directory, or a legacy `.loci-project` file.
+   - A **multi-item drop** accepts supported image files only.
+   - Loci validates the entire selection before modifying the study, so an invalid or unsafe item never leaves a partial import.
+2. For nested directories, use **Open folder** (`⌘⇧O` / `Ctrl+Shift+O`) from the opening screen, header **File** menu, or native **File** menu. Existing published `_loci` bundles are excluded automatically.
+3. For specialized formats, expand **More sources** on the opening screen or open the header **File** menu:
+   - **DICOM series** (**File → Open DICOM series**): choose one conventional CT or MR series explicitly. DICOM files inside an ordinary folder are not assembled silently across acquisitions.
+   - **OME-Zarr store** (**File → Open OME-Zarr store**): open a local OME-NGFF 0.4 Zarr v2 directory store.
+   - **Loci project** (**File → Open .loci-project**): import a legacy `.loci-project` file.
+   - **Convert image format**: open the conversion route for supported study or vendor images.
+   - **New empty study**: open an empty workspace before importing sources.
 
-After opening a valid source, Loci creates a managed local session and saves derived work as it changes. To make a named study, choose **Save study…** in the header (also available under **File → Save as study…**). This creates a `.loci-study` snapshot without copying or modifying the original images. Keep original source locations available: reopening a study may require them to be present. The session status in the header distinguishes an autosaved session from saved local work.
+### Save studies and recover sessions
 
-**Recent work** opens saved studies and recoverable managed sessions. Its **Updated** time describes activity in Loci's session registry, such as an open, save, or reopen; it is not an acquisition timestamp. If a study or source location has moved, use the displayed recovery route to locate it again. Use **Relink exact source** directly in an unavailable-source banner. Relinking requires the original source identity, so a different file at a familiar path is rejected. Discarding a managed session affects only Loci's derived session state and offers immediate Undo; it never deletes the source image.
+Opening a valid source creates a managed local session that autosaves derived work as you go. The status indicator in the header distinguishes an **Autosaved session** from a **Saved locally** named study.
+
+- **Save a named study:** Choose **Save study…** in the header, **File → Save as study…** in the header menu, or native **File → Save study…** (`⌘S` / `Ctrl+S`). Loci writes a `.loci-study` snapshot without copying or altering original source files.
+- **Keep originals accessible:** Reopening a study can require the original source files to remain reachable.
+- **Reopen recent work:** Use **Recent work** on the opening screen or **File → Recent work** to return to saved studies and recoverable managed sessions. Its **Updated** timestamp reflects Loci session activity (open, save, or reopen), not image acquisition time.
+- **Relink a moved source:** If a study or source file has moved, follow the recovery prompt or choose **Relink exact source** in the unavailable-source banner. Relinking checks the original source identity and rejects a different file at a familiar path.
+- **Discard a managed session:** Discarding affects only Loci's derived session state and offers immediate **Undo**; it never deletes source images.
+
+### Convert study images to OME-TIFF or OME-Zarr
+
+Use the native format converter when you need a portable, pixel-verified copy of a supported study image in standard OME-TIFF or OME-Zarr format.
+
+1. Open **View → Import & conversion → Convert image format → Study image**.
+2. Select the source series in the image list. The converter reads finite scalar pixels from supported sources such as TIFF/OME-TIFF, Imaris IMS, and OME-NGFF 0.4/Zarr v2. All channels must share one numeric type.
+3. Choose **OME-TIFF** or **OME-Zarr** under **Output format**. OME-TIFF supports 8-, 16-, and 32-bit integers and 32- or 64-bit floats. Choose OME-Zarr for other supported scalar types, including 64-bit integers.
+4. Select **Convert image…** and choose the destination in the **Save converted image** dialog.
+5. Confirm the **Conversion verified** status once writing and verification finish.
+
+Conversion exports the full-resolution native T, C, and Z planes with no resampling. Loci creates a new folder containing:
+
+- `image.ome.tif` (for OME-TIFF) or `image.ome.zarr` (OME-NGFF 0.4), and
+- `conversion.json`, recording original and output fingerprints, array shape, dtype, and recognized coordinates, timing, and plane positions.
+
+Loci reopens the output and checks every pixel before publishing both files together. Use a destination filesystem that supports atomic folder creation without replacement on macOS or Linux. Keep the original for vendor headers, other pyramid levels, and future analysis. Display edits and study results stay in the study.
+
+RGB and indexed-colour images, whole slides, and medical series have separate export workflows. To export segmentation labels from a result, use **Results → Review & export**. The [capability matrix](CAPABILITY_MATRIX.md) lists the supported operations for each source type.
+
+### Convert vendor files (Bio-Formats)
+
+For standalone proprietary vendor microscopy files (`.czi`, `.lif`, or `.nd2`), Loci provides an optional local conversion boundary backed by an explicitly supplied Bio-Formats runtime.
+
+1. Open **View → Import & conversion → Convert image format → Vendor file** (or **More sources → Convert image format** on the opening screen).
+2. Select the source file, the official Bio-Formats `8.5.0` `bioformats_package.jar`, and your local Java executable. For whole series or C/Z/T ranges, choose the `java` executable from a **JDK 11 or later**. Loci checks the supplied JAR and executable before running the reader.
+3. Inspect the series dimensions, channels, and spacing, then choose **Whole series**, **Selected C/Z/T range**, or **Single plane**. C/Z/T ranges in the UI are zero-based and **inclusive** on both endpoints. Optional **Crop XY** applies one source-pixel rectangle across all selected planes.
+4. Review the output preview and **Resource limits** (Java heap, timeout, and output cap up to **1 GiB**; stacks are capped at **4,096 planes**, and each plane is capped at 512 MiB).
+5. Choose a new destination folder outside the study. Loci writes `image.ome.tif` and `provenance.json`, verifies the decoded scalar pixels against the pinned Bio-Formats reader, and imports the converted result as a derived study image (retained under **Study conversions**).
+
+For exact JAR hashes, JVM codec notes, and CLI/Python details, see [vendor conversion](VENDOR_CONVERSION.md) and the [capability matrix](CAPABILITY_MATRIX.md).
 
 ## First study with synthetic shapes
 
-**Try an example** on the opening screen creates a normal managed study with three synthetic rectangles, offline. No analysis or human review is prefilled. Its 256 × 256 scalar image has authored 0.5 µm X/Y spacing; it is geometric practice, not cells or biological validation.
+Use the built-in synthetic fixture to practice inspection, segmentation, label correction, review, and export completely offline before working on experimental data.
 
-In **View → Image & channels → Analysis region**, set X/Y = 0 and Width/Height = 256, using the first scalar channel and single Z/time plane at native level 0. These appear as Channel 1, Z 1 and T 1 in researcher-facing summaries; their recorded API indices are 0. In **Analyze → Segment & measure**, choose **Whole image**, then use **Classical methods**, **Components**, **Threshold** 50, **Above threshold**, **Minimum object area** 1, no preprocessing and no border exclusion; choose **Run recipe**. Expect 3 objects: 320, 768 and 512 pixels; areas 80, 192 and 128 µm²; mean intensities 100, 150 and 200.
+> **Practice fixture boundary:** **Try a synthetic example** creates a 256 × 256 scalar image with three authored rectangles and 0.5 µm X/Y spacing. It is geometric practice, not biological cells or validation evidence, and no analysis or human review is prefilled.
 
-Inspect object rows and labels. In **Annotate → Edit labels & ROIs**, delete label 1 for a deliberate two-object revision, then inspect **Undo revision** and **Redo revision**. In **Results → Review & export → Review**, inspect the exact revision yourself and choose **Mark reviewed**, then choose **Export → Export result**. Choose **Save study…** and reopen through **Recent work** or **Open study**. The original pixels remain intact; each correction needs its own review.
+### Walkthrough steps
 
-The source stays in a separate app-owned directory when its managed study is discarded. Save As preserves the source binding, so keep an exact source copy if removing the whole app profile or moving the study. The [first-study reference](workflows/FIRST_STUDY.md) gives the independent geometry, coordinate conventions and provenance. In current source, the optional **Practice: inspect, measure and export** guide in the inspector links to these tools and keeps expected example results in a disclosure. It does not configure or run analysis, and it never records review automatically. See the [release record](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) for downloadable availability.
+1. **Create the study:** Choose **Try a synthetic example** on the opening screen.
+2. **Confirm the analysis region:** Open **View → Image & channels → Analysis region** and confirm `X = 0`, `Y = 0`, `Width = 256`, `Height = 256` on the first scalar channel and single Z/time plane at native level 0. Researcher-facing summaries display these as Channel 1, Z 1, and T 1; recorded API indices are zero-based (`0`).
+3. **Run a classical recipe:** Open **Analyze → Segment & measure**, choose **Whole image**, then select **Classical methods**, **Components**, **Threshold** `50`, **Above threshold**, and **Minimum object area** `1`. Leave preprocessing empty and border exclusion off, then choose **Run recipe**.
+4. **Check the expected objects:** Inspect the object table and label overlay. Expect 3 objects:
+
+   | Object | Pixel count | Calibrated area | Mean scalar intensity |
+   | --- | --- | --- | --- |
+   | Object 1 | 320 px | 80 µm² | 100 |
+   | Object 2 | 768 px | 192 µm² | 150 |
+   | Object 3 | 512 px | 128 µm² | 200 |
+
+5. **Practice label correction:** Open **Annotate → Edit labels & ROIs** and delete label 1 to create a two-object revision. Test **Undo revision** and **Redo revision** to see how parent and child revisions remain distinct.
+6. **Review and export:** Open **Results → Review & export → Review**, inspect the exact revision yourself, choose **Mark reviewed**, and then choose **Export → Export result**.
+7. **Save and reopen:** Choose **Save study…** in the header and reopen it through **Recent work** or **Open study**. Original pixels stay untouched, and every new correction requires its own review.
+
+The synthetic source file stays in a separate app-owned directory if its managed session is discarded. Because **Save study…** preserves the source binding without copying source bytes, keep a copy of the source if you move the study or remove the app profile.
+
+For independent fixture geometry, coordinate conventions, and provenance, see the [first-study reference](workflows/FIRST_STUDY.md). In current source, the optional **Practice: inspect, measure and export** panel in the inspector links directly to these steps and keeps expected values inside a disclosure; it never configures, runs, or reviews work automatically. See the [release record](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) for downloadable availability.
 
 ## Read the workspace
 
-The left column contains **Images**, then **Layers & results** for the selected image. Use **Folder tree** to browse nested imports or **Flat list** for the image list. **Find images or folders** searches relative paths; **Reveal current image** clears the search and opens its ancestors. The image breadcrumb identifies its relative location without exposing the source filesystem prefix. Arrow keys navigate the tree, Enter opens an image, and Space selects images. In **Study & batch → Batch**, folder selection includes its descendant images; check the selected image count before running. Result rows show method names, object counts and review state, with creation-time or sequence labels when needed to distinguish similar results. Open **Review & export → Review → Technical identity** for the full result ID and revision hash. Choose **Original image** to inspect source display, or select a result to inspect one exact derived revision. The centre is the image or volume viewport. The right inspector groups work under **View**, **Annotate**, **Analyze**, and **Results**. Each group remembers its last tool. Its selector includes advanced routes such as portability, vendor conversion, remote compute, and assistant connection. Search all tools by name; use arrow keys and Enter to choose, or Escape to return.
+### Layout and navigation
 
-Use **⌘K** on macOS or **Ctrl+K** on Windows to search all tools. **⌘1–4** selects View, Annotate, Analyze or Results in order. **⌘[** toggles the image list and **⌘]** toggles the tools panel. Use Ctrl in place of ⌘ on Windows. The two panel buttons in the title bar expose the same controls. The image and the active tool keep their state when you hide a panel.
+- **Left rail — Images, then Layers & results:** Switch between **Folder tree** for nested imports and **Flat list** for a plain list. **Find images or folders** filters by relative path; **Reveal current image** clears the search and expands ancestors. The header path breadcrumb shows relative location without exposing the host filesystem prefix. Use arrow keys to move through the tree, `Enter` to open an image, and `Space` to select images. In **Study & batch → Batch**, selecting a folder includes its descendant images—check the selected count before running.
+- **Layers & results:** Select **Original image** to inspect the raw source display, or select a specific result row to inspect that exact derived revision. Rows display method names, object counts, and review states, adding creation-time or sequence labels when similar results need disambiguation. Open **Review & export → Review → Technical identity** for the full result ID and revision hash.
+- **Centre stage:** Displays the 2D image, A/B comparison, or 3D/MPR volume viewport.
+- **Right inspector:** Organizes all controls under four task groups (**View**, **Annotate**, **Analyze**, **Results**). Each group remembers its last used tool, and specialized routes appear in labelled sections of each selector. Press `⌘K` (`Ctrl+K` on Windows) to search all tools by name or keyword; use arrow keys and `Enter` to open, or `Escape` to close search.
 
-In **Segment & measure** and ordinary **Review & export**, choose **Focus panel** to give the inspector the image area, then **Show image** to return. This layout change keeps the current controls, drafts and prepared export preview mounted. Changing tools returns to the normal layout. Study and Statistics retain their own focus controls.
+### Workspace tools at a glance
 
-Native **File** commands open images, folders and studies in the active workspace.
-From detached image windows, these commands return to the main workspace first.
-**Window → Focus control panel** and **Window → Return to workspace** expose the
-same window controls from the menu bar.
+| Group | Primary tools | Additional & advanced routes |
+| --- | --- | --- |
+| **View** (`⌘1`) | **Image & channels** | *Import & conversion:* **Convert image format** |
+| **Annotate** (`⌘2`) | **Draw & measure**, **Epidermal thickness**, **Edit labels & ROIs** | — |
+| **Analyze** (`⌘3`) | **Segment & measure** (including **Model Zoo**), **Preprocess**, **Workflow builder**, **Use a model**, **Epidermis model**, **Fluorescence & field assay**, **Nuclear & cell shape**, **Track over time**, **Wound closure**, **Register & resample** | *Connections:* **Connect an assistant**, **Remote compute** |
+| **Results** (`⌘4`) | **Review & export**, **Spatial donor density**, **Statistics & objects**, **Study & batch** | *Portable results:* **Import & share results** |
 
-Three independent choices are central to reliable work:
+### Keyboard shortcuts and panel focus
 
-- **Camera** is the area and magnification currently on screen.
-- **Display** maps source values to rendered colour.
-- **Analysis scope** is the source region, plane, channels, and settings supplied to the next operation.
+| Action | macOS | Windows / Linux |
+| --- | --- | --- |
+| Search all tools | `⌘K` | `Ctrl+K` |
+| Switch inspector group (View / Annotate / Analyze / Results) | `⌘1` – `⌘4` | `Ctrl+1` – `Ctrl+4` |
+| Toggle image list | `⌘[` | `Ctrl+[` |
+| Toggle tools panel | `⌘]` | `Ctrl+]` |
+| Open images / Open folder | `⌘O` / `⌘⇧O` | `Ctrl+O` / `Ctrl+Shift+O` |
+| Open study / Save study | `⌘⇧P` / `⌘S` | `Ctrl+Shift+P` / `Ctrl+S` |
+| Open Settings | `⌘,` | `Ctrl+,` |
+| Open offline User manual | `F1` | `F1` |
 
-Panning or zooming does not crop an analysis. Changing low/high values or a colour map does not alter source values or rewrite a completed result. A result preserves its source binding, grid, resolved settings, method/runtime information, and review state. Treat the right inspector as the declaration of the next operation, not the current camera frame.
+The two panel buttons in the header toggle the image list and tools panel while preserving active image and tool state.
+
+When working in larger inspector tools, use the focus toggle in the inspector header (**Focus panel**, **Focus workflow**, or **Focus setup**) to expand the panel across the image stage, then choose **Show image** to return. Controls, drafts, and prepared export previews stay mounted across layout switches; changing tools restores the normal layout. **Study & batch** (**Focus study**) and **Statistics & objects** (**Focus statistics**) provide their own focus toggles.
+
+Native **File** commands open images, folders, and studies in the active workspace (returning from detached image windows to the main workspace first). **Window → Focus control panel** and **Window → Return to workspace** expose the same window switches from the menu bar.
+
+> **Remember the three independent choices:** **Camera** controls only what is on screen; **Display** maps source values to colour; **Analysis scope** declares the exact region, plane, channels, and settings for the next run. Treat the right inspector—not the camera frame—as the declaration of the next operation.
 
 ## View images and set display
 
-### Direct image viewing
+### Direct 2D viewing and sampling
 
-Open **View → Image & channels**. **Image info** reports declared dimensions, axes, channel/sample count, depth/time count, and recorded calibration. The **Open as** choice is a presentation choice: Automatic, Generic image, Histology, Fluorescence, Volume, or Medical research. It changes offered workflow shortcuts, never source values or recorded axes.
+Open **View → Image & channels**. Expand **Image info** to inspect declared dimensions, axes, channel/sample count, depth/time count, and recorded physical calibration. **Open as** (**Automatic**, **Generic image**, **Histology**, **Fluorescence**, **Volume**, or **Medical research**) is a reversible presentation choice that surfaces relevant workflow shortcuts; it never modifies source values or recorded axes.
 
-Print density in an ordinary TIFF, PNG or JPEG does not establish specimen size.
-These images use pixels unless supported acquisition metadata declares physical
-spacing, such as OME-TIFF PhysicalSize values. An older study with unsupported
-saved calibration remains intact; import its unchanged image into a new study
-before making new measurements or exports.
+> **Calibration boundary:** Print density (DPI) in an ordinary TIFF, PNG, or JPEG does not establish physical specimen size. Loci reports pixels unless supported acquisition metadata (such as OME-TIFF `PhysicalSize` values) declares physical spacing. Older studies with unsupported saved calibration remain readable; import the unchanged source into a new study before making new measurements or exports.
 
-For a direct inspection, select a source, choose **Fit** to show its whole plane, then use the wheel or pinch to zoom around the pointer and drag to pan. The main keyboard controls are:
+Select a source and choose **Fit** to frame its full plane. Scroll or pinch to zoom around the pointer, and drag to pan.
 
-| Action | Shortcut |
+| 2D viewer action | Shortcut |
 | --- | --- |
 | Fit selected plane | `F` |
-| 1:1 view | `1` |
-| Zoom | `+` / `-` |
+| 1:1 native pixel scale | `1` |
+| Zoom in / out | `+` / `-` |
 | Reset camera | `0` |
 | Pan | Arrow keys |
 
-At **1:1**, one source X pixel spans one physical display pixel. Loci respects
-the declared Y spacing. The **Display sampling** control applies to each 2D
-view, including either pane of an A/B comparison. **Auto** smooths the image
-below native scale and shows individual pixels at or above it. Choose
-**Nearest pixel** to inspect pixel boundaries at any zoom, or **Smooth** for
-a continuous display. The readout names the active sampling. These settings
-affect the image display only. Label overlays retain nearest-pixel sampling,
-and measurements use the original source values.
+At **1:1**, one source X pixel spans one physical display pixel while respecting declared Y spacing. The **Display sampling** control applies independently to each 2D view (including each pane of an A/B comparison):
 
-The navigation toolbar docks above or below the image and the scale readout has its own space outside the pixel field. Large images first show a bounded overview and then load finer tiles. The navigator, when enabled, shows the full extent and current field of view.
+- **Auto:** Smooths below native scale and displays crisp individual pixels at or above 1:1.
+- **Nearest pixel:** Shows exact pixel boundaries at every zoom level.
+- **Smooth:** Keeps continuous interpolation at all zoom levels.
 
-Use the Z and Time sliders when the source declares those axes. **Play** advances a time series; pause it before inspecting a plane histogram. For Z data, the **View** menu selects **Single plane**, **Maximum projection**, or **Mean projection**. A projection is an explicit display operation over the shown Z range. It is not a raw plane, and it should not be treated as a three-dimensional object count or measurement.
+The status readout names the active sampling mode. Display sampling affects the image display only: categorical label overlays always use nearest-pixel sampling, and all measurements use raw source values.
 
-The Z and Time controls also remain available in **Annotate** for plane-by-plane
-work. The main workspace retains unfinished drafts separately by source identity,
-Z/T plane and drawing tool. Return to that source, plane and tool to continue.
-Drafts are session-only, are cleared when opening another study, and are not saved
-annotations until you choose a save action. **Clear draft** discards the current
-draft. Up to 128 unfinished drafts are retained; Loci asks you to save or clear one
-before starting another instead of silently discarding an older draft.
+The navigation toolbar docks above or below the image, and the scale bar keeps its own space outside source pixels. Large images display a bounded overview first and stream finer tiles progressively; the optional navigator shows the full extent and current viewport.
 
-During rapid Z or Time changes, Loci can use a smaller XY preview based on measured
-response time, then refine once movement stops. The selected native plane and
-analysis resolution do not change. If the previous plane remains visible, the
-status identifies the displayed and requested planes; drawing is unavailable
-until the requested plane paints. **Stop loading** stops new work for that view
-and discards its pending response without interrupting other views. An active
-decode may still finish. **Retry view** resumes that view after a stop or error.
+### Z stacks, time series, and loading controls
+
+Use the **Z** and **Time** sliders whenever the source declares depth or time axes. Choose **Play** to step through a time series, and pause playback before opening a plane histogram.
+
+For multi-Z scalar data, the **View** selector switches between **Single plane**, **Maximum projection**, and **Mean projection**. A projection is an explicit display summary over the shown Z range—it is not a raw plane and must not be treated as a 3D object count or measurement.
+
+During rapid Z or Time scrubbing, Loci can show a smaller XY preview based on measured response time and refine once movement stops, without changing the selected native plane or analysis resolution. While a previous plane remains on screen, the status bar identifies both displayed and requested planes and pauses drawing until the requested plane paints. **Stop loading** cancels pending view work without interrupting other views (an active decode may finish); **Retry view** resumes after a stop or error.
+
+The Z and Time sliders stay accessible inside **Annotate** for plane-by-plane drawing. Unfinished drafts are retained separately in memory by source identity, Z/T plane, and drawing tool (up to 128 unfinished drafts; Loci prompts you to save or clear an older draft rather than silently dropping it). Drafts are session-only, clear when opening another study, and are not saved until you explicitly save them; use **Clear draft** to discard the active draft.
 
 ### Scalar channels, RGB, and medical windows
 
-Above a scalar image, expand **Display channels** and use the eye beside a channel to toggle its visibility. Select the channel name to adjust its range, gamma, LUT colour or opacity, or to show it alone with **Solo**. RGB sources use **Image tone**. Choose **Full display options** to inspect histograms in **View → Image & channels**. The analysis channel is selected separately in the analysis tool. Exact native 2D result labels can overlay the source display. Other result grids open in the result viewer.
+Above a scalar image, expand **Display channels** to toggle channel visibility with the eye icon, or click a channel name to adjust its range, gamma, LUT colour, opacity, or **Solo** view. RGB sources show **Image tone** instead. Choose **Full display options** to open histograms inside **View → Image & channels**. Analysis channel selection remains independent inside each analysis tool. Exact native 2D result labels can overlay the source display; non-matching grids open in the result viewer.
 
-For scalar sources, expand a channel under **View → Image & channels**. Set visibility, colour, **Low**, **High**, **Gamma**, and opacity. Low and high define the displayed range; gamma changes the mapping through it. **Auto** sets stable channel ranges from the selected source, T index, and Z plane. It does not calculate a range from a projection, current camera crop, or pan position. Selecting another plane or time point then pressing Auto deliberately gives a range for that selected plane.
+Inside **View → Image & channels**, expand any scalar channel to adjust visibility, **Colour**, **Low**, **High**, **Gamma**, and **Opacity**:
 
-Use **Reset** to restore acquisition/default display settings. Hold **Hold for source display** to compare temporarily with that baseline. For a medical source, or when **Open as → Medical research** is selected, each scalar channel also exposes **Window** and **Level**. Window is the displayed width and Level is its midpoint; these controls are the same display-range operation expressed in conventional medical terms. They do not apply a diagnostic preset or modify stored pixels.
+- **Auto / Auto range:** Calculates stable channel limits from a full-plane sample of the selected source, T frame, and Z plane—never from a Z projection or the current camera crop.
+- **Reset display:** Restores acquisition/default display settings.
+- **Hold to show default display:** Temporarily compares your adjusted display against the baseline while held (pointer or Space key).
+- **Window & Level:** Shown for declared medical sources or when **Open as → Medical research** is chosen. Window (width) and Level (midpoint) express the same display-range mapping in medical conventions without applying a diagnostic preset or modifying stored pixels.
 
-An interleaved RGB or RGBA source is a colour image. Loci uses its stated display policy and applies a valid embedded ICC profile once to the display copy. **Image tone** provides one shared black point, white point, and gamma curve for RGB components. RGB components remain encoded display samples, not automatically biological channels.
+An interleaved RGB or RGBA file is treated as a colour image: Loci applies a valid embedded ICC profile once to the display copy and exposes one shared **Image tone** curve (**Black point**, **White point**, **Gamma**). RGB components are display samples, not biological channels.
 
-For a scalar source with at least three channels, **Image info → RGB plane mapping** lets you explicitly select distinct planes for display red, green, and blue. Apply the mapping only when it is the intended visual composite; **Restore source composite** returns to the original representation. This is reversible display state. Analysis continues to use the original scalar channels rather than treating the composite as an inferred biological interpretation.
+For scalar sources with at least three channels, **Image info → RGB plane mapping** lets you assign three distinct scalar planes to display Red, Green, and Blue. Choose **Apply RGB mapping** for an explicit visual composite and **Restore source composite** to revert. Analysis continues to read the original scalar channels.
 
-### Batch channel colors and A/B comparison viewing
+### Batch channel colours and A/B comparison
 
-Under **View → Image & channels**, select **Apply colors…** to propagate standard channel colors across multiple images in one step. Choose target scope (**Selected images** or **All loaded images** in the current session snapshot) and channel matching (**Name, then index**, **Channel name**, or **Channel index**). Select from standard microscopy presets (DAPI/GFP/TRITC/Cy5, RGB, CMY, Greyscale) or customize individual hex codes. The dialog provides a preflight preview showing affected images and explicit skip reasons for incompatible interleaved RGB sources. Color updates are display-only, do not alter raw pixel intensities or invalidate existing scientific reviews, and can be reversed across all affected images with **Undo colors**.
-
-When two or more images are open, select **Compare A/B** in the canvas toolbar to inspect images side by side. Choose independent sources for **Pane A** and **Pane B**. Use **Match display (A → B)** to copy display ranges and colors from A to B (presentation only; does not standardize physical intensity). Each pane has its own T, Z and channel selection. **Link pan/zoom** is available when both panes show the same source identity and coordinate grid; matching dimensions alone do not establish correspondence. Display matching requires compatible channel mappings and remains a temporary comparison setting.
+- **Propagate channel colours:** In **View → Image & channels**, select the **Copy colours to images…** button beside **Auto**. Choose target scope (**Selected images** or **All loaded images**) and channel matching (**Name, then index**, **Channel name**, or **Channel index**). Pick a standard palette preset (DAPI/GFP/TRITC/Cy5, DAPI/GFP/TRITC/Far-Red, RGB, CMY, or Greyscale) or customize hex colours. Inspect the preflight preview—which flags skipped interleaved RGB sources—before applying. Colour updates are display-only, leave raw values and reviews untouched, and can be reversed with **Undo colors**.
+- **Side-by-side comparison:** With two or more images loaded, select **Compare A/B** in the canvas toolbar. Assign independent sources, T/Z planes, and channels to **Pane A** and **Pane B**. **Match display (A → B)** copies compatible display ranges and colours from A to B for visual comparison only (it does not standardize physical intensity). **Link pan/zoom** activates only when both panes share the same source identity and coordinate grid; matching pixel dimensions alone do not establish correspondence.
 
 ### Independent image windows
 
-Select a source and choose **Detach image** to open an independent window. The
-main window becomes **Image controls**. Detaching carries the current channel
-colours, ranges, gamma, visibility and opacity, selected plane/projection and 2D
-camera into the viewer. Supported volume mode, quality and transfer settings also
-carry over. Opacity readouts use 0 (transparent) to 1 (fully opaque), matching the
-sliders. Finish drawing and resolve any display-save error before detaching.
-VTK orbit pose, clipping and temporary detail boxes are not transferred yet.
-Move the resulting window using its native title bar onto another monitor.
-You can open a second view of another
-source, or of the same source with a different plane and camera. The control
-target follows the last focused image window; clicking the control panel keeps
-that target. **Pin this target** holds it until **Follow focused view** is chosen.
-Always check the view letter and image name before drawing or changing settings.
+Select a source and choose **Detach image** to open an independent viewer window (up to two detached views sharing bounded resources). The main window becomes **Image controls**.
 
-Use the image window's full-screen button and `Escape` to enter and leave native
-full screen. Display channels, Z/T, raw volume viewing and source annotations are
-available through the control panel. The panel shows one shared tone curve for RGB/RGBA sources, scalar channel controls
-for microscopy, and Window/Level for declared medical sources. **Open as** is an
-explicit presentation choice; it does not infer stains or diagnoses. The source
-summary identifies axes, calibration and any recorded coordinate frame. In 3D,
-rendering mode, quality and scalar transfer settings are shared with the image
-window. Changes made in either window appear in the other.
-
-Annotation save, undo and redo remain bound
-to that source and its selected plane. A stale annotation revision reports a
-conflict and offers **Reload annotations**, preserving the unsaved draft.
-Segmentation, immutable-result correction and the full analysis tools remain in
-**Return to workspace**.
-
-Window positions, display settings and the pinned target are stored locally for
-the study. After reopening it, choose **Restore image windows** explicitly.
-Unsaved annotation drafts are not saved as layout. Saving a new study copy changes
-the document identity and closes its detached views; open views again for that
-copy. If an image renderer stops, **Reopen** creates a new command generation and
-keeps annotations already committed to the study. This version supports two
-detached views with shared, bounded viewer resources.
+- **What carries over:** Current channel colours, ranges, gamma, visibility, opacity (0 transparent to 1 opaque), selected plane/projection, 2D camera, and supported 3D mode, quality, and transfer settings. Finish drawing and clear any display-save error before detaching. VTK orbit pose, clipping, and temporary detail boxes do not transfer yet.
+- **Multi-monitor & target control:** Move detached windows across monitors using their native title bars, or toggle native full screen (`Escape` exits). You can open a second view of another source or a second plane/camera of the same source. **Image controls** follows the last focused window (clicking the control panel keeps that target); use **Pin this target** and **Follow focused view** to lock or unlock it. Always verify the view letter and image name before editing.
+- **Available tools & conflicts:** Display channels, Z/T, raw volume viewing (synced bidirectionally with the image window), and source annotations work from the control panel. If a stale annotation revision conflicts, Loci preserves your unsaved draft and offers **Reload annotations**. Segmentation, label correction, and full analysis remain in **Return to workspace**.
+- **Persistence & recovery:** Window positions, display settings, and pinned target save locally with the study; after reopening, choose **Restore image windows** explicitly. Unsaved drafts are not saved as layout. Saving a new study copy changes document identity and closes detached views. If an image renderer stops, **Reopen** starts a fresh view while preserving committed annotations.
 
 ## Use histograms deliberately
 
-Open **Histogram & levels** inside Image tone or an individual scalar channel. A 2D scalar histogram is a deterministic full-plane sample of the current T and Z plane, drawn from native scalar values. An RGB histogram is a sample of stored RGB component values before ICC display conversion. Neither sample follows the camera, and both remain tied to the selected plane even when Maximum or Mean projection is displayed. The panel names its sample count, T, Z, and level so that the display basis is visible.
+Open **Histogram & levels** inside **Image tone** or any expanded scalar channel in **View → Image & channels**.
 
-Use the plotted black and white handles, or the matching numeric Low and High entries, to choose a display range. **Trim 1–99%** uses the sampled first and 99th percentile bin edges. It is a deliberate, binned approximation: values outside the chosen interval clip in the rendered display and rendered figures, while source pixels and analysis values stay untouched. The line below the plot reports the percentage in clipped sample bins. **Log counts** only changes how the histogram bars are viewed.
+- **Sampling basis:** A 2D scalar histogram is a deterministic full-plane sample of native scalar values at the selected T and Z plane. An RGB histogram samples stored RGB component values before ICC display conversion. Neither follows camera pan/zoom, and both remain bound to the selected plane even when a Maximum or Mean Z projection is displayed. The caption below the plot reports exact sample count, T, Z, and pyramid level.
+- **Adjusting range:** Drag the black and white handles or edit the numeric **Low** and **High** fields.
+- **Trim 1–99%:** Sets Low and High to the sampled 1st and 99th percentile bin edges. This is a binned display approximation: values outside the interval clip in screen rendering and rendered figures while source pixels and analysis measurements stay unchanged. The readout below the plot reports the clipped sample-bin percentage.
+- **Log counts:** Changes only the vertical display scale of the histogram bars.
 
-The histogram is useful for choosing a documented display range and recognizing saturation. It is not a quantitative assay, proof that images are comparable, or a reason to clean up pixels cosmetically. If comparison needs common display limits, set them deliberately and retain the exported display provenance.
-
-## Annotate and define analysis scope
-
-Choose **Annotate → Draw & measure** to make source-bound points, lines, rectangles, polygons, or freehand regions. Select the intended T and Z first. Loci binds the annotation to source identity and its T/Z location, so it appears on the appropriate plane. Use these geometry records for observation and stated measurements; a scale bar or physical unit appears only when trustworthy calibration is declared. Annotation interchange follows the strict rules in [annotation interchange](ANNOTATION_INTERCHANGE.md).
-
-Drag to draw a rectangle, or click its opposite corners. A polygon closes when you click its first point, double-click the last point, or press `Enter`. For **Freehand region**, drag around the boundary and release to close it. Choose **Save annotation** to retain the draft; `Escape` clears it. Freehand regions use the same source-bound polygon format, with a visible vertex-limit notice for long traces.
-
-For a saved source annotation, expand **Measurements & coordinates** to inspect full stored length/perimeter and area values, X/Y level-0 pixel-edge points, zero-based T/Z indices and geometry array axes. World coordinates appear with their frame and units when supported. Long point lists are paged. This inspection preserves the saved geometry.
-
-For analysis, use **Analysis region** in Image & channels or the right-side **Analysis scope** card. Set X, Y, width, height, analysis channel, Z start, optional Z depth/range, and T as needed. The inspector also offers **Draw region** and **Whole image**. A yellow analysis rectangle is a declared input area, separate from the camera. Confirm it before running processing, segmentation, a model, puncta work, or a measurement.
-
-When a segmentation result is selected, use **Annotate → Edit labels & ROIs** for correction of that exact revision. Brush, polygon, merge, delete, and supported watershed-split tools produce a new unreviewed revision while retaining the parent. Corrections do not edit source pixels and do not turn a result into ground truth.
-
-### Calibrated epidermal transects and rete ridge morphometry
-
-Choose **Annotate → Epidermal thickness** for the guided manual measurement workflow on histology sections. State the named measurement definition (specifying upper/lower tissue boundaries, orientation rule, and exclusion criteria such as folds or appendages). Draw transects across the viable epidermis, selecting the appropriate morphological class: **Suprapapillary** (sampled over dermal papillae), **Ridge-base** (sampled toward a rete ridge base), or another protocol-defined category.
-
-The tool computes the calibrated Euclidean distance from physical pixel calibration (`sqrt((dx * pixel_size_x)^2 + (dy * pixel_size_y)^2)`). If physical calibration is absent, distance is reported in pixels without fabricating physical units. Summary tables separate sampled suprapapillary from ridge-base transects; they do not find global minima or maxima automatically. Each transect saves its boundary definitions, orientation, exclusions and review state. **Save transect** creates an unverified record. **Save reviewed transect** requires a reviewer name and records approval of the current two endpoints, boundaries and orientation. Each save is a separate decision; restoring a draft or saving one transect does not approve the next. Summaries use the current T/Z plane and compatible saved protocols. CSV export includes each saved protocol, source identity, endpoints, zero-based Z/T, coordinate basis, length, units and reviewer; legacy label-only records remain explicitly unverified. Oblique sectioning or tissue processing distortion is not automatically corrected.
-
-## Run practical analysis workflows
-
-### Cells with classical methods or Adaptive Watershed
-
-For **standalone μSAM**, choose a full native plane or Z range in one original
-channel. Open **Analyze → Segment & measure → Import existing labels → μSAM
-(standalone)** to export it. After segmentation in your μSAM environment,
-preview the returned label TIFF on the same image and confirm the import.
-Loci measures the original channel and creates an unreviewed result. The
-[external-label guide](EXTERNAL_LABELS.md) covers the 2D and 3D file formats.
-
-For a transparent scalar workflow, select the source and set its display only for comfortable viewing. Define the analysis region, then open **Analyze → Segment & measure → Classical methods**. Choose **Segmentation input** by its recorded source channel name and numbered index; its adjacent T/Z scope uses one-based labels. Submitted indices remain zero-based. **Raw measurement channel** chooses the channel to measure independently; **Display channel** and **Solo** change presentation only. These controls do not infer a stain or fluorophore.
-
-Choose the explicit threshold, Components or Watershed method, foreground direction, minimum object size, optional watershed split height and border exclusion. Use **Run recipe** to create a new result; the method uses declared source data and scope rather than the rendered tone settings.
-
-**Recipe resources** shows the engine's working-memory estimate for the selected
-scope. The initial allowance is 512 MiB. Choose a larger **Recipe memory allowance**
-(up to 8 GiB) when needed, or explicitly apply the hardware recommendation. A
-recommendation uses installed memory; it does not measure available RAM or reserve
-memory. Larger allowances can cause memory pressure and slower operation. The
-estimate does not run the analysis, and an over-budget refusal publishes no result.
-The chosen allowance travels with saved recipes and results. Cellpose-SAM, Cellpose-SAM v2 and Adaptive Watershed also expose a **Memory
-allowance** control (256 MiB–8 GiB). Switching between these segmentation methods
-retains the choice. Published results retain their accepted allowance for display
-and subsequent label corrections; a correction records its own execution budget.
-Imported ONNX models use their existing **Working memory** control.
-
-These are host array-working allowances, not reservations or guarantees of peak
-process memory. Cellpose checkpoint/runtime overhead and GPU memory are additional;
-GPU batch size is a separate explicit setting. A larger allowance does not change
-image resolution or scientific settings. Decoder and export-artifact limits remain
-separate and can still reject oversized inputs/results. For cluster resources and
-current remote limitations, see [Remote workflow](REMOTE_WORKFLOW.md).
-
-Use **Try settings on regions** to compare bounded classical previews across representative ROIs before adopting an exact configuration. Previews save no result; adoption creates an unreviewed result. See [Exploration and groups](EXPLORATION_AND_GROUPS.md) for preview limits, comparison records and reusable population gates.
-
-Choose **Run on: This Mac** or a saved target for supported classical and Cellpose analyses. **Compute setup** opens **Settings → Compute** to import an already trusted SSH alias, specify a prepared Linux runtime and workspaces, and choose CPU or Single GPU resources. **Check runtime** records a dated check; it installs no runtime or model. Run authorizes the displayed whole-file transfer, execution, retrieval and attachment, even when analysis uses a smaller region. Job Center retains progress through connection loss and reopening. A cancellation request prevents attachment while scheduler confirmation is pending. See [Remote workflow](REMOTE_WORKFLOW.md).
-
-For the built-in baseline, select **Loci Adaptive Watershed**. It identifies its input as the selected scalar channel or RGB-derived grayscale, and shows selected Z/T. It works on one 2D plane; choose Classical methods for a supported volumetric segmentation. Its recommended profile is editable and resettable: Auto image mode and polarity, expected diameter 34 px, minimum area 80 px, sensitivity 0, smoothing 1.2 px, touching-object splitting enabled, and border exclusion disabled. The method normalizes the selected plane at the first and 99th percentiles. For scalar data, measurements use original scalar intensities; display ranges do not alter the method. Settings are recommendations, not an inference of cell type or validated parameters for a new assay.
-
-After either run, select the result under **Layers & results**. Inspect objects and measurements, then correct labels if needed. Open **Results → Review & export**, confirm the exact revision, and select **Mark reviewed** only after human review. **Export revision** is enabled for a reviewed revision. Review records a human decision for that immutable result; it is not an automatic claim of accuracy.
-
-### Repeating a prepared workflow across images
-
-For a connected analysis plan, choose **Analyze → Workflow builder**. Build a
-sequence from image processing through segmentation, raw measurements and
-population filtering, then inspect, review and export the exact result. The
-dedicated workspace keeps the image alongside the graph and settings. Saved
-workflows can run across compatible sources; see [Visual workflows](WORKFLOWS.md)
-for revision, preview, batch and recovery behavior.
-
-Open **Results → Study & batch**. For a recipe workflow, give the recipe a name and select **Save validated recipe** after the source has been validated. Check the images to include and use **Preview** for an ordinary recipe where available. For Adaptive Watershed or a Cellpose profile, first configure the exact method in Analyze; the batch then freezes its profile, settings, measurement channels, and 2D selection.
-
-Choose **Run selected sources sequentially**. Loci validates each source and creates durable jobs before work proceeds. **Stop batch** cancels the current item and leaves later work queued. **Resume batch** resumes queued or interrupted jobs; **Retry failed or cancelled** is a separate action. Successful jobs are not silently duplicated. Use **Open result** from a batch row, inspect every result, and review it before reviewed-result or reviewed-batch export.
-
-### Histology RGB and scalar fluorescence
-
-For an RGB histology image, choose **Open as → Histology** if that describes the intended workflow. The shortcut offers **Annotate tissue** and **Choose analysis**. In Analyze, select **Declared stain separation**. State either the H&E or H-DAB basis, choose the derived stain coordinate, threshold, minimum object area, Components or Watershed method, and optional split height. **Preview declared stain** lets you inspect the declared separation before **Run declared stain**. If using the optional object rule, provide its rule name, coordinate, statistic, threshold, and control/evidence text. The recorded rule is a measurement rule, never an automatic stain or biological classification.
-
-For RGB classical analysis, choose **Weighted RGB intensity** explicitly under **Intensity input**. This creates a documented 0–1 intensity derivation; it does not transform RGB components into biological channels. For scalar fluorescence, choose **Open as → Fluorescence**, make visibility and low/high choices in the channel panel, select a scalar analysis channel and scope, then use **Quantify channels** or another appropriate scalar route. A display colour is a viewing aid. Keep measurement-channel choices explicit and do not infer a fluorophore from colour.
-
-### Fluorescence field assay (signal per nucleus)
-
-For two-channel fluorescence field quantification, open **Analyze → Fluorescence & field assay → Field assay**. Confirm the exact source identity and T/Z plane shown in the readiness summary. The assay requires a human-reviewed focus region and a separate, disjoint cell-free background region drawn on that same native plane; Loci filters the selectors and rejects an annotation from another plane.
-
-Select the declared nuclear channel for nuclei segmentation and the declared signal channel for intensity measurement; the names are user or metadata declarations, not inferences from colour. Preview provisional segmentation using an explicit fixed threshold or the selected Otsu/Yen method and object-size parameters. Failed automatic thresholding stops with an error; it never substitutes an arbitrary fixed value. The engine computes the signed background-corrected signal sum (`sum(signal in focus) − focus_pixels × background_estimate`), accepted nucleus count, signal per nucleus, and saturation pixel fractions directly from original pixel values. The background estimate uses the explicitly selected median or mean estimator. If automatic segmentation is unsatisfactory, supply reviewed point marks from the same plane or an explicit reviewed manual count. In manual mode, the signal is measured over the full reviewed focus region and divided by that human count; the automatic segmentation remains a provisional visual aid. A field result must be explicitly reviewed before publication; changing source, plane, annotations, channels, masks, or parameters makes the preview stale.
-
-Choose **Save exploratory** to retain the current preview without scientific approval.
-**Approve & save** requires a reviewer name, a fixed threshold or reviewed manual
-count, and an appropriate focus/background selection. The click records review of
-channel identity, acquisition comparability, focus, nuclei, background and any
-reported saturation. Editing channel declarations or assay settings requires a new
-preview. Each approval applies only to the current saved result.
-
-Signal per nucleus is a field-level proxy; it is not automatically per-cell membrane intensity or absolute receptor abundance. Background subtraction does not establish a positive threshold or correct every source of nonspecific signal. Define the assay, controls, acquisition comparability, independent replicates and normalization reference in the study protocol. The workflow is general-purpose: record experiment-specific assumptions in your study protocol.
+> **Not a quantitative assay:** Use the histogram to choose a documented display window and spot acquisition saturation—never as proof of sample comparability or a reason to alter raw pixels. When comparing images visually, set identical display bounds deliberately and retain figure display provenance.
 
 ## Inspect scalar volumes and MPR
 
-For a supported scalar source with depth, choose **Open as → Volume** or **Medical research**, then select **Explore in 3D**. Loci accepts up to four visible scalar channels in the raw volume view and requires compatible orthogonal geometry. It refuses unsupported RGB/RGBA, single-plane, or unsuitable geometry rather than inventing a volume.
+For a supported scalar source with depth (`Z > 1`), choose **Open as → Volume** or **Medical research** in **Image info**, then select **Explore in 3D**. Loci accepts up to four visible scalar channels with compatible orthogonal geometry and refuses unsupported RGB/RGBA, single-plane, or incompatible grids rather than fabricating a volume.
 
-The viewer starts with a bounded whole-volume context. **Detail at crosshair** requests a separately displayed focus region around the current crosshair; choose **Whole** or **Focus** once it is available. A late focus response preserves the crosshair; moving outside its extent returns to Whole. Focus improves local display detail but does not replace or modify source data. In Volume mode, left-drag orbits, right-drag or Shift-left-drag pans, scroll zooms, arrow keys orbit, `+`/`-` zoom, and `R` resets the camera. **Clip** exposes X/Y/Z axis and position controls for a display-only clipping plane.
+### Layout, rendering modes, and focus detail
 
-The default **Four panes** layout shows three linked slice views and a fourth 3D pane. Patient-frame sources use axial, coronal and sagittal planes in radiological orientation, including reslicing oblique acquisitions. Generic microscopy sources use XY, XZ and YZ labels. Drag the crosshair to reposition all planes; scroll or use ↑/↓ in a slice to step through it. Each pane has Expand/Restore controls. **3D view** selects a single large 3D pane.
+- **Four panes** (default) shows three linked orthogonal slice views beside the 3D pane. Patient-frame sources display **axial**, **coronal**, and **sagittal** views in radiological orientation (including reslicing oblique acquisitions); generic microscopy sources display **XY**, **XZ**, and **YZ**. Drag the crosshair to synchronize all panes, scroll or press `↑`/`↓` in a slice pane to step through slices, and use each pane's **Expand** / **Restore** button. Choose **3D view** for a single large 3D canvas.
+- **Volume vs. MPR inside the 3D pane:** **Volume** renders the scalar volume using the selected **Mode** (**Composite blend**, **Shaded volume**, **Maximum intensity**, **Average intensity**, or **Minimum intensity**). **MPR** renders intersecting source-grid planes. X/Y/Z controls always refer to acquisition axes—they are not silently renamed to anatomical axes for oblique data.
+- **Rendering & detail:** Expand **Rendering & detail** to adjust 3D **Quality**, toggle a display-only **Clip** plane (**Axis** X/Y/Z and **Position**), or request higher local resolution with **Detail span** (`32`, `64`, or `96` voxels) and **Detail at crosshair**. Once loaded, switch between **Whole** and **Focus**. A late focus response preserves your crosshair; moving outside the focus box returns to **Whole**. Focus refines display only and never modifies source data.
+- **Controls & sampling:** Expand **Controls & sampling** for inline navigation hints. In Volume mode, left-drag (or `Alt`-drag) orbits, right-drag or `Shift`-drag pans, scroll/pinch zooms, arrow keys orbit, `+`/`-` zoom, and `R` resets the camera. Raw slice views use bounded linear resampling; verified label overlays use nearest-pixel native sampling, and 3D label surfaces are bounded voxel display approximations. Always use source-space tools for quantitative measurements.
 
-Inside the 3D pane, **Volume** displays the scalar volume and **MPR** displays intersecting source-grid planes. The X/Y/Z controls refer to acquisition axes; they are not renamed anatomical axes for oblique data. Displayed world coordinates follow source geometry and units. Slice canvases use bounded, linearly resampled display grids. Use source-space annotation and analysis for quantitative measurements. **Shade** adds optional display lighting; its settings are recorded in exported figures.
+### Volume channels, histograms, and PNG figures
 
-Expand a volume channel to set colour, Low, High, Gamma, opacity, visibility, or **Reset channel**. Its histogram is explicitly a deterministic sample of the whole-volume context at the current T and display level. It does not use the focus payload or a crop, so its basis stays stable while changing detail. **Trim 1–99%** remains binned display clipping only.
+Expand a volume channel to change colour, **Low**, **High**, **Gamma**, opacity, visibility, or **Reset channel**. Its histogram is a deterministic sample of the whole-volume context at the current T and display level—it stays stable when toggling **Whole** and **Focus**. **Trim 1–99%** remains binned display clipping only.
 
-Use **Export PNG…** in the volume toolbar to save a `.loci-figure` directory atomically. It contains `image.png` and `manifest.json`. The PNG captures the 3D pane, including when the four-pane layout is open; the three separate slice canvases are not included. It uses the native canvas at its current screen resolution; it is not a high-resolution render or original-value data. The manifest records source binding, payload fingerprints, representation, camera, transfer functions, clipping, MPR indices and grids when applicable, Loci application and VTK renderer/software identities, and the PNG SHA-256. It intentionally has no scale bar under perspective, no source pixels in metadata, and no biological or clinical validation claim.
+Choose **Export PNG…** in the volume toolbar to save a `.loci-figure` directory atomically (`image.png` and `manifest.json`).
 
-## Review, batch, and export results
+> **3D figure export scope:** **Export PNG…** captures only the 3D pane at its current screen resolution (the three separate slice panes are excluded; hide labels to export a raw-volume figure). The manifest records source binding, payload fingerprints, representation, camera, transfer functions, shading, clipping, MPR indices/grids when applicable, Loci and VTK software identities, and PNG SHA-256. It intentionally omits scale bars under perspective and contains no original-value pixel arrays.
 
-**Results → Review & export** opens ordinary results in **Review**, with quantitative summaries, review controls and **Technical identity** for the full result ID and revision hash. Select a result, inspect its revision and review status, and use **Mark reviewed** after a person has assessed it. The review state binds to that revision. Review history distinguishes researcher and explicitly delegated agent decisions, including their reason and coverage. A researcher can supersede an agent decision while retaining its event; label corrections create a new unreviewed revision. A review is an assessment record, not independent validation. Choose **Export → Export result** to write the scientific result package appropriate to the result: arrays, labels where applicable, measurements, method and provenance records, review information, and integrity material. It is distinct from a rendered display image.
+## Annotate and define analysis scope
 
-Quantitative summaries in **Review & export** require homogeneous metric fields, declared measurement kinds, and compatible units across all rows. If a result contains mixed units (for example, micrometres and pixels), mixed measurement kinds (such as area and volume), or declared-versus-unspecified metadata, pooled statistics (mean and range) are withheld and a clear reason is displayed beside the table, while preserving all individual records, row selection, and review/export controls. Non-finite, missing, or null values are excluded from arithmetic calculations rather than counted as zero, and exclusions are disclosed beside the table. Missing unit metadata is explicitly labeled as unspecified rather than assuming calibration. The row count includes every loaded preview record. If the preview is partial, its coverage is stated; use Statistics & objects for the full population. The summary does not infer biological object identities.
+### Draw source-bound annotations
 
-In **Export**, **Export scientific data** prepares interoperable tables and Python/R readers. Editable export choices survive section changes and tool navigation; reopening the panel requires a fresh preview. Indexed large results retain their dedicated inspector and export panel. See [Scientific data packages](SCIENTIFIC_DATA_EXPORT.md) for review requirements and exact scope.
+Open **Annotate → Draw & measure** to draw points, lines, rectangles, polygons, or freehand regions. Select the intended **T** and **Z** plane first so the annotation binds to the exact source identity and T/Z location. Scale bars and physical lengths appear only when trustworthy calibration is declared.
 
-For object-level exploration, choose **Results → Statistics & objects**. **Go to object label** selects an exact label in the current filtered order. **Previous object**, **Next object** and table arrow keys traverse that order across pages; selection keeps the image position, while **Locate selected object** moves it. See [Statistics & objects](OBJECT_POPULATIONS.md).
-You can [adopt external labels](EXTERNAL_LABELS.md) onto a checked native source
-plane and create ordinary correction revisions. From a corrected revision,
-**Show experiment effect** compares its direct parent with that child using the
-existing object-size endpoint and explicitly assigned biological replicates; see
-[Correction effects](CORRECTION_EFFECTS.md).
+- **Rectangle:** Drag across the region, or click opposite corners.
+- **Polygon:** Click vertices; close by clicking the first point, double-clicking the last point, or pressing `Enter`.
+- **Freehand region:** Drag around the boundary and release to close. Freehand regions save in the same source-bound polygon format with a visible vertex-limit notice on long traces.
+- **Save or cancel:** Choose **Save annotation** to commit the draft, or press `Escape` to clear it.
+- **Inspect stored geometry:** Expand **Measurements & coordinates** on any saved annotation to inspect stored length/perimeter, area, level-0 pixel-edge X/Y points, zero-based T/Z indices, geometry axes, and world coordinates (when supported). Long point lists are paged.
 
-Open **Results → Study & batch** for **Samples**, **Intensity**, **Batch** and, when available, **Corrections**. **Focus study** expands the workspace; **Show image** restores the linked image. Switching sections retains unapplied CSV and comparison drafts.
+Annotation export/import follows the strict schema in [annotation interchange](ANNOTATION_INTERCHANGE.md). For comparing frozen drawn references or saved masks on identical grids, see [annotation agreement](ANNOTATION_EVALUATION.md).
 
-In **Samples**, use **Sources & samples** to search image/sample names and filter declared condition, replicate or metadata/result status. Expand a source’s **Results** and choose **Inspect result** for one explicit revision; **Technical result identity** retains its full bindings. Review labels distinguish agent decisions from researcher review. **Edit metadata** selects the source for editing. Missing required metadata and an optional unassigned replicate are distinct; neither is an automatic readiness judgment.
+### Declare analysis scope
 
-**Intensity** compares saved raw mean measurements while retaining image and declared replicate grouping. Some long decimal values use an **≈** disclosure; open it by pointer or keyboard for the exact stored spelling. This changes display only; reports, calculations and exports keep full precision. See [Sample sheets and intensity](EXPERIMENT_INTENSITY.md).
+Before running processing, segmentation, models, puncta tools, or measurements, confirm your input extent using **View → Image & channels → Analysis region** or the right-hand **Analysis scope** card:
 
-For provisional inspection, select exact revisions in **Results → Study & batch → Batch**, name the package and choose **Export review package**. Supported whole native uint8 RGB planes up to 16 megapixels produce `counts.csv`, a provenance manifest and native-resolution boundary-outline PNGs, preserving nested relative paths. Pending results can be included; this action never marks them reviewed. Source RGB samples outside the recoloured label boundaries remain unchanged. Choose a destination supporting atomic no-replace publication, such as APFS; exFAT on macOS is unsupported for this operation.
+- Set **X**, **Y**, **Width**, **Height**, **Analysis channel**, **Start Z**, **Depth** (**One plane** or **Z range** with exclusive **Stop Z**), and **Time** as needed.
+- Use **Draw region** to sketch the yellow analysis rectangle directly on the canvas, or **Whole image** to cover the full plane.
+- In **Analysis region**, `X`, `Y`, `C`, `Z`, and `T` are **zero-based** and `Stop Z` is **exclusive** (for example, `Start Z = 0` and `Stop Z = 10` covers 10 planes, displayed as Z 1–10 in summaries).
 
-For batch publication, use the reviewed-export controls in **Study & batch → Batch** after every intended result is reviewed. Available choices include reviewed bundles, reviewed bundles with a summary CSV, and **Summary CSV only**. Loci validates exact revisions and planned destination names before publication. Summary-only exports contain the count CSV and manifest, not image or label bundles. Portable study export retains derived records while omitting private raw-source locations; source-dependent work after import requires exact local relinking.
+### Edit segmentation labels
 
-## Export rendered figures
+With a segmentation result selected, open **Annotate → Edit labels & ROIs** to correct that exact revision using brush, polygon, merge, delete, or supported watershed-split tools. Every correction produces a new unreviewed child revision while preserving the parent; it never alters source pixels or establishes biological ground truth.
 
-Open **View → Image & channels → Export rendered image**. This panel exports the current display, including its selected plane or projection, channel appearance, and display provenance. It does not export original values or annotation overlays.
+### Calibrated epidermal transects and rete ridge morphometry
 
-| Format | Available extent | Meaning |
-| --- | --- | --- |
-| **PNG · 8-bit display** | Whole image up to 1024 px, or Analysis region in source pixels | Rendered RGB display image |
-| **TIFF · 16-bit display** | Whole selected plane at full resolution, or Analysis region in source pixels | Rendered RGB display image |
+Open **Annotate → Epidermal thickness** for guided manual histology transect measurement:
 
-Set **Resolution (DPI)** from 72 to 1200; Settings supplies the default, initially 300. DPI changes output metadata and physical layout, not source resolution or image detail. Enable **Include calibrated scale bar** only when trustworthy physical X/Y geometry supports it. Enable **Include channel legend** only for visible scalar channels, then supply clear user labels. The scale bar and channel key are placed in a footer outside source pixels. They are not annotation overlays. Export records exact figure/display provenance for the rendered output.
+1. Declare the named measurement protocol (upper/lower tissue boundaries, orientation rule, and exclusions such as folds or appendages).
+2. Choose the morphological class (**Suprapapillary**, **Ridge-base**, or another protocol-defined category) and draw two-endpoint transects across the viable epidermis.
+3. Choose **Save transect** for an unverified record, or **Save reviewed transect** (requiring a reviewer name) to record approval of the current endpoints, boundaries, and orientation. Each save is an independent decision; restoring a draft or saving one transect never approves the next.
 
-Use a reviewed result export when downstream work needs arrays, labels, measurements, or method records. Use annotation interchange for vector annotations. Use PNG/TIFF display export when a presentation figure is the intended artifact. Do not substitute a display picture for original-value research data.
+Distance is computed as calibrated Euclidean length (`sqrt((dx * pixel_size_x)^2 + (dy * pixel_size_y)^2)`), falling back to pixels without fabricating physical units when calibration is absent. Summary tables separate sampled suprapapillary and ridge-base transects on the current T/Z plane with compatible protocols—they do not search for global minima or maxima automatically. CSV export includes protocol text, source identity, endpoints, zero-based Z/T, coordinate basis, length, units, and reviewer (legacy label-only records stay explicitly unverified). Oblique sectioning and tissue processing distortion are not automatically corrected.
+
+## Run practical analysis workflows
+
+### Classical segmentation, memory budgets, and remote compute
+
+1. Select the source, set display for comfortable viewing, and confirm **Analysis scope**.
+2. Open **Analyze → Segment & measure → Classical methods**.
+3. Choose **Segmentation input** by recorded channel name and numbered index (adjacent T/Z scope uses one-based labels; submitted API indices stay zero-based) and pick **Raw measurement channel** independently. **Display channel** and **Solo** remain presentation-only and never infer stains or fluorophores.
+4. Set threshold, **Components** or **Watershed**, foreground polarity, minimum object area, optional watershed split height, and border exclusion, then choose **Run recipe**. Analysis reads declared raw source data rather than rendered tone curves.
+
+- **Working-memory allowances:** **Recipe resources** shows the engine's working-memory estimate for the selected scope. The default **Recipe memory allowance** is 512 MiB and can be raised up to 8 GiB (or set via the hardware recommendation, which reads installed RAM and neither measures free memory nor reserves RAM). Estimates never execute analysis, and over-budget refusals publish no result. Cellpose-SAM, Cellpose-SAM v2, and Loci Adaptive Watershed expose a shared **Memory allowance** (256 MiB–8 GiB) that persists when switching methods; imported ONNX models use **Working memory**. Accepted allowances travel with saved recipes and results (label corrections record their own budget). Larger allowances never alter resolution or scientific settings, and separate GPU, checkpoint, decoder, and export caps remain in force.
+- **Explore before committing:** Choose **Try settings on regions** to compare bounded classical previews across representative ROIs without saving results; adopting a preview creates an unreviewed result. See [exploration and groups](EXPLORATION_AND_GROUPS.md).
+- **Run locally or remotely:** Choose **Run on: This Mac** or a configured remote target for supported classical and Cellpose runs. **Compute setup** opens **Settings → Compute** to import a trusted SSH alias, configure a prepared Linux runtime and workspaces, and select CPU or Single GPU resources. **Check runtime** records a dated check without installing runtimes or models. Submitting a remote run authorizes the displayed whole-file transfer, execution, retrieval, and attachment (even for a cropped region). Job Center preserves progress across disconnects and reopens; cancellation stops attachment while scheduler confirmation is pending. See [remote workflow](REMOTE_WORKFLOW.md).
+
+### Loci Adaptive Watershed, Model Zoo, and provisioned models
+
+- **Built-in baseline** (**Loci Adaptive Watershed**): Runs on one 2D plane using the selected scalar channel or RGB-derived grayscale. Its editable, resettable default profile uses Auto image mode and polarity, expected diameter `34 px`, minimum area `80 px`, sensitivity `0`, smoothing `1.2 px`, touching-object splitting enabled, and border exclusion disabled. It normalizes the selected plane at the 1st and 99th percentiles while measuring original scalar intensities (independent of display range). Defaults are starting recommendations, not cell-type inference or assay validation. For supported 3D segmentation, use **Classical methods**.
+- **Provisioned models** (**Analyze → Use a model**): Runs explicitly provisioned ONNX model packages with recorded runtime identity, working-memory bounds, and reference-tensor checks; see [model package format](MODEL_PACKAGE_FORMAT.md).
+- **Standalone μSAM interchange:** Select a full native level-0 plane or Z range in one original scalar channel, then open **Analyze → Segment & measure → Import existing labels → μSAM (standalone)** to export the raw TIFF handoff. After running μSAM externally, preview the returned label TIFF on the exact same source and confirm import to measure the raw channel and create an unreviewed result. See [external labels](EXTERNAL_LABELS.md).
+- **Additional specialist tools:** **Analyze → Preprocess** builds an ordered preprocessing preview (see [Preprocessing pipeline](#preprocessing-pipeline)); **Analyze → Epidermis model** supports explicit managed PUMA H&E tissue preview and adoption ([tissue models](TISSUE_MODELS.md)); **Analyze → Nuclear & cell shape** and **Analyze → Wound closure** compute shape and scratch-assay metrics on exact saved masks ([assay measurements](ASSAY_MEASUREMENTS.md)). Controlled reusable method packages follow [controlled methods](CONTROLLED_METHODS.md).
+
+### Preprocessing pipeline
+
+Open **Analyze → Preprocess** to assemble and preview an ordered scalar preprocessing sequence without altering source pixels or publishing a result:
+
+1. **Analysis scope:** Switch between **Whole image** and **Region** (choosing **Region** enters rectangle drawing on the image with **Cancel drawing** to leave the current scope unchanged, and **Redraw** once a crop is active). The subdued summary reports actual crop dimensions, plane count, and Z/T position when the source has multiple planes or timepoints.
+2. **Processing pipeline:** Choose **Add processing step** to pick from **Smoothing** (**Gaussian blur**, **Median filter**), **Background & intensity** (**Background subtraction**, **Subtract constant**), or **Morphology** (**Morphological opening**, **Morphological closing**). Steps run in their numbered order (`01`, `02`, …). Select a step to edit its parameter inline in verified units (`µm` only when calibrated, `px` for uncalibrated native levels, `unit unverified` when calibration is incomplete, or `source intensity` / `step N intensity` for constant subtraction), optionally toggle **Clip negative values to zero** on supported subtraction or flat-field steps, reorder steps with **Up** / **Down**, or remove individual steps. Unfinished or invalid numeric drafts remain visible and block preview/execution across collapse or reordering until corrected, reverted with `Escape`, removed, or restored.
+3. **Preview and memory:** Choose **Preview selected crop** below the pipeline to inspect the ordered recipe on the declared scope, and expand **Memory** below it when you need to inspect the working-memory estimate or adjust the allowance.
+
+### Model Zoo
+
+Open **File → Model Zoo…** or **Analyze → Segment & measure → Browse Model Zoo…**. Search for a model or filter by **Local** or **External**. Select a card to see its microscopy example, exact version and workflow.
+
+When a model has a paired prediction, switch between **Original** and **Overlay** or use the comparison divider to inspect the same structures on both sides. The image credit records the source, licence, displayed region and how the overlay was produced. Use the publisher link to visit the model's source or weights. Use the workflow action to return to your own image.
+
+| Profile | What you can use in Loci |
+| --- | --- |
+| **Cellpose-SAM v2** | Provision the exact `cpsam_v2` checkpoint for cellular instance segmentation. The original `cpsam` remains separately selectable. [Cellpose compatibility](CELLPOSE_COMPATIBILITY.md) |
+| **μSAM Light Microscopy Generalist** | Export native pixels, segment them in standalone μSAM, and return the matching labels. The registered generalist uses `vit_b_lm` from the SAM1 registry in `micro-sam v2.0.1`. [Standalone handoff](EXTERNAL_LABELS.md) |
+| **StarDist Versatile Fluorescence Nuclei** | Import the native 2D integer labels produced externally by `2D_versatile_fluo`. [Import existing labels](EXTERNAL_LABELS.md) |
+| **BioImage.IO 2D Nuclei Boundary ONNX** | Supply a compatible ONNX-only package for the fluorescence nuclei model. The upstream BioImage.IO 0.4.4 archive requires adaptation. [Model package format](MODEL_PACKAGE_FORMAT.md) |
+| **PUMA tissue nnU-Net · fold 4** | Supply the exact converted weights and receipt for fold 4. Declare the H&E preparation and inspect the proposed epidermis against the original tissue. [Tissue model](TISSUE_MODELS.md) |
+
+The [Model Zoo guide](MODEL_LIBRARY.md) gives checkpoint identities, papers and publisher links. A verified example documents one execution on the credited image. Assess the output on your specimen before recording a review.
+
+After any segmentation run, select the new result under **Layers & results**, inspect objects and measurements, correct labels if needed, then open **Results → Review & export** to inspect the exact revision and choose **Mark reviewed** before **Export result**. Human review records an assessment of that immutable revision—not an automatic claim of accuracy.
+
+### Repeating a prepared workflow across images
+
+- **Visual workflow graph:** Open **Analyze → Workflow builder** to chain preprocessing, segmentation, raw measurements, and population gates alongside the image canvas, then run saved definitions across compatible sources. See [visual workflows](WORKFLOWS.md).
+- **Batch execution:** Open **Results → Study & batch**. For a classical recipe, name it and choose **Save validated recipe** after validation, select target images, and use **Preview** where available. For Adaptive Watershed or a Cellpose profile, configure the exact method in **Analyze** first so the batch freezes its profile, settings, measurement channels, and 2D scope.
+- Choose **Run selected sources sequentially** (or on a selected remote target). Loci validates each source and creates durable jobs before execution. **Stop batch** cancels the current item and leaves remaining work queued; **Resume batch** continues queued or interrupted jobs; **Retry failed or cancelled** is a separate action. Completed jobs are never silently duplicated. Use **Open result** on each row to inspect and review before batch export.
+
+### Histology RGB and scalar fluorescence
+
+- **Histology RGB:** Choose **Open as → Histology** to surface **Annotate tissue** and **Choose analysis**. Under **Analyze → Declared stain separation**, declare either the **H&E** or **H-DAB** basis, select the derived stain coordinate, threshold, minimum object area, Components or Watershed, and optional split height. Use **Preview declared stain** before **Run declared stain**. An optional object rule requires an explicit rule name, coordinate, statistic, threshold, and control/evidence note; it records a measurement rule, never an automatic biological classification. For classical RGB analysis, select **Weighted RGB intensity** explicitly under **Intensity input** (a documented 0–1 derivation, not biological channel separation).
+- **Scalar fluorescence:** Choose **Open as → Fluorescence**, adjust display channels in **View**, set your scalar analysis channel and scope, and open **Quantify channels** (**Analyze → Fluorescence & field assay**) or another scalar route. Keep measurement channels explicit rather than inferring fluorophores from display colours.
+
+### Fluorescence field assay (signal per nucleus)
+
+Open **Analyze → Fluorescence & field assay → Field assay** for two-channel field quantification on a single native plane:
+
+1. Verify source identity and T/Z plane in the readiness summary.
+2. Draw and review a **focus region** and a separate, **disjoint cell-free background region** on that exact plane (annotations from other planes are rejected).
+3. Declare the nuclear segmentation channel and signal measurement channel explicitly (metadata or user declarations, never inferred from colour).
+4. Preview provisional nuclei using a fixed threshold or Otsu/Yen thresholding and object-size limits (failed automatic thresholds error cleanly and never fall back silently to an arbitrary number).
+5. Inspect the computed raw-pixel metrics: signed background-corrected signal sum (`sum(signal in focus) − focus_pixels × background_estimate` using the selected median or mean background estimator), accepted nucleus count, signal per nucleus, and saturation pixel fractions. If automatic nuclei are unsuitable, supply reviewed point marks on the same plane or an explicit reviewed manual count (measuring signal over the full reviewed focus region divided by the human count).
+6. Choose **Save exploratory** to keep the unapproved preview, or **Approve & save** (requiring a reviewer name, fixed threshold or reviewed manual count, and valid focus/background regions) to record approval of channel identity, acquisition comparability, focus, nuclei, background, and saturation. Any edit to channels, regions, masks, or settings invalidates the preview.
+
+> **Assay interpretation:** Signal per nucleus is a field-level proxy, not per-cell membrane intensity or absolute receptor abundance. Background subtraction does not establish a positivity cutoff or remove all nonspecific signal. Document controls, acquisition comparability, independent replicates, and normalization references in your study protocol.
 
 ## Medical, temporal, and registration work
 
-Medical import supports documented scalar subsets with declared geometry. Open a supported NIfTI, NRRD, or conventional CT/MR DICOM series through its explicit route, choose **Open as → Medical research**, inspect Image info, orientation/frame, units, and calibration, then set Window/Level as needed for viewing. For volume data, use 3D/MPR only after confirming the displayed geometry. Loci does not make a de-identification, diagnostic, clinical-preset, or clinical-performance claim.
+### Medical research sources
 
-For a time series, select the desired Time frame in Image & channels and create or choose exact result revisions. Open **Analyze → Track over time** to associate appropriate timed results. Review ambiguous links before publishing a tracking result. The records retain selected timepoints and settings; repeated frames, planes, patches, or objects do not become independent biological samples merely by being numerous.
+Loci imports documented scalar subsets of NIfTI, NRRD, and explicitly selected conventional CT/MR DICOM series with declared geometry. Choose **Open as → Medical research**, inspect **Image info** (orientation/frame, units, and calibration), and use **Window** and **Level** for viewing. Confirm displayed geometry before opening **Explore in 3D** or MPR. Loci makes no de-identification, diagnostic, clinical-preset, or clinical-performance claim.
 
-Open **Analyze → Register & resample** when a declared transform or resampling grid is needed. Choose compatible sources and inspect geometry first. Registration and resampling create explicit derived state and preserve transforms/grids in their records. They do not silently turn a transformed display into an original source or establish biological correspondence.
+### Track over time
+
+Select the target Time frame in **Image & channels** and create or select exact timed result revisions. Open **Analyze → Track over time** to link objects across timepoints and review ambiguous associations before publishing. Tracking records preserve selected timepoints and settings; repeated frames, planes, patches, or objects do not become independent biological samples simply by being numerous. See [assay measurements](ASSAY_MEASUREMENTS.md).
+
+### Register and resample
+
+Open **Analyze → Register & resample** when an explicit transform or resampling grid is required. Inspect source geometry and compatibility first. Registration and resampling create explicit derived state with recorded transforms and grids—they never silently replace an original source or establish biological correspondence. See [registration](REGISTRATION.md).
+
+## Review, batch, and export results
+
+### Inspect provenance, review, and export one result
+
+Open **Results → Review & export** to inspect ordinary results in **Review**:
+
+- **Quantitative summaries:** Pooled mean and range require homogeneous metric fields, declared measurement kinds, and compatible units across rows. Mixed units (such as µm and pixels), mixed kinds (area vs. volume), or declared-versus-unspecified metadata withhold pooled statistics with an explicit explanation while keeping individual rows, selection, and review/export controls usable. Non-finite or missing values are excluded rather than treated as zero (with exclusions disclosed), missing units are labelled unspecified, and partial preview coverage is stated clearly (use **Statistics & objects** for the full population).
+- **Analysis details & CLI replay:** Expand **Analysis details** to inspect method, segmentation/measurement channels, measurement basis, region, recorded settings, parent steps, and **Technical record**. Use **Copy analysis request** to copy the verified request, or **Copy CLI recipe JSON** (available on eligible original native 2D CPU Components results) with the inline **Run from CLI** instructions to replay in a saved study via the `loci` CLI. Expand **Technical identity** for the full result ID and revision hash.
+- **Review authority:** Choose **Mark reviewed** only after human assessment of that exact revision. Review history distinguishes researcher decisions from explicitly delegated agent reviews (with reason and coverage); a researcher can supersede an agent decision while retaining the prior event, and any label edit creates a new unreviewed revision. Review is an assessment record, not independent validation.
+- **Exporting scientific data:** Under **Export**, choose **Export result** to write the scientific package (arrays, labels where applicable, measurements, method/provenance records, review state, and integrity hashes—distinct from a rendered picture). Use **Export scientific data** for interoperable tables and Python/R reader scripts; editable export choices persist across panel navigation, while reopening the panel requires a fresh preview. Large indexed results use their dedicated inspector and export workspace. See [scientific data packages](SCIENTIFIC_DATA_EXPORT.md).
+
+### Explore object populations and spatial density
+
+- **Statistics & objects** (**Results → Statistics & objects**): Explore the full object population with linked tables, charts, and canvas selection. **Go to object label** jumps to an exact label in the current filtered order; **Previous object**, **Next object**, and table arrow keys step across pages without moving the image camera until you choose **Locate selected object**. See [object populations](OBJECT_POPULATIONS.md).
+- **External labels and correction effects:** Adopt verified external label masks onto a native source plane ([external labels](EXTERNAL_LABELS.md)), then from a corrected revision choose **Show experiment effect** to compare direct parent and child revisions using the existing object-size endpoint and assigned biological replicates ([correction effects](CORRECTION_EFFECTS.md)).
+- **Spatial donor density** (**Results → Spatial donor density**): Pool exact tissue-distance band results within declared donors and compare conditions while retaining counts, sampled areas, and exclusions. See [tissue distance bands](SPATIAL_DISTANCE_BANDS.md) and [spatial donor density](SPATIAL_DONOR_DENSITY.md).
+
+### Organize studies, compare intensity, and export batches
+
+Open **Results → Study & batch** for **Samples**, **Intensity**, **Batch**, and (when available) **Corrections**. **Focus study** expands the workspace and **Show image** restores the canvas; switching tabs preserves unapplied CSV and comparison drafts.
+
+- **Samples:** Search image or sample names in **Sources & samples**, filter by condition, replicate, or metadata/result state, expand a source's **Results** to **Inspect result** (with **Technical result identity**), or choose **Edit metadata**. Missing required metadata and an optional unassigned replicate are tracked separately; neither implies automatic readiness.
+- **Intensity:** Compare saved raw mean intensities while preserving image and biological replicate grouping. Long decimals with an **≈** disclosure open via pointer or keyboard to show the exact stored spelling; calculations and exports always keep full precision. See [sample sheets and intensity](EXPERIMENT_INTENSITY.md).
+- **Provisional review package** (**Batch**): Select exact revisions, name the package, and choose **Export review package**. Supported whole native `uint8` RGB planes up to 16 megapixels write `counts.csv`, a provenance manifest, and native-resolution boundary-outline PNGs preserving relative paths (source pixels outside recoloured boundaries stay untouched). Pending results may be included without marking them reviewed. Choose a filesystem supporting atomic no-replace publication (such as APFS; exFAT on macOS is unsupported).
+- **Reviewed batch & portable exports** (**Batch**): After every intended result is reviewed, export reviewed bundles, reviewed bundles plus a summary CSV, or **Summary CSV only** (count CSV and manifest without image/label bundles). Loci validates exact revisions and destination names before writing. Portable study export (**Results → Import & share results**) retains derived records while omitting private source paths; source-dependent work after import requires exact local relinking.
+
+## Export rendered figures
+
+Open **View → Image & channels → Export rendered image** to export the current visual display (selected plane or Z projection, channel appearance, and display provenance). Rendered figures never export original pixel values or annotation overlays.
+
+| Format | Available extent | Output meaning |
+| --- | --- | --- |
+| **PNG · 8-bit display** | **Whole image** (up to 1024 px) or **Analysis region** (source pixels, up to 2048 × 2048 px) | Rendered 8-bit RGB display image with rendering provenance |
+| **TIFF · 16-bit display** | **Whole selected plane** (full resolution) or **Analysis region** (source pixels) | Rendered 16-bit RGB display image with rendering provenance |
+
+- **Resolution (DPI):** Enter a whole number from `72` to `1200` (initial default `300`, configurable in **Settings → Saving & export**). DPI sets output metadata and print layout—never source resolution or detail.
+- **Scale bar & channel legend:** Enable **Include calibrated scale bar** when trustworthy physical X/Y geometry is declared (unavailable for RGBA or uncalibrated sources). Enable **Include channel legend** for visible scalar channels and enter clear user labels. Both sit in a dedicated footer outside source pixels—they are not burned over image data or treated as vector annotations.
+
+> **Choose the right artifact:** Use **Export result** or **Export scientific data** for downstream arrays, labels, measurements, and provenance; use annotation interchange for vector ROIs; use **Export rendered image** only for presentation figures. Never substitute a display figure for raw-value scientific data.
 
 ## Settings, recovery, and help
 
-Open **Settings** from the header or press **⌘,** on macOS. It opens in its own resizable window and fills the current display’s work area. Select a category in the sidebar or use **Search settings** to jump to a control. Back and Forward revisit categories. **Done** returns you to the workspace.
+### Open Settings and configure preferences
 
-Under **Appearance**, select a preview or use the theme menu. **Black** gives the interface and the 2D image surround a pure black background, with neutral gray surfaces for controls. **Graphite** is the default. **Midnight**, **Paper**, **Aurora**, **Ember**, **Lagoon** and **FIJI** are also available. Appearance applies to open workspaces and persists on this device. Source intensities, channel colors and figure exports keep their own settings. You can also choose the interface font, control density, text size and motion preference.
+Open **Settings** from the header or the application menu, or press `⌘,` on macOS (`Ctrl+,` on Windows). Settings opens as an overlay over the current workbench. Choose a category in the sidebar or use **Search settings** to jump directly to a control; **Back** and **Forward** revisit categories. Use **Done**, the close button, or `Escape` to return to the workspace (`Escape` clears an active search first).
 
-Numeric display and region fields apply with Enter or when focus leaves the field; Escape restores the last applied value. Analysis numbers accept valid edits immediately. Empty or unfinished numbers block analysis and recipe saving until corrected; **Restore applied numbers** discards those unfinished edits. Invalid entries remain visible with a specific reason instead of becoming zero.
+- **Appearance:** Choose from eight themes—**Graphite** (default), **Black** (pure black application ground and 2D image surround with neutral gray controls), **Midnight**, **Paper**, **Aurora**, **Ember**, **Lagoon**, and **FIJI**—plus interface font, control density, text size, and motion preference. Appearance persists locally across workspaces without altering source intensities, channel colours, or figure exports.
+- **Viewing & help:** Toggle the viewer scale bar (shown only when usable calibration exists), overview navigator, and contextual guidance tips (which also offer **Close tip** and `Escape` dismissal).
+- **Saving & export:** Configure default rendered-figure DPI (`72–1200`) and review the boundaries between rendered figures, derived results, and recoverable sessions.
+- **External agents:** Set default view-following and activity-expansion preferences for new workspaces (connection permissions stay per-session in the workspace).
+- **Capabilities & Compute:** Inspect supported format subsets under **Capabilities**, and manage trusted SSH/cluster targets under **Compute**.
+- **User guide:** Open this bundled offline manual or jump directly to a workflow topic. `F1` and **Help → User guide** open the manual directly from anywhere in Loci.
 
-Drag the left edge of the tools panel to resize it. With that divider focused, use left/right arrows to adjust it, Home/End for its bounds, or double-click to reset. Its width is remembered locally. Contextual tips have a **Close tip** button and can also be dismissed with `Escape`.
+### Numeric editing, layout resizing, and troubleshooting
 
-Under **Viewing & help**, turn the viewer scale bar, overview navigator, and contextual guidance on or off. A viewer scale bar still appears only when the source declares usable calibration. Under **Saving & export**, set the default rendered-figure DPI and review the distinction between rendered figures, derived results, and recoverable local sessions. Use **Search settings** to find a control and jump directly to it. Under **External agents**, choose initial view-following and activity-detail preferences; connection permissions remain in the workspace. Under **User guide**, open this bundled manual or choose a specific workflow topic. `F1` opens it directly; search its contents for terms such as `histogram`, `batch`, `MPR`, or `recovery`.
-
-If a control is unavailable, read the inline prerequisite. Common reasons are an unsupported source subset, missing or incompatible geometry/calibration, incomplete analysis scope, absent depth/time dimension, source identity mismatch, missing model/runtime provisioning, or an unreviewed result. Preserve the shown error wording when seeking support, but do not include protected source data or private filesystem paths. Consult the [capability matrix](CAPABILITY_MATRIX.md) for supported formats and resource boundaries and [release status](https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md) for published beta limitations.
+- **Numeric fields:** Display and analysis-region numbers commit on `Enter` or blur; `Escape` restores the last applied value. Analysis settings accept valid edits immediately. Empty or invalid numbers remain visible with a specific reason (never silently turning into zero) and block running or saving until fixed; choose **Restore applied numbers** to discard unfinished edits.
+- **Resizable tools panel:** Drag the left divider of the tools panel to resize it, or focus the divider and use Left/Right arrows, `Home`/`End` for bounds, or double-click to reset. Its width persists locally.
+- **Unavailable controls:** Read the inline prerequisite beside any disabled control. Common causes are an unsupported format subset, missing or incompatible calibration/geometry, incomplete analysis scope, absent Z/T axis, source identity mismatch, unprovisioned model/runtime, or an unreviewed result. When reporting an issue, preserve the exact error wording without sharing protected data or private filesystem paths.
 
 ## Work with external agents
 
-Open **Analyze → Connect an assistant**. Choose **Inspect**, **Analyze**, or **Full study**, then expand **Customize permissions** to narrow the connection. **Grant selected access** creates the bundle after destination selection. Inspect the selected permissions before granting. Configure the generated local connection in your external host and start it there. A prepared connection is not a connected session; the workspace indicator reports the observed session state. Source access, image disclosure, corrections, compute, review and export remain explicit permissions.
+Open **Analyze → Connect an assistant**. Choose **Inspect**, **Analyze**, or **Full study**, then expand **Customize permissions** to narrow scope before choosing **Grant selected access** and selecting a destination folder. Configure and start the generated local connection in your external assistant host. A prepared bundle is not an active session; the bottom status indicator reports live connection state. Source access, image disclosure, corrections, compute, review, and export always remain explicit grants.
 
 ### Follow work and edit a plan
 
-Open the agent indicator in the bottom status bar to see the connection, permission mode, task plan, assessments and recent work. Pending decisions stay accessible from every agent section. Inspect the requested operation, source and recorded identity before approving or denying it. **Follow agent** brings inspected views into the workspace; turning it off leaves your current view in place. In **Settings → External agents**, choose the default for new workspaces and whether newly shown activity records start expanded. These are display preferences and grant no access.
+Open the agent indicator in the bottom status bar to inspect connection state, permission mode, **Task plan**, assessments, and recent activity. Pending approval requests remain accessible from every agent section; inspect the requested operation, source, and recorded identity before approving or denying.
 
-When the external agent records a task, its goal and steps appear under **Task plan**. **Edit plan** lets you change the goal, add or remove steps, and reorder them. **Save plan** records the edit without executing it. Changed steps return to Planned. The agent must read the new revision before continuing. If someone changes the plan during your edit, your draft remains visible and saving is blocked; cancel editing to load the latest plan.
-
-Plan and step states are reported by the external agent. Actual jobs and recorded activity provide separate execution evidence. **Cancel plan** cancels the plan record; use **Stop job** to request cancellation of a confirmed running job. A retained plan from a disconnected or interrupted session needs an explicit resume from the external agent.
+- **Follow agent:** Brings agent-inspected views into your workspace; turning it off leaves your view independent. Defaults for new workspaces live in **Settings → External agents** (display preferences only; they grant no access).
+- **Edit a task plan:** When an external agent records a goal and steps under **Task plan**, choose **Edit plan** to update the goal, add or remove steps, or reorder them, then **Save plan** (recording changes without running anything). Edited steps reset to **Planned**, and the agent must read the new revision before continuing. If the plan changes concurrently while you edit, your draft stays visible and saving is blocked until you cancel and reload the latest plan.
+- **Plans vs. execution:** Plan states are agent-reported; durable jobs and **Recorded activity** provide separate execution evidence. **Cancel plan** cancels the plan record; use **Stop job** to cancel a confirmed running job. A retained plan after disconnect requires an explicit resume from the external agent.
 
 ### Inspect evidence and review results
 
-Open source, result, workflow or job links to inspect the exact recorded target. A changed or unavailable target cannot silently open a replacement. Job links show the recorded execution state. Expand **Recorded activity**, **Step evidence**, or the task record when you need identities and provenance.
+Open any source, result, workflow, or job link to inspect the exact recorded target (changed or missing targets never silently substitute another record). Expand **Recorded activity**, **Step evidence**, or the task record for full identities and provenance.
 
-An **Agent assessment** contains the agent's interpretation, observations, stated limitations and evidence links. It does not itself review a scientific result. Use **Review result** to inspect and record your decision on that exact result revision. If evidence changed, the assessment remains in history with a warning.
+An **Agent assessment** records the agent's observations, stated limitations, and evidence links; it never substitutes for scientific result review. Choose **Review result** to inspect and record your decision on that exact revision. If underlying evidence changes, the assessment stays in history with a warning.
 
-Full study pins the current sources; later imports are excluded. It can delegate approval of exact result revisions and exports to new names in the selected folder. These decisions display **Reviewed by agent** with the stated reason, coverage and delegated authority. Marking the result reviewed in the desktop records a researcher decision while retaining the earlier agent event. A label correction creates a new, unreviewed revision. Inspect review history before exporting. See [agent access](AGENT_ACCESS.md) for supported operations, setup and revocation.
+**Full study** pins the sources present at grant time (excluding later imports) and can delegate approval of exact revisions and exports to new names in the chosen folder. Delegated approvals display **Reviewed by agent** with stated reason, coverage, and authority. Marking the result reviewed in Loci records your researcher decision while retaining the prior agent event; any label correction creates a new unreviewed revision. Inspect review history before exporting. See [agent access](AGENT_ACCESS.md) for supported operations, setup, and revocation.
 
 ## Compose and reuse workflows
 
-Open **Analyze → Workflow builder**, then expand **Composed workflows** to inspect a saved multi-step definition. An authorized agent connection can create the first definition. Choose its exact source, prepared-preview or result inputs, then select **Check inputs**. Resolve any missing or incompatible binding before **Run composed workflow**. The saved steps and settings remain inspectable. A plan describes intended work; each durable run records actual node states and exact outputs.
+Open **Analyze → Workflow builder**, then expand **Composed workflows** to inspect a saved multi-step definition (an authorized assistant connection can author the initial definition). Bind exact source, prepared-preview, or result inputs, then choose **Check inputs**. Resolve every missing or incompatible binding before choosing **Run composed workflow**. A saved definition declares intended steps; each durable run records actual node states and exact outputs.
 
 ### Inspect and save a run
 
-Choose a saved run to inspect its steps, input bindings and result links. **Refresh run** reads the current state. For a desktop-owned run, **Advance workflow** starts the next ready work; **Cancel composed run** requests cancellation. Agent-owned runs remain under their recorded owner. **Open result** requires the exact result revision still to be present in study history.
+Select any saved run to review its steps, input bindings, and result links. Choose **Refresh run** to read current state. For desktop-owned runs, **Advance workflow** starts the next ready step and **Cancel composed run** requests cancellation; agent-owned runs remain under their recorded owner. **Open result** requires the exact revision to remain present in study history.
 
-After a successful run, use **Save as workflow** to retain a reusable definition. This saves the workflow definition, not a claim that another source has compatible inputs or that the result is scientifically valid. Bind and check inputs again for the new run.
+After a successful run, choose **Save as workflow** to retain a reusable definition. Saving a definition never implies another source is compatible or scientifically valid—bind and check inputs again for each new run.
 
 ### Continue unfinished work
 
-For a failed or cancelled run, choose **Inspect continuation**. Review the remaining steps, completed evidence and any required replacement inputs. **Prepare fresh run** requires native approval and creates a separate continuation with new bindings; it does not restart the old run, transfer the original agent’s permissions or start a step. Select **Advance workflow** when ready. Changed evidence, incompatible replacements or stale continuation records must be resolved before continuing.
+For a failed or cancelled run, select **Inspect continuation** to review remaining steps, completed evidence, and required replacement inputs. **Prepare fresh run** requires native confirmation and creates a new continuation with updated bindings—it never restarts the old run, carries over an earlier agent's permissions, or starts steps automatically. Select **Advance workflow** once ready, resolving any changed evidence, incompatible replacements, or stale records first.
 
 ## Terminal workflows
 
-Use the [Loci CLI](CLI.md) to create studies, register immutable sources, validate
-explicit requests, inspect durable jobs and export reviewed exact revisions from
-a shell. The local macOS app includes its own terminal launcher. `loci discover QUERY` finds operations, `loci operation NAME` gives the exact invocation route,
-and `loci examples` lists authored requests. `loci doctor` reports lightweight
-runtime facts; it does not check models or establish analysis readiness.
+Use the [Loci CLI](CLI.md) to create studies, register immutable sources, validate explicit JSON requests, inspect measured objects and durable jobs, and export reviewed exact revisions from a shell.
 
-Interactive terminal summaries preserve complete identities and numerical strings.
-Piped output is JSON; `--json` explicitly selects full machine receipts. `--plain`
-and `--no-motion` support control-free output. The welcome animation and optional
-`loci logo --animate` are bounded. Read the CLI guide for study paths, validation,
-stable retry keys, review/export requirements and bash/zsh/fish completion.
+- **Bundled launcher:** The local macOS app ships its own CLI at `Loci.app/Contents/Resources/bin/loci` (add that directory to `PATH` to invoke `loci` directly).
+- **Discover and inspect:**
+  - `loci discover QUERY` searches supported operations.
+  - `loci operation NAME` prints the exact invocation schema.
+  - `loci examples` lists authored example requests.
+  - `loci doctor` reports lightweight runtime diagnostics (it does not validate models or establish analysis readiness).
+- **Replay a desktop recipe:** For an eligible original native 2D CPU Components result, open **Results → Review & export → Review → Analysis details → Copy CLI recipe JSON**, save the copied request as `recipe.json`, save the study via **Save study…** if it is still a managed session, and run it against that `.loci-study` directory with a fresh retry key.
+- **Output modes:** Interactive summaries preserve complete identities and numerical precision. Piped output defaults to JSON, `--json` explicitly emits full machine receipts, and `--plain` / `--no-motion` produce control-free output. The welcome animation and optional `loci logo --animate` are strictly bounded. See the [CLI guide](CLI.md) for study paths, object queries, validation, retry keys, review/export gates, and shell completions.

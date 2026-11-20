@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { type Ref, useEffect, useId, useRef, useState } from "react";
 import type {
   ResearchDesktopApi,
   ResearchLabelsImportPreview,
@@ -108,11 +108,12 @@ function handoffMatchesCurrent(item: ResearchUsamHandoffRecord, source: Research
     sameUsamSelection(item.selection, selection);
 }
 
-export function ResearchLabelsImportPanel({ api, source, selection, workingBytes, scope, busy, onBusy, onResult, navigationIntent }: {
+export function ResearchLabelsImportPanel({ api, source, selection, workingBytes, scope, busy, onBusy, onResult, navigationIntent, usamDisclosureRef }: {
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; workingBytes: number; scope: string;
   busy: boolean; onBusy: (message: string | null, owner: string) => void;
   onResult: (result: ResearchResult, measurements: Array<Record<string, unknown>> | undefined, isCurrent: () => boolean) => Promise<void>;
   navigationIntent?: () => number;
+  usamDisclosureRef?: Ref<HTMLDetailsElement>;
 }) {
   const binding = JSON.stringify([scope, source.id, source.sha256, selection, workingBytes]);
   const liveBinding = useRef(binding);
@@ -343,7 +344,7 @@ export function ResearchLabelsImportPanel({ api, source, selection, workingBytes
   return <section className="research-label-import research-panel" aria-label="Import external labels">
     <h3>External labels</h3>
     <button type="button" disabled={locked || Boolean(reason) || !api.labelsImportPreview} onClick={() => void choose()}>Import labels</button>
-    <details open={usamOpen} onToggle={(event) => setUsamOpen(event.currentTarget.open)}>
+    <details ref={usamDisclosureRef} open={usamOpen} onToggle={(event) => setUsamOpen(event.currentTarget.open)}>
       <summary>μSAM (standalone)</summary>
       <p>Export the selected channel at full resolution. Run μSAM separately, then return its labels to this study.</p>
       <div className="research-actions">

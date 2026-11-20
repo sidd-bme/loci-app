@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { placeQaWindow } from './display-placement.mjs';
-import { closeSettings, openSettings } from '../../desktop/tests/settings-qa-helpers.mjs';
+import { closeSettings, escapeSettings, measureSettingsPaint, openSettings, resolveSettings } from '../../desktop/tests/settings-qa-helpers.mjs';
 import { fileMenuAction, selectWorkbenchTool, waitForSnapshot } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..');
@@ -148,16 +148,14 @@ async function resize(width, height, stage) {
 }
 
 async function appearance({ theme, density }) {
-  const settings = await openSettings(app, page, { requireNative: true });
+  const settings = await openSettings(app, page);
   const { dialog } = settings;
   await dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
   await dialog.getByRole('combobox', { name: 'Application theme', exact: true }).selectOption(theme);
   const label = density === 'compact' ? 'Compact' : 'Comfortable';
   await dialog.getByRole('radiogroup', { name: 'Workbench density', exact: true }).getByRole('radio', { name: label, exact: true }).click();
-  for (const surface of [page, settings.page]) {
-    await surface.waitForFunction(({ theme, density }) => document.documentElement.dataset.theme === theme &&
-      document.documentElement.dataset.density === density, { theme, density });
-  }
+  await page.waitForFunction(({ theme, density }) => document.documentElement.dataset.theme === theme &&
+    document.documentElement.dataset.density === density, { theme, density });
   if (theme === 'black') {
     const rgba = await page.evaluate(() => {
       const color = getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim();
@@ -172,68 +170,73 @@ async function appearance({ theme, density }) {
   await closeSettings(settings);
 }
 
-async function nativeWindowId(surface) {
-  const handle = await app.browserWindow(surface);
-  try { return await handle.evaluate(window => window.id); }
-  finally { await handle.dispose(); }
+async function invokeMenu(menuName, itemLabel) {
+  await app.evaluate(({ Menu, BrowserWindow, app: runtime }, { menuName, itemLabel }) => {
+    const menu = Menu.getApplicationMenu()?.items;
+    const item = menu?.find(entry => entry.label === (menuName === 'app' ? runtime.name : menuName))
+      ?.submenu?.items.find(entry => entry.label === itemLabel);
+    if (!item?.enabled) throw new Error(`Could not activate ${menuName} → ${itemLabel}`);
+    item.click(item, BrowserWindow.getFocusedWindow(), {});
+  }, { menuName, itemLabel });
 }
 
-async function auditNativeSettingsZoom({ page: settingsPage, dialog }) {
-  const settingsWindow = await app.browserWindow(settingsPage);
-  const mainWindow = await app.browserWindow(page);
-  const readZoom = window => window.evaluate(native => native.webContents.getZoomFactor());
-  const setZoom = (window, factor) => window.evaluate((native, value) => {
+async function auditSettingsZoom({ dialog }) {
+  await cdp.send('Emulation.clearDeviceMetricsOverride');
+  await paint();
+  const window = await app.browserWindow(page);
+  const readZoom = () => window.evaluate(native => native.webContents.getZoomFactor());
+  const setZoom = factor => window.evaluate((native, value) => {
     native.webContents.setZoomFactor(value);
     return native.webContents.getZoomFactor();
   }, factor);
+  const originalZoom = await readZoom();
+  const baseline = await viewport();
   try {
-    const settingsZoom = await readZoom(settingsWindow);
-    const mainZoom = await readZoom(mainWindow);
-    const baseline = await settingsPage.evaluate(() => ({ width: innerWidth, height: innerHeight, dpr: devicePixelRatio }));
-    try {
-      assert.ok(Math.abs(await setZoom(settingsWindow, 2) - 2) < 1e-9, 'Settings must use true Electron 200% zoom');
-      await settingsPage.waitForFunction(({ width, height, dpr, ratio }) =>
-        Math.abs(innerWidth * ratio - width) <= 2 && Math.abs(innerHeight * ratio - height) <= 2 &&
-        Math.abs(devicePixelRatio / dpr - ratio) < 0.02, { ...baseline, ratio: 2 / settingsZoom });
-      const search = dialog.getByRole('searchbox', { name: 'Search settings', exact: true });
-      await search.click();
-      await search.fill('Workbench density');
-      await dialog.getByRole('button', { name: /^Workbench density\b/ }).waitFor();
-      const zoomed = await search.evaluate(element => {
-        const { x, y, width, height } = element.getBoundingClientRect();
-        const root = document.documentElement;
-        const shell = element.closest('.settings-shell');
-        const pane = shell.querySelector('.settings-pane');
-        return { viewport: [innerWidth, innerHeight], dpr: devicePixelRatio,
-          page_overflow_x: root.scrollWidth - root.clientWidth,
-          settings_overflow_x: shell.scrollWidth - shell.clientWidth,
-          pane_overflow_x: pane.scrollWidth - pane.clientWidth,
-          search: { x, y, width, height, focused: element === document.activeElement,
-            hit: document.elementFromPoint(x + width / 2, y + height / 2) === element } };
-      });
-      assert.ok(zoomed.page_overflow_x <= 1 && zoomed.settings_overflow_x <= 1 && zoomed.pane_overflow_x <= 1,
-        `Settings overflows horizontally at 200% zoom: ${JSON.stringify(zoomed)}`);
-      assert.ok(zoomed.search.focused && zoomed.search.hit, 'Settings search must remain reachable at 200% zoom');
-      await search.press('Escape');
-      assert.equal(await search.inputValue(), '');
-      return { factor: 2, baseline, zoomed };
-    } finally {
-      await setZoom(settingsWindow, settingsZoom);
-      if (Math.abs(await readZoom(mainWindow) - mainZoom) > 1e-9) await setZoom(mainWindow, mainZoom);
-      assert.ok(Math.abs(await readZoom(settingsWindow) - settingsZoom) < 1e-9 &&
-        Math.abs(await readZoom(mainWindow) - mainZoom) < 1e-9, 'Settings and workspace must recover their prior Electron zoom');
-      await settingsPage.waitForFunction(({ width, height, dpr }) => innerWidth === width && innerHeight === height &&
-        Math.abs(devicePixelRatio - dpr) < 0.02, baseline);
-    }
+    assert.ok(Math.abs(await setZoom(2) - 2) < 1e-9, 'Settings must use true Electron 200% zoom');
+    await page.waitForFunction(({ width, height, dpr, ratio }) =>
+      Math.abs(innerWidth * ratio - width) <= 2 && Math.abs(innerHeight * ratio - height) <= 2 &&
+      Math.abs(devicePixelRatio / dpr - ratio) < 0.02, { ...baseline, ratio: 2 / originalZoom });
+    const search = dialog.getByRole('searchbox', { name: 'Search settings', exact: true });
+    await search.click();
+    await search.fill('Workbench density');
+    await dialog.getByRole('button', { name: /^Workbench density\b/ }).waitFor();
+    const zoomed = await search.evaluate(element => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      const root = document.documentElement;
+      const shell = element.closest('.settings-shell');
+      const pane = shell.querySelector('.settings-pane');
+      return { viewport: [innerWidth, innerHeight], dpr: devicePixelRatio,
+        page_overflow_x: root.scrollWidth - root.clientWidth,
+        settings_overflow_x: shell.scrollWidth - shell.clientWidth,
+        pane_overflow_x: pane.scrollWidth - pane.clientWidth,
+        search: { x, y, width, height, focused: element === document.activeElement,
+          hit: document.elementFromPoint(x + width / 2, y + height / 2) === element } };
+    });
+    assert.ok(zoomed.page_overflow_x <= 1 && zoomed.settings_overflow_x <= 1 && zoomed.pane_overflow_x <= 1,
+      `Settings overflows horizontally at 200% zoom: ${JSON.stringify(zoomed)}`);
+    assert.ok(zoomed.search.focused && zoomed.search.hit, 'Settings search must remain reachable at 200% zoom');
+    await search.press('Escape');
+    assert.equal(await search.inputValue(), '');
+    await capture('settings-zoom-200-native', zoomed, { nativeZoom: true });
+    return { factor: 2, baseline, zoomed };
   } finally {
-    await Promise.all([settingsWindow.dispose(), mainWindow.dispose()]);
+    if (await setZoom(originalZoom) !== originalZoom) throw new Error('Settings must restore its original Electron zoom');
+    await page.waitForFunction(({ width, height, dpr }) => innerWidth === width && innerHeight === height &&
+      Math.abs(devicePixelRatio - dpr) < 0.02, baseline);
+    await window.dispose();
   }
 }
 
-async function auditNativeSettings() {
+async function auditSettingsModal() {
   await selectWorkbenchTool(page, 'Analyze');
   const before = await viewport();
-  await appearance({ theme: 'graphite', density: 'compact' });
+  const rendererGlobals = await page.evaluate(() => ({
+    desktop: typeof window.loci, research: typeof window.lociResearch,
+    settings: typeof window.lociSettings, require: typeof window.require, process: typeof window.process,
+  }));
+  assert.deepEqual(rendererGlobals, { desktop: 'object', research: 'object', settings: 'undefined',
+    require: 'undefined', process: 'undefined' });
+
   const getStudyBinding = () => page.evaluate(async ({ sourceId, resultId }) => {
     const snapshot = await window.lociResearch.getSnapshot();
     const source = snapshot.sources.find(item => item.id === sourceId);
@@ -246,55 +249,87 @@ async function auditNativeSettings() {
   assert.equal(binding.result, result.revision_hash);
   assert.equal(binding.labels, result.arrays.labels.sha256);
 
-  const settings = await openSettings(app, page, { requireNative: true });
-  const { page: settingsPage, dialog } = settings;
-  const initialId = await nativeWindowId(settingsPage);
-  assert.notEqual(initialId, await nativeWindowId(page));
-  assert.equal(await page.getByRole('dialog', { name: 'Settings', exact: true }).count(), 0);
-  const isolation = await settingsPage.evaluate(() => ({
-    settings: typeof window.lociSettings, desktop: typeof window.loci, research: typeof window.lociResearch,
-    images: typeof window.lociImageWindows, agent: typeof window.lociAgentWorkspace, node: typeof window.require,
-  }));
-  assert.deepEqual(isolation, { settings: 'object', desktop: 'undefined', research: 'undefined',
-    images: 'undefined', agent: 'undefined', node: 'undefined' });
+  report.settings_paint = { viewport: before, warm: true, ...(await measureSettingsPaint(app, page)) };
+  const opener = button('Open settings');
+  await opener.focus();
+  await page.keyboard.press('Meta+Comma');
+  const settings = await resolveSettings(app, page);
+  const { dialog } = settings;
+  const shell = await dialog.evaluate(element => {
+    const { x, y, width, height } = element.getBoundingClientRect();
+    const backdrop = getComputedStyle(element, '::backdrop');
+    return { x, y, width, height, viewport: [innerWidth, innerHeight], modal: element.matches(':modal'),
+      backdrop: { blur: backdrop.backdropFilter, dim: backdrop.backgroundColor },
+      rail: getComputedStyle(element.querySelector('.settings-sidebar')).backgroundColor,
+      content: getComputedStyle(element).backgroundColor };
+  });
+  assert.ok(shell.modal && shell.x >= 16 && shell.y >= 14, 'Settings must be inset inside the workbench');
+  assert.ok(shell.width >= shell.viewport[0] * 0.75 && shell.height >= shell.viewport[1] * 0.8, 'Settings must dominate the workbench');
+  assert.match(shell.backdrop.blur, /blur/);
+  assert.match(shell.backdrop.dim, /^rgba?\(/);
+  for (const surface of [shell.rail, shell.content]) assert.match(surface, /^rgb\(/, 'Settings surfaces must be opaque');
+  await opener.evaluate(element => element.focus());
+  assert.equal(await opener.evaluate(element => document.activeElement === element), false, 'Workbench focus is inert');
+  const search = dialog.getByRole('searchbox', { name: 'Search settings' });
+  const done = button('Done', dialog);
+  await search.focus();
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await done.evaluate(element => document.activeElement === element), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await search.evaluate(element => document.activeElement === element), true);
+
+  const behind = await page.evaluate(() => {
+    const main = document.querySelector('main.research-workbench');
+    return { document: document.scrollingElement.scrollTop, workbench: main.scrollTop,
+      panes: [...main.querySelectorAll('.research-sources-pane, .research-inspector')].map(element => element.scrollTop) };
+  });
+  await page.mouse.move(shell.x / 2, shell.viewport[1] / 2);
+  await page.mouse.wheel(0, 1200);
+  await paint();
+  const afterWheel = await page.evaluate(() => {
+    const main = document.querySelector('main.research-workbench');
+    return { document: document.scrollingElement.scrollTop, workbench: main.scrollTop,
+      panes: [...main.querySelectorAll('.research-sources-pane, .research-inspector')].map(element => element.scrollTop) };
+  });
+  assert.deepEqual(afterWheel, behind, 'Wheel input on the backdrop must stay out of the workbench');
+
   await dialog.getByRole('tab', { name: 'Saving & export', exact: true }).click();
   const dpi = dialog.getByRole('textbox', { name: 'Default figure DPI' });
   const savedDpi = await dpi.inputValue();
   await dpi.fill('1201');
   await dpi.press('Tab');
   await dpi.and(dialog.locator('[aria-invalid="true"]')).waitFor();
-  const singleton = await openSettings(app, page, { requireNative: true });
-  assert.equal(await nativeWindowId(singleton.page), initialId, 'Repeated Settings opens must focus the same window');
-  assert.equal(app.windows().length, 2, 'Exactly one Settings window can coexist with the workbench');
-  assert.equal(await dpi.inputValue(), '1201', 'Focusing Settings must preserve its invalid draft');
-
-  const compute = await openSettings(app, page, { requireNative: true, trigger: button('Compute setup') });
-  assert.equal(await nativeWindowId(compute.page), initialId, 'Compute setup must route the existing Settings window');
-  await dialog.getByRole('tab', { name: 'Compute', exact: true }).and(dialog.locator('[aria-selected="true"]')).waitFor();
+  await invokeMenu('app', 'Settings…');
+  assert.equal(app.windows().length, 1, 'Repeated Settings opens must leave one workbench window');
+  assert.equal(await dpi.inputValue(), '1201', 'Repeated open must preserve the active draft');
+  await dialog.getByRole('tab', { name: 'Viewing & help', exact: true }).click();
   await dialog.getByRole('tab', { name: 'Saving & export', exact: true }).click();
   assert.equal(await dpi.inputValue(), '1201');
   await dpi.press('Escape');
   assert.equal(await dpi.inputValue(), savedDpi);
+
   await dialog.getByRole('tab', { name: 'User guide', exact: true }).click();
   await button('Open user guide', dialog).click();
-  const manual = settingsPage.getByRole('dialog', { name: 'User manual', exact: true });
+  const manual = page.getByRole('dialog', { name: 'User manual', exact: true });
   await manual.waitFor();
-  assert.equal(await dialog.isVisible(), false, 'The guide replaces Settings in the dedicated window');
+  assert.equal(await dialog.isVisible(), false);
   await button('Close user manual', manual).click();
   await dialog.getByRole('tab', { name: 'User guide', exact: true }).and(dialog.locator('[aria-selected="true"]')).waitFor();
 
   await dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
   await dialog.getByRole('radiogroup', { name: 'Theme previews', exact: true }).getByRole('radio', { name: 'Black', exact: true }).click();
   await dialog.getByRole('radiogroup', { name: 'Workbench density', exact: true }).getByRole('radio', { name: 'Comfortable', exact: true }).click();
-  for (const surface of [page, settingsPage]) await surface.waitForFunction(() =>
-    document.documentElement.dataset.theme === 'black' && document.documentElement.dataset.density === 'comfortable');
-  const settingsZoom = await auditNativeSettingsZoom(settings);
-  const settingsImage = 'native-settings-black.png';
-  await settingsPage.screenshot({ path: path.join(output, settingsImage), animations: 'disabled', scale: 'css' });
-  await closeSettings(settings);
-  const reopened = await openSettings(app, page, { requireNative: true });
-  const reopenedId = await nativeWindowId(reopened.page);
-  assert.notEqual(reopenedId, initialId, 'Closing must release the native Settings window');
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'black' && document.documentElement.dataset.density === 'comfortable');
+  const settingsZoom = await auditSettingsZoom(settings);
+  const settingsImage = 'settings-modal-black.png';
+  await page.screenshot({ path: path.join(output, settingsImage), animations: 'disabled', scale: 'css' });
+  await escapeSettings(settings);
+  assert.equal(await opener.evaluate(element => document.activeElement === element), true, 'Settings must return focus to its opener');
+
+  const compute = await openSettings(app, page, { trigger: button('Compute setup') });
+  await compute.dialog.getByRole('tabpanel', { name: 'Compute', exact: true }).waitFor();
+  await closeSettings(compute);
+  const reopened = await openSettings(app, page);
   assert.equal(await reopened.dialog.getByRole('combobox', { name: 'Application theme', exact: true }).inputValue(), 'black');
   assert.equal(await reopened.dialog.getByRole('radiogroup', { name: 'Workbench density', exact: true })
     .getByRole('radio', { name: 'Comfortable', exact: true }).getAttribute('aria-checked'), 'true');
@@ -303,8 +338,8 @@ async function auditNativeSettings() {
   await closeSettings(reopened);
   assert.deepEqual(await getStudyBinding(), binding, 'Settings must retain the exact study, source, and scientific result');
   await appearance({ theme: before.theme, density: before.density });
-  report.checks.push({ name: 'dedicated-settings-singleton-route-guide-drafts-and-persistence',
-    initialId, reopenedId, isolation, binding, settings_zoom: settingsZoom, settings_screenshot: settingsImage });
+  report.checks.push({ name: 'settings-modal-shortcut-menu-focus-compute-guide-drafts-and-persistence',
+    renderer_globals: rendererGlobals, shell, binding, settings_zoom: settingsZoom, settings_screenshot: settingsImage });
 }
 
 async function createOfflineComputeStudy(name, cpus) {
@@ -355,21 +390,14 @@ async function auditComputeStudyBinding() {
   }, [{ destination: first.destination, hold: false }, { destination: second.destination, hold: true }]);
   await fileMenuAction(page, 'Open study');
   await waitForSnapshot(page, state => state?.project.project_id === first.project_id, 'first synthetic compute study');
-  const settings = await openSettings(app, page, { requireNative: true });
-  const { page: settingsPage, dialog } = settings;
-  settingsPage.on('pageerror', error => report.page_errors.push(String(error)));
-  settingsPage.on('request', request => { if (/^https?:/u.test(request.url())) report.network_requests.push(request.url()); });
-  // Playwright normally emulates focus on every Chromium page, including background windows.
-  const settingsCdp = await settingsPage.context().newCDPSession(settingsPage);
-  await settingsCdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-  const settingsId = await nativeWindowId(settingsPage);
+  const settings = await openSettings(app, page);
+  const { dialog } = settings;
   const computeTab = dialog.getByRole('tab', { name: 'Compute', exact: true });
   const studyTargets = dialog.locator('.compute-settings__study');
   const saveTarget = button('Save for all studies', studyTargets);
   const firstSummary = studyTargets.getByText('PBSPRO · 2 CPU · 2 GiB · 10 min', { exact: true });
   const secondSummary = studyTargets.getByText('PBSPRO · 4 CPU · 4 GiB · 10 min', { exact: true });
-  const list = () => settingsPage.evaluate(() => window.lociSettings.computeTargets('list', {}));
+  const list = () => page.evaluate(() => window.lociResearch.computeTargets('list', {}));
   const pinDirectory = path.join(output, 'profile/compute-targets-v1.loci-study/ssh-hosts');
   const pinnedHosts = () => fs.readdir(pinDirectory).catch(error => {
     if (error.code === 'ENOENT') return [];
@@ -387,11 +415,9 @@ async function auditComputeStudyBinding() {
   const retired = { study_binding: listedFirst.study_binding, id: first.profile.id,
     revision: first.profile.revision, expected_revision: 0 };
 
-  await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).focus(), await nativeWindowId(page));
-  await settingsPage.waitForFunction(() => !document.hasFocus(), null, { timeout: 10000 });
-  evidence.settings_blurred = true;
   try {
-    await fileMenuAction(page, 'Open study');
+    // The native File menu can request a study switch while the modal is open.
+    await invokeMenu('File', 'Open study…');
     await app.evaluate(async () => {
       const deadline = Date.now() + 10000;
       while (typeof globalThis.__lociDesignPassReleaseStudy !== 'function') {
@@ -399,7 +425,7 @@ async function auditComputeStudyBinding() {
         await new Promise(resolve => setTimeout(resolve, 25));
       }
     });
-    // Activate the displayed native Settings control without refocusing the window and refreshing the row.
+    // Exercise the displayed row while the native picker is held, without moving focus.
     assert.ok(await firstSummary.isVisible() && await saveTarget.isVisible() && await saveTarget.isEnabled());
     await saveTarget.evaluate(element => element.click());
     const waiting = dialog.getByRole('alert').filter({ hasText: 'Wait for the study to finish opening.' });
@@ -414,9 +440,8 @@ async function auditComputeStudyBinding() {
     });
   }
   await waitForSnapshot(page, state => state?.project.project_id === second.project_id, 'second synthetic compute study');
-  assert.equal(await nativeWindowId(settingsPage), settingsId);
-  const rejected = await settingsPage.evaluate(async request => {
-    try { await window.lociSettings.computeTargets('remember', request); return null; }
+  const rejected = await page.evaluate(async request => {
+    try { await window.lociResearch.computeTargets('remember', request); return null; }
     catch (error) { return error.message; }
   }, retired);
   assert.match(rejected, /The study changed\. Refresh Settings/u);
@@ -430,11 +455,8 @@ async function auditComputeStudyBinding() {
   evidence.bindings_differ = true;
   evidence.targets_after_rejections = listedSecond.targets;
 
-  await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id).focus(), settingsId);
-  await settingsPage.waitForFunction(() => document.hasFocus(), null, { timeout: 10000 });
-  evidence.settings_refocused = true;
   await secondSummary.waitFor();
-  assert.equal(await firstSummary.count(), 0, 'Refocused Settings must replace the retired study resources');
+  assert.equal(await firstSummary.count(), 0, 'The modal must refresh after study replacement');
   assert.equal(await computeTab.getAttribute('aria-selected'), 'true', 'The Compute tab must stay open during the study switch');
   evidence.second_rendered_resources = await secondSummary.textContent();
   await saveTarget.click();
@@ -445,13 +467,10 @@ async function auditComputeStudyBinding() {
   assert.deepEqual(saved.study_profiles, [second.profile]);
   assert.deepEqual(await pinnedHosts(), [second.host_sha256]);
   assert.equal(await sha256(path.join(pinDirectory, second.host_sha256)), second.host_sha256);
-  assert.equal(await nativeWindowId(settingsPage), settingsId);
-  evidence.settings_window_id = settingsId;
   evidence.saved_targets = saved.targets;
   evidence.pinned_host_sha256 = second.host_sha256;
-  await settingsCdp.detach();
   await closeSettings(settings);
-  report.checks.push({ name: 'native-compute-settings-rejects-retired-study-row', ...evidence });
+  report.checks.push({ name: 'compute-settings-rejects-retired-study-row', ...evidence });
 }
 
 async function frameGeometry() {
@@ -847,8 +866,8 @@ try {
   report.result = { id: result.id, revision_hash: result.revision_hash, object_count: result.object_count,
     labels_sha256: result.arrays.labels.sha256, selection: result.selection, ...measurements };
   await capture('workbench-exact-synthetic-measurements', { ...await frameGeometry(), image_binding: resultImage, ...measurements });
-  report.stage = 'native-settings';
-  await auditNativeSettings();
+  report.stage = 'settings-modal';
+  await auditSettingsModal();
   report.stage = 'native-electron-zoom';
   await actualZoom();
   report.stage = 'native-compute-study-binding';

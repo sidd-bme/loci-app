@@ -706,23 +706,30 @@ describe("Loci renderer", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it("opens the dedicated Settings window from the title bar and keyboard when its bridge is available", () => {
-    const openSettingsWindow = vi.fn().mockResolvedValue(undefined);
-    window.loci = mockApi({ openSettingsWindow });
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
-    fireEvent.keyDown(window, { key: ",", metaKey: true });
-    expect(openSettingsWindow).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("dialog", { name: "Settings" })).toBeNull();
-  });
-
-  it("shows a recoverable window error when native Settings cannot open", async () => {
-    window.loci = mockApi({ openSettingsWindow: vi.fn().mockRejectedValue(new Error("native failure")) });
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not open");
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss command error" }));
-    expect(screen.queryByRole("alert")).toBeNull();
+  it("opens the same Settings dialog from the header, keyboard and native menu event", () => {
+    const stop = vi.fn();
+    window.loci = mockApi({ onSettingsRequested: vi.fn().mockReturnValue(stop) });
+    const view = render(<App />);
+    const opener = screen.getByRole("button", { name: "Open settings" });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("tab", { name: "Saving & export" }));
+    const dpi = screen.getByRole("textbox", { name: "Default figure DPI" });
+    fireEvent.change(dpi, { target: { value: "invalid" } });
+    const request = vi.mocked(window.loci.onSettingsRequested).mock.calls.at(-1)![0];
+    act(() => request());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBe(dialog);
+    expect(dpi).toHaveValue("invalid");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    fireEvent.keyDown(opener, { key: ",", metaKey: true });
+    expect(screen.getByRole("dialog", { name: "Settings" })).toHaveAttribute("open");
+    expect(screen.getByRole("tabpanel", { name: "Appearance" })).toBeVisible();
+    view.unmount();
+    expect(stop).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -1821,6 +1828,8 @@ describe("Loci renderer", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "Work with external agents" })).toBeVisible();
     fireEvent.keyDown(window, { key: "F1" });
     expect(await screen.findByRole("heading", { level: 2, name: "Welcome" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close user manual" }));
+    expect(screen.getByRole("tabpanel", { name: "External agents" })).toBeVisible();
   });
 
   it("suspends workspace shortcuts while Settings is modal", async () => {

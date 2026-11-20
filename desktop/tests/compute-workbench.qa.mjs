@@ -123,7 +123,7 @@ async function configure(profile) {
 async function saveGlobalTarget(profile) {
   await selectWorkbenchTool(page, 'Analyze');
   await page.getByRole('button', { name: 'Compute setup', exact: true }).click();
-  const surface = await resolveSettings(app, page, { requireNative: true });
+  const surface = await resolveSettings(app, page);
   const settings = surface.dialog;
   await settings.getByRole('tab', { name: 'Compute', exact: true }).waitFor();
   await settings.getByRole('button', { name: 'Save for all studies', exact: true }).click();
@@ -136,23 +136,29 @@ async function saveGlobalTarget(profile) {
   await capture('01b-global-target-and-ssh-import', surface.page);
   await settings.getByRole('button', { name: 'Cancel', exact: true }).click();
   if (kind === 'classical') {
-    const settingsWindow = await app.browserWindow(surface.page);
-    await settingsWindow.evaluate(win => win.setBounds({ width: 1024, height: 768 }));
-    for (const theme of ['graphite', 'paper']) {
+    const window = await app.browserWindow(page);
+    const prior = await window.evaluate(win => win.getBounds());
+    await window.evaluate(win => win.setBounds({ width: 1024, height: 768 }));
+    try {
+      for (const theme of ['graphite', 'paper']) {
+        await settings.getByRole('tab', { name: 'Appearance', exact: true }).click();
+        await settings.getByLabel('Application theme', { exact: true }).selectOption(theme);
+        await settings.getByRole('tab', { name: 'Compute', exact: true }).click();
+        await settings.getByRole('list', { name: 'Saved compute targets' }).getByText(profile.alias, { exact: true }).waitFor();
+        const layout = await settings.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth,
+          documentWidth: document.documentElement.clientWidth, documentScroll: document.documentElement.scrollWidth }));
+        assert.ok(layout.scroll <= layout.width + 1 && layout.documentScroll <= layout.documentWidth + 1);
+        await capture(`01c-global-target-${theme}`, surface.page);
+      }
       await settings.getByRole('tab', { name: 'Appearance', exact: true }).click();
-      await settings.getByLabel('Application theme', { exact: true }).selectOption(theme);
-      await settings.getByRole('tab', { name: 'Compute', exact: true }).click();
-      await settings.getByRole('list', { name: 'Saved compute targets' }).getByText(profile.alias, { exact: true }).waitFor();
-      const layout = await settings.evaluate(element => ({ width: element.clientWidth, scroll: element.scrollWidth,
-        documentWidth: document.documentElement.clientWidth, documentScroll: document.documentElement.scrollWidth }));
-      assert.ok(layout.scroll <= layout.width + 1 && layout.documentScroll <= layout.documentWidth + 1);
-      await capture(`01c-global-target-${theme}`, surface.page);
+      await settings.getByLabel('Application theme', { exact: true }).selectOption('graphite');
+    } finally {
+      await window.evaluate((win, bounds) => win.setBounds(bounds), prior);
+      await window.dispose();
     }
-    await settings.getByRole('tab', { name: 'Appearance', exact: true }).click();
-    await settings.getByLabel('Application theme', { exact: true }).selectOption('graphite');
   }
   await closeSettings(surface);
-  receipt.checks.push('Native Settings saves a study target application-wide and imports the existing trusted SSH alias without connecting or transferring an image');
+  receipt.checks.push('Settings saves a study target application-wide and imports the existing trusted SSH alias without connecting or transferring an image');
 }
 async function bindHostFailureFixture() {
   const script = `import json,sqlite3,sys;from pathlib import Path
@@ -313,7 +319,7 @@ try {
         assert.ok(receipt.resumed_existing_run, 'Only a resumed fixture may start with its future resource edit already saved');
         await selectWorkbenchTool(page, 'Analyze');
         await page.getByRole('button', { name: 'Compute setup', exact: true }).click();
-        const surface = await resolveSettings(app, page, { requireNative: true });
+        const surface = await resolveSettings(app, page);
         const settings = surface.dialog;
         await settings.getByRole('button', { name: 'Resources', exact: true }).click();
         await settings.getByLabel('Resource preset', { exact: true }).selectOption('cpu');
@@ -350,7 +356,7 @@ try {
       await page.getByLabel('Run on', { exact: true }).focus();
       await page.getByLabel('Run on', { exact: true }).selectOption(profile.alias);
       await page.getByRole('button', { name: 'Compute setup', exact: true }).click();
-      const surface = await resolveSettings(app, page, { requireNative: true });
+      const surface = await resolveSettings(app, page);
       const settings = surface.dialog;
       await settings.getByRole('button', { name: 'Resources', exact: true }).click();
       await settings.getByLabel('Resource preset', { exact: true }).selectOption('gpu');

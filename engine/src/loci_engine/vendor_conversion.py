@@ -1,8 +1,8 @@
 """Explicit, bounded conversion of selected Bio-Formats vendor image planes.
 
 This module is intentionally outside the engine's automatic import path.  It
-executes only an exact, user-provided Bio-Formats 8.5.0 package and converts one
-explicitly selected scalar plane into a small derived OME-TIFF artifact.
+executes only an exact, user-provided Bio-Formats 8.5.0 package and converts an
+explicit scalar plane or multidimensional selection to derived OME-TIFF.
 """
 
 from __future__ import annotations
@@ -40,7 +40,12 @@ BIOFORMATS_JAR_URL = (
     "https://downloads.openmicroscopy.org/bio-formats/8.5.0/artifacts/bioformats_package.jar"
 )
 
-SUPPORTED_SUFFIXES = frozenset({".czi", ".lif", ".nd2"})
+VENDOR_READERS = {
+    ".czi": "loci.formats.in.ZeissCZIReader",
+    ".lif": "loci.formats.in.LIFReader",
+    ".nd2": "loci.formats.in.ND2Reader",
+}
+SUPPORTED_SUFFIXES = frozenset(VENDOR_READERS)
 MIN_HEAP_MIB = 256
 MAX_HEAP_MIB = 4096
 MAX_TIMEOUT_SECONDS = 1800
@@ -77,8 +82,17 @@ class VendorConversionError(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
+class VendorRangeEnd:
+    """Exclusive stops of a contiguous source C/Z/T box."""
+
+    c: int
+    z: int
+    t: int
+
+
+@dataclass(frozen=True, slots=True)
 class VendorConversionRequest:
-    """One bounded scalar plane selection and its resource limits."""
+    """Zero-based start coordinates, optional exclusive stops, XY crop and budgets."""
 
     series: int
     c: int
@@ -88,6 +102,7 @@ class VendorConversionRequest:
     heap_mib: int = 768
     timeout_seconds: int = 300
     max_output_bytes: int = 512 << 20
+    end_exclusive: VendorRangeEnd | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +199,7 @@ def _validate_runtime(
     *,
     heap_mib: int,
     timeout_seconds: int,
+    expected_java_sha256: str | None = None,
 ) -> _Runtime:
     source, source_identity = _regular_file(source_value, "vendor source")
     if source.suffix.lower() not in SUPPORTED_SUFFIXES:
@@ -197,6 +213,8 @@ def _validate_runtime(
     if jar_sha256 != BIOFORMATS_JAR_SHA256:
         raise VendorConversionError("The Bio-Formats JAR is not the approved 8.5.0 artifact.")
     java, _java_identity, java_sha256 = _trusted_java(java_value)
+    if expected_java_sha256 is not None and java_sha256 != expected_java_sha256:
+        raise VendorConversionError("The Java executable differs from the inspected fingerprint.")
     with tempfile.TemporaryDirectory(prefix="loci-vendor-java-") as scratch_value:
         scratch = Path(scratch_value)
         result = _run_bounded(
@@ -413,7 +431,9 @@ def _parse_calibration(pixels: ET.Element) -> dict[str, dict[str, float | str]] 
     return calibration
 
 
-def _parse_ome_xml(output: bytes) -> list[dict[str, Any]]:
+def _parse_ome_xml(
+    output: bytes, request: VendorConversionRequest | None = None
+) -> list[dict[str, Any]]:
     start = output.find(b"<?xml")
     end = output.rfind(b"</OME>")
     if start < 0 or end < start:
@@ -441,7 +461,11 @@ def _parse_ome_xml(output: bytes) -> list[dict[str, Any]]:
         if dtype not in _DTYPE_BYTES:
             raise VendorConversionError("Bio-Formats returned an unsupported pixel type.")
         dimension_order = pixels.attrib.get("DimensionOrder", "").strip()
-        if len(dimension_order) != 5 or set(dimension_order) != set("XYZCT"):
+        if (
+            len(dimension_order) != 5
+            or not dimension_order.startswith("XY")
+            or set(dimension_order) != set("XYZCT")
+        ):
             raise VendorConversionError("Bio-Formats returned an invalid dimension order.")
         channels = [child for child in pixels if child.tag.rsplit("}", 1)[-1] == "Channel"]
         if not channels:
@@ -468,10 +492,25 @@ def _parse_ome_xml(output: bytes) -> list[dict[str, Any]]:
                 "dimension_order": dimension_order,
                 "dtype": _NUMPY_DTYPES.get(dtype, dtype),
                 "channel_names": names,
+                "declared_channel_names": [
+                    name if channel.get("Name", "").strip() == name else None
+                    for name, channel in zip(names, channels, strict=True)
+                ],
                 "samples_per_channel": samples,
                 "calibration": _parse_calibration(pixels),
             }
         )
+        if request is not None and request.end_exclusive is not None and index == request.series:
+            from .vendor_acquisition import select_acquisition
+
+            # Admit the complete grid and byte budget before allocating selected plane records.
+            series = records[-1]
+            _resolve_series(request, series)
+            if any(n != 1 for n in samples):
+                raise VendorConversionError(
+                    "Stack acquisition coordinates require a scalar series."
+                )
+            series["_acquisition"] = select_acquisition(pixels, request, series["dimensions"])
     return records
 
 
@@ -487,7 +526,11 @@ def _validate_limits(heap_mib: int, timeout_seconds: int) -> None:
 
 
 def _inspect(
-    runtime: _Runtime, *, heap_mib: int, timeout_seconds: int
+    runtime: _Runtime,
+    *,
+    heap_mib: int,
+    timeout_seconds: int,
+    request: VendorConversionRequest | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     with tempfile.TemporaryDirectory(prefix="loci-vendor-inspect-") as scratch_value:
         scratch = Path(scratch_value)
@@ -509,7 +552,7 @@ def _inspect(
         )
     if result.returncode != 0:
         raise VendorConversionError("Bio-Formats could not inspect the selected vendor source.")
-    series = _parse_ome_xml(result.stdout)
+    series = _parse_ome_xml(result.stdout, request)
     source_sha256 = _stable_sha256(runtime.source, runtime.source_identity)
     if _identity(runtime.jar) != runtime.jar_identity:
         raise VendorConversionError("The Bio-Formats JAR changed during inspection.")
@@ -539,7 +582,9 @@ def inspect_vendor(
         "format": runtime.source.suffix.lower().removeprefix("."),
         "source_size_bytes": runtime.source_identity.size,
         "source_sha256": source_sha256,
-        "series": series,
+        "series": [
+            {k: v for k, v in item.items() if k != "declared_channel_names"} for item in series
+        ],
         "runtime": {
             "bioformats_version": BIOFORMATS_VERSION,
             "bioformats_jar_sha256": runtime.jar_sha256,
@@ -563,6 +608,7 @@ def _request(value: VendorConversionRequest | Mapping[str, Any]) -> VendorConver
             "heap_mib",
             "timeout_seconds",
             "max_output_bytes",
+            "end_exclusive",
         }
         if set(value) - expected or not {"series", "c", "z", "t"}.issubset(value):
             raise VendorConversionError(
@@ -578,6 +624,17 @@ def _request(value: VendorConversionRequest | Mapping[str, Any]) -> VendorConver
         selected = getattr(request, label)
         if isinstance(selected, bool) or not isinstance(selected, int) or selected < 0:
             raise VendorConversionError(f"{label} must be a non-negative integer.")
+    end = request.end_exclusive
+    if end is not None:
+        if isinstance(end, Mapping) and set(end) == {"c", "z", "t"}:
+            end = VendorRangeEnd(**end)
+        if not isinstance(end, VendorRangeEnd):
+            raise VendorConversionError("end_exclusive must contain integer C, Z and T stops.")
+        for axis in ("c", "z", "t"):
+            stop = getattr(end, axis)
+            if type(stop) is not int or stop <= getattr(request, axis):
+                raise VendorConversionError("Each exclusive stop must exceed its start index.")
+        request = replace(request, end_exclusive=end)
     _validate_limits(request.heap_mib, request.timeout_seconds)
     if (
         isinstance(request.max_output_bytes, bool)
@@ -598,7 +655,7 @@ def _request(value: VendorConversionRequest | Mapping[str, Any]) -> VendorConver
         if x < 0 or y < 0 or width <= 0 or height <= 0:
             raise VendorConversionError("crop must be a positive half-open rectangle.")
         if not isinstance(request.crop, tuple):
-            request = VendorConversionRequest(**{**asdict(request), "crop": tuple(request.crop)})
+            request = replace(request, crop=tuple(request.crop))
     return request
 
 
@@ -608,6 +665,10 @@ def _resolve_selection(
     if request.series >= len(series_records):
         raise VendorConversionError("The selected series is outside the inspected source.")
     series = series_records[request.series]
+    return _resolve_series(request, series)
+
+
+def _resolve_series(request: VendorConversionRequest, series: dict[str, Any]):
     dimensions = series["dimensions"]
     for label in ("c", "z", "t"):
         if getattr(request, label) >= dimensions[label]:
@@ -634,6 +695,15 @@ def _resolve_selection(
     )
     if decoded_bytes > MAX_DECODED_PLANE_BYTES or decoded_bytes > request.max_output_bytes:
         raise VendorConversionError("The selected plane exceeds the decoded/output byte budget.")
+    end = request.end_exclusive
+    if end is not None:
+        if any(getattr(end, axis) > dimensions[axis] for axis in ("c", "z", "t")):
+            raise VendorConversionError("The selected range exceeds the inspected series.")
+        if any(n != 1 for n in series["samples_per_channel"][request.c : end.c]):
+            raise VendorConversionError("The selected range must contain only scalar channels.")
+        planes = (end.t - request.t) * (end.c - request.c) * (end.z - request.z)
+        if planes > 4096 or planes * decoded_bytes > request.max_output_bytes:
+            raise VendorConversionError("The selected range exceeds its plane or byte budget.")
     return series, crop, decoded_bytes
 
 
@@ -997,6 +1067,70 @@ def _rename_no_replace(source: Path, destination: Path) -> None:
         raise VendorConversionError("The converted artifact could not be published atomically.")
 
 
+def _convert_plane(
+    execution_runtime: _Runtime,
+    request: VendorConversionRequest,
+    selected: dict[str, Any],
+    crop: tuple[int, int, int, int],
+    decoded_bytes: int,
+    stage: Path,
+    output: Path,
+):
+    reader_bounds = _reader_minmax(execution_runtime, request, selected, crop, stage)
+    command = _java_prefix(
+        execution_runtime.java,
+        execution_runtime.jar,
+        request.heap_mib,
+        stage,
+    ) + [
+        _IMAGE_CONVERTER,
+        "-series",
+        str(request.series),
+        "-channel",
+        str(request.c),
+        "-z",
+        str(request.z),
+        "-timepoint",
+        str(request.t),
+        "-crop",
+        ",".join(str(value) for value in crop),
+        "-tilex",
+        "512",
+        "-tiley",
+        "512",
+        "-no-upgrade",
+        "-nogroup",
+        "-no-sas",
+        "-nolookup",
+        "-nooverwrite",
+        "-compression",
+        "zlib",
+        str(execution_runtime.source),
+        str(output),
+    ]
+    result = _run_bounded(
+        command,
+        cwd=stage,
+        timeout_seconds=request.timeout_seconds,
+        max_capture_bytes=MAX_CAPTURE_BYTES,
+        watched_output=output,
+        max_output_bytes=request.max_output_bytes,
+    )
+    if result.returncode != 0 or not output.is_file():
+        raise VendorConversionError("Bio-Formats could not convert the selected source plane.")
+    if output.stat().st_size > request.max_output_bytes:
+        raise VendorConversionError("The converted artifact exceeded its output-size limit.")
+    _normalize_output_ome(output, request, selected)
+    return _verify_output(
+        output,
+        request,
+        selected,
+        crop,
+        decoded_bytes,
+        reader_bounds,
+    )
+
+
 def convert_vendor(
     source: str | Path,
     jar: str | Path,
@@ -1005,8 +1139,9 @@ def convert_vendor(
     java: str | Path = "/usr/bin/java",
     *,
     expected_source_sha256: str | None = None,
+    expected_java_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Convert one bounded scalar plane into an atomic derived artifact folder."""
+    """Convert a bounded scalar selection into an atomic derived artifact folder."""
 
     checked_request = _request(request)
     if expected_source_sha256 is not None and (
@@ -1020,6 +1155,7 @@ def convert_vendor(
         java,
         heap_mib=checked_request.heap_mib,
         timeout_seconds=checked_request.timeout_seconds,
+        expected_java_sha256=expected_java_sha256,
     )
     destination_path = Path(destination).absolute()
     try:
@@ -1039,6 +1175,7 @@ def convert_vendor(
     destination_path = parent / destination_path.name
     series_records, source_sha256 = _inspect(
         runtime,
+        request=checked_request,
         heap_mib=checked_request.heap_mib,
         timeout_seconds=checked_request.timeout_seconds,
     )
@@ -1053,63 +1190,53 @@ def convert_vendor(
     published = False
     try:
         execution_runtime = _private_jar_copy(runtime, stage)
-        reader_bounds = _reader_minmax(execution_runtime, checked_request, selected, crop, stage)
-        command = _java_prefix(
-            execution_runtime.java,
-            execution_runtime.jar,
-            checked_request.heap_mib,
-            stage,
-        ) + [
-            _IMAGE_CONVERTER,
-            "-series",
-            str(checked_request.series),
-            "-channel",
-            str(checked_request.c),
-            "-z",
-            str(checked_request.z),
-            "-timepoint",
-            str(checked_request.t),
-            "-crop",
-            ",".join(str(value) for value in crop),
-            "-tilex",
-            "512",
-            "-tiley",
-            "512",
-            "-no-upgrade",
-            "-nogroup",
-            "-no-sas",
-            "-nolookup",
-            "-nooverwrite",
-            "-compression",
-            "zlib",
-            str(runtime.source),
-            str(output),
-        ]
-        result = _run_bounded(
-            command,
-            cwd=stage,
-            timeout_seconds=checked_request.timeout_seconds,
-            max_capture_bytes=MAX_CAPTURE_BYTES,
-            watched_output=output,
-            max_output_bytes=checked_request.max_output_bytes,
-        )
-        if result.returncode != 0 or not output.is_file():
-            raise VendorConversionError("Bio-Formats could not convert the selected source plane.")
+        selection = {
+            "series": checked_request.series,
+            "c": checked_request.c,
+            "z": checked_request.z,
+            "t": checked_request.t,
+            "crop_xywh": list(crop),
+        }
+        artifact_axes = "YX"
+        artifact_shape = [crop[3], crop[2]]
+        end = checked_request.end_exclusive
+        version = "v3" if end else "v1"
+        acquisition_fields = {}
+        if end is not None:
+            from .vendor_stack import convert_stack
+
+            selection["end_exclusive"] = asdict(end)
+            artifact_axes = "TCZYX"
+            artifact_shape = [
+                end.t - checked_request.t,
+                end.c - checked_request.c,
+                end.z - checked_request.z,
+                crop[3],
+                crop[2],
+            ]
+            acquisition = selected.pop("_acquisition")
+            output_sha256, pixel_sha256, calibration, numeric_summary, proof = convert_stack(
+                execution_runtime,
+                checked_request,
+                selected,
+                crop,
+                artifact_shape,
+                stage,
+                output,
+                acquisition,
+            )
+            acquisition_fields["acquisition"] = proof
+        else:
+            output_sha256, pixel_sha256, calibration, numeric_summary = _convert_plane(
+                execution_runtime, checked_request, selected, crop, decoded_bytes, stage, output
+            )
         execution_runtime.jar.unlink()
+        if set(stage.iterdir()) != {output}:
+            raise VendorConversionError("Bio-Formats created unexpected companion artifacts.")
         if output.stat().st_size > checked_request.max_output_bytes:
             raise VendorConversionError("The converted artifact exceeded its output-size limit.")
-        unexpected = sorted(path.name for path in stage.iterdir() if path.name != output.name)
-        if unexpected:
-            raise VendorConversionError("Bio-Formats created unexpected companion artifacts.")
-        _normalize_output_ome(output, checked_request, selected)
-        output_sha256, pixel_sha256, calibration, numeric_summary = _verify_output(
-            output,
-            checked_request,
-            selected,
-            crop,
-            decoded_bytes,
-            reader_bounds,
-        )
+        if _trusted_java(runtime.java)[2] != runtime.java_sha256:
+            raise VendorConversionError("The Java executable changed during conversion.")
         if _stable_sha256(runtime.source, runtime.source_identity) != source_sha256:
             raise VendorConversionError("The vendor source changed during conversion.")
         if (
@@ -1118,37 +1245,35 @@ def convert_vendor(
         ):
             raise VendorConversionError("The Bio-Formats JAR changed during conversion.")
         record = {
-            "schema_version": "loci.vendor-conversion/v1",
+            "schema_version": f"loci.vendor-conversion/{version}",
             "source": {
                 "format": runtime.source.suffix.lower().removeprefix("."),
                 "size_bytes": runtime.source_identity.size,
                 "sha256_before": source_sha256,
                 "sha256_after": source_sha256,
             },
-            "selection": {
-                "series": checked_request.series,
-                "c": checked_request.c,
-                "z": checked_request.z,
-                "t": checked_request.t,
-                "crop_xywh": list(crop),
-            },
-            "source_series": selected,
+            "selection": selection,
+            "source_series": selected
+            if end
+            else {k: v for k, v in selected.items() if k != "declared_channel_names"},
             "runtime": {
                 "bioformats_version": BIOFORMATS_VERSION,
                 "bioformats_jar_sha256": runtime.jar_sha256,
                 "bioformats_jar_size_bytes": runtime.jar_identity.size,
                 "java_sha256": runtime.java_sha256,
                 "java_version": runtime.java_version,
+                **({"reader_class": VENDOR_READERS[runtime.source.suffix.lower()]} if end else {}),
             },
             "artifact": {
                 "filename": output.name,
                 "sha256": output_sha256,
                 "pixel_sha256": pixel_sha256,
-                "axes": "YX",
-                "shape": [crop[3], crop[2]],
+                "axes": artifact_axes,
+                "shape": artifact_shape,
                 "dtype": selected["dtype"],
                 "calibration": calibration,
                 "numeric_summary": numeric_summary,
+                **acquisition_fields,
             },
             "limits": {
                 "heap_mib": checked_request.heap_mib,
@@ -1173,21 +1298,12 @@ def convert_vendor(
         published = True
         _fsync_directory(parent)
         return {
-            "schema_version": "loci.vendor-conversion-receipt/v1",
+            "schema_version": f"loci.vendor-conversion-receipt/{version}",
             "source_sha256": source_sha256,
             "bioformats_jar_sha256": runtime.jar_sha256,
             "selection": record["selection"],
             "runtime": record["runtime"],
-            "artifact": {
-                "filename": output.name,
-                "sha256": output_sha256,
-                "pixel_sha256": pixel_sha256,
-                "axes": record["artifact"]["axes"],
-                "shape": record["artifact"]["shape"],
-                "dtype": record["artifact"]["dtype"],
-                "calibration": record["artifact"]["calibration"],
-                "numeric_summary": record["artifact"]["numeric_summary"],
-            },
+            "artifact": record["artifact"],
             "provenance": {
                 "filename": provenance.name,
                 "sha256": provenance_sha256,

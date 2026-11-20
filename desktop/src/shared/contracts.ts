@@ -477,8 +477,7 @@ export interface JobSummary {
 }
 
 export interface LociDesktopApi {
-  openSettingsWindow?(page?: import("./settings-window-api").SettingsPage): Promise<void>;
-  onComputeTargetsChanged?(callback: () => void): () => void;
+  onComputeStudyChanged?(callback: () => void): () => void;
   pickImages: () => Promise<ImportedImage[]>;
   pickFolder: () => Promise<ImportedImage[]>;
   createProject: (manifest: ProjectManifestV1) => Promise<ProjectSessionReceipt | null>;

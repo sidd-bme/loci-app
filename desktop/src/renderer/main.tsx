@@ -2,7 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
-import { NativeSettingsWindow } from "./NativeSettingsWindow";
 import { DetachedAgentWorkspace } from "./DetachedAgentWorkspace";
 import { rendererRole } from "./renderer-role";
 import { DetachedImageWindow } from "./DetachedImageWindow";
@@ -14,10 +13,6 @@ if (!root) throw new Error("Loci renderer root was not found.");
 
 const reactRoot = createRoot(root);
 async function startRenderer(): Promise<void> {
-  if (window.lociSettings) {
-    reactRoot.render(<StrictMode><NativeSettingsWindow api={window.lociSettings} /></StrictMode>);
-    return;
-  }
   // The main process chooses the role from the native sender; URL parameters cannot grant it.
   const windows = window.lociImageWindows;
   const agent = window.lociAgentWorkspace;

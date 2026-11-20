@@ -1,0 +1,125 @@
+{
+  "modelId": "micro-sam-vit-b-lm",
+  "modelVersion": "micro-sam v2.0.1 (d45ab70ece93a9eb3ca1e237b9067767b0a18263) · BioImage.IO diplomatic-bug v0 (manifest 1.2)",
+  "kind": "input-only",
+  "subject": "DAPI-stained human carcinoma cell nuclei in a confocal microscopy optical section.",
+  "modality": "Confocal laser-scanning fluorescence microscopy (Leica TCS SP5 X Supercontinuum; 12-bit DAPI nuclear channel; 120 nm × 120 nm × 250 nm nominal voxel size)",
+  "attribution": "Mariusz Marzec, Adam Piórkowski and Arkadiusz Gertych (2022). Efficient automatic 3D segmentation of cell nuclei for high-content screening. Dataset DOI 10.5281/zenodo.4462097 (CC BY 4.0). The published µSAM sample was adapted by extracting Z=9, cropping, windowing to grayscale and resampling the thumbnail.",
+  "imageLicense": "CC-BY-4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "sourceUrl": "https://doi.org/10.5281/zenodo.4462097",
+  "publicationUrl": "https://doi.org/10.1186/s12859-022-04737-4",
+  "displayTransform": "Native confocal section 9 of 18. The 1360 × 1020 crop begins at X=204, Y=0. Both views use a linear 0–2387 display window. The detail image keeps one display pixel per source pixel. The source.png file retains the 16-bit intensities.",
+  "predictionOrigin": null,
+  "creators": [
+    "Marzec, Mariusz",
+    "Piórkowski, Adam",
+    "Gertych, Arkadiusz"
+  ],
+  "publication": {
+    "citation": "Marzec, M., Piórkowski, A. & Gertych, A. (2022). Efficient automatic 3D segmentation of cell nuclei for high-content screening. BMC Bioinformatics 23, 203.",
+    "doi": "10.1186/s12859-022-04737-4",
+    "url": "https://doi.org/10.1186/s12859-022-04737-4",
+    "status": "Peer-reviewed Open Access journal article (CC-BY-4.0)"
+  },
+  "upstream": {
+    "primaryDatasetRecordUrl": "https://doi.org/10.5281/zenodo.4462097",
+    "primaryDatasetLicenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "microSamSampleCodeUrl": "https://github.com/computational-cell-analytics/micro-sam/blob/d45ab70ece93a9eb3ca1e237b9067767b0a18263/micro_sam/sample_data.py",
+    "exactSampleFileUrl": "https://owncloud.gwdg.de/index.php/s/eW0uNCo8gedzWU4/download",
+    "exactSampleFileName": "3d-nucleus-data.tif",
+    "exactSampleFileSha256": "4946896f747dc1c3fc82fb2e1320226d92f99d22be88ea5f9c37e3ba4e281205",
+    "exactSampleFileSizeBytes": 89419014,
+    "modelPublicationUrl": "https://doi.org/10.1038/s41592-024-02580-4",
+    "modelCardUrl": "https://bioimage.io/#/artifacts/diplomatic-bug/v0",
+    "modelRegistryUrl": "https://github.com/computational-cell-analytics/micro-sam/blob/d45ab70ece93a9eb3ca1e237b9067767b0a18263/micro_sam/v1/util.py"
+  },
+  "modelIdentity": {
+    "artifactId": "vit_b_lm",
+    "upstreamPackage": "micro-sam==2.0.1",
+    "upstreamCommit": "d45ab70ece93a9eb3ca1e237b9067767b0a18263",
+    "bioimageioArtifact": "diplomatic-bug",
+    "bioimageioVersion": "v0 (manifest 1.2)",
+    "encoderFile": "vit_b.pt",
+    "encoderPublisherXxh128": "fe9252a29f3f4ea53c15a06de471e186",
+    "encoderBioimageioV0Sha256": "e684636c775be03afc36335525584cf239a050ad70650ee85e50f8b55eba8e7f",
+    "decoderFile": "vit_b_decoder.pt",
+    "decoderPublisherXxh128": "708b15ac620e235f90bb38612c4929ba",
+    "decoderBioimageioV0Sha256": "a23c636b3619c96838ed8ce862d6e88fb7e3b5b6c43b646e41b415c07ed81523",
+    "checkpointExecuted": false,
+    "executionBoundary": "Representative microscopy input from the publisher’s µSAM example. A segmentation is unavailable for the pinned checkpoint on this field."
+  },
+  "rawData": {
+    "originalFileName": "3d-nucleus-data.tif",
+    "originalSha256": "4946896f747dc1c3fc82fb2e1320226d92f99d22be88ea5f9c37e3ba4e281205",
+    "nativeShape": [
+      18,
+      1576,
+      1576
+    ],
+    "nativeAxes": "ZYX",
+    "nativeDtype": "uint16",
+    "bitDepthNominal": 12,
+    "voxelSizeNm": {
+      "x": 120,
+      "y": 120,
+      "z": 250,
+      "source": "Marzec et al. (2022) BMC Bioinformatics 23:203 Methods (not embedded in TIFF resolution tags)"
+    },
+    "rawOutputSha256": null,
+    "nativeCropFile": "input-native.tif",
+    "nativeCropSha256": "2d847b40c526414d08903f986240342fbe26e0cdbc28a652df8f46b1fff811e6"
+  },
+  "cropAndIntensity": {
+    "zIndex0Based": 9,
+    "cropBoxY0Y1X0X1": [
+      0,
+      1020,
+      204,
+      1564
+    ],
+    "nativeCropWidth": 1360,
+    "nativeCropHeight": 1020,
+    "aspectRatio": "4:3",
+    "channelMapping": "Single-channel scalar DAPI nuclear fluorescence rendered in neutral linear grayscale",
+    "intensityWindow": {
+      "mode": "linear-percentile-clip",
+      "minValue": 0.0,
+      "maxValue": 2387.0,
+      "maxPercentile": 99.85,
+      "gamma": 1.0
+    }
+  },
+  "files": {
+    "original.webp": {
+      "sha256": "a1d6921fe0f607fdeb84af334637a5d441b755faab2ac50cefa45c1a48433373",
+      "dimensionsXY": [
+        1360,
+        1020
+      ],
+      "bytes": 496966
+    },
+    "thumbnail.webp": {
+      "sha256": "625a36ea4a656c3125297dc3c926c79339fdd9a03b50f53dfc963229174ed3b2",
+      "dimensionsXY": [
+        768,
+        576
+      ],
+      "bytes": 142378
+    },
+    "source.png": {
+      "sha256": "aab4b392fb41704e30187c0a9fd64264e0a584764f5ba53760af8faeadab0381",
+      "dimensionsXY": [
+        1360,
+        1020
+      ],
+      "bytes": 1464432
+    }
+  },
+  "cardDisplay": {
+    "source": "original.webp",
+    "resampling": "Lanczos at recorded thumbnail dimensions",
+    "encoding": "lossless WebP",
+    "field": "same native crop as the detail viewer"
+  }
+}

@@ -323,7 +323,7 @@ class ResearchProject:
         if derivation is not None:
             from .research_vendor import validate_derivation
 
-            derivation = validate_derivation(derivation, fingerprint)
+            derivation = validate_derivation(derivation, fingerprint, metadata)
         display_name = checked_text(name or source.name, "Source name")
         with self.connection() as connection:
             for row in connection.execute("SELECT record FROM sources"):
@@ -846,7 +846,9 @@ class ResearchProject:
         if source.get("derivation") is not None:
             from .research_vendor import validate_derivation
 
-            derivation = validate_derivation(source["derivation"], source["sha256"])
+            derivation = validate_derivation(
+                source["derivation"], source["sha256"], source["metadata"]
+            )
             if "source_derivation" in provenance and provenance["source_derivation"] != derivation:
                 raise ValueError("Result origin differs from its immutable derived source")
             provenance = {**provenance, "source_derivation": derivation}
@@ -1019,7 +1021,9 @@ class ResearchProject:
         if source.get("derivation") is not None:
             from .research_vendor import validate_derivation
 
-            derivation = validate_derivation(source["derivation"], source["sha256"])
+            derivation = validate_derivation(
+                source["derivation"], source["sha256"], source["metadata"]
+            )
             if "source_derivation" in provenance and provenance["source_derivation"] != derivation:
                 raise ValueError("Result origin differs from its immutable derived source")
             provenance = {**provenance, "source_derivation": derivation}

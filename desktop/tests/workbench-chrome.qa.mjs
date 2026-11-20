@@ -271,7 +271,7 @@ try {
       for (const textSize of ["standard", "large"])
         for (const motion of ["no-preference", "reduce"]) {
           await page.emulateMedia({ reducedMotion: motion });
-          const surface = await openSettings(app, page, { requireNative: true });
+          const surface = await openSettings(app, page);
           const settings = surface.dialog;
           await settings
             .getByRole("combobox", { name: "Application theme" })

@@ -286,7 +286,7 @@ describe("workbench tool selector", () => {
   });
 
   it.each([
-    ["Display", "View", "Import & conversion", "Convert vendor images", "Vendor import"],
+    ["Display", "View", "Import & conversion", "Convert image format", "Vendor import"],
     ["Analyze", "Analyze", "Connections", "Remote compute", "Remote"],
     ["Study", "Results", "Portable results", "Import & share results", "Portability"],
   ] as const)("exposes secondary tools from the %s selector", (tab, group, section, label, selected) => {
@@ -352,7 +352,7 @@ describe("workbench tool selector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Search all tools" }));
     const input = screen.getByRole("combobox", { name: "Search all tools" });
     const first = screen.getByRole("option", { name: /Import & share results/ });
-    const last = screen.getByRole("option", { name: /Convert vendor images/ });
+    const last = screen.getByRole("option", { name: /Convert image format/ });
     expect(last.id).not.toMatch(/\s/); // aria-activedescendant requires one valid IDREF.
     expect(screen.getByRole("option", { name: /Segment & measure/ })).toBeDisabled();
     fireEvent.keyDown(input, { key: "ArrowDown" });

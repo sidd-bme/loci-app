@@ -401,6 +401,7 @@ for index, name in enumerate(("sampling-a.ome.tif", "sampling-b.ome.tif")):
     receipt.stage = "processing-preview";
     await selectWorkbenchTool(page, "Process");
     await button(page, "Whole image").click();
+    await button(page, "Add processing step").click();
     await button(page, "Gaussian blur").click();
     await button(main, "1:1").click();
     await button(main, "Zoom out").click();

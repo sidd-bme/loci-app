@@ -158,10 +158,10 @@ async function placePopup(width, height) {
   return actual;
 }
 async function setTheme(theme) {
-  const settings = await openSettings(app, page, { requireNative: true });
+  const settings = await openSettings(app, page);
   await settings.dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
   await settings.dialog.getByRole('combobox', { name: 'Application theme' }).selectOption(theme);
-  for (const surface of [settings.page, page, popup])
+  for (const surface of [page, popup])
     await surface.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme);
   await closeSettings(settings);
 }

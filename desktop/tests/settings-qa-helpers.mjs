@@ -3,37 +3,25 @@ import path from "node:path";
 
 const dialogIn = (page) => page.getByRole("dialog", { name: "Settings", exact: true });
 
-/** Resolve the dedicated Settings page, or the explicitly supported inline fallback. */
-export async function resolveSettings(app, workspace, { requireNative = false } = {}) {
-  const deadline = performance.now() + 30_000;
-  while (performance.now() < deadline) {
-    for (const page of app.windows()) {
-      if (page === workspace || page.isClosed() ||
-          !await page.evaluate(() => Boolean(window.lociSettings)).catch(() => false)) continue;
-      const dialog = dialogIn(page);
-      await dialog.waitFor({ state: "visible", timeout: Math.max(1, deadline - performance.now()) });
-      return { page, dialog, native: true };
-    }
-    const dialog = dialogIn(workspace);
-    if (!requireNative && await dialog.isVisible()) return { page: workspace, dialog, native: false };
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(requireNative ? "The dedicated Settings window did not open." : "Settings did not open.");
+/** Settings belongs to the triggering workbench and blocks interaction in that document. */
+export async function resolveSettings(app, workspace) {
+  const dialog = dialogIn(workspace).and(workspace.locator("dialog.settings-shell:modal"));
+  await dialog.waitFor({ state: "visible", timeout: 30_000 });
+  assert.ok(app.windows().includes(workspace), "Settings must belong to the workbench window");
+  return { page: workspace, dialog };
 }
 
-export async function openSettings(app, workspace, { requireNative = false, trigger } = {}) {
+export async function openSettings(app, workspace, { trigger } = {}) {
+  const windows = app.windows();
   await (trigger ?? workspace.getByRole("button", { name: "Open settings", exact: true })).click();
-  return resolveSettings(app, workspace, { requireNative });
+  const surface = await resolveSettings(app, workspace);
+  assert.deepEqual(app.windows(), windows, "Opening Settings must not create a window");
+  return surface;
 }
 
 async function awaitSettingsClose(settings, action) {
-  if (settings.native) {
-    await Promise.all([settings.page.waitForEvent("close", { timeout: 30_000 }),
-      action().catch(error => { if (!settings.page.isClosed()) throw error; })]);
-  } else {
-    await action();
-    await settings.dialog.waitFor({ state: "hidden", timeout: 30_000 });
-  }
+  await action();
+  await settings.dialog.waitFor({ state: "hidden", timeout: 30_000 });
 }
 
 export async function closeSettings(settings, name = "Done") {
@@ -42,6 +30,106 @@ export async function closeSettings(settings, name = "Done") {
 
 export async function escapeSettings(settings) {
   return awaitSettingsClose(settings, () => settings.page.keyboard.press("Escape"));
+}
+
+/** Record real input and compositor frame swaps. Use pixel evidence to identify
+ * the state in each frame, without app markers or locator/poll completion times. */
+export async function measureSettingsPaint(app, page, samples = 6) {
+  const cdp = await page.context().newCDPSession(page);
+  const frames = [];
+  const onFrame = ({ data, metadata, sessionId }) => {
+    if (Number.isFinite(metadata.timestamp)) frames.push({ data, swapMs: metadata.timestamp * 1000 });
+    void cdp.send("Page.screencastFrameAck", { sessionId }).catch(() => undefined);
+  };
+  cdp.on("Page.screencastFrame", onFrame);
+  try {
+    await page.evaluate(() => {
+      const probe = { input: [], stop: () => {} };
+      const capture = event => {
+        if (!event.isTrusted || !(event.target instanceof Element)) return;
+        const control = event.target.closest("button");
+        const action = control?.getAttribute("aria-label");
+        if (action === "Open settings" || action === "Close settings") {
+          probe.input.push({ action, type: event.type, epochMs: performance.timeOrigin + event.timeStamp });
+        }
+      };
+      for (const event of ["pointerdown", "click"]) document.addEventListener(event, capture, true);
+      probe.stop = () => {
+        for (const event of ["pointerdown", "click"]) document.removeEventListener(event, capture, true);
+        delete window.__lociSettingsPaint;
+      };
+      window.__lociSettingsPaint = probe;
+    });
+    const afterPaint = () => page.evaluate(() => new Promise(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const reference = async () => (await cdp.send("Page.captureScreenshot", { format: "png" })).data;
+    const closed = await reference();
+    await cdp.send("Page.startScreencast", { format: "png", maxWidth: 600, maxHeight: 380, everyNthFrame: 1 });
+    let opened;
+    for (let sample = 0; sample < samples; sample++) {
+      const settings = await openSettings(app, page);
+      await afterPaint();
+      if (sample === 0) opened = await reference();
+      await closeSettings(settings, "Close settings");
+      await afterPaint();
+    }
+    await cdp.send("Page.stopScreencast");
+    const input = await page.evaluate(() => window.__lociSettingsPaint.input);
+    assert.equal(input.length, samples * 4, "Every open/close must come from a trusted pointer activation");
+    const classified = await page.evaluate(async ({ closed, opened, frames }) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 60; canvas.height = 38;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      const pixels = async data => {
+        const bytes = Uint8Array.from(atob(data), character => character.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        return context.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const distance = (a, b) => {
+        let sum = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          for (let channel = 0; channel < 3; channel++) sum += Math.abs(a[i + channel] - b[i + channel]);
+        }
+        return sum / (canvas.width * canvas.height * 3);
+      };
+      const before = await pixels(closed), after = await pixels(opened);
+      const referenceDistance = distance(before, after);
+      const observed = [];
+      for (const { data, swapMs } of frames) {
+        const actual = await pixels(data);
+        const fromClosed = distance(actual, before), fromOpen = distance(actual, after);
+        const state = Math.min(fromClosed, fromOpen) > referenceDistance * 0.4 ? "unknown"
+          : fromOpen < fromClosed ? "open" : "closed";
+        observed.push({ swapMs, state, fromClosed, fromOpen });
+      }
+      return { referenceDistance, observed };
+    }, { closed, opened, frames });
+    assert.ok(classified.referenceDistance > 2, "Settings and workspace reference frames must be visually distinguishable");
+    const transitions = [];
+    for (let i = 0; i < input.length; i += 2) {
+      const [down, click, next] = input.slice(i, i + 3);
+      const state = i % 4 === 0 ? "open" : "closed";
+      assert.equal(down.type, "pointerdown");
+      assert.equal(click.type, "click");
+      assert.equal(click.action, state === "open" ? "Open settings" : "Close settings");
+      assert.equal(down.action, click.action);
+      const swapped = classified.observed.find(frame => frame.state === state &&
+        frame.swapMs >= click.epochMs && frame.swapMs < (next?.epochMs ?? Infinity));
+      assert.ok(swapped, `No composited Settings ${state} frame was captured for sample ${Math.floor(i / 4) + 1}`);
+      transitions.push({ sample: Math.floor(i / 4) + 1, state,
+        pointer_down_epoch_ms: down.epochMs, click_epoch_ms: click.epochMs, first_observed_swap_epoch_ms: swapped.swapMs,
+        pointer_to_swap_ms: swapped.swapMs - down.epochMs, click_to_swap_ms: swapped.swapMs - click.epochMs });
+    }
+    return { method: "Trusted DOM event time and first matching CDP compositor swap (PNG pixels)",
+      transitions, reference_distance: classified.referenceDistance, frame_count: frames.length };
+  } finally {
+    cdp.off("Page.screencastFrame", onFrame);
+    await cdp.send("Page.stopScreencast").catch(() => undefined);
+    await cdp.detach();
+    await page.evaluate(() => window.__lociSettingsPaint?.stop());
+  }
 }
 
 /** Real control interaction, run after timed navigation so captures do not bias it. */
@@ -110,13 +198,15 @@ export async function checkSettingsAndManual(app, page, screenshots) {
   await tip.waitFor({ state: "hidden" });
   await page.keyboard.press("F1");
   const manual = page.getByRole("dialog", { name: "User manual", exact: true });
-  const search = manual.getByRole("textbox", { name: "Search user manual" });
+  const search = manual.getByRole("searchbox", { name: "Search user manual" });
   await search.fill("histogram");
   assert.ok(await manual.getByRole("navigation", { name: "Manual contents" }).getByRole("button").count() > 0);
   const manualFile = path.join(screenshots, "offline-user-manual.png");
   await manual.screenshot({ path: manualFile, animations: "disabled" });
   await search.fill("no-matching-workflow-xyz");
   await manual.getByRole("status").filter({ hasText: "No matching section" }).waitFor();
+  await search.press("Escape");
+  assert.equal(await search.inputValue(), "");
   await page.keyboard.press("Escape");
   await manual.waitFor({ state: "hidden" });
   return { themes: evidence, preferences, reduced_motion_transition: transition, manual_screenshot: manualFile };

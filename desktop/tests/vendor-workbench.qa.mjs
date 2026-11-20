@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createEmptyStudy, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { createEmptyStudy, selectWorkbenchTool, setSelectionField } from "./workbench-qa-helpers.mjs";
 import { createHash } from "node:crypto";
 import { constants, createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
@@ -18,6 +18,13 @@ function requiredPath(name) {
 
 const appBundle = requiredPath("LOCI_PACKAGED_APP");
 const vendorSource = requiredPath("LOCI_QA_VENDOR_SOURCE");
+const multi = path.basename(vendorSource) === "sample.lif";
+const sourceName = path.basename(vendorSource);
+const threshold = multi ? 10 : 100;
+const expectedSourceHash = multi ? "a4bc49b2fb9f1adf3a66872d01e1450db1d898fc7f4d2386aefa28836c2ec419"
+  : "77c921fa2d3ebce182c261d28790de97d119062e550029b5e501d6200720eb0d";
+const convertedName = sourceName + (multi ? " · converted S0 C1–2 Z1–3 T0" : " · converted S0 C0 Z0 T0");
+const action = multi ? "Convert and import stack" : "Convert and import plane";
 const bioformatsJar = requiredPath("LOCI_QA_BIOFORMATS_JAR");
 const javaExecutable = requiredPath("LOCI_QA_JAVA");
 const outputRoot = requiredPath("LOCI_QA_OUTPUT_ROOT");
@@ -49,7 +56,7 @@ const userData = path.join(outputRoot, "user-data");
 const studyParent = path.join(outputRoot, "study");
 const studyPath = path.join(studyParent, "vendor-workbench.loci-study");
 const conversionParent = path.join(outputRoot, "conversion");
-const conversionPath = path.join(conversionParent, "selected-plane");
+const conversionPath = path.join(conversionParent, multi ? "selected-stack" : "selected-plane");
 const screenshots = path.join(outputRoot, "screenshots");
 const reportPath = path.join(outputRoot, "qa-report.json");
 const failurePath = path.join(outputRoot, "qa-failure.json");
@@ -153,6 +160,7 @@ async function installExactDialogs(app) {
         const title = args.at(-1)?.title;
         record("open", title);
         const exact = {
+          "Open research study": values.study,
           "Inspect a vendor file for explicit conversion": values.source,
           "Select the verified Bio-Formats 8.5.0 package JAR": values.jar,
           "Select your installed Java executable": values.java,
@@ -227,6 +235,7 @@ const [
   fileIdentity(appArchivePath),
 ]);
 
+assert.equal(sourceBefore.sha256, expectedSourceHash, "Named public fixture identity");
 let app;
 let page;
 const rendererMessages = [];
@@ -257,6 +266,7 @@ try {
   );
 
   await selectWorkbenchTool(page, "Vendor import");
+  await page.getByText("Vendor file", { exact: true }).click();
   await visible(
     page,
     page.getByRole("button", {
@@ -285,14 +295,11 @@ try {
     ),
     "vendor inspection completion",
   );
+  await page.getByLabel("Exact vendor inspection").getByText("Technical record").click();
   const inspectionText = await page
     .getByLabel("Exact vendor inspection")
     .innerText();
-  assert.match(
-    inspectionText,
-    /sample\.nd2/u,
-    "The visible inspection must identify the selected ND2 file",
-  );
+  assert.ok(inspectionText.includes(sourceName));
   assert.ok(
     inspectionText.includes(sourceBefore.sha256),
     "The visible inspection must show the original source hash",
@@ -304,8 +311,13 @@ try {
   await screenshot(page, "01-vendor-inspection");
 
   await page.getByLabel("Vendor series").selectOption("0");
-  await page.getByLabel("Vendor channel").selectOption("0");
-  await page.getByLabel("Vendor Z index").fill("0");
+  await page.getByLabel("Vendor scope").selectOption(multi ? "range" : "plane");
+  await page.getByLabel("Vendor channel").selectOption(multi ? "1" : "0");
+  await page.getByLabel("Vendor Z index").fill(multi ? "1" : "0");
+  if (multi) {
+    await page.getByLabel("Vendor last C").fill("2");
+    await page.getByLabel("Vendor last Z").fill("3");
+  }
   await page.getByLabel("Vendor T index").fill("0");
   await page.getByLabel("Crop vendor plane").check();
   await page.getByLabel("Vendor crop X").fill("0");
@@ -315,18 +327,19 @@ try {
   assert.equal(
     await page
       .getByRole("button", {
-        name: "Convert and import plane",
+        name: action,
         exact: true,
       })
       .isEnabled(),
     true,
     "The exact scalar crop must be eligible for conversion",
   );
-  await screenshot(page, "02-exact-plane-selection");
+  if (multi) assert.match(await page.getByLabel("Vendor output preview").innerText(), /1 × 2 × 3 × 64 × 64.*uint8.*6 planes/u);
+  await screenshot(page, "02-exact-selection");
 
   await page
     .getByRole("button", {
-      name: "Convert and import plane",
+      name: action,
       exact: true,
     })
     .click();
@@ -339,18 +352,11 @@ try {
   await visible(
     page,
     page.getByText(
-      "Converted the exact selected plane and imported it as a derived OME-TIFF source.",
+      "Imported the selected data as a derived OME-TIFF source.",
       { exact: true },
     ),
     "vendor conversion completion",
   );
-  const derivedButton = page.locator(".research-sources").getByRole("button", {
-    name: /^sample\.nd2 · converted S0 C0 Z0 T0/u,
-  });
-  await visible(page, derivedButton, "imported derived source");
-  await derivedButton.click();
-  await screenshot(page, "03-imported-derived-source");
-
   const convertedSnapshot = await page.evaluate(() =>
     window.lociResearch.getSnapshot(),
   );
@@ -360,26 +366,36 @@ try {
     "The new study must contain one converted source",
   );
   const derivedSource = convertedSnapshot.sources[0];
-  assert.equal(derivedSource.name, "sample.nd2 · converted S0 C0 Z0 T0");
+  assert.equal(derivedSource.name, convertedName);
+  const derivedButton = page.locator(`.research-sources button[data-source-id="${derivedSource.id}"]`);
+  await derivedButton.click();
+  await screenshot(page, "03-imported-derived-source");
   assert.deepEqual(derivedSource.metadata.dimensions, {
-    c: 1,
+    c: multi ? 2 : 1,
     s: 1,
     t: 1,
     x: 64,
     y: 64,
-    z: 1,
+    z: multi ? 3 : 1,
   });
 
+  await selectWorkbenchTool(page, "Display");
+  if (multi) {
+    await page.getByLabel("Analysis depth", { exact: true }).selectOption("plane");
+    await setSelectionField(page, "Z", 2);
+  }
   await selectWorkbenchTool(page, "Analyze");
-  await page.getByLabel("Threshold", { exact: true }).fill("100");
+  await page.getByLabel("Threshold", { exact: true }).fill(String(threshold));
   await selectWorkbenchTool(page, "Process");
   await page
     .getByRole("button", { name: "Preview selected crop", exact: true })
     .click();
   await visible(
     page,
-    page.getByAltText("Bounded native image region"),
-    "classical threshold preview",
+    page.locator(`.image-viewport[data-viewer-source="${derivedSource.id}"][data-prepared="true"]`)
+      .getByLabel("Image dimensions and display sampling")
+      .getByText(/^Preview · (?:nearest pixel|smoothed)$/),
+    "the painted crop preview on the converted source",
     120_000,
   );
   await noUiError(page, "previewing the classical threshold recipe");
@@ -391,7 +407,7 @@ try {
   await selectWorkbenchTool(page, "Analyze");
   assert.equal(
     await page.getByLabel("Threshold", { exact: true }).inputValue(),
-    "100",
+    String(threshold),
   );
   await page.getByRole("button", { name: "Run recipe", exact: true }).click();
   const completedSnapshot = await waitFor(
@@ -435,14 +451,28 @@ try {
   assert.equal(derivation.receipt.bioformats_jar_sha256, jarIdentity.sha256);
   assert.equal(derivation.record.source.sha256_before, sourceBefore.sha256);
   assert.equal(derivation.record.source.sha256_after, sourceBefore.sha256);
-  assert.equal(derivation.record.source.format, "nd2");
+  assert.equal(derivation.record.source.format, multi ? "lif" : "nd2");
   assert.deepEqual(derivation.receipt.selection, {
     series: 0,
-    c: 0,
-    z: 0,
+    ...(multi ? { end_exclusive: { c: 3, z: 4, t: 1 } } : {}),
+    c: multi ? 1 : 0,
+    z: multi ? 1 : 0,
     t: 0,
     crop_xywh: [0, 0, 64, 64],
   });
+  if (multi) {
+    assert.deepEqual(derivation.receipt.artifact.shape, [1, 2, 3, 64, 64]);
+    assert.equal(derivation.receipt.artifact.numeric_summary.planes_verified, 6);
+    assert.equal(derivation.receipt.schema_version, "loci.vendor-conversion-receipt/v3");
+    // Public LIF source Plane records matched by original T0, C1–2, Z1–3.
+    assert.deepEqual(derivation.receipt.artifact.acquisition, {
+      time_increment: {}, planes_with_delta_t: 6, planes_with_stage_position: 6,
+      stage_position_anchor: "unspecified",
+      native_plane_metadata_sha256: "47371ff4dc491bcfef27e83c14a4809c6678138e4b8080972c5d6954cb40889c",
+    });
+    // Independent full-C/Z bfconvert crop, sliced into the selected native TCZYX order.
+    assert.equal(derivation.receipt.artifact.pixel_sha256, "5923877ae226327bd7effe1946b75e1545a83a379bbe0b665c20596f83ab35d8");
+  }
   assert.deepEqual(derivation.record.selection, derivation.receipt.selection);
   assert.equal(
     derivation.record.runtime.bioformats_jar_sha256,
@@ -462,10 +492,10 @@ try {
     height: 64,
     t: 0,
     c: 0,
-    z: 0,
+    z: multi ? 2 : 0,
     level: 0,
   });
-  assert.equal(resultRecord.provenance.recipe.segmentation.threshold, 100);
+  assert.equal(resultRecord.provenance.recipe.segmentation.threshold, threshold);
 
   const convertedImage = path.join(conversionPath, "image.ome.tif");
   const convertedProvenance = path.join(conversionPath, "provenance.json");
@@ -519,6 +549,27 @@ try {
     { kind: "open", title: "Select your installed Java executable" },
     { kind: "save", title: "Create a new derived OME-TIFF conversion folder" },
   ]);
+  await close(app);
+  app = await electron.launch({ executablePath, args: [`--user-data-dir=${path.join(outputRoot,"cold-user-data")}`], cwd: desktopRoot });
+  page = await app.firstWindow();
+  await installExactDialogs(app);
+  await page.locator("main.image-first-empty, main.image-first-workbench").waitFor();
+  // Open through the visible native picker so the renderer adopts the returned snapshot.
+  const options = page.getByRole("button", { name: "More opening options", exact: true });
+  const open = page.getByRole("button", { name: "Open study", exact: true });
+  if (!(await open.isVisible()) && await options.isVisible()) await options.click();
+  await open.click();
+  await page.getByRole("main", { name: "Research workspace" }).waitFor();
+  const reopened = await page.evaluate(() => window.lociResearch.getSnapshot());
+  assert.deepEqual(reopened.sources.find((s) => s.id === derivedSource.id)?.derivation, derivation);
+  const reopenedResult = await page.evaluate(id => window.lociResearch.execute("result", {result_id: id}), resultSummary.id);
+  assert.deepEqual(reopenedResult.provenance.source_derivation, derivation);
+  await selectWorkbenchTool(page, "Vendor import");
+  await page.getByText("Vendor file", { exact: true }).click();
+  const history = page.getByLabel("Saved vendor conversions");
+  await history.locator("summary").click();
+  assert.ok((await history.innerText()).includes(derivedSource.sha256));
+  await screenshot(page, "06-cold-reopen");
   const runtime = await app.evaluate(({ app: electronApp }) => ({
     application_version: electronApp.getVersion(),
     electron: process.versions.electron,
@@ -549,6 +600,8 @@ try {
     original_source: { before: sourceBefore, after: sourceAfter },
     bioformats_jar: jarIdentity,
     executed_selection: derivation.receipt.selection,
+    cold_reopen_verified: true,
+    pixel_verification: derivation.receipt.artifact,
     derived_artifact: convertedImageIdentity,
     provenance_artifact: convertedProvenanceIdentity,
     derived_source: {

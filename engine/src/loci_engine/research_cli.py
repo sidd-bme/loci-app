@@ -71,6 +71,14 @@ def parser() -> argparse.ArgumentParser:
         default=None,
         help="Path to the exported μSAM manifest.json to verify and bind against",
     )
+    convert = sub.add_parser(
+        "convert-image", help="Write and verify a lossless full-resolution scalar series"
+    )
+    convert.add_argument("--project", required=True)
+    convert.add_argument("--source", required=True)
+    convert.add_argument("--source-sha256", required=True)
+    convert.add_argument("--format", required=True, choices=("ome-tiff", "ome-zarr"))
+    convert.add_argument("--destination", required=True, help="New output folder outside the study")
     usam = sub.add_parser(
         "usam-handoff",
         help="Atomically export an original native scalar YX/ZYX TIFF handoff for standalone μSAM",
@@ -360,6 +368,16 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                 handoff_manifest_path=(
                     os.path.abspath(args.handoff_manifest) if args.handoff_manifest else None
                 ),
+            )
+        if args.command == "convert-image":
+            from .image_conversion import convert_image
+
+            return convert_image(
+                workbench,
+                args.source,
+                args.source_sha256,
+                args.format,
+                os.path.abspath(args.destination),
             )
         if args.command == "usam-handoff":
             from .research_usam_handoff import export_usam_handoff
