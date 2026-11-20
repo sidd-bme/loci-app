@@ -837,7 +837,7 @@ assert report["maximum_absolute_delta"] == 0
   assert.ok(timing.cached_wheel_zoom_animation_frames.p99_ms <= 50,
     `Cached 2D wheel zoom p99 exceeded 50 ms: ${timing.cached_wheel_zoom_animation_frames.p99_ms}`);
 
-  settingsAndManualEvidence = await checkSettingsAndManual(page, screenshots);
+  settingsAndManualEvidence = await checkSettingsAndManual(app, page, screenshots);
   await page.locator("details.workbench-file-menu summary").click();
   await page.getByRole("button", { name: "Save as study…", exact: true }).click();
   await waitForFile(path.join(studyPath, "study.sqlite3"), "Save as study");

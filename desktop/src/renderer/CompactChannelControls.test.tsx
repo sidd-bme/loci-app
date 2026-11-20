@@ -28,7 +28,12 @@ function mount(overrides: Partial<CompactChannelControlsProps> = {}) {
 const low = () => screen.getByLabelText("Nuclei low");
 const high = () => screen.getByLabelText("Nuclei high");
 function draft(input: HTMLElement, value: string) { fireEvent.change(input, { target: { value } }); }
-function select(value: number) { fireEvent.change(screen.getByRole("combobox", { name: "Display channel" }), { target: { value } }); }
+function openEditor(name = "Nuclei") {
+  const chip = screen.getByRole("button", { name: `Adjust ${name} display` });
+  if (chip.getAttribute("aria-expanded") !== "true") fireEvent.click(chip);
+  return chip;
+}
+function select(value: number) { openEditor(source.metadata.channel_names![value]); }
 function solo() { fireEvent.click(screen.getByRole("button", { name: "Solo" })); }
 function restore() { fireEvent.click(screen.getByRole("button", { name: "Restore" })); }
 
@@ -40,7 +45,7 @@ describe("compact channel display", () => {
       observe() {} disconnect() {}
     });
     const view = mount();
-    const summary = screen.getByText("Display channels", { exact: true });
+    const summary = screen.getByText("Display channels", { exact: true }).closest("summary")!;
     const changeWidth = (width: number) => act(() => resize([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver));
     changeWidth(400);
     expect(summary.closest("details")).not.toHaveAttribute("open");
@@ -51,6 +56,18 @@ describe("compact channel display", () => {
     fireEvent.click(summary); changeWidth(900);
     expect(summary.closest("details")).not.toHaveAttribute("open");
     expect(view.onChannels).not.toHaveBeenCalled();
+  });
+  it("shows channel chips before editing and opens tone controls without publishing a change", () => {
+    const view = mount();
+    expect(screen.queryByLabelText("Nuclei low")).not.toBeInTheDocument();
+    const chip = openEditor("Reference");
+    expect(chip).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Reference high")).toHaveValue("255");
+    expect(screen.getByLabelText("Reference gamma")).toHaveValue("1");
+    expect(screen.getByLabelText("Reference color")).toHaveValue("#ff0000");
+    expect(view.onChannels).not.toHaveBeenCalled();
+    fireEvent.click(chip);
+    expect(screen.queryByLabelText("Reference high")).not.toBeInTheDocument();
   });
   it("changes visibility without mutating source metadata or the supplied channels", () => {
     const original = structuredClone(source), channels = channelState(), preserved = structuredClone(channels);
@@ -68,11 +85,11 @@ describe("compact channel display", () => {
     expect(view.onChannels.mock.lastCall![0]).toEqual([view.initial[0], { ...view.initial[1], high: 400 }, view.initial[2]]);
   });
   it("keeps the original snapshot when solo moves to a different channel", () => {
-    const view = mount(); solo(); select(1); solo(); restore();
+    const view = mount(); openEditor(); solo(); select(1); solo(); restore();
     expect(view.onChannels.mock.lastCall![0]).toEqual(view.initial);
   });
   it("ends solo history after manual visibility changes", () => {
-    mount(); solo(); fireEvent.click(screen.getByRole("checkbox", { name: "Marker visible" }));
+    mount(); openEditor(); solo(); fireEvent.click(screen.getByRole("checkbox", { name: "Marker visible" }));
     expect(screen.queryByRole("button", { name: "Restore" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Solo" })).toHaveAttribute("aria-pressed", "false");
   });
@@ -80,70 +97,72 @@ describe("compact channel display", () => {
     { ...source, id: "c".repeat(32) }, { ...source, sha256: "d".repeat(64) },
     { ...source, metadata: { ...source.metadata, channel_names: ["Renamed", "Marker", "Reference"] } },
   ])("discards solo history and drafts for changed source/channel identity", (currentSource) => {
-    const view = mount(); solo(); draft(low(), "unfinished");
+    const view = mount(); openEditor(); solo(); draft(low(), "unfinished");
     view.rerender(<view.Harness currentSource={currentSource} />);
     expect(screen.queryByRole("button", { name: "Restore" })).not.toBeInTheDocument();
+    openEditor(currentSource.metadata.channel_names![0]);
     expect(screen.getByLabelText(`${currentSource.metadata.channel_names![0]} low`)).toHaveValue("0");
     expect(view.onChannels).toHaveBeenCalledTimes(1);
   });
   it("invalidates solo history when the channel set changes", () => {
     const onChannels = vi.fn(), channels = channelState();
-    const view = render(<CompactChannelControls source={source} channels={channels} onChannels={onChannels} />); solo();
+    const view = render(<CompactChannelControls source={source} channels={channels} onChannels={onChannels} />); openEditor(); solo();
     view.rerender(<CompactChannelControls source={source} channels={channels.slice(1)} onChannels={onChannels} />);
     expect(screen.queryByRole("button", { name: "Restore" })).not.toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: "Display channel" })).toHaveValue("1");
+    expect(openEditor("Marker")).toHaveAttribute("aria-expanded", "true");
   });
   it.each(["", " ", "NaN", "Infinity", "abc", "255", "300"])("retains invalid low draft %j and blocks commit", (text) => {
-    const view = mount(); draft(low(), text); fireEvent.blur(low());
+    const view = mount(); openEditor(); draft(low(), text); fireEvent.blur(low());
     expect(low()).toHaveValue(text); expect(low()).toHaveAttribute("aria-invalid", "true");
     expect(view.onChannels).not.toHaveBeenCalled(); fireEvent.keyDown(low(), { key: "Escape" });
     expect(low()).toHaveValue("0"); expect(low()).toHaveAttribute("aria-invalid", "false");
   });
   it("publishes both limits atomically when a pair moves beyond the original range", () => {
-    const view = mount(); draft(low(), "300"); fireEvent.blur(low()); expect(view.onChannels).not.toHaveBeenCalled();
+    const view = mount(); openEditor(); draft(low(), "300"); fireEvent.blur(low()); expect(view.onChannels).not.toHaveBeenCalled();
     draft(high(), "400"); fireEvent.blur(high());
     expect(view.onChannels).toHaveBeenCalledExactlyOnceWith([{ ...view.initial[0], low: 300, high: 400 }, view.initial[1], view.initial[2]]);
     expect(low()).toHaveValue("300"); expect(low()).toHaveAttribute("aria-invalid", "false");
   });
   it("blocks high while an empty low draft remains, then accepts after Escape restores it", () => {
-    const view = mount(); draft(low(), ""); draft(high(), "400"); fireEvent.blur(high());
+    const view = mount(); openEditor(); draft(low(), ""); draft(high(), "400"); fireEvent.blur(high());
     expect(view.onChannels).not.toHaveBeenCalled(); expect(low()).toHaveValue("");
     fireEvent.keyDown(low(), { key: "Escape" }); fireEvent.blur(high());
     expect(view.onChannels).toHaveBeenCalledExactlyOnceWith([{ ...view.initial[0], high: 400 }, view.initial[1], view.initial[2]]);
   });
   it("preserves full precision negative native values and rejects equal high limits", () => {
-    const view = mount(); draft(high(), "0"); fireEvent.blur(high()); expect(view.onChannels).not.toHaveBeenCalled();
+    const view = mount(); openEditor(); draft(high(), "0"); fireEvent.blur(high()); expect(view.onChannels).not.toHaveBeenCalled();
     fireEvent.keyDown(high(), { key: "Escape" }); draft(low(), "-1.23456789012345"); fireEvent.blur(low());
     expect(view.onChannels.mock.lastCall![0][0]).toMatchObject({ low: -1.23456789012345, high: 255 });
   });
   it("commits by Enter, restores by Escape, and collapses by Escape with focus restored", () => {
-    const view = mount(); low().focus(); draft(low(), "5"); fireEvent.keyDown(low(), { key: "Enter" });
+    const view = mount(); const chip = openEditor(); low().focus(); draft(low(), "5"); fireEvent.keyDown(low(), { key: "Enter" });
     expect(view.onChannels).toHaveBeenCalledTimes(1);
     draft(low(), "invalid"); fireEvent.keyDown(low(), { key: "Escape" }); expect(low()).toHaveValue("5");
-    const summary = screen.getByText("Display channels", { exact: true }); expect(summary.closest("details")).toHaveAttribute("open");
-    const channelSelect = screen.getByRole("combobox", { name: "Display channel" });
-    channelSelect.focus(); fireEvent.keyDown(channelSelect, { key: "Escape" });
+    const summary = screen.getByText("Display channels", { exact: true }).closest("summary")!; expect(summary.closest("details")).toHaveAttribute("open");
+    chip.focus(); fireEvent.keyDown(chip, { key: "Escape" });
+    expect(chip).toHaveAttribute("aria-expanded", "false"); expect(chip).toHaveFocus();
+    fireEvent.keyDown(chip, { key: "Escape" });
     expect(summary.closest("details")).not.toHaveAttribute("open"); expect(summary).toHaveFocus();
   });
   it("routes Auto and full display options explicitly", () => {
     const onAuto = vi.fn(), onOpenDisplay = vi.fn(); mount({ onAuto, onOpenDisplay }); select(1);
     fireEvent.click(screen.getByRole("button", { name: "Auto" })); expect(onAuto).toHaveBeenCalledExactlyOnceWith(1);
-    fireEvent.click(screen.getByText("More display")); fireEvent.click(screen.getByRole("button", { name: "Full display options" }));
+    fireEvent.click(screen.getByRole("button", { name: "Full display options" }));
     expect(onOpenDisplay).toHaveBeenCalledOnce();
   });
   it("edits only the selected channel's gamma, color and opacity", () => {
-    const view = mount(); select(1); fireEvent.click(screen.getByText("More display"));
+    const view = mount(); select(1);
     draft(screen.getByLabelText("Marker gamma"), "2"); fireEvent.blur(screen.getByLabelText("Marker gamma"));
     fireEvent.change(screen.getByLabelText("Marker color"), { target: { value: "#123456" } });
     fireEvent.change(screen.getByRole("slider", { name: "Marker opacity" }), { target: { value: "0.42" } });
     expect(view.onChannels.mock.lastCall![0]).toEqual([view.initial[0], { ...view.initial[1], gamma: 2, color: "#123456", opacity: 0.42 }, view.initial[2]]);
   });
   it("disables mutations while leaving the native disclosure usable", () => {
-    mount({ disabled: true, onAuto: vi.fn(), onOpenDisplay: vi.fn() });
+    mount({ disabled: true, onAuto: vi.fn(), onOpenDisplay: vi.fn() }); openEditor();
     expect(screen.getByRole("checkbox", { name: "Nuclei visible" })).toBeDisabled();
-    expect(screen.getByRole("combobox", { name: "Display channel" })).toBeDisabled(); expect(low()).toBeDisabled();
+    expect(low()).toBeDisabled();
     expect(screen.getByRole("button", { name: "Solo" })).toBeDisabled(); expect(screen.getByRole("button", { name: "Auto" })).toBeDisabled();
-    fireEvent.click(screen.getByText("More display")); expect(screen.getByLabelText("Nuclei gamma")).toBeDisabled();
+    expect(screen.getByLabelText("Nuclei gamma")).toBeDisabled();
     expect(screen.getByRole("button", { name: "Full display options" })).toBeDisabled();
   });
   it("selects a logical RGB plane without treating RGB components as biological channels", () => {
@@ -151,6 +170,7 @@ describe("compact channel display", () => {
     render(<CompactChannelControls source={{ ...source, metadata: { ...source.metadata, sample_semantics: "RGB",
       dimensions: { ...source.metadata.dimensions!, c: 2, s: 3 }, channel_names: ["Plane A", "Plane B"] } }}
       channels={[{ ...channelState()[0], channel: 1 }]} onChannels={onChannels} onSourceChannel={onSourceChannel} />);
+    openEditor("RGB components");
     expect(screen.getByLabelText("Display channel")).toHaveValue("1");
     fireEvent.change(screen.getByLabelText("Display channel"), { target: { value: "0" } });
     expect(onSourceChannel).toHaveBeenCalledWith(0);
@@ -162,10 +182,11 @@ describe("compact channel display", () => {
     const onChannels = vi.fn();
     render(<CompactChannelControls source={{ ...source, metadata: { ...source.metadata, sample_semantics,
       dimensions: { ...source.metadata.dimensions!, c: 1 } } }} channels={[channelState()[0]]} onChannels={onChannels} />);
-    expect(screen.getByRole("option", { name: "RGB components" })).toBeInTheDocument();
+    openEditor("RGB components");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument(); expect(screen.queryByRole("button", { name: "Solo" })).not.toBeInTheDocument();
     draft(screen.getByLabelText("RGB components low"), "-1"); fireEvent.blur(screen.getByLabelText("RGB components low"));
-    expect(onChannels).not.toHaveBeenCalled(); fireEvent.click(screen.getByText("More display"));
+    expect(onChannels).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("RGB components color")).not.toBeInTheDocument(); expect(screen.queryByRole("slider")).not.toBeInTheDocument();
     if (sample_semantics === "RGBA") expect(screen.getByText(/Source alpha is retained/)).toBeInTheDocument();
   });

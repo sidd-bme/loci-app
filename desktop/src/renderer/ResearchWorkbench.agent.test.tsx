@@ -37,7 +37,7 @@ beforeEach(() => {
     "fillText", "setLineDash", "save", "restore", "ellipse", "fill", "scale", "putImageData",
   ].map((key) => [key, vi.fn()])) as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const visible = this.classList?.contains("image-viewport");
+    const visible = this.matches(".image-viewport > canvas");
     return { x: 0, y: 0, left: 0, top: 0, right: visible ? 640 : 0, bottom: visible ? 480 : 0,
       width: visible ? 640 : 0, height: visible ? 480 : 0, toJSON: () => ({}) } as DOMRect;
   });
@@ -127,7 +127,7 @@ async function startFollowing(state: ReturnType<typeof harness>) {
   await screen.findByRole("checkbox", { name: "Channel 1 visible" });
   await waitFor(() => expect(screen.getByLabelText("Z plane")).toHaveValue("2"));
   userClick(screen.getByRole("button", { name: "Agent session status" }));
-  userClick(screen.getByRole("checkbox", { name: "Follow agent" }));
+  userClick(screen.getByRole("switch", { name: "Follow agent" }));
   userClick(screen.getByRole("button", { name: "Close agent session drawer" }));
   now += 2000;
 }
@@ -143,11 +143,11 @@ describe("Agent navigation integration", () => {
     const view = render(<ResearchWorkbench api={state.api} preferences={preferences} onBack={vi.fn()} />);
     await screen.findByRole("checkbox", { name: "Channel 1 visible" });
     userClick(screen.getByRole("button", { name: "Agent session status" }));
-    expect(screen.getByRole("checkbox", { name: "Follow agent" })).toBeChecked();
-    userClick(screen.getByRole("checkbox", { name: "Follow agent" }));
+    expect(screen.getByRole("switch", { name: "Follow agent" })).toBeChecked();
+    userClick(screen.getByRole("switch", { name: "Follow agent" }));
     view.rerender(<ResearchWorkbench api={state.api}
       preferences={{ ...preferences, textSize: "large" }} onBack={vi.fn()} />);
-    expect(screen.getByRole("checkbox", { name: "Follow agent" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Follow agent" })).not.toBeChecked();
   });
 
   it("fits followed regions to the live viewport and shows the inspected scalar channel with local display settings", async () => {

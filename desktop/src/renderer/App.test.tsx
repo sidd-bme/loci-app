@@ -706,6 +706,32 @@ describe("Loci renderer", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it("opens the same Settings dialog from the header, keyboard and native menu event", () => {
+    const stop = vi.fn();
+    window.loci = mockApi({ onSettingsRequested: vi.fn().mockReturnValue(stop) });
+    const view = render(<App />);
+    const opener = screen.getByRole("button", { name: "Open settings" });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(dialog).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("tab", { name: "Saving & export" }));
+    const dpi = screen.getByRole("textbox", { name: "Default figure DPI" });
+    fireEvent.change(dpi, { target: { value: "invalid" } });
+    const request = vi.mocked(window.loci.onSettingsRequested).mock.calls.at(-1)![0];
+    act(() => request());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBe(dialog);
+    expect(dpi).toHaveValue("invalid");
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    fireEvent.keyDown(opener, { key: ",", metaKey: true });
+    expect(screen.getByRole("dialog", { name: "Settings" })).toHaveAttribute("open");
+    expect(screen.getByRole("tabpanel", { name: "Appearance" })).toBeVisible();
+    view.unmount();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["onImportRequested", "open-images"],
     ["onFolderImportRequested", "open-folder"],
@@ -1715,7 +1741,8 @@ describe("Loci renderer", () => {
     }));
   });
 
-  it("exports a full-resolution adjusted view without segmentation", async () => {
+  it.each(["graphite", "black"])("exports a full-resolution adjusted view without segmentation in %s", async (theme) => {
+    localStorage.setItem("loci.preferences.v1", JSON.stringify({ theme }));
     const exportView = vi.fn().mockResolvedValue({
       path: "/lab/export/plate-a_loci_view.png",
       format: "png",
@@ -1740,6 +1767,7 @@ describe("Loci renderer", () => {
     });
     window.loci = mockApi({ exportView });
     render(<App />);
+    expect(document.documentElement).toHaveAttribute("data-theme", theme);
 
     fireEvent.click(screen.getByRole("button", { name: "Open images" }));
     await screen.findAllByText("plate-a.tif");
@@ -1770,19 +1798,24 @@ describe("Loci renderer", () => {
     expect(screen.queryByText(/\/lab\/export/)).not.toBeInTheDocument();
   });
 
-  it("opens persisted appearance and export preferences from the title bar", () => {
+  it.each(["midnight", "black"])("opens persisted appearance and export preferences from the title bar in %s", (theme) => {
     render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Open settings" }));
     expect(screen.getByRole("dialog", { name: "Settings" })).toBeVisible();
-    fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: "midnight" } });
+    fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: theme } });
     fireEvent.click(screen.getByRole("radio", { name: /Large/i }));
+    expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    fireEvent.click(screen.getByRole("radio", { name: "Comfortable" }));
     fireEvent.click(screen.getByRole("tab", { name: "Saving & export" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Default figure DPI" }), { target: { value: "600" } });
     fireEvent.blur(screen.getByRole("textbox", { name: "Default figure DPI" }));
 
-    expect(document.documentElement).toHaveAttribute("data-theme", "midnight");
+    expect(document.documentElement).toHaveAttribute("data-theme", theme);
+    expect(window.localStorage.getItem("loci.preferences.v1")).toContain(`"theme":"${theme}"`);
     expect(document.documentElement).toHaveAttribute("data-text-size", "large");
+    expect(document.documentElement).toHaveAttribute("data-density", "comfortable");
+    expect(window.localStorage.getItem("loci.preferences.v1")).toContain('"density":"comfortable"');
     expect(window.localStorage.getItem("loci.preferences.v1")).toContain('"figureDpi":600');
   });
 
@@ -1795,6 +1828,8 @@ describe("Loci renderer", () => {
     expect(await screen.findByRole("heading", { level: 2, name: "Work with external agents" })).toBeVisible();
     fireEvent.keyDown(window, { key: "F1" });
     expect(await screen.findByRole("heading", { level: 2, name: "Welcome" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Close user manual" }));
+    expect(screen.getByRole("tabpanel", { name: "External agents" })).toBeVisible();
   });
 
   it("suspends workspace shortcuts while Settings is modal", async () => {

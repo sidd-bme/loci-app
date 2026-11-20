@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
@@ -205,11 +206,12 @@ async function geometry(label) {
 async function appearance(width, height, theme, size) {
   await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setContentSize(bounds.width, bounds.height), { width, height });
   await page.waitForFunction(bounds => innerWidth === bounds.width && innerHeight === bounds.height, { width, height });
-  await page.getByRole("button", { name: "Open settings", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Settings" });
+  const settings = await openSettings(app, page);
+  const { dialog } = settings;
+  await dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
   await dialog.getByRole("combobox", { name: "Application theme" }).selectOption(theme);
   await dialog.getByRole("radio", { name: new RegExp(`^${size === "large" ? "Large" : "Standard"}`) }).click();
-  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await closeSettings(settings);
   await page.waitForFunction(([theme, size]) => document.documentElement.dataset.theme === theme &&
     document.documentElement.dataset.textSize === size, [theme, size]);
 }

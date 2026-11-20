@@ -6,6 +6,13 @@ import type { LociDesktopApi } from "./shared/contracts";
 import type { ResearchDesktopApi } from "./shared/research-contracts";
 
 const api: LociDesktopApi = {
+  ...(process.argv.includes("--loci-main-workspace") ? {
+    onComputeStudyChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on("loci:compute-study-changed", listener);
+      return () => { ipcRenderer.removeListener("loci:compute-study-changed", listener); };
+    },
+  } : {}),
   pickImages: () => ipcRenderer.invoke("loci:pick-images"),
   pickFolder: () => ipcRenderer.invoke("loci:pick-folder"),
   createProject: (manifest) =>
@@ -276,6 +283,10 @@ const researchApi: ResearchDesktopApi = {
   chooseControlledMethodOutput: (request) => ipcRenderer.invoke("loci-research:method-output-grant", request),
   exportControlledMethodInput: (request) => ipcRenderer.invoke("loci-research:method-input-export", request),
   labelsImportPreview: (binding) => ipcRenderer.invoke("loci-research:labels-import-preview", binding),
+  convertStudyImage: (request) => ipcRenderer.invoke("loci-research:convert-study-image", request),
+  exportUsamHandoff: (binding) => ipcRenderer.invoke("loci-research:usam-handoff-export", binding),
+  listUsamHandoffs: () => ipcRenderer.invoke("loci-research:usam-handoffs"),
+  openModelLibraryLink: (linkId) => ipcRenderer.invoke("loci-research:model-library-link", linkId),
   recipeResources: () => ipcRenderer.invoke("loci-research:recipe-resources"),
   computeTargets: (operation, request) => ipcRenderer.invoke("loci-research:compute-targets", operation, request),
   exportSourceView: (request) => ipcRenderer.invoke("loci-research:export-source-view", request),

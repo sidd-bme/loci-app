@@ -444,6 +444,25 @@ describe("Info Review & export rendered summary component", () => {
     expect(screen.getByText(/first 1 of 201 objects/)).toBeVisible();
   });
 
+  it.each([
+    { unit: "um^2", display: "µm²", kind: "area" },
+    { unit: "um^3", display: "µm³", kind: "volume" },
+  ])("formats $unit in the preview and summary while preserving the declared unit", ({ unit, display, kind }) => {
+    const rows = [{ label: 1, measure: 42, measure_kind: kind, measure_unit: unit }];
+    const result = { ...mockResult, kind: "segmentation", created_at: "now", object_count: 1 };
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={createMockApi()} result={result}
+      rows={rows} onSave={vi.fn()} report={async (work) => work()} busy={false} onSnapshot={vi.fn()} />);
+    const displayedUnits = screen.getAllByText(display);
+    expect(displayedUnits.filter((element) => element.closest(".research-stat-value"))).toHaveLength(2);
+    fireEvent.click(screen.getByText(/^Inspect preview rows/));
+    const table = screen.getByRole("grid", { name: "Measurements and object table" });
+    expect(within(table).getByText(display)).toHaveAttribute("title", unit);
+    expect(within(table).getByRole("columnheader", { name: "Measure" })).toHaveAttribute("data-align", "numeric");
+    expect(within(table).getByRole("gridcell", { name: "42" })).toHaveAttribute("data-align", "numeric");
+    expect(computeResultStats(rows)?.unit).toBe(unit);
+    expect(computeResultStats([...rows, { ...rows[0], measure_unit: display }])?.hasMixedUnits).toBe(true);
+  });
+
   it("keeps source metadata directly reachable without an active result", () => {
     render(<Info source={mockSource} snapshot={mockSnapshot} api={createMockApi()} result={null}
       onSave={vi.fn()} report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
@@ -492,6 +511,20 @@ describe("Info Review & export rendered summary component", () => {
     expect(screen.getByLabelText("Label import identity")).toHaveTextContent("sparse.tif");
     expect(screen.getByLabelText("Label import identity")).toHaveTextContent("Upstream settingsUnknown");
     expect(screen.getByLabelText("Label import identity")).toHaveTextContent("Correction parentparent-exact-id");
+  });
+
+  it("identifies a returned volume and its declared model in technical details", () => {
+    const result = { ...mockResult, kind: "external-labels", created_at: "now", object_count: 2,
+      label_import: { file_name: "labels.tif", format: "TIFF",
+      profile: "scalar-native-zyx/v1", source_sha256: mockSource.sha256, file_sha256: "f".repeat(64),
+      original_dtype: "uint32", shape: [3, 19, 27] as [number, number, number],
+      producer: { name: "External annotator", version: null, model: "test model", mode: "interactive" } } };
+    render(<Info source={mockSource} snapshot={mockSnapshot} api={createMockApi()} result={result} rows={[]}
+      selectedRow={null} onSelectRow={vi.fn()} onSave={vi.fn()} report={async (work) => await work()} busy={false} onSnapshot={vi.fn()} />);
+    const details = screen.getByLabelText("Label import identity");
+    expect(details).toHaveTextContent("3 × 19 × 27 ZYX");
+    expect(details).toHaveTextContent("Declared modeltest model");
+    expect(details).toHaveTextContent("Declared modeinteractive");
   });
 
   it("renders plain-language incompatible reason, withholds mean/range, and keeps table/controls interactive", () => {

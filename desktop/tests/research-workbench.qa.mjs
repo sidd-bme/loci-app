@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
 import { qualifyExtendedWorkflows } from "./research-extended-workflows.qa.mjs";
 import { qualifyMedicalWorkflow } from "./research-medical-workflow.qa.mjs";
-import { selectResultSection, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool, sourceRowByName, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -139,7 +139,8 @@ async function visible(page, locator, label, timeout = 30_000) {
   await noUiError(page, "waiting for " + label);
   return locator;
 }
-async function rows(page, count, unit) {
+const sourceRow = (page, fixturePath) => sourceRowByName(page, path.basename(fixturePath));
+async function rows(page, count, displayUnit, storedUnit) {
   const tableRows = page.locator(".research-result-table tbody tr");
   await page.waitForFunction(
     (expected) =>
@@ -149,15 +150,16 @@ async function rows(page, count, unit) {
     { timeout: 120_000 },
   );
   assert.equal(await tableRows.count(), count);
-  await visible(
+  const unitCell = await visible(
     page,
     page
       .locator(".research-result-table")
-      .getByText(unit, { exact: true })
+      .getByText(displayUnit, { exact: true })
       .first(),
-    unit,
+    displayUnit,
     30_000,
   );
+  assert.equal(await unitCell.evaluate((element) => element.dataset.lociHelp ?? element.title), storedUnit);
 }
 async function assertRowValues(page, values) {
   const actual = await page
@@ -324,29 +326,9 @@ try {
     page.getByRole("main", { name: "Research workspace" }),
     "research workspace",
   );
-  await visible(
-    page,
-    page
-      .locator(".research-sources")
-      .getByRole("button", {
-        name: /^anisotropic_tczyx_two_objects\.ome\.tiff/,
-      }),
-    "volume source",
-  );
-  await visible(
-    page,
-    page
-      .locator(".research-sources")
-      .getByRole("button", { name: /^declared_h_dab_rgb\.tiff/ }),
-    "RGB source",
-  );
-  await visible(
-    page,
-    page
-      .locator(".research-sources")
-      .getByRole("button", { name: /^oblique_scalar\.nii/ }),
-    "NIfTI source",
-  );
+  await visible(page, await sourceRow(page, fixture.volume), "volume source");
+  await visible(page, await sourceRow(page, fixture.rgb), "RGB source");
+  await visible(page, await sourceRow(page, fixture.nifti), "NIfTI source");
   await page.locator("details.workbench-file-menu summary").click();
   await page.getByRole("button", { name: "Save as study…", exact: true }).click();
   await assertFileExists(path.join(studyPath, "study.sqlite3"));
@@ -375,33 +357,33 @@ try {
 
   // First run is one native Z plane (2D), then the explicit z_stop creates a 3D result.
   await page.getByLabel("Display scope").selectOption("plane");
-  await page
-    .locator(".research-sources")
-    .getByRole("button", { name: /^declared_h_dab_rgb\.tiff/ })
-    .click();
-  await page
-    .locator(".research-sources")
-    .getByRole("button", { name: /^anisotropic_tczyx_two_objects\.ome\.tiff/ })
-    .click();
+  await (await sourceRow(page, fixture.rgb)).click();
+  await (await sourceRow(page, fixture.volume)).click();
   await openAnalysisRegion(page);
   await page.getByLabel("Z", { exact: true }).fill("1");
   await selectTool(page, "Analyze");
   await page.getByLabel("Threshold", { exact: true }).fill("50");
   await page.getByRole("button", { name: "Run recipe" }).click();
-  await rows(page, 2, "um^2");
+  await rows(page, 2, "µm²", "um^2");
   await assertRowValues(page, [10, 18]);
   await screenshot(page, "two-dimensional-result");
   await selectTool(page, "Info");
   const summary = page.locator(".research-result-summary-card");
   await summary.waitFor({ state: "visible" });
+  const analysisDetails = page.locator("details.result-context > summary");
+  await analysisDetails.click();
+  const desktopRecipe = page.getByRole("button", { name: "Copy CLI recipe JSON", exact: true });
+  await desktopRecipe.waitFor({ state: "visible" });
+  assert.equal(await desktopRecipe.isEnabled(), true, "An original recipe run in the desktop must expose CLI replay");
+  await analysisDetails.click();
   assert.equal(await page.getByRole("group",{name:"Result sections",exact:true}).getByRole("button",{name:"Review",exact:true}).getAttribute("aria-pressed"),"true");
   assert.equal(await page.getByRole("region",{name:"Export scientific data",exact:true}).count(),0);
   assert.equal(await summary.locator("details.research-preview-rows").evaluate(element=>element.open),false);
   await screenshot(page,"quantitative-summary-review-first");
   // Fixture rectangles are 4*5 and 6*6 pixels at 0.5*1 µm²/pixel.
   assert.equal(await summary.locator(".research-stat-value").nth(0).innerText(), "2");
-  assert.match(await summary.innerText(), /Mean Area\s+14\s+um\^2/);
-  assert.match(await summary.innerText(), /Range\s+10 – 18\s+um\^2/);
+  assert.match(await summary.innerText(), /Mean Area\s+14\s+µm²/);
+  assert.match(await summary.innerText(), /Range\s+10 – 18\s+µm²/);
   await page.locator("details.research-preview-rows > summary").click();
   const measurementTable = page.getByRole("region", { name: "Result measurements", exact: true });
   await measurementTable.focus();
@@ -428,7 +410,7 @@ try {
   await page.getByLabel("Z stop", { exact: true }).fill("3");
   await selectTool(page, "Analyze");
   await page.getByRole("button", { name: "Run recipe" }).click();
-  await rows(page, 2, "um^3");
+  await rows(page, 2, "µm³", "um^3");
   await assertRowValues(page, [60, 108]);
   await screenshot(page, "three-dimensional-result");
 
@@ -441,10 +423,7 @@ try {
 
   // RGB is selected as a declared brightfield source.  The UI must never call RGB
   // components biological channels; it requires an explicit H-DAB declaration.
-  await page
-    .locator(".research-sources")
-    .getByRole("button", { name: /^declared_h_dab_rgb\.tiff/ })
-    .click();
+  await (await sourceRow(page, fixture.rgb)).click();
   await selectTool(page, "Analyze");
   await page.getByLabel("Segmentation model", { exact: true }).selectOption("stain");
   await visible(
@@ -460,7 +439,7 @@ try {
   await page.getByLabel("Stain rule threshold").fill("0.01");
   await page.getByLabel("Stain rule control or evidence").fill("Synthetic RGB patches; technical rule only.");
   await page.getByRole("button", { name: "Preview declared stain" }).click();
-  await rows(page, 1, "pixel^2");
+  await rows(page, 1, "px²", "pixel^2");
   await assertRowValues(page, [90]);
   await page.getByRole("button", { name: "Run declared stain" }).click();
   const stainState = await waitForSnapshot(page, state => state?.results.some(item => item.kind === "declared-stain-analysis"), "declared stain publication");
@@ -493,10 +472,7 @@ try {
 
   // Saved recipes are validated against their source.  Batch only includes the
   // compatible source and still requires a displayed preview before the run.
-  await page
-    .locator(".research-sources")
-    .getByRole("button", { name: /^anisotropic_tczyx_two_objects\.ome\.tiff/ })
-    .click();
+  await (await sourceRow(page, fixture.volume)).click();
   await selectTool(page, "Study");
   await page
     .getByLabel("Study recipe name")
@@ -590,15 +566,7 @@ try {
     page.getByRole("main", { name: "Research workspace" }),
     "reopened study",
   );
-  await visible(
-    page,
-    page
-      .locator(".research-sources")
-      .getByRole("button", {
-        name: /^anisotropic_tczyx_two_objects\.ome\.tiff/,
-      }),
-    "reopened source",
-  );
+  await visible(page, await sourceRow(page, fixture.volume), "reopened source");
   await screenshot(page, "reopened");
   await close(app);
 

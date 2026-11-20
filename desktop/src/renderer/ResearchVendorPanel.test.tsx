@@ -126,9 +126,10 @@ describe("ResearchVendorPanel", () => {
     fireEvent.click(screen.getByText("Choose vendor image…"));
     expect(await screen.findByLabelText("Exact vendor inspection")).toHaveTextContent("sample.czi");
     expect(screen.getByLabelText("Exact vendor inspection")).toHaveTextContent("8.5.0");
-    expect(screen.getByLabelText("Exact vendor plane selection")).toHaveTextContent("100×80");
+    expect(screen.getByLabelText("Vendor selection")).toHaveTextContent("100×80");
     expect(document.body).not.toHaveTextContent("/private/");
 
+    fireEvent.change(screen.getByLabelText("Vendor scope"), { target: { value: "plane" } });
     fireEvent.change(screen.getByLabelText("Vendor channel"), { target: { value: "1" } });
     expect(screen.getByText(/multiple RGB samples/)).toBeVisible();
     expect(screen.getByText("Convert and import plane")).toBeDisabled();
@@ -166,6 +167,56 @@ describe("ResearchVendorPanel", () => {
     expect(within(conversionReceipt).getByText(pixelHash)).toBeVisible();
   });
 
+  it("previews the full series and binds an inclusive range to exclusive worker stops", async () => {
+    const grant = structuredClone(inspection);
+    grant.inspection.series[0].samples_per_channel = [1, 1];
+    const convertVendor = vi.fn().mockResolvedValue(null);
+    renderPanel(bridge(vi.fn().mockResolvedValue(grant), convertVendor));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
+    const preview = await screen.findByLabelText("Vendor output preview");
+    expect(preview).toHaveTextContent("TCZYX · 4 × 2 × 3 × 80 × 100 · uint16 · 24 planes · 375.0 KiB");
+    expect(screen.getByLabelText("Vendor heap MiB")).not.toBeVisible();
+    fireEvent.change(screen.getByLabelText("Vendor scope"), { target: { value: "range" } });
+    fireEvent.change(screen.getByLabelText("Vendor T index"), { target: { value: "1" } });
+    fireEvent.change(screen.getByLabelText("Vendor last T"), { target: { value: "0" } });
+    expect(screen.getByText("Convert and import stack")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Vendor last T"), { target: { value: "2" } });
+    expect(preview).toHaveTextContent("2 × 2 × 3 × 80 × 100");
+    fireEvent.click(screen.getByText("Convert and import stack"));
+    await waitFor(() => expect(convertVendor).toHaveBeenCalledWith(expect.objectContaining({
+      series: 0, c: 0, z: 0, t: 1, end_exclusive: { c: 2, z: 3, t: 3 },
+    })));
+  });
+
+  it("requires matching acquisition evidence and scope before adopting a whole-series receipt", async () => {
+    const grant = structuredClone(inspection);
+    grant.inspection.series[0].samples_per_channel = [1, 1];
+    const receipt = {
+      ...converted.conversion, schema_version: "loci.vendor-conversion-receipt/v3",
+      runtime: grant.inspection.runtime,
+      selection: { series: 0, c: 0, z: 0, t: 0, end_exclusive: { c: 2, z: 3, t: 4 }, crop_xywh: [0, 0, 100, 80] },
+      artifact: { ...converted.conversion.artifact, axes: "TCZYX", dtype: "uint16", shape: [4, 2, 3, 80, 100],
+        acquisition: { planes_with_delta_t: 0, planes_with_stage_position: 0, stage_position_anchor: "unspecified", native_plane_metadata_sha256: "e".repeat(64) },
+      },
+    };
+    const convertVendor = vi.fn()
+      .mockResolvedValueOnce({ ...converted, conversion: { ...receipt, artifact: { ...receipt.artifact, acquisition: null } } })
+      .mockResolvedValueOnce({ ...converted, conversion: { ...receipt, selection: { ...receipt.selection, z: 1 } } })
+      .mockResolvedValueOnce({ ...converted, conversion: receipt });
+    const { onSnapshot, onBusyChange } = renderPanel(bridge(vi.fn().mockResolvedValue(grant), convertVendor));
+    fireEvent.click(screen.getByText("Choose vendor image…"));
+    const button = await screen.findByText("Convert and import stack");
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(onSnapshot).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(onSnapshot).not.toHaveBeenCalled();
+    fireEvent.click(button);
+    await waitFor(() => expect(onSnapshot).toHaveBeenCalledWith(importedSnapshot));
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  });
+
   it("discards the previous grant before a cancelled replacement inspection", async () => {
     const inspectVendor = vi.fn()
       .mockResolvedValueOnce(inspection)
@@ -199,10 +250,11 @@ describe("ResearchVendorPanel", () => {
     const rendered = renderPanel(bridge(vi.fn().mockResolvedValue(inspection), convertVendor), report);
     fireEvent.click(screen.getByText("Choose vendor image…"));
     await screen.findByLabelText("Exact vendor inspection");
+    fireEvent.change(screen.getByLabelText("Vendor scope"), { target: { value: "plane" } });
     fireEvent.click(screen.getByText("Convert and import plane"));
     await waitFor(() => expect(reportMock).toHaveBeenCalledWith(
       expect.any(Function),
-      "Could not convert and import the exact selected vendor plane.",
+      "Could not convert and import the selected vendor data.",
     ));
     expect(rendered.onSnapshot).not.toHaveBeenCalled();
   });
@@ -215,6 +267,7 @@ describe("ResearchVendorPanel", () => {
     );
     fireEvent.click(screen.getByText("Choose vendor image…"));
     await screen.findByLabelText("Exact vendor inspection");
+    fireEvent.change(screen.getByLabelText("Vendor scope"), { target: { value: "plane" } });
     fireEvent.click(screen.getByText("Convert and import plane"));
     expect(screen.getByLabelText("Vendor Z index")).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Vendor Z index"), { target: { value: "1" } });

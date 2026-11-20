@@ -9,7 +9,8 @@ const agentEntrypoint = /(?:^|\/)(?:AGENTS|CLAUDE|GEMINI)\.md$/i;
 const manualRoutingPaths = new Set(["desktop/src/renderer/UserGuideDialog.tsx", "desktop/src/main/manual-links.ts"]);
 const privateManualRoute = /(?:github\.com\/sidd-bme\/Loci(?:[/.?#\s]|$)|\/sidd-bme\/Loci\/blob\/)/i;
 const documentationPath = /^(?:[^/]+\.md|docs\/.*\.md)$/i;
-const privateReference = /https?:\/\/github\.com\/sidd-bme\/Loci(?:\.git)?(?=[/#?\s)"'`]|$)|\/(?:Volumes|Users)\/[^\s)"'`]+/i;
+const privateReference = /https?:\/\/github\.com\/sidd-bme\/Loci(?:\.git)?(?=[/#?\s)"'`]|$)|(?<![A-Za-z0-9._~%-])\/(?:Volumes|Users)\/[^\s)"'`]+/i;
+const embeddedMacPath = /\/(?:Volumes|Users)\/[^\s)"'`]+/;
 const developmentReference = /(?:\.agents\/|\.codex\/|\.github\/development\/|\bADR-\d{4}|\b(?:PROJECT_STATE|PRODUCT_FOUNDATION|ROADMAP|RESEARCH_DECISIONS[^/\s]*)\.md\b)/;
 
 export function validatePaths(paths) {
@@ -37,7 +38,7 @@ export function publicSurfaceProblems(paths, readText) {
     if (!documentationPath.test(path)) continue;
     const text = readText(path);
     for (const [index, line] of text.split("\n").entries()) {
-      if (privateReference.test(line)) problems.push(`${path}:${index + 1}: private repository or local checkout reference`);
+      if (privateReference.test(line) || embeddedMacPath.test(line)) problems.push(`${path}:${index + 1}: private repository or local checkout reference`);
       if (developmentReference.test(line)) problems.push(`${path}:${index + 1}: development coordination or planning reference`);
     }
     for (const match of text.matchAll(/\[[^\]\n]*\]\(([^\s)]+)(?:\s+"[^"\n]*")?\)/g)) {

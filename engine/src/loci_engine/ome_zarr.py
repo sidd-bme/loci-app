@@ -121,6 +121,7 @@ class OMEZarrMetadata:
     zarr_version: str
     numcodecs_version: str
     strict_content_manifest_sha256: str | None
+    channel_labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,11 +339,7 @@ def _open_verified_file(
         try:
             before = os.fstat(descriptor)
             identity = _entry_identity(before, "file")
-            if (
-                identity != expected
-                or not stat.S_ISREG(before.st_mode)
-                or before.st_nlink != 1
-            ):
+            if identity != expected or not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise OMEZarrSourceChangedError(
                     f"OME-Zarr file '{relative}' changed before it was read."
                 )
@@ -941,7 +938,23 @@ class OMEZarrSession:
         file_count = sum(item.kind == "file" for item in after.values())
         directory_count = sum(item.kind == "directory" for item in after.values())
         source_size = sum(item.size for item in after.values() if item.kind == "file")
+        # Optional display labels belong to the selected channel axis. Other OMERO
+        # fields carry rendering advice, not biological declarations.
+        omero = attributes.get("omero")
+        channels = omero.get("channels") if isinstance(omero, dict) else None
+        labels = ()
+        if isinstance(channels, list) and len(channels) == levels[0].canonical_shape_tczyx[1]:
+            labels = tuple(
+                label
+                if isinstance(channel, dict)
+                and isinstance(label := channel.get("label"), str)
+                and 0 < len(label) <= 256
+                and label.isprintable()
+                else f"Channel {index + 1}"
+                for index, channel in enumerate(channels)
+            )
         self.metadata = OMEZarrMetadata(
+            channel_labels=labels,
             ngff_version="0.4",
             zarr_format=2,
             source_axes=axes,
@@ -1031,7 +1044,21 @@ class OMEZarrSession:
         except (TypeError, ValueError) as exc:
             raise OMEZarrError("A decoded Zarr chunk has an invalid numeric layout.") from exc
 
+    def iter_verified_planes(self, requests):
+        """Read a transaction's tiles, binding the inventory at both ends of iteration.
+
+        Each encoded chunk is opened against its captured identity. Only the completed
+        iterator has passed the final inventory check; conversion publishes afterwards.
+        """
+        self._verify_inventory()
+        for request in requests:
+            yield self._read_plane(request, check_inventory=False)
+        self._verify_inventory()
+
     def read_plane(self, request: OMEZarrPlaneRequest) -> OMEZarrPlane:
+        return self._read_plane(request, check_inventory=True)
+
+    def _read_plane(self, request: OMEZarrPlaneRequest, *, check_inventory: bool) -> OMEZarrPlane:
         """Read one bounded scalar YX rectangle at explicit T, C, and Z indices."""
 
         if not isinstance(request, OMEZarrPlaneRequest):
@@ -1109,7 +1136,8 @@ class OMEZarrSession:
         if estimated_peak > budget:
             raise OMEZarrBudgetError(estimated_peak, budget)
 
-        self._verify_inventory()
+        if check_inventory:
+            self._verify_inventory()
         output = np.empty((height, width), dtype=spec.dtype)
         for coordinate in coordinates:
             decoded = self._decode_chunk(spec, coordinate)
@@ -1132,7 +1160,8 @@ class OMEZarrSession:
                 global_y0 - request.y : global_y1 - request.y,
                 global_x0 - request.x : global_x1 - request.x,
             ] = block
-        self._verify_inventory()
+        if check_inventory:
+            self._verify_inventory()
         if output.dtype.kind == "f" and not np.isfinite(output).all():
             raise OMEZarrError("The requested scientific plane contains non-finite values.")
         output = np.ascontiguousarray(output)

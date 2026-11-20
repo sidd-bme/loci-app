@@ -106,3 +106,210 @@
 .image-viewport.is-fullscreen { width: 100vw; height: 100vh; }
 .image-view-unavailable { position: absolute; left: 20%; right: 20%; top: 45%; color: var(--ink); background: var(--graphite-850); padding: 12px; border-radius: 6px; text-align: center; font-size: var(--type-md); line-height: 1.6; }
 @media (max-width: 800px) { .image-view-tools { top: 8px; } .image-view-loading { top: 52px; } }
+
+.image-view-command-rail { display: contents; }
+.image-viewport[data-controls="docked"] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "tools tools" "image navigator" "readout readout";
+  container: image-stage / inline-size;
+  background: var(--canvas);
+}
+.image-viewport[data-controls="docked"][data-toolbar-dock="bottom"] {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-areas: "image navigator" "tools tools" "readout readout";
+}
+.image-viewport[data-controls="docked"] > canvas { grid-area: image; min-width: 0; min-height: 0; }
+.image-viewport[data-controls="docked"] .image-view-command-rail {
+  grid-area: tools;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 3px 8px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+.image-viewport[data-controls="docked"][data-toolbar-dock="bottom"] .image-view-command-rail {
+  border-top: 1px solid var(--line);
+  border-bottom: 0;
+}
+.image-viewport[data-controls="docked"] .image-view-tools {
+  position: static;
+  transform: none;
+  flex: 1 1 auto;
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0;
+  gap: 2px;
+  background: transparent;
+  border: 0;
+  color: var(--ink-secondary);
+}
+.image-viewport[data-controls="docked"] .image-view-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: var(--control-height-compact, 26px);
+  min-height: var(--control-height-compact, 26px);
+  min-width: var(--control-height-compact, 26px);
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+}
+.image-viewport[data-controls="docked"] .image-view-tools button:is(:hover, :focus-visible, [aria-pressed="true"]) {
+  border-color: transparent;
+  background: var(--surface-4);
+  color: var(--ink);
+}
+.image-viewport[data-controls="docked"] .image-display-sampling {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1px;
+  margin-inline-start: 6px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+.image-viewport[data-controls="docked"] .image-display-sampling button {
+  height: max(24px, calc(var(--control-height-compact, 26px) - 2px));
+  min-height: 24px;
+  padding: 0 7px;
+  border-radius: var(--radius-badge);
+  font-size: var(--type-xs);
+  font-weight: 500;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+.image-viewport[data-controls="docked"] .image-display-sampling button:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+.image-viewport[data-controls="docked"] .image-display-sampling button[aria-pressed="true"] {
+  background: var(--surface-4);
+  color: var(--ink);
+  box-shadow: none;
+}
+.image-viewport[data-controls="docked"] :is(button, [role="button"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+.image-viewport[data-controls="docked"] .image-toolbar-dock {
+  order: 1;
+  margin-inline-start: auto;
+}
+.image-viewport[data-controls="docked"] .image-view-tools output {
+  color: var(--ink);
+  min-width: 5ch;
+  font-size: var(--type-sm);
+  font-weight: 550;
+}
+.image-viewport[data-controls="docked"] :is(.image-view-loading, .image-drawing-status) {
+  position: static;
+  margin: 0;
+  max-width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+}
+.image-viewport[data-controls="docked"] .image-view-loading button {
+  color: var(--mineral-bright);
+  min-height: 24px;
+}
+.image-viewport[data-controls="docked"] .image-view-readout {
+  position: static;
+  grid-area: readout;
+  align-items: center;
+  min-width: 0;
+  min-height: var(--control-height-compact, 26px);
+  max-width: none;
+  gap: 4px 12px;
+  padding: 4px 10px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--surface-1);
+  color: var(--ink-secondary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  text-shadow: none;
+}
+.image-viewport[data-controls="docked"][data-toolbar-dock="bottom"] .image-view-readout {
+  border-top-color: color-mix(in srgb, var(--line) 65%, transparent);
+}
+.image-viewport[data-controls="docked"] .image-view-readout > span:first-child { color: var(--ink); }
+.image-source-sampling-readout {
+  display: grid;
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+/* Reserve space for both source states so a sampling change cannot resize the canvas. */
+.image-source-sampling-readout > span,
+.image-source-sampling-readout::before { grid-area: 1 / 1; }
+.image-source-sampling-readout::before {
+  content: attr(data-alternate-sampling) / "";
+  visibility: hidden;
+}
+.image-viewport[data-controls="docked"] .image-scale-bar {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.image-viewport[data-controls="docked"] .image-scale-bar i { border-color: currentColor; }
+.image-viewport[data-controls="docked"] .image-navigator-panel {
+  position: static;
+  grid-area: navigator;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 100%;
+  padding: 6px;
+  align-self: start;
+  border: 0;
+  border-radius: 0;
+  background: var(--graphite-925);
+  backdrop-filter: none;
+  box-shadow: none;
+  box-sizing: border-box;
+  overflow: auto;
+}
+/* Keep the field stable while the next verified overview is loading. */
+.image-viewport[data-overview-rail="true"] {
+  grid-template-columns: minmax(0, 1fr) min(130px, 18%);
+  background: var(--graphite-925);
+}
+.image-navigator-caption {
+  padding-bottom: 4px;
+  font-size: var(--type-xs);
+  color: var(--ink-secondary);
+}
+@container image-stage (max-width: 560px) {
+  .image-viewport[data-controls="docked"] .image-view-command-rail { padding-inline: 6px; gap: 2px 6px; }
+  .image-viewport[data-controls="docked"] .image-view-tools { gap: 1px; }
+  .image-viewport[data-controls="docked"] .image-view-tools button { padding: 0 5px; }
+  .image-viewport[data-controls="docked"] .image-display-sampling { margin-inline-start: 4px; padding: 1px; }
+  .image-viewport[data-controls="docked"] .image-display-sampling button { padding: 0 5px; }
+}
+@container image-stage (max-width: 450px) {
+  .image-viewport[data-controls="docked"] .image-view-command-rail { padding-inline: 4px; gap: 2px 5px; }
+  .image-viewport[data-controls="docked"] .image-display-sampling { margin-inline-start: 2px; padding: 1px; }
+  .image-viewport[data-controls="docked"] .image-view-readout { gap: 3px 8px; }
+  .image-viewport[data-controls="docked"] .image-scale-bar { gap: 4px; }
+}

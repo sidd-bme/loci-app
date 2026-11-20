@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import { useState } from "react";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_PREFERENCES, type UserPreferences } from "./preferences";
+import { DEFAULT_PREFERENCES, LOCI_THEMES, type UserPreferences } from "./preferences";
 import SettingsDialog from "./SettingsDialog";
 
 afterEach(cleanup);
 
 function show(overrides: Partial<UserPreferences> = {}, callbacks: {
-  onChange?: (value: UserPreferences) => void; onClose?: () => void; onOpenGuide?: (sectionId?: string) => void;
+  onChange?: (value: UserPreferences) => void; onClose?: () => void; onQuit?: () => void; onOpenGuide?: (sectionId?: string) => void;
 } = {}) {
   const preferences: UserPreferences = {
     ...structuredClone(DEFAULT_PREFERENCES),
@@ -18,7 +18,7 @@ function show(overrides: Partial<UserPreferences> = {}, callbacks: {
     viewer: { ...DEFAULT_PREFERENCES.viewer, ...overrides.viewer },
   };
   return render(<SettingsDialog preferences={preferences} onChange={callbacks.onChange ?? vi.fn()}
-    onClose={callbacks.onClose ?? vi.fn()} onQuit={vi.fn()} onOpenGuide={callbacks.onOpenGuide} />);
+    onClose={callbacks.onClose ?? vi.fn()} onQuit={callbacks.onQuit ?? vi.fn()} onOpenGuide={callbacks.onOpenGuide} />);
 }
 
 describe("SettingsDialog", () => {
@@ -29,13 +29,13 @@ describe("SettingsDialog", () => {
     expect(screen.getByRole("status")).toHaveTextContent("1 matching setting");
     fireEvent.click(screen.getByRole("button", { name: /Expand activity records/ }));
     expect(screen.getByRole("tab", { name: "External agents" })).toHaveAttribute("aria-selected", "true");
-    const activity = screen.getByRole("checkbox", { name: /Expand activity records/ });
+    const activity = screen.getByRole("switch", { name: "Expand activity records" });
     expect(activity).toHaveFocus();
     fireEvent.click(activity);
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { followByDefault: false, expandActivityDetails: true } }));
     fireEvent.change(search, { target: { value: "guidance" } });
     fireEvent.click(screen.getByRole("button", { name: /Contextual guidance/ }));
-    expect(screen.getByRole("checkbox", { name: /Contextual guidance/ })).toHaveFocus();
+    expect(screen.getByRole("switch", { name: "Contextual guidance" })).toHaveFocus();
     expect(onChange).toHaveBeenCalledOnce();
   });
 
@@ -50,13 +50,13 @@ describe("SettingsDialog", () => {
     appearance.focus(); fireEvent.keyDown(appearance, { key: "ArrowDown" });
     expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveFocus();
     expect(screen.getByRole("tab", { name: "Viewing & help" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(window, { key: "Escape" }); expect(onClose).toHaveBeenCalledOnce();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" }); expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("opens contextual manual topics without changing agent permissions or preferences", () => {
     const onChange = vi.fn(), onOpenGuide = vi.fn(); show({}, { onChange, onOpenGuide });
     fireEvent.click(screen.getByRole("tab", { name: "External agents" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: /Follow agent by default/ }));
+    fireEvent.click(screen.getByRole("switch", { name: "Follow agent by default" }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ agent: { followByDefault: true, expandActivityDetails: false } }));
     fireEvent.click(screen.getByRole("button", { name: "Read the agent workflow" }));
     expect(onOpenGuide).toHaveBeenLastCalledWith("work-with-external-agents");
@@ -71,7 +71,9 @@ describe("SettingsDialog", () => {
     const navigation = screen.getByRole("tablist", { name: "Settings categories" });
     for (const label of ["Appearance", "Viewing & help", "Saving & export", "Capabilities", "User guide"])
       expect(within(navigation).getByRole("tab", { name: label })).toBeVisible();
-    expect(screen.getByRole("combobox", { name: "Application theme" })).toBeVisible();
+    const themeControl = screen.getByRole("combobox", { name: "Application theme" });
+    expect(themeControl).toBeVisible();
+    expect(within(themeControl).getAllByRole("option").map(option => (option as HTMLOptionElement).value).sort()).toEqual([...LOCI_THEMES].sort());
     for (const theme of ["Graphite", "Midnight", "Paper", "Aurora", "Ember", "Lagoon"])
       expect(screen.getByRole("option", { name: theme })).toBeVisible();
     expect(screen.queryByText("Count summary CSV")).not.toBeInTheDocument();
@@ -91,7 +93,7 @@ describe("SettingsDialog", () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ motion: "reduced" }));
 
     fireEvent.click(screen.getByRole("tab", { name: "Viewing & help" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: /Viewer scale bar/ }));
+    fireEvent.click(screen.getByRole("switch", { name: "Viewer scale bar" }));
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       viewer: expect.objectContaining({ showScaleBar: false }),
     }));
@@ -168,6 +170,22 @@ describe("SettingsDialog", () => {
     expect(dpi).toHaveAttribute("aria-invalid", "true");
   });
 
+  it("focuses the selected density from search and applies keyboard selection", () => {
+    const onChange = vi.fn();
+    show({ density: "comfortable" }, { onChange });
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings" }), { target: { value: "density" } });
+    fireEvent.click(screen.getByRole("button", { name: /Workbench density/ }));
+
+    const density = screen.getByRole("radiogroup", { name: "Workbench density" });
+    const comfortable = within(density).getByRole("radio", { name: "Comfortable" });
+    const compact = within(density).getByRole("radio", { name: "Compact" });
+    expect(comfortable).toHaveFocus();
+    expect(comfortable).toHaveAttribute("aria-checked", "true");
+    fireEvent.keyDown(comfortable, { key: "ArrowLeft" });
+    expect(compact).toHaveFocus();
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ density: "compact" }));
+  });
+
   it("changes theme and locally available font through native selects", () => {
     const onChange = vi.fn(); show({}, { onChange });
     fireEvent.change(screen.getByRole("combobox", { name: "Application theme" }), { target: { value: "midnight" } });
@@ -175,6 +193,123 @@ describe("SettingsDialog", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Interface font" }), { target: { value: "verdana" } });
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ font: "verdana" }));
     expect(screen.queryByText("Loci preferences")).not.toBeInTheDocument();
+  });
+
+  it("selects the exact Black theme from a keyboard-operable workbench preview and keeps Graphite as the default", () => {
+    const onChange = vi.fn();
+    function ControlledSettings() {
+      const [preferences, setPreferences] = useState(DEFAULT_PREFERENCES);
+      return <SettingsDialog preferences={preferences} onChange={next => { setPreferences(next); onChange(next); }}
+        onClose={vi.fn()} onQuit={vi.fn()} />;
+    }
+    render(<ControlledSettings />);
+    const palettes = screen.getByRole("radiogroup", { name: "Theme previews" });
+    const graphite = within(palettes).getByRole("radio", { name: "Graphite" });
+    const black = within(palettes).getByRole("radio", { name: "Black" });
+    expect(graphite).toHaveAttribute("aria-checked", "true");
+    expect(black.querySelector('[data-preview-theme="black"]')).toBeInTheDocument();
+    graphite.focus(); fireEvent.keyDown(graphite, { key: "ArrowLeft" });
+    expect(black).toHaveFocus();
+    expect(black).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("combobox", { name: "Application theme" })).toHaveValue("black");
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ ...DEFAULT_PREFERENCES, theme: "black" });
+  });
+
+  it("navigates Back and Forward through settings pages, then returns to the workspace", () => {
+    const onClose = vi.fn(), onQuit = vi.fn();
+    show({}, { onClose, onQuit });
+    const next = screen.getByRole("button", { name: "Next settings page" });
+    expect(next).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "User guide" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous settings page" }));
+    expect(screen.getByRole("tabpanel", { name: "Appearance" })).toBeVisible();
+    fireEvent.click(next);
+    expect(screen.getByRole("tabpanel", { name: "User guide" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Previous settings page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to workspace" }));
+    expect(onClose).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Quit Loci" }));
+    expect(onQuit).toHaveBeenCalledOnce();
+  });
+
+  it("supports keyboard search result navigation and keeps focus on the setting that was selected", () => {
+    show();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    fireEvent.change(search, { target: { value: "viewer" } });
+    fireEvent.keyDown(search, { key: "ArrowDown" });
+    const first = screen.getByRole("button", { name: /Viewer scale bar/ });
+    const second = screen.getByRole("button", { name: /Overview navigator/ });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(second).toHaveFocus();
+    fireEvent.click(second);
+    expect(screen.getByRole("switch", { name: "Overview navigator" })).toHaveFocus();
+    fireEvent.change(search, { target: { value: "DPI" } });
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.getByRole("textbox", { name: "Default figure DPI" })).toHaveFocus();
+  });
+
+  it("adopts an explicit route without unmounting fields on a repeated request for the same page", () => {
+    const props = { preferences: DEFAULT_PREFERENCES, onChange: vi.fn(), onClose: vi.fn(), onQuit: vi.fn() };
+    const view = render(<SettingsDialog {...props} initialPage="saving" navigationRevision={1} />);
+    expect(screen.getByRole("dialog", { name: "Settings" })).toHaveAttribute("aria-modal", "true");
+    const dpi = screen.getByRole("textbox", { name: "Default figure DPI" });
+    dpi.focus(); fireEvent.change(dpi, { target: { value: "invalid" } });
+    view.rerender(<SettingsDialog {...props} initialPage="saving" navigationRevision={2} />);
+    expect(screen.getByRole("textbox", { name: "Default figure DPI" })).toBe(dpi);
+    expect(dpi).toHaveFocus(); expect(dpi).toHaveValue("invalid");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search settings" }), { target: { value: "motion" } });
+    view.rerender(<SettingsDialog {...props} initialPage="compute" navigationRevision={3} />);
+    expect(screen.getByRole("tabpanel", { name: "Compute" })).toBeVisible();
+    expect(screen.getByRole("searchbox", { name: "Search settings" })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Back to workspace" })).toBeVisible();
+  });
+
+  it("opens Compute before its worker request and cancels deferred work after a fast switch", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    const request = vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => {
+      frames.set(++nextFrame, callback);
+      return nextFrame;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(id => { frames.delete(id); });
+    const paint = () => {
+      const pending = [...frames.values()];
+      frames.clear();
+      for (const callback of pending) callback(performance.now());
+    };
+    const computeTargets = vi.fn().mockResolvedValue({ targets: [], study_profiles: [], study_binding: null });
+    const view = render(<SettingsDialog initialPage="compute" computeApi={{ computeTargets }}
+      preferences={DEFAULT_PREFERENCES} onChange={vi.fn()} onClose={vi.fn()} onQuit={vi.fn()} />);
+    try {
+      expect(screen.getByRole("tabpanel", { name: "Compute" })).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent("Loading compute targets");
+      expect(computeTargets).not.toHaveBeenCalled();
+      act(paint);
+      expect(computeTargets).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("tab", { name: "Appearance" }));
+      act(paint);
+      expect(computeTargets).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("tab", { name: "Compute" }));
+      act(paint);
+      await act(async () => paint());
+      expect(computeTargets).toHaveBeenCalledExactlyOnceWith("list", {});
+    } finally {
+      view.unmount();
+      request.mockRestore();
+      cancel.mockRestore();
+    }
+  });
+
+  it("wraps keyboard focus at both edges of the open dialog", () => {
+    show();
+    const search = screen.getByRole("searchbox", { name: "Search settings" });
+    const done = screen.getByRole("button", { name: "Done" });
+    search.focus();
+    fireEvent.keyDown(search, { key: "Tab", shiftKey: true });
+    expect(done).toHaveFocus();
+    fireEvent.keyDown(done, { key: "Tab" });
+    expect(search).toHaveFocus();
   });
 
   it("does not steal focus on preference rerenders and restores prior focus on close", () => {
@@ -189,7 +324,7 @@ describe("SettingsDialog", () => {
     view.rerender(<SettingsDialog preferences={{ ...DEFAULT_PREFERENCES, theme: "aurora" }}
       onChange={vi.fn()} onClose={latestClose} onQuit={vi.fn()} />);
     expect(screen.getByRole("textbox", { name: "Default figure DPI" })).toHaveFocus();
-    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
     expect(latestClose).toHaveBeenCalledOnce();
     view.unmount();
     expect(opener).toHaveFocus();

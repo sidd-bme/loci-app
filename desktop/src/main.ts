@@ -201,6 +201,10 @@ const agentWorkspace = new AgentWorkspaceCoordinator(researchBridge, createAgent
   new AgentWorkspaceLayoutStore(path.join(app.getPath("userData"), "agent-workspace-layouts")));
 const engineResultResidency = new EngineResultResidencyCoordinator();
 let mainWindow: BrowserWindow | null = null;
+researchBridge.onViewDocumentChanged(() => {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed())
+    mainWindow.webContents.send("loci:compute-study-changed");
+});
 const MAX_DISCOVERED_SOURCES = MAX_PROJECT_SOURCES;
 const SUPPORTED_EXTENSIONS = new Set([".tif", ".tiff", ".png", ".jpg", ".jpeg", ".ims"]);
 const SHUTDOWN_GRACE_MILLISECONDS = 15_000;
@@ -4102,9 +4106,9 @@ function installMenu(): void {
     mainWindow.show();
     mainWindow.focus();
   };
-  const requestInControlPanel = (channel: "loci:settings-requested" | "loci:guide-requested" |
+  const requestInControlPanel = (channel: "loci:guide-requested" |
     "loci:workspace-requested" | "loci:open-project-requested" | "loci:save-project-requested" |
-    "loci:import-requested" | "loci:folder-import-requested") => {
+    "loci:import-requested" | "loci:folder-import-requested" | "loci:settings-requested") => {
     focusControlPanel();
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel);
   };
@@ -4403,6 +4407,7 @@ async function createWindow(): Promise<void> {
     backgroundColor: "#111614",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
+      additionalArguments: ["--loci-main-workspace"],
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

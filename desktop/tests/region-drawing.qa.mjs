@@ -205,12 +205,12 @@ async function waitForAnnotationCount(sourceId, count) {
 async function screenPoints(viewer, sourcePoints) {
   return viewer.evaluate((element, points) => {
     const camera = JSON.parse(element.getAttribute("data-camera"));
-    const viewport = element.getBoundingClientRect();
+    const canvas = element.querySelector('canvas[aria-label="Source image and bound annotations"]');
+    const viewport = canvas.getBoundingClientRect();
     const source = points.map((point) => ({
       x: viewport.left + viewport.width / 2 + (point.x - camera.x) * camera.scale,
       y: viewport.top + viewport.height / 2 + (point.y - camera.y) * camera.scale * 1.6,
     }));
-    const canvas = element.querySelector('canvas[aria-label="Source image and bound annotations"]');
     return source.map((point) => ({ ...point, hit_is_canvas: document.elementFromPoint(point.x, point.y) === canvas }));
   }, sourcePoints);
 }

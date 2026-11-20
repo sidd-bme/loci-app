@@ -477,6 +477,7 @@ export interface JobSummary {
 }
 
 export interface LociDesktopApi {
+  onComputeStudyChanged?(callback: () => void): () => void;
   pickImages: () => Promise<ImportedImage[]>;
   pickFolder: () => Promise<ImportedImage[]>;
   createProject: (manifest: ProjectManifestV1) => Promise<ProjectSessionReceipt | null>;

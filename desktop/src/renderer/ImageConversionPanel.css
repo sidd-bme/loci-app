@@ -1,0 +1,11 @@
+.image-conversion__modes { display: flex; gap: 2px; margin: 10px 12px 0; padding: 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-1); }
+.image-conversion__modes button { flex: 1; min-width: 0; min-height: var(--control-height); padding: 3px 6px; border: 1px solid transparent; background: transparent; color: var(--ink-secondary); }
+.image-conversion__modes button[aria-pressed="true"] { background: var(--surface-3); color: var(--ink); border-color: var(--line); }
+.image-conversion__study { display: grid; gap: 12px; }
+.image-conversion__study p, .image-conversion__study h2 { margin: 0; }
+.image-conversion__source { font-weight: 600; overflow-wrap: anywhere; }
+.image-conversion__dimensions { display: flex; flex-wrap: wrap; margin: 0; padding-block: 8px; border-block: 1px solid var(--line); gap: 12px; font-variant-numeric: tabular-nums; }
+.image-conversion__dimensions dt { font-size: 0.85em; color: var(--ink-secondary); }
+.image-conversion__dimensions dd { margin: 2px 0 0; }
+.image-conversion__study label { display: grid; gap: 5px; }
+.image-conversion__study details p, .image-conversion__receipt p { margin-block-start: 6px; }

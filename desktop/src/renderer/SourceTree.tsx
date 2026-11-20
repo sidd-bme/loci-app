@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { ChevronRight, FileImage, Folder, FolderOpen, GripVertical, LocateFixed, Search, X } from "lucide-react";
+import { ChevronRight, FileImage, Folder, FolderOpen, GripVertical, List, ListTree, LocateFixed, Search, X } from "lucide-react";
 import type { ResearchSource } from "../shared/research-contracts";
 import { buildSourceBrowser, filterSourceBrowser, sourceAncestors, sourceDisplayPath, visibleSourceRows, type SourceBrowserNode } from "./source-browser";
+import { WorkbenchFilename } from "./WorkbenchFilename";
 import "./SourceTree.css";
 
 type Activate = (source: ResearchSource, event: React.MouseEvent, rangeIds: string[]) => void;
@@ -80,6 +81,7 @@ function FlatSources({ sources, allSources, activeSourceId, selectedSourceIds, o
       return <button key={item.id} type="button" data-source-id={item.id}
         className={`research-source-item source-browser__leaf ${selectedSourceIds.includes(item.id) ? "selected" : ""} ${activeSourceId === item.id ? "active" : ""} ${drag?.item.id === item.id ? "is-ghost" : ""} ${dropped === item.id ? "is-dropped" : ""}`}
         aria-selected={selectedSourceIds.includes(item.id)} aria-current={activeSourceId === item.id ? "true" : undefined}
+        aria-label={item.name} aria-description={`Channels ${size.c}, Z planes ${size.z}`}
         title={`${sourceDisplayPath(item, allSources)} · ${size.c} C / ${size.z} Z`}
         style={{ transform: shift ? `translateY(${shift}px)` : undefined }}
         onPointerDown={event => pointerDown(item, index, event)}
@@ -92,8 +94,8 @@ function FlatSources({ sources, allSources, activeSourceId, selectedSourceIds, o
           const next = [...allSources]; const [moved] = next.splice(index, 1); next.splice(target, 0, moved);
           onReorder(next); flash(item.id);
         }}>
-        {reorderEnabled ? <span className="research-source-drag-handle" title="Drag to reorder the working list" aria-hidden="true"><GripVertical size={13} /></span> : <FileImage size={14} aria-hidden="true" />}
-        <span className="research-source-name">{item.name}</span>
+        {reorderEnabled && sources.length > 1 ? <span className="research-source-drag-handle" title="Drag to reorder the working list" aria-hidden="true"><GripVertical size={13} /></span> : <FileImage size={14} aria-hidden="true" />}
+        <span className="research-source-name"><WorkbenchFilename name={item.name} /></span>
         <span className="source-browser__dimensions" aria-hidden="true">{size.c}C · {size.z}Z</span>
       </button>;
     })}
@@ -108,12 +110,14 @@ export function SourceTree(props: Props) {
   const { sources, activeSourceId, selectedSourceIds, onActivate } = props;
   const treeId = useId();
   const model = useMemo(() => buildSourceBrowser(sources), [sources]);
+  const hasFolders = model.some(node => node.kind === "folder");
   const [mode, setMode] = useState<"auto" | "tree" | "flat">("auto");
-  const treeMode = mode === "auto" ? model.some(node => node.kind === "folder") : mode === "tree";
+  const treeMode = mode === "auto" ? hasFolders : mode === "tree";
   const [query, setQuery] = useState("");
   const [searchCollapsed, setSearchCollapsed] = useState(new Set<string>());
   const search = (value: string) => { setQuery(value); setSearchCollapsed(new Set()); };
   const searching = Boolean(query.trim());
+  const showBrowserControls = sources.length > 1 || hasFolders || searching;
   const [expanded, setExpanded] = useState(() => new Set(model.filter(node => node.kind === "folder").map(node => node.id)));
   const [focused, setFocused] = useState(activeSourceId ? `image:${activeSourceId}` : model[0]?.id);
   const elements = useRef(new Map<string, HTMLButtonElement>());
@@ -200,25 +204,27 @@ export function SourceTree(props: Props) {
         onClick={event => { setFocused(node.id); if (folder) toggle(node.id); else onActivate(node.source, event, visibleIds); }}>
         {folder ? <><ChevronRight size={12} className={open ? "is-expanded" : ""} aria-hidden="true" />
           {open ? <FolderOpen size={15} aria-hidden="true" /> : <Folder size={15} aria-hidden="true" />}</> : <FileImage size={14} className="source-browser__file-icon" aria-hidden="true" />}
-        <span className="research-source-name">{node.label}</span>
+        <span className="research-source-name">{folder ? node.label : <WorkbenchFilename name={node.label} />}</span>
         {folder && <span className="source-browser__count" aria-label={`${node.sourceIds.length} images`}>{node.sourceIds.length}</span>}
       </button>
       {folder && open && <ul role="group" id={groupId}>{render(node.children, level + 1)}</ul>}
     </li>;
   });
   return <div className="source-browser" ref={container}>
-    <div className="source-browser__search"><Search size={14} aria-hidden="true" />
-      <input type="search" aria-label="Search images and folders" placeholder="Find images or folders" value={query} onChange={event => search(event.target.value)} />
-      {query && <button type="button" aria-label="Clear image search" onClick={() => search("")}><X size={13} /></button>}
-    </div>
-    <div className="source-browser__toolbar"><div role="group" aria-label="Image list view">
-      <button type="button" aria-pressed={treeMode} onClick={() => setMode("tree")}>Folder tree</button>
-      <button type="button" aria-pressed={!treeMode} onClick={() => setMode("flat")}>Flat list</button>
-    </div><button type="button" aria-label="Reveal current image" title="Reveal current image" disabled={!activeSourceId} onClick={() => {
-      if (activeSourceId) pendingReveal.current = { id: activeSourceId, focus: true };
-      search(""); setExpanded(previous => new Set([...previous, ...ancestors]));
-      if (activeSourceId) setFocused(`image:${activeSourceId}`);
-    }}><LocateFixed size={14} aria-hidden="true" /></button></div>
+    {showBrowserControls && <>
+      <div className="source-browser__search"><Search size={14} aria-hidden="true" />
+        <input type="search" aria-label="Search images and folders" placeholder="Find images or folders" value={query} onChange={event => search(event.target.value)} />
+        {query && <button type="button" aria-label="Clear image search" onClick={() => search("")}><X size={13} /></button>}
+      </div>
+      <div className="source-browser__toolbar"><div role="group" aria-label="Image list view">
+        <button type="button" aria-label="Folder tree" title="Folder tree" aria-pressed={treeMode} onClick={() => setMode("tree")}><ListTree /><span>Tree</span></button>
+        <button type="button" aria-label="Flat list" title="Flat list" aria-pressed={!treeMode} onClick={() => setMode("flat")}><List /><span>List</span></button>
+      </div><button type="button" className="source-browser__reveal" aria-label="Reveal current image" title="Reveal current image" disabled={!activeSourceId} onClick={() => {
+        if (activeSourceId) pendingReveal.current = { id: activeSourceId, focus: true };
+        search(""); setExpanded(previous => new Set([...previous, ...ancestors]));
+        if (activeSourceId) setFocused(`image:${activeSourceId}`);
+      }}><LocateFixed size={14} aria-hidden="true" /></button></div>
+    </>}
     {treeMode ? <ul role="tree" aria-label="Study images" aria-description="Use arrow keys to browse, Space to select images, and Enter to open an image."
       aria-multiselectable="true" className="source-browser__tree">{render(filtered)}</ul>
       : <FlatSources {...props} allSources={sources} sources={sources.filter(source => sourceDisplayPath(source, sources).toLowerCase().includes(query.trim().toLowerCase()))}

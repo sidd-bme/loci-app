@@ -251,6 +251,30 @@ Import registers explicitly selected immutable sources. It does not move or
 edit them. `sources` displays the full source ID needed by subsequent commands;
 the JSON receipt contains exact fingerprints and complete metadata.
 
+## Convert a study image
+
+Use the source ID and SHA-256 from `loci sources --project "$STUDY" --json` for the selected scalar
+series. Choose an output folder that does not yet exist, outside the study and
+source store.
+
+```bash
+loci convert-image --project "$STUDY" --source "$SOURCE_ID" \
+  --source-sha256 "$SOURCE_SHA256" --format ome-zarr \
+  --destination "$OUTPUT/converted" --json
+```
+
+Choose `ome-tiff` for a tiled OME-TIFF (BigTIFF for large outputs) or
+`ome-zarr` for a chunked OME-NGFF 0.4 / Zarr v2 image. Both retain the native
+scalar dtype and all level-zero time points, channels and Z planes in the
+selected series. Loci reopens the output and compares its pixels, channel
+labels and calibration before publishing the folder. `conversion.json` records
+source and output fingerprints, coordinate transforms and recognized acquisition
+metadata. Keep the source for proprietary metadata, other series and pyramid
+levels. RGB, indexed palettes, mixed channel dtypes and non-finite scientific
+samples are outside this conversion path. Native study conversion requires a
+macOS or Linux filesystem with directory-descriptor access and atomic
+no-replace renaming for the completed folder.
+
 ## Prepare, validate and run
 
 Read the recipe guide and create an editable starter request:
@@ -282,6 +306,30 @@ returns the same job; changing that request under the same key is rejected.
 Use a new key for an intentional new run. Omitting `--run` leaves a queued job;
 `loci run --project "$LOCI_STUDY" --job JOB_ID` executes that exact job.
 
+### Repeat a desktop Components result
+
+Select the original result and open **Results → Review & export → Review →
+Analysis details**. **Copy CLI recipe JSON** is available for verified local
+CPU Components runs on one native scalar plane at full resolution. Loci
+checks the registered source, measured channels, processing parameters,
+geometry and numerical runtime again when you copy. **Copy analysis request**
+includes the operation name and its request for other callers.
+
+Save the copied JSON as `recipe.json`. If you opened images in a managed
+session, choose **Save study…** and set `LOCI_STUDY` to that study directory.
+Use the CLI from the same app (`Loci.app/Contents/Resources/bin/loci` on
+macOS). With its `bin` directory on your `PATH`, run
+
+```sh
+loci execute --project "$LOCI_STUDY" recipe_preflight --request @recipe.json --json
+loci submit --project "$LOCI_STUDY" --operation run_recipe --request @recipe.json --request-key "$NEW_KEY" --run --json
+```
+
+Set `NEW_KEY` to a fresh identifier for a new, unreviewed result. Reuse it to
+retry that same job. Preflight reports the normalized recipe, its hash and
+the memory estimate. If you change a measured channel or move to another
+app version, return to the original result and check its recipe again.
+
 For operations beyond the recipe route, `loci discover` lists the shared
 catalog. `execute` handles supported inspection/validation operations;
 `submit --operation NAME --request @request.json --request-key KEY --run`
@@ -289,6 +337,11 @@ handles durable tasks. The operation catalog is broader than the starter
 recipe guide and does not imply every operation accepts a recipe request.
 
 ## Adopt external labels
+
+For standalone μSAM, `loci usam-handoff` exports the selected native plane or Z
+range. Use `loci import-labels --handoff-manifest` to preview returned instance
+labels against the same saved study. See the [μSAM workflow](EXTERNAL_LABELS.md#offline-standalone-μsam-interchange)
+for the full commands and TIFF axis requirements.
 
 In the desktop, select one full native source plane, then use **Analyze →
 External labels → Import labels**. Inspect the overlay and measurement channel

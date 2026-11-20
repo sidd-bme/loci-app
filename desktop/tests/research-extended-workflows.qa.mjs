@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { selectResultSection, fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, fileMenuAction, selectWorkbenchTool, sourceRowByName } from "./workbench-qa-helpers.mjs";
 
 // All mutations below use visible controls in the actual packaged application.
 // Read-only snapshots and result inspection provide numerical assertions against
@@ -53,9 +53,8 @@ export async function qualifyExtendedWorkflows({
   const openResult = async (result) => {
     const state = await snapshot();
     const source = state.sources.find((item) => item.id === result.source_id);
-    await page.locator(".research-sources").getByRole("button", {
-      name: new RegExp("^" + source.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-    }).click();
+    assert.ok(source, "The result's source must exist in the study.");
+    await page.locator(`.research-sources button[data-source-id="${source.id}"]`).click();
     await page.locator(`.research-sources [data-result-id="${result.id}"]`).click();
     await wait(async () => page.locator(`.research-sources [data-result-id="${result.id}"]`).getAttribute("class"),
       (value) => value?.includes("selected"), "select exact revision");
@@ -126,9 +125,7 @@ export async function qualifyExtendedWorkflows({
   await screenshot(page, "extended-3d-correction-surface");
   await page.getByRole("button", { name: "Surface", exact: true }).click();
 
-  await page.locator(".research-sources").getByRole("button", {
-    name: /^multiplex_translating_objects\.ome\.tiff/,
-  }).click();
+  await (await sourceRowByName(page, path.basename(fixture.multiplex))).click();
   await tab("Display");
   await openAnalysisRegion();
   await page.getByLabel("C", { exact: true }).fill("0");
@@ -151,14 +148,14 @@ export async function qualifyExtendedWorkflows({
   await segmentation.selectOption("1");
   const compactDisplay=page.locator("details.compact-channel-controls");
   if (!(await compactDisplay.evaluate(element=>element.open))) await compactDisplay.locator(":scope > summary").click();
-  const display=page.getByLabel("Display channel",{exact:true});
-  await display.selectOption("0");
+  const display=compactDisplay.getByRole("button",{name:"Adjust synthetic-nuclear display",exact:true});
+  await display.click();
   await page.getByRole("button",{name:"Solo",exact:true}).click();
   assert.equal(await segmentation.inputValue(),"1");
   const measurement=page.getByLabel("Measurement channel",{exact:true});
   await measurement.selectOption("1");
   assert.equal(await segmentation.inputValue(),"1");
-  assert.equal(await display.inputValue(),"0");
+  assert.equal(await display.getAttribute("aria-expanded"),"true");
   await measurement.selectOption("0");
   assert.equal(await segmentation.inputValue(),"1");
   await page.getByText("Raw source channel · T 2 · Z 3",{exact:true}).waitFor();

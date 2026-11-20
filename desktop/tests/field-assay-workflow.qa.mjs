@@ -171,9 +171,11 @@ try {
   // the behavior this journey qualifies.
   await page.reload();
   await page.locator(`button[data-source-id="${source.id}"]`).waitFor({ state: "visible" });
-  // The packaged app is deliberately hidden and unfocusable. Set the real
-  // range control through its native setter instead of relying on keyboard focus.
-  const zPlane = page.getByRole("slider", { name: "Z plane", exact: true });
+  // Source rows render before the saved display is restored. Wait for its
+  // controls to accept input, then use the native setter even in background QA.
+  const zSelector = '.source-display .source-axes input[aria-label="Z plane"]';
+  const zPlane = page.locator(".source-display .source-axes").getByRole("slider", { name: "Z plane", exact: true });
+  await page.waitForFunction((selector) => document.querySelector(selector)?.matches(":enabled"), zSelector);
   await zPlane.evaluate((element) => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
     if (!setter) throw new Error("The native range value setter is unavailable.");
@@ -181,7 +183,7 @@ try {
     element.dispatchEvent(new Event("input", { bubbles: true }));
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  await page.waitForFunction(() => document.querySelector('input[aria-label="Z plane"]')?.value === "0");
+  await page.waitForFunction((selector) => document.querySelector(selector)?.value === "0", zSelector);
   assert.equal(await zPlane.inputValue(), "0");
   await selectWorkbenchTool(page, "Annotate");
   const annotationPanel = page.locator(".source-annotations");

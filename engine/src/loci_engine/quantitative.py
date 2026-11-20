@@ -212,6 +212,34 @@ def _footprint(radius: float, spacing: tuple[float, ...]) -> np.ndarray:
     return np.asarray(distance <= radius**2)
 
 
+def _processing_step_record(
+    step: dict[str, Any], geometry: Geometry, spacing: tuple[float, ...]
+) -> dict[str, Any]:
+    op = step["op"]
+    record: dict[str, Any] = {"op": op, "input_basis": "preceding-derived-or-raw"}
+    if op in {"gaussian", "subtract_background"}:
+        sigma = finite_number(step.get("sigma"), "sigma", 0, 1e6)
+        pixels = _sigma_voxels(sigma, spacing)
+        record.update(sigma=sigma, sigma_voxels=pixels, unit=geometry.unit, boundary="reflect")
+    elif op in {"median", "opening", "closing"}:
+        radius = finite_number(step.get("radius"), "radius", 0, 1e6)
+        record.update(radius=radius, unit=geometry.unit, boundary="reflect")
+    elif op == "subtract_constant":
+        value = finite_number(step.get("value"), "value", -1e15, 1e15)
+        record["value"] = value
+    else:
+        raise ValueError(f"Processing step provenance requires reference values for {op}")
+    if "clip_negative" in _PROCESSING_FIELDS[op]:
+        record["clip_negative"] = step.get("clip_negative", False)
+    return record
+
+
+def processing_step_provenance(step: dict[str, Any], geometry: Geometry) -> dict[str, Any]:
+    """Return the exact deterministic provenance record for one non-reference step."""
+    validate_processing_steps([step], geometry=geometry)
+    return _processing_step_record(step, geometry, geometry.orthogonal_spacing())
+
+
 def process_scalar(
     image: np.ndarray,
     geometry: Geometry,
@@ -229,28 +257,8 @@ def process_scalar(
     records: list[dict[str, Any]] = []
     for step in steps:
         op = step.get("op")
-        record: dict[str, Any] = {"op": op, "input_basis": "preceding-derived-or-raw"}
-        if op in {"gaussian", "subtract_background"}:
-            sigma = finite_number(step.get("sigma"), "sigma", 0, 1e6)
-            pixels = _sigma_voxels(sigma, spacing)
-            smooth = ndi.gaussian_filter(result, pixels, mode="reflect", truncate=4.0)
-            result = smooth if op == "gaussian" else result - smooth
-            record.update(sigma=sigma, sigma_voxels=pixels, unit=geometry.unit, boundary="reflect")
-        elif op in {"median", "opening", "closing"}:
-            radius = finite_number(step.get("radius"), "radius", 0, 1e6)
-            footprint = _footprint(radius, spacing)
-            operation = {
-                "median": ndi.median_filter,
-                "opening": ndi.grey_opening,
-                "closing": ndi.grey_closing,
-            }[op]
-            result = operation(result, footprint=footprint, mode="reflect")
-            record.update(radius=radius, unit=geometry.unit, boundary="reflect")
-        elif op == "subtract_constant":
-            value = finite_number(step.get("value"), "value", -1e15, 1e15)
-            result -= value
-            record["value"] = value
-        elif op == "flatfield":
+        if op == "flatfield":
+            record: dict[str, Any] = {"op": op, "input_basis": "preceding-derived-or-raw"}
             if flatfield is None:
                 raise ValueError("Flat-field correction requires a declared reference image")
             flat = validate_array(flatfield, geometry=geometry, working_bytes=working_bytes)
@@ -266,11 +274,30 @@ def process_scalar(
                 raise ValueError("Flat minus dark reference must be positive at every voxel")
             scale = float(np.mean(illumination))
             result = (result - dark) * scale / illumination
-            record.update(formula="(image-dark)*mean(flat-dark)/(flat-dark)", scale=scale)
+            record.update(
+                formula="(image-dark)*mean(flat-dark)/(flat-dark)",
+                scale=scale,
+                clip_negative=step.get("clip_negative", False),
+            )
+        else:
+            record = _processing_step_record(step, geometry, spacing)
+            if op in {"gaussian", "subtract_background"}:
+                smooth = ndi.gaussian_filter(
+                    result, record["sigma_voxels"], mode="reflect", truncate=4.0
+                )
+                result = smooth if op == "gaussian" else result - smooth
+            elif op in {"median", "opening", "closing"}:
+                footprint = _footprint(record["radius"], spacing)
+                operation = {
+                    "median": ndi.median_filter,
+                    "opening": ndi.grey_opening,
+                    "closing": ndi.grey_closing,
+                }[op]
+                result = operation(result, footprint=footprint, mode="reflect")
+            elif op == "subtract_constant":
+                result -= record["value"]
         if step.get("clip_negative", False):
             result = np.maximum(result, 0)
-        if "clip_negative" in _PROCESSING_FIELDS[op]:
-            record["clip_negative"] = step.get("clip_negative", False)
         if not np.isfinite(result).all():
             raise ValueError("Processing produced non-finite values; result was rejected")
         records.append(record)

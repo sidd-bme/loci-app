@@ -30,6 +30,7 @@ class ZarrAdapter:
         image_group: str = "",
         multiscale_index: int | None = None,
         expected_sha256: str | None = None,
+        registered_channel_names: tuple[str, ...] = (),
     ):
         self.store = OMEZarrSession(
             path,
@@ -63,7 +64,9 @@ class ZarrAdapter:
             source_shape=self.store.metadata.levels[0].source_shape,
             dimensions=dimensions,
             levels=tuple(levels),
-            channel_names=tuple(f"Channel {c + 1}" for c in range(dimensions.c)),
+            channel_names=registered_channel_names
+            or self.store.metadata.channel_labels
+            or tuple(f"Channel {c + 1}" for c in range(dimensions.c)),
             channel_dtypes=(self.store.metadata.levels[0].dtype,) * dimensions.c,
             sample_semantics="none",
             physical_calibration=levels[0].calibration,

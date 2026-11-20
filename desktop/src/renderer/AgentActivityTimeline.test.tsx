@@ -127,6 +127,7 @@ describe("AgentActivityTimeline", () => {
   it("keeps legacy targetless events and missing approval records inspectable", () => {
     render(<AgentActivityTimeline events={[event({ targets: undefined, approval_id: "removed-request", timestamp: "invalid" })]} approvals={[]} snapshot={snapshot} />);
     expect(screen.getByText("Exact source inspected")).toBeVisible();
+    fireEvent.click(screen.getByText("Recorded activity"));
     expect(screen.getByText("No target recorded.")).toBeVisible();
     expect(screen.getAllByText("Time unavailable")[0]).toBeVisible();
     expect(screen.getByText("Request details unavailable · removed-request")).toBeVisible();
@@ -164,10 +165,16 @@ describe("AgentActivityTimeline", () => {
       event({ id: "unknown", kind: "future_event", summary: "Original future summary" }),
     ];
     render(<AgentActivityTimeline events={events} approvals={[]} snapshot={snapshot} />);
-    expect(screen.getByText("Proposal validated · analysis")).toBeVisible();
-    expect(screen.getByText("Submitted · analysis")).toBeVisible();
-    expect(screen.getByText("Approved once · awaiting execution")).toBeVisible();
-    expect(screen.getByText("Completed call · result review")).toBeVisible();
+    const rows = Array.from(document.querySelectorAll<HTMLElement>(".agent-activity-list > li"));
+    expect(within(rows[0]).getByText("Analysis")).toBeVisible();
+    expect(within(rows[0]).getByText("Proposal validated")).toBeVisible();
+    expect(within(rows[0]).getByText("submit_recipe").tagName).toBe("CODE");
+    expect(within(rows[1]).getByText("Analysis")).toBeVisible();
+    expect(within(rows[1]).getByText("Submitted")).toBeVisible();
+    expect(within(rows[2]).getByText("Approved once · awaiting execution")).toBeVisible();
+    expect(within(rows[3]).getByText("Result review")).toBeVisible();
+    expect(within(rows[3]).getByText("Completed call")).toBeVisible();
+    expect(within(rows[3]).queryByText(/^Completed$/)).not.toBeInTheDocument();
     expect(screen.getByText("Original future summary")).toBeVisible();
     expect(document.querySelectorAll(".agent-activity-list > li")).toHaveLength(5);
     fireEvent.click(screen.getAllByText(/Recorded activity/)[0]);
@@ -198,7 +205,8 @@ describe("AgentActivityTimeline", () => {
       jobs: [{ ...snapshot.jobs[0], id: jobId, operation: "annotation_evaluation_run", result_ids: [outputId] }] };
     const onOpenResult = vi.fn();
     render(<AgentActivityTimeline events={[completed]} approvals={[]} snapshot={live} navigation={{ onOpenResult, onOpenJob: vi.fn() }} />);
-    expect(screen.getByText("Completed · annotation agreement")).toBeVisible();
+    expect(screen.getByText("Annotation agreement")).toBeVisible();
+    expect(screen.getByText(/^Completed$/)).toBeVisible();
     expect(screen.getByRole("button", { name: `Open result ${input.id}` })).not.toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: `Open result ${outputId}` }));
     expect(onOpenResult).toHaveBeenCalledWith(output);
@@ -235,7 +243,8 @@ describe("AgentActivityTimeline", () => {
     ["method_preflight", "method input check"],
   ])("names the actual %s action without claiming job completion", (operation, label) => {
     render(<AgentActivityTimeline events={[event({ kind: "operation_inspected", operation })]} approvals={[]} snapshot={snapshot} />);
-    expect(screen.getByText(`Inspected · ${label}`)).toBeVisible();
+    expect(screen.getByText(label.replace(/^./, (letter) => letter.toUpperCase()))).toBeVisible();
+    expect(screen.getByText("Inspected")).toBeVisible();
     expect(screen.queryByText(/^Completed/)).not.toBeInTheDocument();
   });
 

@@ -345,8 +345,8 @@ async function clickSourcePoint(viewer, sourcePoint) {
     const canvasBounds = canvas.getBoundingClientRect();
     const aspectY = 0.8 / 0.5;
     const screen = {
-      x: viewport.left + viewport.width / 2 + (point.x - camera.x) * camera.scale,
-      y: viewport.top + viewport.height / 2 + (point.y - camera.y) * camera.scale * aspectY,
+      x: canvasBounds.left + canvasBounds.width / 2 + (point.x - camera.x) * camera.scale,
+      y: canvasBounds.top + canvasBounds.height / 2 + (point.y - camera.y) * camera.scale * aspectY,
     };
     const hit = document.elementFromPoint(screen.x, screen.y);
     return {

@@ -268,7 +268,7 @@ try {
     await sleep(750);
     const corners = await phaseViewer.evaluate((element, points) => {
       const camera = JSON.parse(element.getAttribute("data-camera") ?? "{}");
-      const bounds = element.getBoundingClientRect();
+      const bounds = element.querySelector("canvas").getBoundingClientRect();
       if (![camera.x, camera.y, camera.scale].every(Number.isFinite) || !bounds.width || !bounds.height) throw new Error("Live phase camera is unavailable.");
       return points.map(({ x, y }) => ({
         x: bounds.width / 2 + (x - camera.x) * camera.scale,

@@ -45,6 +45,7 @@ export type WorkerInvalidationListener = (event: WorkerInvalidationEvent) => voi
 const CANCELLABLE_METHODS = new Set(["segment", "research_run", "research_data_export_plan"]);
 const DURABLE_METHODS = new Set([
   "research_vendor_convert",
+  "research_image_convert",
   "research_agent_access",
   "research_project_export",
   "research_project_import",

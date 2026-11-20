@@ -50,7 +50,7 @@ beforeEach(() => {
   );
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
-      if (this.classList?.contains("image-viewport")) {
+      if (this.matches(".image-viewport > canvas")) {
         return {
           left: 0,
           top: 0,
@@ -422,6 +422,110 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     });
   });
 
+  it("keeps the initiating linked camera when an unequal receiving pane clamps its view", async () => {
+    vi.stubGlobal("devicePixelRatio", 2);
+    expect(window.devicePixelRatio).toBe(2);
+    const dimensions = { x: 320, y: 256, z: 1, t: 1, c: 2 };
+    const snapshot = structuredClone(twoSourceSnapshot);
+    for (const source of snapshot.sources) {
+      source.metadata.dimensions = dimensions;
+      source.metadata.levels = [{ index: 0, dimensions }];
+    }
+
+    // Pane A admits the explicit 1:1 camera at scale 0.5. Pane B has a
+    // larger local fit and a minimum scale of 0.6. Its local constraint
+    // must not replace Pane A's camera when it observes the linked update.
+    let paneAWidth = 240, paneBWidth = 1000;
+    const boundsMock = vi.mocked(HTMLElement.prototype.getBoundingClientRect);
+    const defaultBounds = boundsMock.getMockImplementation()!;
+    boundsMock.mockImplementation(function (this: HTMLElement) {
+      const pane = this.closest(".research-ab-pane");
+      if (!this.matches(".image-viewport > canvas") || !pane) {
+        return defaultBounds.call(this);
+      }
+      const first = pane.querySelector("strong")?.textContent === "Pane A";
+      const width = first ? paneAWidth : paneBWidth;
+      const height = first ? 200 : 900;
+      return {
+        left: 0, top: 0, right: width, bottom: height,
+        width, height, x: 0, y: 0, toJSON: () => ({}),
+      } as DOMRect;
+    });
+
+    const api = mockApi(snapshot);
+    const execute = vi.mocked(api.execute);
+    const defaultExecute = execute.getMockImplementation()!;
+    let holdRepin = false;
+    let releaseRepin: () => void = () => { throw new Error("Repin reply was not held"); };
+    const repinGate = new Promise<void>((resolve) => { releaseRepin = resolve; });
+    execute.mockImplementation(async (operation, request, options) => {
+      const response = await defaultExecute(operation, request, options);
+      if (holdRepin && operation === "source_view" && request.source_id === snapshot.sources[0].id) {
+        await repinGate;
+      }
+      return response;
+    });
+
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Compare A/B" }));
+    const link = await screen.findByLabelText("Link pan and zoom");
+    await waitFor(() => {
+      for (const source of snapshot.sources) {
+        expect(screen.getByLabelText(`Image viewer: ${source.name}`)).toHaveAttribute("data-prepared", "true");
+      }
+    });
+
+    holdRepin = true;
+    fireEvent.change(screen.getByLabelText("Pinned Source B"), {
+      target: { value: snapshot.sources[0].id },
+    });
+    expect(link).toBeDisabled();
+    expect(screen.queryByLabelText(`Image viewer: ${snapshot.sources[1].name}`)).toBeNull();
+    await act(async () => { releaseRepin(); });
+    await waitFor(() => expect(link).toBeEnabled());
+    const [a, b] = screen.getAllByLabelText(`Image viewer: ${snapshot.sources[0].name}`);
+    await waitFor(() => {
+      expect(a).toHaveAttribute("data-prepared", "true");
+      expect(b).toHaveAttribute("data-prepared", "true");
+    });
+    const camera = (pane: HTMLElement) => JSON.parse(pane.getAttribute("data-camera")!);
+    expect(a.querySelector("canvas")?.getBoundingClientRect().width).toBe(240);
+    expect(b.querySelector("canvas")?.getBoundingClientRect().width).toBe(1000);
+    fireEvent.click(link);
+    expect(link).toBeChecked();
+    fireEvent.keyDown(a, { key: "1" });
+    await waitFor(() => expect(camera(a).scale).toBe(0.5));
+
+    paneBWidth = 1100;
+    act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+    await waitFor(() => expect(camera(b).scale).toBeCloseTo(0.66));
+    expect(camera(a).scale).toBe(0.5);
+
+    // Batch real viewport keyboard handlers to check updates do not replay an
+    // observed camera from the other pane or lose user input under batching.
+    act(() => {
+      for (let zoom = 0; zoom < 4; zoom++) fireEvent.keyDown(a, { key: "+" });
+    });
+    await waitFor(() => {
+      expect(camera(a).scale).toBe(0.5 * 1.25 ** 4);
+      expect(camera(b)).toEqual(camera(a));
+    });
+    act(() => {
+      for (let zoom = 0; zoom < 2; zoom++) fireEvent.keyDown(b, { key: "+" });
+    });
+    await waitFor(() => {
+      expect(camera(b).scale).toBe(0.5 * 1.25 ** 6);
+      expect(camera(a)).toEqual(camera(b));
+    });
+
+    fireEvent.click(within(a).getByRole("button", { name: "Fit image" }));
+    const fit = camera(a);
+    paneAWidth = 180;
+    act(() => { document.dispatchEvent(new Event("fullscreenchange")); });
+    expect(camera(a)).toEqual(fit);
+    expect(camera(b)).toEqual(fit);
+  });
+
   it("keeps selections and channel views source-bound across incompatible panes", async () => {
     const incompatible = structuredClone(twoSourceSnapshot);
     incompatible.sources[0].metadata.dimensions = { x: 2047, y: 2046, z: 3, t: 2, c: 2 };
@@ -583,5 +687,168 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     await waitFor(() => {
       expect(screen.queryByLabelText("A/B image comparison toolbar")).toBeNull();
     });
+  });
+
+  it("keeps display sampling independent across A/B linked panes and persistent across annotation-tool switches", async () => {
+    type TrackedDraw = { smooth: unknown };
+    type TrackedContext = Record<string, unknown> & {
+      imageSmoothingEnabled?: boolean;
+      drawImage: ReturnType<typeof vi.fn>;
+      drawCalls: TrackedDraw[];
+    };
+    const contexts = new Map<HTMLCanvasElement, TrackedContext>();
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+      let tracked = contexts.get(this);
+      if (!tracked) {
+        const drawCalls: TrackedDraw[] = [];
+        tracked = {
+          ...Object.fromEntries(
+            [
+              "setTransform", "fillRect", "beginPath", "moveTo", "lineTo",
+              "closePath", "arc", "stroke", "fillText", "setLineDash",
+              "save", "restore", "ellipse", "fill", "clearRect", "rect", "clip",
+            ].map((name) => [name, vi.fn()]),
+          ),
+          canvas: this, drawCalls,
+          drawImage: vi.fn(() => {
+            drawCalls.push({ smooth: tracked!.imageSmoothingEnabled });
+          }),
+        };
+        contexts.set(this, tracked);
+      }
+      return tracked as unknown as CanvasRenderingContext2D;
+    });
+
+    const api = mockApi();
+    const execute = vi.mocked(api.execute);
+    render(<ResearchWorkbench api={api} onBack={vi.fn()} />);
+
+    const mainViewer = await screen.findByLabelText("Image viewer: Field_01_Untreated");
+    await waitFor(() => expect(mainViewer).toHaveAttribute("data-prepared", "true"));
+    const mainCanvas = mainViewer.querySelector("canvas")!;
+    const mainCtx = contexts.get(mainCanvas)!;
+    await waitFor(() => expect(mainCtx.drawCalls.length).toBeGreaterThan(0));
+
+    const mainSampling = within(mainViewer).getByRole("group", { name: "Display sampling" });
+    const mainReadout = within(mainViewer).getByLabelText("Image dimensions and display sampling");
+    expect(within(mainSampling).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(mainReadout).getByText("Reduced · smoothed")).toBeVisible();
+    expect(mainCtx.drawCalls.at(-1)?.smooth).toBe(true);
+
+    const tileRequestsBeforeManual = execute.mock.calls.filter(([op]) => op === "viewer_tile").length;
+    const mainCameraBefore = mainViewer.getAttribute("data-camera");
+    const mainDrawsBefore = mainCtx.drawCalls.length;
+    fireEvent.click(within(mainSampling).getByRole("button", { name: "Nearest pixel" }));
+    expect(within(mainSampling).getByRole("button", { name: "Nearest pixel" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(mainReadout).getByText("Reduced · nearest pixel")).toBeVisible();
+    await waitFor(() => expect(mainCtx.drawCalls.length).toBeGreaterThan(mainDrawsBefore));
+    expect(mainCtx.drawCalls.at(-1)?.smooth).toBe(false);
+    expect(mainViewer.getAttribute("data-camera")).toBe(mainCameraBefore);
+    expect(execute.mock.calls.filter(([op]) => op === "viewer_tile")).toHaveLength(tileRequestsBeforeManual);
+
+    // Switching annotation tools remounts the docked ImageViewport, while session sampling persists.
+    const navigation = screen.getByRole("navigation", { name: "Task groups" });
+    fireEvent.click(within(navigation).getByRole("button", { name: "Annotate" }));
+    for (const toolName of ["Distance", "Polygon", "Point"]) {
+      fireEvent.click(await screen.findByRole("button", { name: toolName }));
+      const activeViewer = await screen.findByLabelText("Image viewer: Field_01_Untreated");
+      await waitFor(() => expect(activeViewer).toHaveAttribute("data-prepared", "true"));
+      const activeCanvas = activeViewer.querySelector("canvas")!;
+      const activeCtx = contexts.get(activeCanvas)!;
+      await waitFor(() => expect(activeCtx.drawCalls.length).toBeGreaterThan(0));
+      expect(within(activeViewer).getByRole("button", { name: "Nearest pixel" })).toHaveAttribute("aria-pressed", "true");
+      expect(within(activeViewer).getByText("Reduced · nearest pixel")).toBeVisible();
+      expect(activeCtx.drawCalls.at(-1)?.smooth).toBe(false);
+      expect(activeViewer.getAttribute("data-camera")).toBe(mainCameraBefore);
+    }
+
+    // Enter A/B comparison and link both panes on the same immutable source.
+    fireEvent.click(screen.getByRole("button", { name: "Compare A/B" }));
+    fireEvent.change(await screen.findByLabelText("Pinned Source B"), {
+      target: { value: "a".repeat(32) },
+    });
+
+    const linkCheckbox = screen.getByLabelText("Link pan and zoom") as HTMLInputElement;
+    await waitFor(() => expect(linkCheckbox).toBeEnabled());
+    await waitFor(() => {
+      const viewers = screen.getAllByLabelText("Image viewer: Field_01_Untreated");
+      expect(viewers).toHaveLength(2);
+      expect(viewers[0]).toHaveAttribute("data-prepared", "true");
+      expect(viewers[1]).toHaveAttribute("data-prepared", "true");
+    });
+
+    fireEvent.click(linkCheckbox);
+    expect(linkCheckbox.checked).toBe(true);
+
+    const [paneA, paneB] = screen.getAllByLabelText("Image viewer: Field_01_Untreated");
+    const canvasA = paneA.querySelector("canvas")!;
+    const canvasB = paneB.querySelector("canvas")!;
+    const ctxA = contexts.get(canvasA)!;
+    const ctxB = contexts.get(canvasB)!;
+    await waitFor(() => {
+      expect(ctxA.drawCalls.length).toBeGreaterThan(0);
+      expect(ctxB.drawCalls.length).toBeGreaterThan(0);
+    });
+
+    const samplingA = within(paneA).getByRole("group", { name: "Display sampling" });
+    const samplingB = within(paneB).getByRole("group", { name: "Display sampling" });
+    expect(within(samplingA).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(samplingB).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+
+    // Set Pane A to Nearest pixel while Pane B stays on Auto.
+    const abTilesBefore = execute.mock.calls.filter(([op]) => op === "viewer_tile").length;
+    const drawsABefore = ctxA.drawCalls.length;
+    const drawsBBefore = ctxB.drawCalls.length;
+    fireEvent.click(within(samplingA).getByRole("button", { name: "Nearest pixel" }));
+    expect(within(samplingA).getByRole("button", { name: "Nearest pixel" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(samplingB).getByRole("button", { name: "Auto" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(ctxA.drawCalls.length).toBeGreaterThan(drawsABefore));
+    expect(ctxA.drawCalls.at(-1)?.smooth).toBe(false);
+    expect(ctxB.drawCalls.length).toBe(drawsBBefore);
+    expect(ctxB.drawCalls.at(-1)?.smooth).toBe(true);
+    expect(within(paneA).getByText("Reduced · nearest pixel")).toBeVisible();
+    expect(within(paneB).getByText("Reduced · smoothed")).toBeVisible();
+    expect(execute.mock.calls.filter(([op]) => op === "viewer_tile")).toHaveLength(abTilesBefore);
+
+    // Linked 1:1 updates both cameras; Pane B (Auto) uses nearest pixel at 1:1, then override Pane B to Smooth.
+    fireEvent.click(within(paneA).getByRole("button", { name: "1:1" }));
+    await waitFor(() => {
+      expect(JSON.parse(paneA.getAttribute("data-camera")!).scale).toBe(1);
+      expect(JSON.parse(paneB.getAttribute("data-camera")!)).toEqual(JSON.parse(paneA.getAttribute("data-camera")!));
+      expect(ctxA.drawCalls.at(-1)?.smooth).toBe(false);
+      expect(ctxB.drawCalls.at(-1)?.smooth).toBe(false);
+    });
+
+    const drawsBAtNative = ctxB.drawCalls.length;
+    fireEvent.click(within(samplingB).getByRole("button", { name: "Smooth" }));
+    expect(within(samplingB).getByRole("button", { name: "Smooth" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(samplingA).getByRole("button", { name: "Nearest pixel" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(ctxB.drawCalls.length).toBeGreaterThan(drawsBAtNative));
+    expect(ctxB.drawCalls.at(-1)?.smooth).toBe(true);
+    expect(ctxA.drawCalls.at(-1)?.smooth).toBe(false);
+    expect(within(within(paneB).getByLabelText("Image dimensions and display sampling")).getByText("Smoothed")).toBeVisible();
+    expect(within(within(paneA).getByLabelText("Image dimensions and display sampling")).getByText("Nearest pixel")).toBeVisible();
+
+    // Linked zoom in keeps cameras locked and preserves independent sampling per pane.
+    fireEvent.click(within(paneA).getByRole("button", { name: "Zoom in" }));
+    await waitFor(() => {
+      const cameraA = JSON.parse(paneA.getAttribute("data-camera")!);
+      const cameraB = JSON.parse(paneB.getAttribute("data-camera")!);
+      expect(cameraA.scale).toBeGreaterThan(1);
+      expect(cameraB).toEqual(cameraA);
+      expect(ctxA.drawCalls.at(-1)?.smooth).toBe(false);
+      expect(ctxB.drawCalls.at(-1)?.smooth).toBe(true);
+    });
+    expect(within(paneA).getByText("Beyond native · nearest pixel")).toBeVisible();
+    expect(within(paneB).getByText("Beyond native · smoothed")).toBeVisible();
+
+    // Exit A/B and verify main workbench pane retains its Nearest pixel choice.
+    fireEvent.click(screen.getByRole("button", { name: "Exit A/B" }));
+    const restoredMain = await screen.findByLabelText("Image viewer: Field_01_Untreated");
+    await waitFor(() => expect(restoredMain).toHaveAttribute("data-prepared", "true"));
+    expect(within(restoredMain).getByRole("button", { name: "Nearest pixel" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(restoredMain).getByText("Reduced · nearest pixel")).toBeVisible();
+    const restoredCtx = contexts.get(restoredMain.querySelector("canvas")!)!;
+    await waitFor(() => expect(restoredCtx.drawCalls.at(-1)?.smooth).toBe(false));
   });
 });

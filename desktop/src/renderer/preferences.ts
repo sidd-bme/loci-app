@@ -1,5 +1,7 @@
-export type LociTheme = "graphite" | "midnight" | "paper" | "aurora" | "ember" | "lagoon" | "fiji";
+export const LOCI_THEMES = ["graphite", "black", "midnight", "paper", "aurora", "ember", "lagoon", "fiji"] as const;
+export type LociTheme = typeof LOCI_THEMES[number];
 export type InterfaceTextSize = "standard" | "large";
+export type InterfaceDensity = "compact" | "comfortable";
 
 export interface ExportPreferences {
   overlay: boolean;
@@ -12,6 +14,7 @@ export interface ExportPreferences {
 export interface UserPreferences {
   theme: LociTheme;
   textSize: InterfaceTextSize;
+  density: InterfaceDensity;
   font?: "system" | "arial" | "verdana";
   motion: "system" | "reduced";
   viewer: { showScaleBar: boolean; showNavigator: boolean; contextualHelp: boolean };
@@ -23,6 +26,7 @@ export interface UserPreferences {
 export const DEFAULT_PREFERENCES: UserPreferences = {
   theme: "graphite",
   textSize: "standard",
+  density: "compact",
   font: "system",
   motion: "system",
   viewer: { showScaleBar: true, showNavigator: true, contextualHelp: true },
@@ -37,8 +41,8 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   },
 };
 
-const STORAGE_KEY = "loci.preferences.v1";
-const themes = new Set<LociTheme>(["graphite", "midnight", "paper", "aurora", "ember", "lagoon", "fiji"]);
+export const PREFERENCES_STORAGE_KEY = "loci.preferences.v1";
+const themes = new Set<LociTheme>(LOCI_THEMES);
 const textSizes = new Set<InterfaceTextSize>(["standard", "large"]);
 
 export function normalizePreferences(value: unknown): UserPreferences {
@@ -82,6 +86,7 @@ export function normalizePreferences(value: unknown): UserPreferences {
         ? candidate.textSize as InterfaceTextSize
         : DEFAULT_PREFERENCES.textSize,
     font: candidate.font === "arial" || candidate.font === "verdana" ? candidate.font : "system",
+    density: candidate.density === "comfortable" ? "comfortable" : DEFAULT_PREFERENCES.density,
     export: exportPreferences,
     motion: candidate.motion === "reduced" ? "reduced" : "system",
     viewer: {
@@ -100,7 +105,7 @@ export function normalizePreferences(value: unknown): UserPreferences {
 
 export function loadPreferences(storage: Pick<Storage, "getItem"> = window.localStorage): UserPreferences {
   try {
-    const raw = storage.getItem(STORAGE_KEY);
+    const raw = storage.getItem(PREFERENCES_STORAGE_KEY);
     return raw ? normalizePreferences(JSON.parse(raw)) : structuredClone(DEFAULT_PREFERENCES);
   } catch {
     return structuredClone(DEFAULT_PREFERENCES);
@@ -111,5 +116,15 @@ export function savePreferences(
   preferences: UserPreferences,
   storage: Pick<Storage, "setItem"> = window.localStorage,
 ): void {
-  storage.setItem(STORAGE_KEY, JSON.stringify(normalizePreferences(preferences)));
+  storage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(normalizePreferences(preferences)));
+}
+
+export function applyAppearancePreferences(preferences: UserPreferences): void {
+  Object.assign(document.documentElement.dataset, {
+    theme: preferences.theme,
+    textSize: preferences.textSize,
+    density: preferences.density,
+    font: preferences.font ?? "system",
+    motion: preferences.motion,
+  });
 }

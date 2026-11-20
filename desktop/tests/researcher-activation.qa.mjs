@@ -9,6 +9,7 @@ import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { _electron as electron } from 'playwright';
+import { closeSettings, openSettings } from './settings-qa-helpers.mjs';
 import { selectWorkbenchTool, setSelectionField, waitForSnapshot } from './workbench-qa-helpers.mjs';
 
 const exec = promisify(execFile), repo = path.resolve(import.meta.dirname, '../..');
@@ -53,12 +54,13 @@ async function fullscreen(enabled) {
 async function frame() { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 async function shot(name) { const target = path.join(output, `${name}.png`); await page.screenshot({ path: target }); receipt.screenshots.push(path.basename(target)); }
 async function appearance(theme, large = false) {
-  await page.getByRole('button', { name: 'Open settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Appearance', exact: true }).click();
-  await page.getByLabel('Application theme', { exact: true }).selectOption(theme);
-  await page.getByRole('radiogroup', { name: 'Interface text size', exact: true }).getByRole('radio', { name: large ? 'Large' : 'Standard', exact: true }).click();
-  await page.getByRole('radiogroup', { name: 'Interface motion', exact: true }).getByRole('radio', { name: /Reduce motion/u }).click();
-  await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+  const settings = await openSettings(app, page);
+  const { dialog } = settings;
+  await dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
+  await dialog.getByLabel('Application theme', { exact: true }).selectOption(theme);
+  await dialog.getByRole('radiogroup', { name: 'Interface text size', exact: true }).getByRole('radio', { name: large ? 'Large' : 'Standard', exact: true }).click();
+  await dialog.getByRole('radiogroup', { name: 'Interface motion', exact: true }).getByRole('radio', { name: /Reduce motion/u }).click();
+  await closeSettings(settings, 'Close settings');
   await page.waitForFunction(expected => document.documentElement.dataset.theme === expected.theme && JSON.parse(localStorage.getItem('loci.preferences.v1')).textSize === expected.size, { theme, size: large ? 'large' : 'standard' });
   await frame();
 }

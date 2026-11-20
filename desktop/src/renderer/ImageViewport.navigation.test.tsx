@@ -22,9 +22,10 @@ beforeEach(() => {
     "closePath", "arc", "stroke", "fillText", "setLineDash", "save", "restore",
     "ellipse", "fill",
   ].map((name) => [name, vi.fn()])) as typeof context;
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-    context as unknown as CanvasRenderingContext2D,
-  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    context.canvas = this;
+    return context as unknown as CanvasRenderingContext2D;
+  });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       const width = this.classList?.contains("image-viewport") ? 400 : 0;
@@ -72,6 +73,49 @@ const source: ResearchSource = {
 const channels = [{ channel: 0, low: 0, high: 255, gamma: 1, visible: true, color: "#ffffff" }];
 
 describe("ImageViewport plane navigation contract", () => {
+  it("repaints only the viewport surround when Black is selected", async () => {
+    const styles = document.createElement("style");
+    styles.textContent = `
+      .image-viewport { --image-stage-background: #151515; }
+      :root[data-theme="black"] .image-viewport { --image-stage-background: #000000; }
+    `;
+    document.head.append(styles);
+    const root = document.documentElement;
+    const previousTheme = root.dataset.theme;
+    const fills: unknown[] = [];
+    context.fillRect.mockImplementation(() => { fills.push(context.fillStyle); });
+    const selection: ResearchSelection = { x: 0, y: 0, width: 400, height: 300, z: 0, t: 0, c: 0, level: 0 };
+    const execute = vi.fn(async () => ({
+      image: "data:image/png;base64,source#viewer-400x300",
+      source_sha256: source.sha256,
+      source_extent: [400, 300],
+      selection: { ...selection, level: -1 },
+      projection: null,
+    }));
+    try {
+      root.dataset.theme = "graphite";
+      const { container } = render(<ImageViewport api={{ execute } as unknown as ResearchDesktopApi}
+        source={source} selection={selection} channels={channels}
+        initialCamera={{ x: 200, y: 150, scale: 0.5 }} onError={vi.fn()} />);
+      const viewport = container.querySelector(".image-viewport");
+      await waitFor(() => expect(viewport).toHaveAttribute("data-prepared", "true"));
+      await waitFor(() => expect(context.drawImage).toHaveBeenCalled());
+      expect(fills.at(-1)).toBe("#151515");
+      const tilePaint = context.drawImage.mock.calls.at(-1);
+      const requests = execute.mock.calls.length;
+
+      await act(async () => { root.dataset.theme = "black"; });
+      expect(fills.at(-1)).toBe("#000000");
+      expect(context.drawImage.mock.calls.at(-1)).toEqual(tilePaint);
+      expect(execute).toHaveBeenCalledTimes(requests);
+      expect(viewport).toHaveAttribute("data-prepared", "true");
+    } finally {
+      styles.remove();
+      if (previousTheme === undefined) delete root.dataset.theme;
+      else root.dataset.theme = previousTheme;
+    }
+  });
+
   it("deferred fake decoder: rapidly selects Z planes and proves only latest matching receipt paints/readies", async () => {
     type Resolver = (receipt: unknown) => void;
     const pendingResolvers = new Map<number, Resolver>();
@@ -769,5 +813,103 @@ describe("M4 integration boundaries", () => {
     fireEvent.click(within(a.container).getByRole("button", { name: "Retry view" }));
     await act(async () => pending.get("A")![1]());
     await waitFor(() => expect(a.container.querySelector(".image-viewport")).toHaveAttribute("data-prepared", "true"));
+  });
+
+  it("repaints a retained fallback plane immediately on sampling change without marking it current", async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const drawSamples: Array<{ src: string; smooth: unknown }> = [];
+    context.drawImage.mockImplementation((image: HTMLImageElement) => {
+      drawSamples.push({ src: image.src, smooth: context.imageSmoothingEnabled });
+    });
+    let resolveZ1!: (value: unknown) => void;
+    const execute = vi.fn((_op: string, request: Record<string, unknown>) => {
+      const z = Number(request.z ?? (request.selection as ResearchSelection | undefined)?.z ?? 0);
+      if (z === 1) {
+        return new Promise((done) => { resolveZ1 = done; });
+      }
+      return Promise.resolve({
+        ...receipt(request),
+        image: `data:image/png;base64,plane-z${z}#viewer-400x300`,
+      });
+    });
+    const api = { execute } as unknown as ResearchDesktopApi;
+    const onViewReady = vi.fn();
+    const error = vi.fn();
+    const view = render(
+      <ImageViewport
+        dockedControls
+        api={api}
+        source={source}
+        selection={selection}
+        channels={channels}
+        initialCamera={{ x: 200, y: 150, scale: 0.5 }}
+        onViewReady={onViewReady}
+        onError={error}
+      />,
+    );
+
+    const viewport = view.container.querySelector(".image-viewport") as HTMLElement;
+    await waitFor(() => expect(viewport).toHaveAttribute("data-prepared", "true"));
+    expect(onViewReady).toHaveBeenLastCalledWith(`${source.id}:${source.sha256}:0:0`);
+    expect(drawSamples.some((sample) => sample.src.includes("plane-z0") && sample.smooth === true)).toBe(true);
+
+    const cameraBefore = viewport.dataset.camera;
+    view.rerender(
+      <ImageViewport
+        dockedControls
+        api={api}
+        source={source}
+        selection={{ ...selection, z: 1 }}
+        channels={channels}
+        initialCamera={{ x: 200, y: 150, scale: 0.5 }}
+        onViewReady={onViewReady}
+        onError={error}
+      />,
+    );
+
+    expect(viewport).toHaveAttribute("data-prepared", "false");
+    expect(onViewReady).toHaveBeenLastCalledWith("");
+    expect(within(view.container).getByText("Showing Z 1 · loading Z 2")).toBeVisible();
+
+    const requestsInFlight = execute.mock.calls.length;
+    const drawsBeforeNearest = drawSamples.length;
+    onViewReady.mockClear();
+
+    const samplingGroup = within(view.container).getByRole("group", { name: "Display sampling" });
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Nearest pixel" }));
+
+    expect(drawSamples.length).toBeGreaterThan(drawsBeforeNearest);
+    expect(drawSamples.slice(drawsBeforeNearest).every((sample) => sample.src.includes("plane-z0") && sample.smooth === false)).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(requestsInFlight);
+    expect(viewport.dataset.camera).toBe(cameraBefore);
+    expect(viewport).toHaveAttribute("data-prepared", "false");
+    expect(onViewReady).not.toHaveBeenCalledWith(`${source.id}:${source.sha256}:0:0`);
+    expect(onViewReady).not.toHaveBeenCalledWith(`${source.id}:${source.sha256}:0:1`);
+    expect(onViewReady).toHaveBeenLastCalledWith("");
+    expect(within(view.container).getByText("Showing Z 1 · loading Z 2")).toBeVisible();
+
+    const drawsBeforeSmooth = drawSamples.length;
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Smooth" }));
+    expect(drawSamples.length).toBeGreaterThan(drawsBeforeSmooth);
+    expect(drawSamples.slice(drawsBeforeSmooth).every((sample) => sample.src.includes("plane-z0") && sample.smooth === true)).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(requestsInFlight);
+    expect(viewport).toHaveAttribute("data-prepared", "false");
+
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Nearest pixel" }));
+    const drawsBeforeResolve = drawSamples.length;
+    await act(async () => {
+      resolveZ1({
+        image: "data:image/png;base64,plane-z1#viewer-400x300",
+        source_sha256: source.sha256,
+        source_extent: [400, 300],
+        selection: { t: 0, z: 1, c: 0, z_stop: null },
+        projection: null,
+      });
+    });
+
+    await waitFor(() => expect(viewport).toHaveAttribute("data-prepared", "true"));
+    expect(onViewReady).toHaveBeenLastCalledWith(`${source.id}:${source.sha256}:0:1`);
+    expect(drawSamples.slice(drawsBeforeResolve).some((sample) => sample.src.includes("plane-z1") && sample.smooth === false)).toBe(true);
+    expect(error).not.toHaveBeenCalled();
   });
 });

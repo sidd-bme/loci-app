@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -80,7 +79,7 @@ def test_reader_bounds_reports_only_exact_jpeg_xr_link_failure(
 def _fixture_root() -> Path:
     root = Path(os.environ.get("LOCI_VENDOR_FIXTURE_DIR", "/tmp/loci-release-run/vendor-reader"))
     required = [
-        root / "bioformats_package.jar",
+        Path(os.environ.get("LOCI_QA_BIOFORMATS_JAR", root / "bioformats_package.jar")),
         *(root / f"sample.{ext}" for ext in FIXTURE_HASHES),
     ]
     if not all(path.is_file() for path in required):
@@ -111,6 +110,7 @@ trailing diagnostics"""
             "dimension_order": "XYZCT",
             "dtype": "uint16",
             "channel_names": ["DAPI", "Channel 2"],
+            "declared_channel_names": ["DAPI", None],
             "samples_per_channel": [1, 1],
             "calibration": {
                 "x": {"value": 0.5, "unit": "µm"},
@@ -218,10 +218,7 @@ def test_expected_inspection_fingerprint_blocks_conversion_before_staging(
 
 @pytest.fixture(scope="module")
 def bioformats_reference_helper(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = _fixture_root()
-    javac = shutil.which("javac")
-    if javac is None:
-        pytest.skip("javac is unavailable for the direct Bio-Formats reference reader")
+    _fixture_root()
     helper = tmp_path_factory.mktemp("bioformats-reference")
     source = helper / "BfPixelReference.java"
     source.write_text(
@@ -264,15 +261,7 @@ public final class BfPixelReference {
         + "\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        [javac, "-cp", str(root / "bioformats_package.jar"), str(source)],
-        cwd=helper,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    return helper
+    return source
 
 
 @pytest.mark.parametrize(
@@ -293,8 +282,9 @@ def test_real_vendor_fixture_conversion_matches_direct_bioformats_pixels(
 ) -> None:
     root = _fixture_root()
     source = root / f"sample.{extension}"
-    jar = root / "bioformats_package.jar"
-    inspection = inspect_vendor(source, jar)
+    jar = Path(os.environ.get("LOCI_QA_BIOFORMATS_JAR", root / "bioformats_package.jar"))
+    java = os.environ.get("LOCI_QA_JAVA", "/usr/bin/java")
+    inspection = inspect_vendor(source, jar, java)
     encoded_inspection = json.dumps(inspection, sort_keys=True)
     assert str(root) not in encoded_inspection
     assert inspection["source_sha256"] == FIXTURE_HASHES[extension]
@@ -308,6 +298,7 @@ def test_real_vendor_fixture_conversion_matches_direct_bioformats_pixels(
         jar,
         destination,
         conversion_request,
+        java,
         expected_source_sha256=inspection["source_sha256"],
     )
     assert destination.is_dir()
@@ -326,14 +317,13 @@ def test_real_vendor_fixture_conversion_matches_direct_bioformats_pixels(
     x, y, width, height = conversion_request.crop
     reference_raw = tmp_path / f"reference-{extension}.bin"
     reference_meta = tmp_path / f"reference-{extension}.txt"
-    classpath = f"{jar}{os.pathsep}{bioformats_reference_helper}"
     subprocess.run(
         [
-            "/usr/bin/java",
+            java,
             "-Djava.awt.headless=true",
             "-cp",
-            classpath,
-            "BfPixelReference",
+            str(jar),
+            str(bioformats_reference_helper),
             str(source),
             str(conversion_request.series),
             str(conversion_request.c),
@@ -380,7 +370,8 @@ def test_destination_must_be_absent(tmp_path: Path) -> None:
     with pytest.raises(VendorConversionError, match="already exists"):
         convert_vendor(
             root / "sample.lif",
-            root / "bioformats_package.jar",
+            Path(os.environ.get("LOCI_QA_BIOFORMATS_JAR", root / "bioformats_package.jar")),
             destination,
             VendorConversionRequest(0, 0, 0, 0, (0, 0, 8, 8)),
+            os.environ.get("LOCI_QA_JAVA", "/usr/bin/java"),
         )

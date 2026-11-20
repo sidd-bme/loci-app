@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
+import { closeSettings, openSettings } from './settings-qa-helpers.mjs';
 import { selectWorkbenchTool } from './workbench-qa-helpers.mjs';
 
 const appPath = process.env.LOCI_PACKAGED_APP;
@@ -212,9 +213,11 @@ try {
   await page.waitForFunction(() => document.querySelector('.population-explorer')?.getAttribute('aria-busy') === 'false');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1024, height: 768 }));
   for (const theme of ['graphite', 'paper']) {
-    await page.getByRole('button', { name: 'Open settings', exact: true }).click();
-    await page.getByLabel('Application theme', { exact: true }).selectOption(theme);
-    await page.getByRole('button', { name: 'Close settings', exact: true }).click();
+    const settings = await openSettings(app, page);
+    await settings.dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
+    await settings.dialog.getByLabel('Application theme', { exact: true }).selectOption(theme);
+    await closeSettings(settings, 'Close settings');
+    await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
     await panel.evaluate((e) => { e.parentElement.scrollTop = 0; });
     await page.screenshot({ path: path.join(output, `06-compact-${theme}.png`) });
     assert.equal(await panel.evaluate((e) => e.scrollWidth > e.clientWidth + 2), false);

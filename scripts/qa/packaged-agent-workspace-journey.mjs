@@ -17,6 +17,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { placeQaWindow } from './display-placement.mjs';
+import { closeSettings, openSettings } from '../../desktop/tests/settings-qa-helpers.mjs';
 import { selectWorkbenchTool, setSelectionField } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), env = process.env;
@@ -75,13 +76,16 @@ async function shot(target, name) {
   await target.screenshot({ path: file, animations: 'disabled' });
   const geometry = await target.evaluate(() => {
     const surface = document.querySelector('.agent-workspace-surface'), columns = document.querySelector('.agent-workspace-columns');
+    const content = surface?.querySelector('.agent-workspace-content');
     return { viewport: [innerWidth, innerHeight], dpi: devicePixelRatio, theme: document.documentElement.dataset.theme,
       horizontal_overflow: document.documentElement.scrollWidth - innerWidth,
       surface_overflow: surface ? surface.scrollWidth - surface.clientWidth : null,
+      content_overflow: content ? content.scrollWidth - content.clientWidth : null,
       grid_columns: columns ? getComputedStyle(columns).gridTemplateColumns : null };
   });
   assert.ok(geometry.horizontal_overflow <= 1, `${name}: document clips horizontally`);
   if (geometry.surface_overflow !== null) assert.ok(geometry.surface_overflow <= 1, `${name}: agent surface clips horizontally`);
+  if (geometry.content_overflow !== null) assert.ok(geometry.content_overflow <= 1, `${name}: agent content scrolls horizontally`);
   report.captures.push({ name, file: path.basename(file), sha256: await hash(file), geometry });
   return geometry;
 }
@@ -154,12 +158,12 @@ async function placePopup(width, height) {
   return actual;
 }
 async function setTheme(theme) {
-  await page.getByRole('button', { name: 'Open settings', exact: true }).click();
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Appearance', exact: true }).click();
-  await settings.getByRole('combobox', { name: 'Application theme' }).selectOption(theme);
-  await settings.getByRole('button', { name: 'Done', exact: true }).click();
-  await popup.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme);
+  const settings = await openSettings(app, page);
+  await settings.dialog.getByRole('tab', { name: 'Appearance', exact: true }).click();
+  await settings.dialog.getByRole('combobox', { name: 'Application theme' }).selectOption(theme);
+  for (const surface of [page, popup])
+    await surface.waitForFunction(expected => document.documentElement.dataset.theme === expected, theme);
+  await closeSettings(settings);
 }
 async function readProcesses() {
   const { stdout } = await exec('/bin/ps', ['-axo', 'pid=,ppid=,lstart='], { timeout: 3000 });
@@ -303,7 +307,15 @@ try {
   await openDrawer(); await page.getByText(initialGoal, { exact: true }).waitFor(); await shot(page, '01-docked-plan');
   report.stage = 'draft-transfer-and-native-close';
   await page.getByRole('button', { name: 'Edit plan', exact: true }).click();
-  const firstDraft = 'Unsaved main-window plan before detaching'; await page.getByRole('textbox', { name: 'Goal', exact: true }).fill(firstDraft);
+  const firstDraft = 'Unsaved main-window plan before detaching';
+  async function enterDraft(surface, value, phase) {
+    const goal = surface.getByRole('textbox', { name: 'Goal', exact: true });
+    await goal.fill(value);
+    const matches = await goal.inputValue() === value;
+    (report.draft_input_checks ??= []).push({ phase, matches });
+    assert.ok(matches, `The expected goal text must be present before ${phase}`);
+  }
+  await enterDraft(page, firstDraft, 'detaching');
   await popOut(); assert.equal(await popup.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), firstDraft);
   const isolated = await popup.evaluate(() => ({ api: Object.keys(window.lociAgentWorkspace).sort(), desktop: typeof window.loci, research: typeof window.lociResearch,
     images: typeof window.lociImageWindows, node: typeof window.require, process: typeof window.process }));
@@ -315,7 +327,8 @@ try {
   const firstWindow = (await app.browserWindow(popup)); const windowId = await firstWindow.evaluate(w => w.id); await firstWindow.dispose();
   await page.getByRole('button', { name: 'Agent session status', exact: true }).click();
   assert.equal((await app.windows()).length, 2, 'Repeated open must focus one existing agent window');
-  const secondDraft = 'Latest popup draft survives ordinary native close'; await popup.getByRole('textbox', { name: 'Goal', exact: true }).fill(secondDraft);
+  const secondDraft = 'Latest popup draft survives ordinary native close';
+  await enterDraft(popup, secondDraft, 'closing the detached window');
   await nativeClosePopup();
   await page.getByRole('textbox', { name: 'Goal', exact: true }).waitFor(); assert.equal(await page.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), secondDraft);
   const unsaved = tasks(await snapshot()).find(t => t.id === taskId); assert.equal(unsaved.goal, initialGoal); assert.equal(unsaved.revision, 1);
@@ -323,7 +336,8 @@ try {
   await wait(snapshot, value => tasks(value).some(t => t.id === taskId && t.goal === secondDraft && t.revision === 2 && t.updated_by === 'human'), 'main UI saved exact transferred draft');
   await popOut();
   await popup.getByRole('button', { name: 'Edit plan', exact: true }).click();
-  const thirdDraft = 'Popup draft returns through the explicit dock control'; await popup.getByRole('textbox', { name: 'Goal', exact: true }).fill(thirdDraft);
+  const thirdDraft = 'Popup draft returns through the explicit dock control';
+  await enterDraft(popup, thirdDraft, 'docking');
   const returned = popup.waitForEvent('close'); await popup.getByRole('button', { name: 'Return to workspace', exact: true }).click(); await returned; popup = undefined;
   assert.equal(await page.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), thirdDraft);
   await page.getByRole('button', { name: 'Cancel editing', exact: true }).click(); await popOut();
@@ -354,11 +368,13 @@ try {
     await window.lociAgentWorkspace.navigate(state.binding, { requestId: crypto.randomUUID(), intent: 'open-result', target: { ...target, revision_hash: '0'.repeat(64) } }); return { rejected: false };
   } catch (error) { return { rejected: true, message: String(error) }; } }, resultTarget);
   assert.equal(staleNavigation.rejected, true); report.checks.push({ name: 'stale-recorded-revision-refused', ...staleNavigation });
-  await popup.getByLabel('Follow agent', { exact: true }).click();
+  const header = popup.locator('.agent-session-drawer__header');
+  const followSwitch = header.getByRole('switch', { name: 'Follow agent', exact: true });
+  await followSwitch.press('Space');
   await wait(workspaceState, value => value.follow === true, 'Follow state shared with main');
-  assert.equal(await popup.getByLabel('Follow agent', { exact: true }).isChecked(), true);
-  await popup.getByLabel('Follow agent', { exact: true }).click(); await wait(workspaceState, value => value.follow === false, 'Follow disabled in main');
-  assert.equal(await popup.getByLabel('Follow agent', { exact: true }).isChecked(), false);
+  await wait(() => followSwitch.isChecked(), value => value === true, 'Follow switch renders enabled');
+  await followSwitch.click(); await wait(workspaceState, value => value.follow === false, 'Follow disabled in main');
+  await wait(() => followSwitch.isChecked(), value => value === false, 'Follow switch renders disabled');
   await popup.getByRole('button', { name: 'Pause access', exact: true }).click();
   await wait(snapshot, value => value.agent_sessions.policies.some(p => p.policy_sha256 === policyHash && p.paused), 'popup pause native policy');
   await client.call('inspect_source', { source_id: source.id }, true);
@@ -368,17 +384,39 @@ try {
   await popup.getByText('Connection and permissions', { exact: true }).click();
   await popup.getByLabel('Agent permission mode', { exact: true }).selectOption('ask_approval');
   await wait(snapshot, value => value.agent_sessions.policies.some(p => p.policy_sha256 === policyHash && p.permission_mode === 'ask_approval'), 'popup permission mode');
+  await header.getByRole('button', { name: 'Connection and permissions, Ask for approval', exact: true }).waitFor();
   const currentTask = tasks(await snapshot()).find(t => t.id === taskId);
   await client.call('agent_task_write', { operation: 'publish_assessment', request: { task_id: taskId, expected_revision: currentTask.revision,
     summary: 'The generated source and retained labels are linked to the same study.', observations: ['Three authored regions are retained in the baseline result.'],
     limitations: ['Generated technical fixture; no biological accuracy or human scientific review.'], targets: [sourceTarget, resultTarget] } });
   assert.equal((await snapshot()).agent_sessions.approvals.filter(a => a.state === 'pending').length, 0, 'Granted prose metadata does not execute analysis or require an execution approval');
+  const activitySection = popup.getByRole('button', { name: 'Activity', exact: true });
+  await activitySection.click();
   const approvedRequest = await json(path.join(access, 'approved-request.json'));
   const preview = client.call('preview_recipe', { request: approvedRequest });
+  preview.catch(() => {});
   const pending = await wait(snapshot, value => value.agent_sessions.approvals.some(a => a.operation === 'preview_recipe' && a.state === 'pending'), 'actual SDK preview approval');
   const approval = pending.agent_sessions.approvals.find(a => a.operation === 'preview_recipe' && a.state === 'pending');
   assert.equal(approval.session_id, report.session_id); assert.equal(approval.policy_sha256, policyHash);
-  await popup.getByRole('button', { name: 'Approve preview_recipe', exact: true }).click(); await preview;
+  const pendingSection = popup.getByRole('region', { name: 'Pending agent approvals', exact: true });
+  await pendingSection.getByText(approval.summary, { exact: true }).waitFor();
+  assert.equal(await activitySection.getAttribute('aria-pressed'), 'true', 'A pending request must not change the selected section');
+  const statusBadge = page.getByRole('button', { name: 'Agent session status', exact: true }).locator('.agent-session-pill__badge');
+  await wait(() => statusBadge.textContent(), value => value === '1', 'Decision count in main-window status badge');
+  const content = popup.locator('.agent-workspace-content');
+  const scrolled = await content.evaluate(element => { element.scrollTop = element.scrollHeight; return element.scrollTop; });
+  assert.ok(scrolled > 0, 'The activity fixture must allow the pending card to scroll');
+  const reviewRequest = popup.getByRole('button', { name: 'Review request', exact: true });
+  const pinned = await reviewRequest.evaluate(button => {
+    const { top, bottom } = button.getBoundingClientRect();
+    return top >= 0 && bottom <= innerHeight;
+  });
+  assert.equal(pinned, true, 'Review request remains in view while activity scrolls');
+  await reviewRequest.press('Enter');
+  const decisionHeading = pendingSection.getByRole('heading', { name: 'Pending approvals (1)', exact: true });
+  assert.equal(await decisionHeading.evaluate(element => element === document.activeElement), true, 'Review request moves keyboard focus to the pending cards');
+  await shot(popup, '07-detached-approval-in-activity');
+  await pendingSection.getByRole('button', { name: 'Approve preview_recipe', exact: true }).click(); await preview;
   await wait(snapshot, value => value.agent_sessions.approvals.some(a => a.id === approval.id && a.state === 'consumed'), 'single-use popup approval consumed');
   assert.ok((await snapshot()).results.every(value => value.review == null), 'Preview approval must not create scientific result review');
   await checkpoint('live-controls-and-single-use-preview-approval');
@@ -388,10 +426,32 @@ try {
   await setTheme('graphite'); await placePopup(960, 760);
   const wide = await shot(popup, '02-detached-wide-graphite'); assert.equal(wide.grid_columns.split(' ').length, 2);
   await placePopup(520, 740); const narrow = await shot(popup, '03-detached-narrow-graphite'); assert.equal(narrow.grid_columns.split(' ').length, 1);
-  await setTheme('paper'); await shot(popup, '04-detached-narrow-paper');
-  await placePopup(960, 760); await shot(popup, '05-detached-wide-paper');
-  await setTheme('graphite'); savedBounds = await placePopup(960, 760);
+  await setTheme('paper');
+  const narrowPaper = await shot(popup, '04-detached-narrow-paper'); assert.equal(narrowPaper.grid_columns.split(' ').length, 1);
+  await placePopup(960, 760);
+  const widePaper = await shot(popup, '05-detached-wide-paper'); assert.equal(widePaper.grid_columns.split(' ').length, 2);
+  const appearanceDraft = 'Unsubmitted plan retained across the native appearance change';
+  await popup.getByRole('button', { name: 'Edit plan', exact: true }).click();
+  await enterDraft(popup, appearanceDraft, 'changing Black appearance');
+  const bindingBeforeAppearance = (await workspaceState(popup)).binding;
+  const themedWindow = await app.browserWindow(popup);
+  const appearanceWindowId = await themedWindow.evaluate(window => window.id);
+  await themedWindow.dispose();
+  await setTheme('black');
+  const liveWindow = await app.browserWindow(popup);
+  const liveWindowId = await liveWindow.evaluate(window => window.id);
+  await liveWindow.dispose();
+  assert.equal(liveWindowId, appearanceWindowId, 'Changing appearance preserves the existing detached window');
+  assert.deepEqual((await workspaceState(popup)).binding, bindingBeforeAppearance);
+  assert.equal(await popup.getByRole('textbox', { name: 'Goal', exact: true }).inputValue(), appearanceDraft);
+  assert.equal(tasks(await snapshot()).find(t => t.id === taskId).goal, secondDraft, 'Appearance must not publish the pending plan draft');
+  await popup.getByRole('button', { name: 'Cancel editing', exact: true }).click();
+  const wideBlack = await shot(popup, '08-detached-wide-black'); assert.equal(wideBlack.grid_columns.split(' ').length, 2);
+  await placePopup(520, 740);
+  const narrowBlack = await shot(popup, '09-detached-narrow-black'); assert.equal(narrowBlack.grid_columns.split(' ').length, 1);
+  savedBounds = await placePopup(960, 760);
   await nativeClosePopup(); await popOut(true);
+  await popup.waitForFunction(() => document.documentElement.dataset.theme === 'black');
   const nativeRestored = await app.browserWindow(popup); const restoredBounds = await nativeRestored.evaluate(window => window.getNormalBounds()); await nativeRestored.dispose();
   assert.deepEqual(restoredBounds, savedBounds, 'Explicit restore must recover saved native bounds');
   report.checks.push({ name: 'explicit-layout-restore', saved: savedBounds, restored: restoredBounds });
@@ -401,11 +461,15 @@ try {
   await closeRuntime(); await launch();
   await wait(snapshot, value => value.agent_sessions.connected_count === 0, 'closed SDK must not restore a live claim');
   await popOut(true);
+  for (const surface of [page, popup]) await surface.waitForFunction(() => document.documentElement.dataset.theme === 'black');
   const cold = await workspaceState(popup); assert.equal(cold.snapshot.agent_sessions.connected_count, 0); assert.equal(cold.presentation.draft, null);
   assert.equal(tasks(cold.snapshot).find(t => t.id === taskId).goal, secondDraft); assert.equal(tasks(cold.snapshot).find(t => t.id === taskId).assessments.length, 1);
   const nativeCold = await app.browserWindow(popup); const coldBounds = await nativeCold.evaluate(window => window.getNormalBounds()); await nativeCold.dispose();
   assert.deepEqual(coldBounds, savedBounds, 'Cold layout restore must preserve bounds while the same display remains connected');
   await shot(popup, '06-cold-retained-workspace');
+  report.checks.push({ name: 'native-settings-live-and-cold-black-appearance', binding: bindingBeforeAppearance,
+    live_window_id: liveWindowId, retained_draft: true, exact_saved_plan: true,
+    recreated_detached_window: true, cold_main_and_detached: true });
   await checkpoint('cold-retained-task-no-live-connection');
   assert.equal(await hash(fixture.source), fixture.sha256); assert.deepEqual(await preservedArrays(result), report.baseline.arrays);
   assert.deepEqual(await packageHashes(), Object.fromEntries(Object.entries(report.build).filter(([key]) => key !== 'identity')));

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchDesktopApi, ResearchSource } from "../shared/research-contracts";
 import { ImageViewport } from "./ImageViewport";
@@ -23,9 +23,10 @@ beforeEach(() => {
     ].map((name) => [name, vi.fn()])),
     globalAlpha: 1,
   } as typeof context;
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-    context as unknown as CanvasRenderingContext2D,
-  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function (this: HTMLCanvasElement) {
+    context.canvas = this;
+    return context as unknown as CanvasRenderingContext2D;
+  });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
     function (this: HTMLElement) {
       const width = this.classList?.contains("image-viewport") ? 400 : 0;
@@ -124,6 +125,137 @@ describe("ImageViewport exact result overlay", () => {
     expect(context.save).toHaveBeenCalled();
     expect(context.restore).toHaveBeenCalled();
     expect(rendered).toHaveBeenLastCalledWith(overlay.key);
+  });
+
+  it("smooths a reduced source while sampling the exact label grid with nearest pixels", async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const samples: Array<{ src: string; smooth: unknown; args: unknown[] }> = [];
+    context.drawImage.mockImplementation((image: HTMLImageElement, ...args: unknown[]) => {
+      samples.push({ src: image.src, smooth: context.imageSmoothingEnabled, args });
+    });
+    const service = api();
+    const execute = vi.mocked(service.execute);
+    render(<ImageViewport dockedControls api={service} source={source}
+      selection={{ x: 0, y: 0, width: 400, height: 300, z: 0, t: 0, c: 0, level: 0 }}
+      channels={[{ channel: 0, gamma: 1, visible: true, color: "#ffffff" }]}
+      initialCamera={{ x: 200, y: 150, scale: 0.4 }} resultOverlay={overlay} onError={vi.fn()} />);
+    await waitFor(() => expect(samples.some((sample) => sample.src === overlay.image)).toBe(true));
+    expect(samples.filter((sample) => sample.src === overlay.image).every((sample) => sample.smooth === false)).toBe(true);
+    expect(samples.some((sample) => sample.src !== overlay.image && sample.smooth === true)).toBe(true);
+    const readout = screen.getByLabelText("Image dimensions and display sampling");
+    expect(within(readout).getByText("Reduced · smoothed")).toBeVisible();
+    expect(within(readout).getByText("Labels · nearest pixel")).toBeVisible();
+
+    const viewer = screen.getByLabelText(`Image viewer: ${source.name}`);
+    const samplingGroup = screen.getByRole("group", { name: "Display sampling" });
+    const requestsBefore = execute.mock.calls.length;
+    const cameraBefore = viewer.getAttribute("data-camera");
+    const lastSourceAuto = samples.findLast((sample) => sample.src !== overlay.image)!;
+    const lastOverlayAuto = samples.findLast((sample) => sample.src === overlay.image)!;
+    const countBeforeNearest = samples.length;
+
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Nearest pixel" }));
+    const afterNearest = samples.slice(countBeforeNearest);
+    expect(afterNearest.some((sample) => sample.src !== overlay.image && sample.smooth === false)).toBe(true);
+    expect(afterNearest.filter((sample) => sample.src !== overlay.image).every((sample) => sample.smooth === false)).toBe(true);
+    expect(afterNearest.find((sample) => sample.src === overlay.image)).toEqual({
+      src: overlay.image,
+      smooth: false,
+      args: lastOverlayAuto.args,
+    });
+    expect(afterNearest.find((sample) => sample.src !== overlay.image)?.args).toEqual(lastSourceAuto.args);
+    expect(within(readout).getByText("Reduced · nearest pixel")).toBeVisible();
+    expect(within(readout).getByText("Labels · nearest pixel")).toBeVisible();
+    expect(execute).toHaveBeenCalledTimes(requestsBefore);
+    expect(viewer.getAttribute("data-camera")).toBe(cameraBefore);
+
+    // At 1:1 and zoomed in, manual Smooth smooths only the source while categorical labels remain nearest-pixel.
+    fireEvent.click(screen.getByRole("button", { name: "1:1" }));
+    const countBeforeSmooth = samples.length;
+    const requestsAtNative = execute.mock.calls.length;
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Smooth" }));
+    const afterSmooth = samples.slice(countBeforeSmooth);
+    expect(afterSmooth.some((sample) => sample.src !== overlay.image && sample.smooth === true)).toBe(true);
+    expect(afterSmooth.filter((sample) => sample.src === overlay.image).every((sample) => sample.smooth === false)).toBe(true);
+    expect(within(readout).getByText("Smoothed")).toBeVisible();
+    expect(within(readout).getByText("Labels · nearest pixel")).toBeVisible();
+    expect(execute).toHaveBeenCalledTimes(requestsAtNative);
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    expect(samples.filter((sample) => sample.src !== overlay.image).at(-1)?.smooth).toBe(true);
+    expect(samples.filter((sample) => sample.src === overlay.image).at(-1)?.smooth).toBe(false);
+    expect(within(readout).getByText("Beyond native · smoothed")).toBeVisible();
+    expect(within(readout).getByText("Labels · nearest pixel")).toBeVisible();
+  });
+
+  it("preserves derived analysis preview sampling and result-pixel picking across manual source modes", async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const samples: Array<{ src: string; smooth: unknown }> = [];
+    context.drawImage.mockImplementation((image: HTMLImageElement) => {
+      samples.push({ src: image.src, smooth: context.imageSmoothingEnabled });
+    });
+    const previewImage = "data:image/png;base64,analysis-preview#viewer-400x300";
+    const onResultPoint = vi.fn();
+    render(<ImageViewport dockedControls api={api()} source={source}
+      selection={{ x: 0, y: 0, width: 400, height: 300, z: 0, t: 0, c: 0, level: 0 }}
+      channels={[{ channel: 0, gamma: 1, visible: true, color: "#ffffff" }]}
+      initialCamera={{ x: 200, y: 150, scale: 0.4 }} overrideImage={previewImage}
+      resultOverlay={overlay} onResultPoint={onResultPoint} onError={vi.fn()} />);
+
+    await waitFor(() => expect(samples.some((sample) => sample.src === previewImage)).toBe(true));
+    await waitFor(() => expect(samples.some((sample) => sample.src === overlay.image)).toBe(true));
+    const samplingGroup = screen.getByRole("group", { name: "Display sampling" });
+
+    // Switching source to Nearest pixel at reduced zoom leaves derived analysis preview auto-smoothed.
+    const beforeNearest = samples.length;
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Nearest pixel" }));
+    const nearestSlice = samples.slice(beforeNearest);
+    expect(nearestSlice.filter((sample) => sample.src !== previewImage && sample.src !== overlay.image).at(-1)?.smooth).toBe(false);
+    expect(nearestSlice.find((sample) => sample.src === previewImage)?.smooth).toBe(true);
+    expect(nearestSlice.find((sample) => sample.src === overlay.image)?.smooth).toBe(false);
+    expect(screen.getByText("Source · nearest pixel")).toBeVisible();
+    expect(screen.getByText("Preview · smoothed")).toBeVisible();
+
+    // Switching source to Smooth at 1:1 leaves derived analysis preview nearest-pixel (auto) and picking unchanged.
+    fireEvent.click(screen.getByRole("button", { name: "1:1" }));
+    const beforeSmooth = samples.length;
+    fireEvent.click(within(samplingGroup).getByRole("button", { name: "Smooth" }));
+    const smoothSlice = samples.slice(beforeSmooth);
+    expect(smoothSlice.filter((sample) => sample.src !== previewImage && sample.src !== overlay.image).at(-1)?.smooth).toBe(true);
+    expect(smoothSlice.find((sample) => sample.src === previewImage)?.smooth).toBe(false);
+    expect(smoothSlice.find((sample) => sample.src === overlay.image)?.smooth).toBe(false);
+    expect(screen.getByText("Source · smoothed")).toBeVisible();
+    expect(screen.getByText("Preview · nearest pixel")).toBeVisible();
+
+    const canvas = screen.getByLabelText("Source image and bound annotations");
+    fireEvent.pointerDown(canvas, { pointerId: 1, button: 0, clientX: 45, clientY: 55 });
+    fireEvent.pointerUp(canvas, { pointerId: 1, button: 0, clientX: 45, clientY: 55 });
+    expect(onResultPoint).toHaveBeenCalledWith({ u: 12, v: 7 });
+  });
+
+  it("identifies the painted process preview and restores the source readout when it is cleared", async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue(new DOMRect(0, 0, 400, 300));
+    const viewer = {
+      dockedControls: true, api: api(), source, onError: vi.fn(),
+      selection: { x: 0, y: 0, width: 400, height: 300, z: 0, t: 0, c: 0, level: 0 },
+      channels: [{ channel: 0, gamma: 1, visible: true, color: "#ffffff" }],
+      initialCamera: { x: 200, y: 150, scale: 0.4 },
+    };
+    const view = render(<ImageViewport {...viewer} />);
+    const controls = screen.getByRole("group", { name: "Display sampling" });
+    fireEvent.click(within(controls).getByRole("button", { name: "Nearest pixel" }));
+    const readout = within(screen.getByLabelText("Image dimensions and display sampling"));
+    expect(readout.getByText("Reduced · nearest pixel")).toBeVisible();
+    expect(readout.queryByText(/^Preview/)).toBeNull();
+
+    view.rerender(<ImageViewport {...viewer} overrideImage="data:image/png;base64,process#viewer-400x300" />);
+    expect(await readout.findByText("Preview · smoothed")).toBeVisible();
+    expect(readout.getByText("Source · nearest pixel")).toBeVisible();
+    expect(readout.queryByText(/^Labels/)).toBeNull();
+
+    view.rerender(<ImageViewport {...viewer} />);
+    await waitFor(() => expect(readout.queryByText(/^Preview/)).toBeNull());
+    expect(readout.getByText("Reduced · nearest pixel")).toBeVisible();
   });
 
   it("maps a source-camera click back to the exact result pixel grid", async () => {

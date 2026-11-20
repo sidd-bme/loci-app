@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ImageWindowApi, ImageWindowPresentation, ImageWindowState } from "../shared/image-window-api";
 import type { ImageViewTargetSnapshot } from "../shared/image-view-contracts";
+import { DEFAULT_PREFERENCES, PREFERENCES_STORAGE_KEY, savePreferences } from "./preferences";
 
 vi.mock("./ImageViewport", () => ({
   ImageViewport: (props: {
@@ -25,6 +26,7 @@ import { DetachedImageWindow } from "./DetachedImageWindow";
 
 afterEach(() => {
   cleanup();
+  localStorage.removeItem("loci.preferences.v1");
   vi.restoreAllMocks();
 });
 
@@ -96,6 +98,21 @@ function mockApi(initialPresentation = presentation()) {
 }
 
 describe("DetachedImageWindow", () => {
+  it("applies the saved density and follows appearance changes from the main window", async () => {
+    const { api } = mockApi();
+    savePreferences({ ...DEFAULT_PREFERENCES, theme: "black", density: "comfortable" });
+    render(<DetachedImageWindow api={api} />);
+    await screen.findByLabelText("Mock image viewer: Stack A");
+    expect(document.documentElement).toHaveAttribute("data-theme", "black");
+    expect(document.documentElement).toHaveAttribute("data-density", "comfortable");
+
+    savePreferences(DEFAULT_PREFERENCES);
+    fireEvent(window, new StorageEvent("storage", { key: PREFERENCES_STORAGE_KEY, storageArea: window.localStorage }));
+    expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    expect(document.documentElement).toHaveAttribute("data-theme", "graphite");
+    expect(api.interact).not.toHaveBeenCalled();
+  });
+
   it("does not overwrite a newer plane with a delayed startup snapshot", async () => {
     const { api, emitPresentation } = mockApi();
     let resolveInitial!: (value: Awaited<ReturnType<ImageWindowApi["presentation"]>>) => void;

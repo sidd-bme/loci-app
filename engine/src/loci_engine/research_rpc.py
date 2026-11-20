@@ -194,7 +194,16 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
 
         exact_keys(
             params,
-            {"project", "path", "source_id", "source_sha256", "selection", "working_bytes"},
+            {
+                "project",
+                "path",
+                "source_id",
+                "source_sha256",
+                "selection",
+                "working_bytes",
+                "handoff_id",
+                "handoff_manifest_path",
+            },
             method,
         )
         return create_import_grant(
@@ -204,7 +213,43 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             params["source_sha256"],
             params["selection"],
             params.get("working_bytes", 512 * 1024**2),
+            handoff_id=params.get("handoff_id"),
+            handoff_manifest_path=params.get("handoff_manifest_path"),
         )
+    if method == "research_image_convert":
+        from .image_conversion import convert_image
+
+        exact_keys(
+            params, {"project", "source_id", "source_sha256", "format", "destination"}, method
+        )
+        return convert_image(
+            _open(params["project"]),
+            params["source_id"],
+            params["source_sha256"],
+            params["format"],
+            params["destination"],
+        )
+    if method == "research_usam_handoff_export":
+        from .research_usam_handoff import export_usam_handoff
+
+        exact_keys(
+            params,
+            {"project", "destination", "source_id", "source_sha256", "selection", "working_bytes"},
+            method,
+        )
+        return export_usam_handoff(
+            _open(params["project"]),
+            params["source_id"],
+            params["source_sha256"],
+            params["selection"],
+            params["destination"],
+            params.get("working_bytes", 512 * 1024**2),
+        )
+    if method == "research_usam_handoffs":
+        from .research_usam_handoff import list_usam_handoffs
+
+        exact_keys(params, {"project"}, method)
+        return {"handoffs": list_usam_handoffs(_open(params["project"]))}
     if method == "research_large_exchange_grant":
         from .research_large_exchange import create_exchange_grant
 

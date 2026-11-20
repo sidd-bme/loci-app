@@ -343,7 +343,7 @@ try {
   const viewer = page.locator(`[data-viewer-source="${calibrated.id}"]`);
   await wait(() => viewer.evaluate((element, pixel) => {
     const camera = JSON.parse(element.getAttribute("data-camera"));
-    const bounds = element.getBoundingClientRect();
+    const bounds = element.querySelector("canvas").getBoundingClientRect();
     const px = bounds.width / 2 + (pixel[1] + 0.5 - camera.x) * camera.scale;
     const py = bounds.height / 2 + (pixel[0] + 0.5 - camera.y) * camera.scale;
     return element.getAttribute("data-prepared") === "true" && px > 0 && px < bounds.width && py > 0 && py < bounds.height;
@@ -356,7 +356,7 @@ try {
   await wait(() => viewer.getAttribute("data-prepared"), value => value === "true", "prepared source viewport");
   const point = await viewer.evaluate((element, pixel) => {
     const camera = JSON.parse(element.getAttribute("data-camera"));
-    const bounds = element.getBoundingClientRect();
+    const bounds = element.querySelector("canvas").getBoundingClientRect();
     return { x: bounds.left + bounds.width / 2 + (pixel[1] + 0.5 - camera.x) * camera.scale,
       y: bounds.top + bounds.height / 2 + (pixel[0] + 0.5 - camera.y) * camera.scale };
   }, [y, x]);
@@ -418,7 +418,9 @@ try {
   await summary.waitFor({state:"visible"});
   assert.equal(child.object_count,255,"The synthetic correction preserves 255 original object identities");
   await summary.getByText("Summary of the first 200 of 255 objects. Use Statistics & objects for the full population.",{exact:true}).waitFor();
-  assert.match(await summary.innerText(),/um\^2/,"Review summary retains the calibrated area unit");
+  assert.match(await summary.innerText(),/µm²/,"Review summary displays the calibrated area unit");
+  assert.deepEqual(await summary.locator(".research-stat-value small").evaluateAll(units => units.map(unit => unit.dataset.lociHelp ?? unit.title)),
+    ["um^2", "um^2"], "Review summary retains the exact recorded area unit");
   assert.equal(await review.getByRole("button",{name:"Explore in Statistics & objects",exact:true}).isVisible(),true);
   assert.equal(await page.getByRole("region",{name:"Export scientific data",exact:true}).count(),0);
   assert.equal(await summary.locator("details.research-preview-rows").evaluate(element=>element.open),false);

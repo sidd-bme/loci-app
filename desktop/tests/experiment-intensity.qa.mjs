@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
 import { fileMenuAction, selectWorkbenchTool, selectStudySection, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 // Root owns serial live execution and visual acceptance. Scientific actions below
@@ -324,12 +325,16 @@ async function exportReport(name, id) {
   return target;
 }
 async function appearance(theme, large = false, reduced = false) {
-  await page.getByRole("button", { name: "Open settings", exact: true }).click();
-  await page.getByRole("tab", { name: "Appearance", exact: true }).click();
-  await page.getByLabel("Application theme", { exact: true }).selectOption(theme);
-  await page.getByRole("radiogroup", { name: "Interface text size", exact: true }).getByRole("radio", { name: large ? "Large" : "Standard", exact: true }).click();
-  await page.getByRole("radiogroup", { name: "Interface motion", exact: true }).getByRole("radio", { name: reduced ? /Reduce motion/u : /Follow system/u }).click();
-  await page.getByRole("button", { name: "Close settings", exact: true }).click();
+  const settings = await openSettings(app, page);
+  const { dialog } = settings;
+  await dialog.getByRole("tab", { name: "Appearance", exact: true }).click();
+  await dialog.getByLabel("Application theme", { exact: true }).selectOption(theme);
+  await dialog.getByRole("radiogroup", { name: "Interface text size", exact: true }).getByRole("radio", { name: large ? "Large" : "Standard", exact: true }).click();
+  await dialog.getByRole("radiogroup", { name: "Interface motion", exact: true }).getByRole("radio", { name: reduced ? /Reduce motion/u : /Follow system/u }).click();
+  await closeSettings(settings, "Close settings");
+  await page.waitForFunction(([theme, size, motion]) => document.documentElement.dataset.theme === theme &&
+    document.documentElement.dataset.textSize === size && document.documentElement.dataset.motion === motion,
+  [theme, large ? "large" : "standard", reduced ? "reduced" : "system"]);
 }
 async function expectedAlert(region, pattern, name) {
   const alert = region.getByRole("alert").filter({ hasText: pattern });

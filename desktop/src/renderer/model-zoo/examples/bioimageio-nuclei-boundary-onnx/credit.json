@@ -1,0 +1,188 @@
+{
+  "modelId": "bioimageio-nuclei-boundary-onnx",
+  "modelVersion": "NucleiSegmentationBoundaryModel 0.1.0 · Zenodo 6647674, v7",
+  "kind": "prediction",
+  "subject": "Fluorescence microscopy of nuclei from the 2018 Data Science Bowl. This is the BioImage.IO model’s supplied example field.",
+  "attribution": "Constantin Pape (EMBL Heidelberg), NucleiSegmentationBoundaryModel, Zenodo 6647674 (2022), sample_input_0.tif, CC BY 4.0. Original image from the contributors to BBBC038v1, curated by the Broad Institute Imaging Platform. WebP renditions and prediction contours prepared by Loci.",
+  "imageLicense": "CC-BY-4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "sourceUrl": "https://doi.org/10.5281/zenodo.6647674",
+  "publicationUrl": "https://doi.org/10.1007/978-3-319-24574-4_28",
+  "displayTransform": "Full native 256 × 256 field. Original and Overlay use the same linear grayscale window of 10–160 in recorded uint8 intensity, with endpoint clipping. The overlay adds a one-pixel inner contour to each predicted instance. The thumbnail shows the same overlay at 256 × 256. The unwindowed source pixels are preserved in source.png.",
+  "predictionOrigin": "Loci ONNX Runtime CPU inference with the exact Zenodo weights. Four-connected components of foreground probability ≥ 0.5 yield 45 candidate instances on this field. These contours show model-derived predictions. The supplier’s probability maps and dataset annotations are separate artifacts.",
+  "sourceMember": "sample_input_0.tif",
+  "sourceFileUrl": "https://zenodo.org/records/6647674/files/sample_input_0.tif",
+  "sourceSha256": "a24b3c708b6ca6825494eb7c5a4d221335fb3eef5eb9d03f4108907cdaad2bf9",
+  "sourceMd5": "8dc5acd11e204dec2b2c3fb924668a10",
+  "datasetUrl": "https://bbbc.broadinstitute.org/BBBC038",
+  "datasetPublicationUrl": "https://doi.org/10.1038/s41592-019-0612-7",
+  "datasetImageLicense": "CC0-1.0",
+  "datasetLicenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+  "datasetPixelIdentity": {
+    "archiveUrl": "https://github.com/stardist/stardist/releases/download/0.1.0/dsb2018.zip",
+    "archiveSha256": "e44921950edce378063aa4457e625581ba35b4c2dbd9a07c19d48900129f386f",
+    "member": "dsb2018/test/images/0bda515e370294ed94efd36bd53782288acacb040c171df2ed97fd691fc9d8fe.tif",
+    "memberSha256": "f201cdd1cab01e7d009bf9957355e6aeaeb37b26e4af5d5c72d87833984ee752",
+    "decodedPixelExactMatch": true
+  },
+  "modelPublicationUrl": "https://doi.org/10.5281/zenodo.6647674",
+  "modelRepositoryUrl": "https://github.com/constantinpape/torch-em",
+  "modelRdfUrl": "https://zenodo.org/records/6647674/files/rdf.yaml",
+  "modelRdfSha256": "b4110beb99300b1718d4bc816756a488f38ba0b47bfc7f3531a3217a43279531",
+  "modelWeightsUrl": "https://zenodo.org/records/6647674/files/weights.onnx",
+  "modelWeightsSha256": "df913b85947f5132bcdaf81d91af0963f60d44f4caf8a4fec672d96a2f327b44",
+  "lociExecutionPackageVersion": "0.1.0-publication-20261015-r2",
+  "lociExecutionPackageSha256": "774aa0c53566c9f995af02c905863c0ca86b71460f93c3a11fe101b11c5ba582",
+  "runtimeVersions": {
+    "onnx": "1.22.0",
+    "onnxruntime": "1.29.0"
+  },
+  "execution": {
+    "provider": "CPUExecutionProvider",
+    "intraOpThreads": 1,
+    "interOpThreads": 1,
+    "tileShapeYX": [
+      256,
+      256
+    ],
+    "haloYX": [
+      16,
+      16
+    ],
+    "padding": "reflect",
+    "preprocessing": [
+      {
+        "id": "ensure_dtype",
+        "kwargs": {
+          "dtype": "float32"
+        }
+      },
+      {
+        "id": "zero_mean_unit_variance",
+        "kwargs": {
+          "axes": [
+            "channel",
+            "y",
+            "x"
+          ],
+          "eps": 1e-06
+        }
+      }
+    ]
+  },
+  "predictionSettings": {
+    "probabilityAxes": "CYX",
+    "probabilityChannels": [
+      "foreground",
+      "boundary"
+    ],
+    "method": "connected components",
+    "channel": 0,
+    "threshold": 0.5,
+    "connectivity": 4,
+    "minimumSizePixels": 0,
+    "excludeBorder": false
+  },
+  "predictionRunId": "run-20261014T192225405638Z",
+  "predictionRunReceiptSha256": "6fe4835cb00740ad7919938ff9de8e9bf074614370421b5c48c50ad32488d05a",
+  "predictionResultRevisionSha256": "674dddcb8435cea08f9b884465206ac5904fad203ceb249faa0c38f643bca231",
+  "predictedProbabilitiesNpySha256": "7d7611de29733d5448c2cbab6faa5bb70816cc5f0a718301925c122fbc8d9f5e",
+  "predictedLabelsNpySha256": "49c5403d08909cf31473562a871ad3ed6fe7c85a998ed4ae00fa66c28c638ee2",
+  "predictedInstanceCount": 45,
+  "predictedForegroundPixels": 3443,
+  "sourceShapeYX": [
+    256,
+    256
+  ],
+  "cropYXHW": [
+    0,
+    0,
+    256,
+    256
+  ],
+  "sourceAxes": "YX",
+  "sourceDtype": "uint8",
+  "sourceScale": {
+    "unit": "pixel",
+    "spacingYX": [
+      1,
+      1
+    ],
+    "physicalCalibration": null
+  },
+  "sourcePixelArraySha256": "8cb6141edbd5066532a1087ca09ac83555e6ce6746bab55f70a937e5640bc29a",
+  "predictedLabelArraySha256": "999b406c9ce5257548bc9c75a529ecbae1bd48d0848102c0a18191203c45acd0",
+  "labelPng": {
+    "axes": "YX",
+    "dtype": "uint16",
+    "backgroundId": 0,
+    "sha256Basis": "C-order little-endian uint16 decoded samples"
+  },
+  "overlayContour": {
+    "widthPx": 1,
+    "inward": true,
+    "connectivity": 4,
+    "rgb": [
+      70,
+      219,
+      184
+    ],
+    "opacity": 0.82
+  },
+  "files": {
+    "original.webp": {
+      "sha256": "56a04b4391b8956e7f73c214e22baaa3f4fbbddf29ff594d86e356a31595a863",
+      "dimensionsXY": [
+        256,
+        256
+      ]
+    },
+    "overlay.webp": {
+      "sha256": "0a8f523f89f6790b28fc0fba49d8613a2b826a76d400971d03db3c82087a4777",
+      "dimensionsXY": [
+        256,
+        256
+      ]
+    },
+    "prediction.png": {
+      "sha256": "9a8d3b87a9a09e27d75ddc7dfe00c0051ebd2ce921fb9915b62091d9f9634699",
+      "dimensionsXY": [
+        256,
+        256
+      ]
+    },
+    "thumbnail.webp": {
+      "sha256": "0a8f523f89f6790b28fc0fba49d8613a2b826a76d400971d03db3c82087a4777",
+      "dimensionsXY": [
+        256,
+        256
+      ]
+    },
+    "source.png": {
+      "sha256": "3bb91bb6149e9a15c9bc831a7598e8afb44039819ef0f62dfc41be500a4b31e2",
+      "dimensionsXY": [
+        256,
+        256
+      ]
+    }
+  },
+  "displayWindow": {
+    "inputLimits": [
+      10,
+      160
+    ],
+    "inputUnit": "native uint8 intensity",
+    "outputLimits": [
+      0,
+      255
+    ],
+    "gamma": 1,
+    "sourceSamples": "source.png"
+  },
+  "cardDisplay": {
+    "source": "overlay.webp",
+    "resampling": "Lanczos at recorded thumbnail dimensions",
+    "encoding": "lossless WebP",
+    "field": "same full-resolution field as the detail viewer"
+  }
+}

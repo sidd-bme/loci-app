@@ -25,10 +25,11 @@ const EVENT_LIMIT = 12;
 const targetName = (target: ResearchAgentTargetReference) => target.kind.replaceAll("_", " ");
 const readable = (value: string) => value.replaceAll("_", " ");
 
-export function RecordedTime({ value }: { value: string }): React.JSX.Element {
+export function RecordedTime({ value, compact = false }: { value: string; compact?: boolean }): React.JSX.Element {
   const date = new Date(value);
   return Number.isFinite(date.getTime())
-    ? <time dateTime={value} title={value}>{date.toLocaleString()}</time>
+    ? <time dateTime={value} title={value}>{date.toLocaleString(undefined, compact
+      ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" } : undefined)}</time>
     : <span>Time unavailable</span>;
 }
 
@@ -64,12 +65,29 @@ export function agentTargetState(target: ResearchAgentTargetReference, snapshot:
   return "current";
 }
 
-export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailable = false, allowReview = false }: {
+function TargetIdentity({ target }: { target: ResearchAgentTargetReference }): React.JSX.Element {
+  return <dl className="agent-approval-meta">
+    <dt>ID</dt><dd><code>{target.id}</code></dd>
+    {target.sha256 && <><dt>SHA-256</dt><dd><code>{target.sha256}</code></dd></>}
+    {target.revision_hash && <><dt>Revision hash</dt><dd><code>{target.revision_hash}</code></dd></>}
+    {target.revision !== undefined && <><dt>Revision</dt><dd>{target.revision}</dd></>}
+    {target.source_id && <><dt>Source ID</dt><dd><code>{target.source_id}</code></dd></>}
+    {target.source_sha256 && <><dt>Source SHA-256</dt><dd><code>{target.source_sha256}</code></dd></>}
+    {target.selection && <><dt>Selection (pixels)</dt><dd>
+      x {target.selection.x}, y {target.selection.y}, width {target.selection.width}, height {target.selection.height};
+      {" "}T index {target.selection.t}, C index {target.selection.c}, Z index {target.selection.z}
+      {target.selection.z_stop !== undefined ? ` to ${target.selection.z_stop} (exclusive)` : ""}; level {target.selection.level}
+    </dd></>}
+  </dl>;
+}
+
+export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailable = false, allowReview = false, compact = false }: {
   targets?: ResearchAgentTargetReference[];
   snapshot: ResearchSnapshot;
   navigation?: AgentActivityNavigation;
   unavailable?: boolean;
   allowReview?: boolean;
+  compact?: boolean;
 }): React.JSX.Element {
   if (!targets?.length) return <p className="agent-activity-note">No target recorded.</p>;
   return <ul className="agent-target-list" aria-label="Recorded targets">
@@ -94,32 +112,21 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
       return <li key={`${target.kind}:${target.id}:${index}`}>
         <button type="button" className="agent-target-link" disabled={Boolean(reason)}
           aria-label={label} title={reason ?? label} onClick={() => callback?.(target)}>
-          {result ? `Open ${resultTitle(result)}` : <>Open {targetName(target)} {sourceName && `${sourceName} · `}<span>{target.id.slice(0, 8)}</span></>}
+          <span>{result ? `Open ${resultTitle(result)}` : <>Open {targetName(target)} {sourceName && !compact && `${sourceName} · `}<code>{target.id.slice(0, 8)}</code></>}</span>
+          {!reason && <ArrowUpRight size={13} aria-hidden="true" />}
         </button>
         {reason && <span className="agent-target-reason">{reason}</span>}
-        {state === "current" && job && <span className="agent-activity-note">Recorded job state · {job.state}{job.cancel_requested ? " · stop requested" : ""}</span>}
+        {state === "current" && job && (!compact || job.cancel_requested) && <span className="agent-activity-note">Recorded job state · {job.state}{job.cancel_requested ? " · stop requested" : ""}</span>}
         {allowReview && target.kind === "result" && navigation.onReviewResult && <button type="button" className="agent-target-link"
           disabled={state !== "current"} aria-label={`Review result ${target.id}`}
           title={state !== "current" ? reason ?? undefined : "Open human review for this exact result revision"}
           onClick={() => navigation.onReviewResult?.(target)}>Review result</button>}
         {previewAvailable && <button type="button" className="agent-target-link"
           aria-label={`Inspect preview ${target.id}`} onClick={() => navigation.onInspectPreview?.(target)}>Inspect preview</button>}
-        <details className="agent-target-identity">
+        {!compact && <details className="agent-target-identity">
           <summary>Exact {targetName(target)} target</summary>
-          <dl className="agent-approval-meta">
-            <dt>ID</dt><dd>{target.id}</dd>
-            {target.sha256 && <><dt>SHA-256</dt><dd>{target.sha256}</dd></>}
-            {target.revision_hash && <><dt>Revision hash</dt><dd>{target.revision_hash}</dd></>}
-            {target.revision !== undefined && <><dt>Revision</dt><dd>{target.revision}</dd></>}
-            {target.source_id && <><dt>Source ID</dt><dd>{target.source_id}</dd></>}
-            {target.source_sha256 && <><dt>Source SHA-256</dt><dd>{target.source_sha256}</dd></>}
-            {target.selection && <><dt>Selection (pixels)</dt><dd>
-              x {target.selection.x}, y {target.selection.y}, width {target.selection.width}, height {target.selection.height};
-              {" "}T index {target.selection.t}, C index {target.selection.c}, Z index {target.selection.z}
-              {target.selection.z_stop !== undefined ? ` to ${target.selection.z_stop} (exclusive)` : ""}; level {target.selection.level}
-            </dd></>}
-          </dl>
-        </details>
+          <TargetIdentity target={target} />
+        </details>}
       </li>;
     })}
   </ul>;
@@ -140,37 +147,28 @@ function operationLabel(operation: string): string {
   return labels[operation] ?? readable(operation);
 }
 
-/** Audit kinds describe calls and submissions; only the audit record can claim an outcome. */
-function eventHeadline(event: ResearchAgentEventRecord): string {
-  const operation = event.operation ? operationLabel(event.operation) : "operation";
-  const headlines: Record<string, string> = {
-    operation_inspected: `Inspected · ${operation}`,
-    operation_proposed: `Proposal validated · ${operation}`,
-    operation_submitted: `Submitted · ${operation}`,
-    operation_started: `Started · ${operation}`,
-    operation_completed: `Completed call · ${operation}`,
-    operation_failed: `Failed · ${operation}`,
-    operation_blocked: `Blocked · ${operation}`,
-    approval_requested: "Decision requested",
-    approval_approved: "Approved once · awaiting execution",
-    approval_denied: "Request denied",
-    approval_expired: "Request expired",
-    approval_consumed: "Approval consumed",
-    session_connected: "Client connected",
-    session_disconnected: "Client disconnected",
-    session_paused: "Access paused",
-    session_resumed: "Access resumed",
-    policy_revoked: "Access revoked",
-    job_stopped: "Job stop requested",
-  };
-  // Durable job outcomes use an explicit summary; a completed call alone is not a completed job.
-  const outcome = jobOutcome(event);
-  if (outcome) {
-    const label = { succeeded: "Completed", failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" }[outcome.state];
-    return `${label} · ${operation}`;
-  }
-  return headlines[event.kind] ?? event.summary;
-}
+const EVENT_STATES: Record<string, string> = {
+  operation_inspected: "Inspected",
+  operation_proposed: "Proposal validated",
+  operation_submitted: "Submitted",
+  operation_started: "Started",
+  operation_completed: "Completed call",
+  operation_failed: "Failed",
+  operation_blocked: "Blocked",
+  approval_requested: "Decision requested",
+  approval_approved: "Approved once · awaiting execution",
+  approval_denied: "Request denied",
+  approval_expired: "Request expired",
+  approval_consumed: "Approval consumed",
+  session_connected: "Client connected",
+  session_disconnected: "Client disconnected",
+  session_paused: "Access paused",
+  session_resumed: "Access resumed",
+  policy_revoked: "Access revoked",
+  job_stopped: "Job stop requested",
+};
+
+const JOB_OUTCOMES = { succeeded: "Completed", failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" };
 
 function jobOutcome(event: ResearchAgentEventRecord) {
   if (event.kind !== "operation_completed" && event.kind !== "operation_failed") return null;
@@ -238,7 +236,7 @@ export function AgentApprovalDetails({ approval, snapshot, navigation, unavailab
           : "Runs the recorded operation with the request parameters below.";
   return <div className="agent-approval-inspection">
     {approval.state === "pending" && <>
-      <p className="agent-approval-consequence">{effect} Approve once authorizes this exact request within its access grant. The request must still pass scope and revision checks before execution. Deny blocks this request and keeps the access bundle unchanged.</p>
+      <p className="agent-approval-consequence">{effect} Approve once authorizes this exact request, subject to scope and revision checks.</p>
       <p className="agent-approval-expiry"><Clock3 size={14} aria-hidden="true" /> Expires <RecordedTime value={approval.expires_at} /></p>
     </>}
     {approval.state === "approved" && <p className="agent-activity-note">Approval recorded; awaiting execution. Execution is not confirmed by approval alone.</p>}
@@ -259,10 +257,10 @@ export function AgentApprovalDetails({ approval, snapshot, navigation, unavailab
       <details>
         <summary>Request identity and parameters</summary>
         <dl className="agent-approval-meta">
-          <dt>Request ID</dt><dd>{approval.id}</dd>
-          <dt>Request SHA-256</dt><dd>{approval.request_hash}</dd>
-          <dt>Policy SHA-256</dt><dd>{approval.policy_sha256}</dd>
-          {approval.session_id && <><dt>Session ID</dt><dd>{approval.session_id}</dd></>}
+          <dt>Request ID</dt><dd><code>{approval.id}</code></dd>
+          <dt>Request SHA-256</dt><dd><code>{approval.request_hash}</code></dd>
+          <dt>Policy SHA-256</dt><dd><code>{approval.policy_sha256}</code></dd>
+          {approval.session_id && <><dt>Session ID</dt><dd><code>{approval.session_id}</code></dd></>}
           <dt>Category</dt><dd>{approval.category}</dd>
           {approval.display_revision !== null && <><dt>Display revision</dt><dd>{approval.display_revision}</dd></>}
         </dl>
@@ -295,35 +293,54 @@ export function AgentActivityTimeline({ events, approvals, snapshot, navigation,
         const primary = primaryTarget(event, snapshot);
         const otherTargets = event.targets?.filter((target) => target !== primary);
         const context = targetContext(event.targets, snapshot, primary);
-        const Icon = event.kind === "operation_failed" || event.kind === "operation_blocked" ? CircleAlert
+        const primaryJob = !unavailable && primary?.kind === "job" && agentTargetState(primary, snapshot, navigation?.currentTargets) === "current"
+          ? snapshot.jobs.find((job) => job.id === primary.id) : undefined;
+        const outcome = jobOutcome(event);
+        const status = outcome ? JOB_OUTCOMES[outcome.state] : EVENT_STATES[event.kind];
+        const title = status && event.operation ? operationLabel(event.operation).replace(/^./, (letter) => letter.toUpperCase()) : status ?? event.summary;
+        const tone = event.kind === "operation_failed" || outcome?.state === "interrupted" ? "danger"
+          : event.kind === "operation_blocked" || event.kind === "approval_requested" || outcome?.state === "cancelled" ? "warning"
+          : outcome?.state === "succeeded" ? "connected" : "neutral";
+        const Icon = tone === "danger" || tone === "warning" ? CircleAlert
           : event.kind === "operation_completed" || event.kind === "operation_inspected" ? Check : ArrowUpRight;
-        return <li key={event.id}>
-          <div className="agent-activity-heading"><Icon size={16} strokeWidth={1.5} aria-hidden="true" />
-            <p className="agent-activity-summary">{eventHeadline(event)}</p></div>
-          {context && <p className="agent-activity-context">{context}</p>}
-          {!primary && Boolean(event.targets?.length)
-            ? <p className="agent-activity-note">Inspect recorded activity for the exact targets.</p>
-            : <AgentTargetLinks targets={primary ? [primary] : undefined} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
-          <ActivityRecord defaultExpanded={defaultExpanded}>
-            <summary>Recorded activity <span>· <RecordedTime value={event.timestamp} /></span></summary>
-            {eventHeadline(event) !== event.summary && <p className="agent-activity-note">{event.summary}</p>}
-            <dl className="agent-approval-meta">
-              <dt>Actor</dt><dd>{event.actor}</dd>
-              <dt>Event</dt><dd>{readable(event.kind)}</dd>
-              {event.operation && <><dt>Operation</dt><dd>{event.operation}</dd></>}
-              <dt>Recorded</dt><dd><RecordedTime value={event.timestamp} /></dd>
-              <dt>Event ID</dt><dd>{event.id}</dd>
-              {event.session_id && <><dt>Session ID</dt><dd>{event.session_id}</dd></>}
-              {event.policy_sha256 && <><dt>Policy SHA-256</dt><dd>{event.policy_sha256}</dd></>}
-            </dl>
-            {Boolean(otherTargets?.length) && <AgentTargetLinks targets={otherTargets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />}
-          </ActivityRecord>
-          {approval && <details className="agent-activity-request">
-            <summary>Inspect request · {readable(approval.state)}</summary>
-            <p className="agent-activity-summary">{approval.summary}</p>
-            <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
-          </details>}
-          {event.approval_id && !approval && <p className="agent-activity-note">Request details unavailable · {event.approval_id}</p>}
+        return <li className={`agent-activity-row tone-${tone}`} key={event.id}>
+          <span className="agent-activity-mark"><Icon size={14} strokeWidth={1.6} aria-hidden="true" /></span>
+          <div className="agent-activity-body">
+            <div className="agent-activity-heading">
+              <p className="agent-activity-summary">{title}</p>
+              {status && title !== status && <span className={`agent-session-badge tone-${tone}`}>{status}</span>}
+            </div>
+            <div className="agent-activity-meta">
+              {event.operation && <code>{event.operation}</code>}
+              <RecordedTime value={event.timestamp} compact />
+            </div>
+            {context && <p className="agent-activity-context">{context}</p>}
+            {primary && <AgentTargetLinks targets={[primary]} snapshot={snapshot} navigation={navigation} unavailable={unavailable} compact />}
+            <ActivityRecord defaultExpanded={defaultExpanded}>
+              <summary>Recorded activity</summary>
+              {title !== event.summary && <p className="agent-activity-note">{event.summary}</p>}
+              <dl className="agent-approval-meta">
+                <dt>Actor</dt><dd>{event.actor}</dd>
+                <dt>Event</dt><dd>{readable(event.kind)}</dd>
+                <dt>Recorded</dt><dd><RecordedTime value={event.timestamp} /></dd>
+                <dt>Event ID</dt><dd><code>{event.id}</code></dd>
+                {event.session_id && <><dt>Session ID</dt><dd><code>{event.session_id}</code></dd></>}
+                {event.policy_sha256 && <><dt>Policy SHA-256</dt><dd><code>{event.policy_sha256}</code></dd></>}
+              </dl>
+              {primary && <div className="agent-activity-target-record">
+                <h4>Exact {targetName(primary)} target</h4><TargetIdentity target={primary} />
+              </div>}
+              {otherTargets?.length ? <AgentTargetLinks targets={otherTargets} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
+                : !primary && <p className="agent-activity-note">No target recorded.</p>}
+              {primaryJob && <p className="agent-activity-note">Current job state · {primaryJob.state}</p>}
+            </ActivityRecord>
+            {approval && <details className="agent-activity-request">
+              <summary>Inspect request · {readable(approval.state)}</summary>
+              <p className="agent-activity-summary">{approval.summary}</p>
+              <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={unavailable} />
+            </details>}
+            {event.approval_id && !approval && <p className="agent-activity-note">Request details unavailable · {event.approval_id}</p>}
+          </div>
         </li>;
       })}
     </ol>

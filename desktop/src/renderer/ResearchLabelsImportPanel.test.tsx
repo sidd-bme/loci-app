@@ -2,7 +2,16 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ResearchDesktopApi, ResearchLabelsImportPreview, ResearchResult, ResearchSelection, ResearchSource } from "../shared/research-contracts";
+import type {
+  ResearchDesktopApi,
+  ResearchLabelsImportPreview,
+  ResearchResult,
+  ResearchSelection,
+  ResearchSource,
+  ResearchUsamHandoffBinding,
+  ResearchUsamHandoffReceipt,
+  ResearchUsamHandoffRecord,
+} from "../shared/research-contracts";
 import { ResearchLabelsImportPanel, checkedLabelsPreview, labelsImportUnavailable } from "./ResearchLabelsImportPanel";
 
 afterEach(cleanup);
@@ -153,5 +162,279 @@ describe("exact native volume label import", () => {
     finish(volumePreview);
     await waitFor(() => expect(props.onBusy).toHaveBeenLastCalledWith(null, expect.any(String)));
     expect(screen.queryByRole("button", { name: "Import on this volume" })).toBeNull();
+  });
+});
+
+describe("offline standalone μSAM handoff", () => {
+  const handoffId = "1".repeat(32);
+  const otherHandoffId = "2".repeat(32);
+  const measurementChannel: ResearchUsamHandoffReceipt["measurement_channel"] = {
+    index: 1,
+    name: "Raw channel 2",
+    basis: "raw-source-channel-values",
+  };
+  const inputMeta: ResearchUsamHandoffReceipt["input"] = {
+    file_name: "input.tif",
+    file_sha256: "d".repeat(64),
+    file_size_bytes: 512,
+    array_sha256: "e".repeat(64),
+    dtype: "uint16",
+    shape: [4, 8],
+    axes: "YX",
+    compression: "deflate",
+    value_preservation: "exact-original-native-scalar-samples",
+  };
+  const labelProfile: ResearchUsamHandoffRecord["label_profile"] = {
+    profile: "scalar-native-yx/v1",
+    alignment: "same-native-yx-grid",
+    axes: "YX",
+    shape: [4, 8],
+    allowed_dtypes: ["uint8", "uint16", "uint32"],
+    background_value: 0,
+    format: "TIFF",
+  };
+  const receipt: ResearchUsamHandoffReceipt = {
+    schema: "loci.usam-handoff-receipt/v1",
+    basename: "Loci-uSAM-plane",
+    handoff_id: handoffId,
+    manifest_sha256: "f".repeat(64),
+    export_origin: "verified-loci-native-export",
+    source_id: source.id,
+    source_sha256: source.sha256,
+    selection,
+    measurement_channel: measurementChannel,
+    geometry: { axes: "YX", unit: "pixel", frame: "image", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] },
+    calibration: { status: "unknown", unit: "pixel", axes: "YX", spacing: null },
+    input: inputMeta,
+    label_profile: labelProfile,
+    validation: "not-established",
+    artifacts: {
+      "input.tif": { sha256: "d".repeat(64), size_bytes: 512 },
+      "manifest.json": { sha256: "f".repeat(64), size_bytes: 600 },
+      "README.md": { sha256: "9".repeat(64), size_bytes: 1200 },
+    },
+  };
+  const matchingRecord: ResearchUsamHandoffRecord = {
+    schema: "loci.usam-handoff/v1",
+    handoff_id: handoffId,
+    export_origin: "verified-loci-native-export",
+    source_id: source.id,
+    source_sha256: source.sha256,
+    source_name: source.name,
+    selection,
+    measurement_channel: measurementChannel,
+    geometry: receipt.geometry,
+    calibration: receipt.calibration,
+    input: inputMeta,
+    label_profile: labelProfile,
+    upstream_reference: { tool: "micro-sam", version: "2.0.1", commit: "d45ab70ece93a9eb3ca1e237b9067767b0a18263" },
+    validation: "not-established",
+    manifest_sha256: receipt.manifest_sha256,
+  };
+  const mismatchedRecord: ResearchUsamHandoffRecord = {
+    ...matchingRecord,
+    handoff_id: otherHandoffId,
+    source_name: "Other plane",
+    selection: { ...selection, z: 0 },
+  };
+  const boundHandoff: ResearchUsamHandoffBinding = {
+    schema: "loci.usam-handoff-binding/v1",
+    handoff_id: handoffId,
+    manifest_sha256: receipt.manifest_sha256,
+    export_identity_basis: "verified-loci-study-handoff",
+    binding_source: "manifest-and-study-handoff",
+    exported_input_file_sha256: inputMeta.file_sha256,
+    exported_input_array_sha256: inputMeta.array_sha256,
+    exported_input_dtype: "uint16",
+    exported_input_shape: [4, 8],
+    exported_input_axes: "YX",
+    mask_origin_verified_by_loci: false,
+    model_validation: "unknown",
+  };
+  const boundPreview: ResearchLabelsImportPreview = {
+    ...preview,
+    handoff: boundHandoff,
+  };
+
+  function setupUsam(overrides: Partial<Parameters<typeof ResearchLabelsImportPanel>[0]> = {}) {
+    const execute = vi.fn().mockResolvedValue({ result, measurements: [] });
+    const picker = vi.fn().mockResolvedValue(boundPreview);
+    const exportUsamHandoff = vi.fn().mockResolvedValue(receipt);
+    const listUsamHandoffs = vi.fn().mockResolvedValue([matchingRecord]);
+    const props = {
+      api: { execute, labelsImportPreview: picker, exportUsamHandoff, listUsamHandoffs } as unknown as ResearchDesktopApi,
+      source,
+      selection,
+      workingBytes: preview.working_bytes,
+      scope: "study-a",
+      busy: false,
+      onBusy: vi.fn(),
+      onResult: vi.fn().mockResolvedValue(undefined),
+      ...overrides,
+    };
+    return { props, execute, picker, exportUsamHandoff, listUsamHandoffs };
+  }
+
+  it("keeps μSAM (standalone) collapsed by default and exports path-free native TIFF without auto-launching", async () => {
+    const { props, exportUsamHandoff, listUsamHandoffs } = setupUsam();
+    render(<ResearchLabelsImportPanel {...props} />);
+    const summary = screen.getByText("μSAM (standalone)");
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(screen.getByRole("button", { name: "Import labels" })).toBeVisible();
+
+    fireEvent.click(summary);
+    await waitFor(() => expect(listUsamHandoffs).toHaveBeenCalledOnce());
+
+    fireEvent.click(screen.getByRole("button", { name: "Export native TIFF for μSAM" }));
+    expect(await screen.findByText(/Loci-uSAM-plane/)).toBeVisible();
+    expect(screen.getByText(/README explains how to save YX labels/)).toBeVisible();
+    expect(exportUsamHandoff).toHaveBeenCalledWith({
+      source_id: source.id,
+      source_sha256: source.sha256,
+      selection,
+      working_bytes: preview.working_bytes,
+    });
+  });
+
+  it("disables μSAM export on derived sources while leaving generic Import labels enabled", () => {
+    const derivedSource: ResearchSource = { ...source, derivation: { kind: "vendor-derived" } };
+    const { props, exportUsamHandoff } = setupUsam({ source: derivedSource });
+    render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("μSAM (standalone)"));
+    expect(screen.getByRole("button", { name: "Export native TIFF for μSAM" })).toBeDisabled();
+    expect(screen.getByText(/derived sources cannot export a μSAM handoff/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Import labels" })).toBeEnabled();
+    expect(exportUsamHandoff).not.toHaveBeenCalled();
+  });
+
+  it("supports saved cross-session handoff selection, mismatch gating, and manifest return", async () => {
+    const { props, picker, listUsamHandoffs } = setupUsam();
+    listUsamHandoffs.mockResolvedValue([mismatchedRecord, matchingRecord]);
+    render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("μSAM (standalone)"));
+    const select = await screen.findByLabelText("Saved μSAM handoff");
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(handoffId));
+
+    const returnSelected = screen.getByRole("button", { name: "Return labels for selected handoff" });
+    expect(returnSelected).toBeEnabled();
+
+    fireEvent.change(select, { target: { value: otherHandoffId } });
+    expect(returnSelected).toBeDisabled();
+    expect(screen.getByText(/Select the source, time, channel and Z range/)).toBeVisible();
+
+    fireEvent.change(select, { target: { value: handoffId } });
+    expect(returnSelected).toBeEnabled();
+    fireEvent.click(returnSelected);
+    await waitFor(() => expect(picker).toHaveBeenCalledWith({
+      source_id: source.id,
+      source_sha256: source.sha256,
+      selection,
+      working_bytes: preview.working_bytes,
+      handoff_id: handoffId,
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Return labels with manifest…" }));
+    await waitFor(() => expect(picker).toHaveBeenCalledWith({
+      source_id: source.id,
+      source_sha256: source.sha256,
+      selection,
+      working_bytes: preview.working_bytes,
+      use_handoff_manifest: true,
+    }));
+  });
+
+  it("separates verified Loci export from user-declared mask origin, validates model details, and resets declared fields", async () => {
+    const { props, execute, picker } = setupUsam();
+    const view = render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("μSAM (standalone)"));
+    fireEvent.click(screen.getByRole("button", { name: "Return labels with manifest…" }));
+
+    await screen.findByText("Verified Loci export");
+    expect(screen.getByText(/Declared by the researcher. Model validation is unknown/)).toBeVisible();
+    expect(screen.getByLabelText("Producer name (optional)")).toHaveValue("");
+    expect(screen.getByLabelText("Model (optional)")).not.toBeVisible();
+    fireEvent.click(screen.getByText("External model details (optional, user-declared)"));
+    fireEvent.change(screen.getByLabelText("Producer name (optional)"), { target: { value: "micro-sam" } });
+
+    fireEvent.change(screen.getByLabelText("Checkpoint digest (optional)"), { target: { value: "not-a-digest" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(/sha256:<64 hex>, xxh128:<32 hex>/);
+    expect(screen.getByRole("button", { name: "Import on this plane" })).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Checkpoint (optional)"), { target: { value: "/private/weights.pt" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(/without file paths/);
+
+    fireEvent.change(screen.getByLabelText("Producer version (optional)"), { target: { value: "2.0.1" } });
+    fireEvent.change(screen.getByLabelText("Model (optional)"), { target: { value: "hvit_t_cells" } });
+    fireEvent.change(screen.getByLabelText("Mode (optional)"), { target: { value: "ais-sparse" } });
+    fireEvent.change(screen.getByLabelText("Checkpoint (optional)"), { target: { value: "hvit_t_cells_v2" } });
+    fireEvent.change(screen.getByLabelText("Checkpoint digest (optional)"), { target: { value: `xxh128:${"ab".repeat(16)}` } });
+
+    const importBtn = screen.getByRole("button", { name: "Import on this plane" });
+    expect(importBtn).toBeEnabled();
+    fireEvent.click(importBtn);
+
+    await waitFor(() => expect(execute).toHaveBeenCalledWith("labels_import", {
+      source_id: source.id,
+      source_sha256: source.sha256,
+      grant_id: boundPreview.grant_id,
+      alignment: "same-native-yx-grid",
+      producer: {
+        name: "micro-sam",
+        version: "2.0.1",
+        model: "hvit_t_cells",
+        mode: "ais-sparse",
+        checkpoint: "hvit_t_cells_v2",
+        checkpoint_digest: `xxh128:${"ab".repeat(16)}`,
+      },
+    }));
+
+    // After adopt, re-opening a preview starts with cleared user-declared fields.
+    picker.mockResolvedValueOnce(boundPreview);
+    fireEvent.click(screen.getByRole("button", { name: "Return labels with manifest…" }));
+    await screen.findByText("Discard preview");
+    expect(screen.getByLabelText("Producer version (optional)")).toHaveValue("");
+    expect(screen.getByLabelText("Model (optional)")).toHaveValue("");
+    expect(screen.getByLabelText("Mode (optional)")).toHaveValue("");
+    expect(screen.getByLabelText("Checkpoint (optional)")).toHaveValue("");
+    expect(screen.getByLabelText("Checkpoint digest (optional)")).toHaveValue("");
+
+    // Changing declared fields and discarding or changing view resets them too.
+    fireEvent.change(screen.getByLabelText("Model (optional)"), { target: { value: "hvit_b_lm" } });
+    fireEvent.click(screen.getByText("Discard preview"));
+    picker.mockResolvedValueOnce(boundPreview);
+    fireEvent.click(screen.getByRole("button", { name: "Return labels with manifest…" }));
+    await screen.findByText("Discard preview");
+    expect(screen.getByLabelText("Model (optional)")).toHaveValue("");
+
+    view.rerender(<ResearchLabelsImportPanel {...props} selection={{ ...selection, c: 0 }} />);
+    expect(screen.queryByText("Verified Loci export")).toBeNull();
+  });
+
+  it("discards late export receipts on binding or navigation intent changes and surfaces actionable signed-dtype errors", async () => {
+    let resolveExport!: (value: ResearchUsamHandoffReceipt) => void;
+    let intent = 1;
+    const { props, exportUsamHandoff, picker } = setupUsam({ navigationIntent: () => intent });
+    exportUsamHandoff.mockReturnValue(new Promise<ResearchUsamHandoffReceipt>((resolve) => { resolveExport = resolve; }));
+
+    const view = render(<ResearchLabelsImportPanel {...props} />);
+    fireEvent.click(screen.getByText("μSAM (standalone)"));
+    fireEvent.click(screen.getByRole("button", { name: "Export native TIFF for μSAM" }));
+    intent++;
+    resolveExport(receipt);
+    await waitFor(() => expect(props.onBusy).toHaveBeenLastCalledWith(null, expect.any(String)));
+    expect(screen.queryByText(/README explains how to save/)).toBeNull();
+
+    let resolveBindingExport!: (value: ResearchUsamHandoffReceipt) => void;
+    exportUsamHandoff.mockReturnValue(new Promise<ResearchUsamHandoffReceipt>((resolve) => { resolveBindingExport = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Export native TIFF for μSAM" }));
+    view.rerender(<ResearchLabelsImportPanel {...props} scope="study-b" navigationIntent={() => intent} />);
+    resolveBindingExport(receipt);
+    await waitFor(() => expect(props.onBusy).toHaveBeenLastCalledWith(null, expect.any(String)));
+    expect(screen.queryByText(/README explains how to save/)).toBeNull();
+
+    picker.mockRejectedValueOnce(new Error("Label TIFF uses signed dtype int16; export uint8, uint16 or uint32 labels without implicit conversion."));
+    fireEvent.click(screen.getByRole("button", { name: "Return labels with manifest…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/uint8, uint16 or uint32.*without implicit conversion/);
   });
 });

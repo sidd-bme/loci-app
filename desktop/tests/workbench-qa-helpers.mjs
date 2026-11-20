@@ -12,13 +12,29 @@ export async function waitForSnapshot(page, predicate, label, timeout = 30_000) 
   throw new Error(`Timed out waiting for ${label}; ${snapshot?.results?.length ?? 0} results available.`);
 }
 
+/** Resolve the exact source before using its row so compact display text can truncate. */
+export async function sourceRowByName(page, name) {
+  const snapshot = await waitForSnapshot(page, (state) => state?.sources?.some((source) => source.name === name), name);
+  const matches = snapshot.sources.filter((source) => source.name === name);
+  assert.equal(matches.length, 1, `Expected exactly one fixture source named ${name}`);
+  const row = page.locator(`.research-sources button[data-source-id="${matches[0].id}"]`);
+  await row.waitFor({ state: "visible" });
+  const labelledFilename = await row.evaluate((element) => {
+    const tooltip = element.dataset.lociHelp ?? element.title;
+    return element.getAttribute("aria-label") ??
+      tooltip.replace(/ · \d+ C \/ \d+ Z$/, "").split(/[\\/]/).at(-1);
+  });
+  assert.equal(labelledFilename, name, "The exact source row must expose the original filename.");
+  return row;
+}
+
 const toolGroup = {
   Display: "View", Annotate: "Annotate", Epidermis: "Annotate", Correction: "Annotate", Analyze: "Analyze",
   Process: "Analyze", Workflow: "Analyze", Model: "Analyze", Quantify: "Analyze", Temporal: "Analyze",
   Registration: "Analyze", Population: "Results", Density: "Results", Info: "Results", Study: "Results",
 };
 const advancedLabel = { Agent: "Connect an assistant", Remote: "Remote compute",
-  Portability: "Import & share results", "Vendor import": "Convert vendor images" };
+  Portability: "Import & share results", "Vendor import": "Convert image format" };
 const toolLabel = { Display: "Image & channels", Annotate: "Draw & measure", Epidermis: "Epidermal thickness", Correction: "Edit labels & ROIs",
   Analyze: "Segment & measure", Process: "Preprocess", Workflow: "Workflow builder", Model: "Use a model", Quantify: "Fluorescence & field assay",
   Temporal: "Track over time", Registration: "Register & resample", Population: "Statistics & objects", Density: "Spatial donor density", Info: "Review & export", Study: "Study & batch" };

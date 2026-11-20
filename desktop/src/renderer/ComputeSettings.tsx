@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ResearchDesktopApi } from "../shared/research-contracts";
 import { sanitizeRendererError } from "./ContextHelp";
-import { notifyComputeTargetsChanged } from "./compute-target-events";
+import { notifyComputeTargetsChanged, subscribeComputeTargetsChanged } from "./compute-target-events";
 import "./ComputeSettings.css";
 
 type Resources = { cpus: number; memory_mb: number; wall_minutes: number; gpus: number };
@@ -10,8 +10,16 @@ type Target = {
   runtime_ready: boolean; readiness_checked_at: string | null;
 };
 type Draft = { id: string; revision: number; alias: string; host_key_sha256: string };
+type TargetList = { targets: Target[]; study_profiles: Target[]; study_binding: string | null };
 const CPU: Resources = { cpus: 2, memory_mb: 4096, wall_minutes: 30, gpus: 0 };
 const GPU: Resources = { cpus: 4, memory_mb: 16384, wall_minutes: 30, gpus: 1 };
+
+function resourceSummary({ scheduler, resources: { cpus, memory_mb, gpus, wall_minutes } }: Target) {
+  return [
+    scheduler.toUpperCase(), `${cpus} CPU`, `${memory_mb / 1024} GiB`,
+    ...(gpus > 0 ? [`${gpus} GPU`] : []), `${wall_minutes} min`,
+  ].join(" · ");
+}
 
 function ResourceFields({ value, onChange }: { value: Resources; onChange: (value: Resources) => void }) {
   return <>
@@ -29,9 +37,16 @@ function ResourceFields({ value, onChange }: { value: Resources; onChange: (valu
   </>;
 }
 
-export default function ComputeSettings({ api }: { api?: ResearchDesktopApi }) {
-  const [targets, setTargets] = useState<Target[]>([]);
-  const [studyProfiles, setStudyProfiles] = useState<Target[]>([]);
+export default function ComputeSettings({ api, onStudyChanged }: {
+  api?: Pick<ResearchDesktopApi, "computeTargets">;
+  onStudyChanged?: (listener: () => void) => () => void;
+}) {
+  const service = api?.computeTargets;
+  const [listing, setListing] = useState<TargetList>({ targets: [], study_profiles: [], study_binding: null });
+  const { targets, study_profiles: studyProfiles, study_binding: studyBinding } = listing;
+  const [listingPending, setListingPending] = useState(Boolean(service));
+  const [hasListed, setHasListed] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -48,7 +63,8 @@ export default function ComputeSettings({ api }: { api?: ResearchDesktopApi }) {
   const [resources, setResources] = useState<Resources>({ ...CPU });
   const [editing, setEditing] = useState<Target | null>(null);
   const mounted = useRef(false);
-  const service = api?.computeTargets;
+  const listSequence = useRef(0);
+  const performing = useRef(false);
   const updateTarget = async (
     operation: "save" | "test" | "resources" | "remember" | "forget",
     request: Record<string, unknown>,
@@ -58,34 +74,65 @@ export default function ComputeSettings({ api }: { api?: ResearchDesktopApi }) {
     notifyComputeTargetsChanged();
     return response;
   };
-  const refresh = async () => {
-    if (!service) return;
-    const result = await service("list", {}) as { targets: Target[]; study_profiles: Target[] };
-    if (!Array.isArray(result.targets) || !Array.isArray(result.study_profiles)) throw new Error("Compute settings could not be read.");
-    if (mounted.current) { setTargets(result.targets); setStudyProfiles(result.study_profiles); }
-  };
+  const refresh = useCallback(async () => {
+    if (!service || !mounted.current) return;
+    const sequence = ++listSequence.current;
+    setListingPending(true);
+    try {
+      const result = await service("list", {}) as TargetList;
+      if (sequence !== listSequence.current) return;
+      if (!result || !Array.isArray(result.targets) || !Array.isArray(result.study_profiles) ||
+          (result.study_profiles.length && (typeof result.study_binding !== "string" || !result.study_binding)))
+        throw new Error("Compute settings could not be read.");
+      setListing(result);
+      setListError(null);
+      setHasListed(true);
+    } catch (value) {
+      if (sequence !== listSequence.current) return;
+      setListing(previous => ({ ...previous, study_profiles: [], study_binding: null }));
+      setListError(sanitizeRendererError(value instanceof Error ? value.message : String(value)));
+    } finally {
+      if (sequence === listSequence.current) setListingPending(false);
+    }
+  }, [service]);
   useEffect(() => {
     mounted.current = true;
-    void refresh().catch(value => { if (mounted.current) setError(sanitizeRendererError(String(value))); });
-    return () => { mounted.current = false; };
-  }, [service]);
+    void refresh();
+    // A write can finish after its Settings pane unmounts. Refresh a newer pane
+    // when that happens; an operation in this pane refreshes in its finally block.
+    const stopTargets = subscribeComputeTargetsChanged(() => { if (!performing.current) void refresh(); });
+    const stopStudy = onStudyChanged?.(refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      mounted.current = false;
+      listSequence.current++;
+      stopTargets();
+      stopStudy?.();
+      window.removeEventListener("focus", refresh);
+    };
+  }, [onStudyChanged, refresh]);
   const perform = async (label: string, action: () => Promise<void>) => {
-    if (!service || busy) return;
+    if (!service || busy || performing.current) return;
+    performing.current = true;
     setBusy(label); setError(null); setMessage("");
-    try { await action(); await refresh(); }
+    try { await action(); }
     catch (value) { if (mounted.current) setError(sanitizeRendererError(value instanceof Error ? value.message : String(value))); }
-    finally { if (mounted.current) setBusy(null); }
+    finally {
+      performing.current = false;
+      await refresh();
+      if (mounted.current) setBusy(null);
+    }
   };
   const studyOnly = studyProfiles.filter(profile => !targets.some(target => target.alias === profile.alias));
   return <div className="compute-settings">
     <p>Save a cluster once, then choose it under Run on in any study.</p>
     {!service ? <p>Compute settings require the desktop app.</p> : <>
+      {listingPending && !hasListed && <p role="status">Loading compute targets…</p>}
       <ul className="compute-settings__targets" aria-label="Saved compute targets">
         {targets.map(target => <li key={target.id} data-target-id={target.id}>
           <div className="compute-settings__target-heading"><strong>{target.alias}</strong><span>
             {target.runtime_ready ? "Runtime checked" : "Not checked"}</span></div>
-          <p>{target.scheduler.toUpperCase()} · {target.resources.cpus} CPU · {target.resources.memory_mb / 1024} GiB
-            {target.resources.gpus > 0 && ` · ${target.resources.gpus} GPU`} · {target.resources.wall_minutes} min</p>
+          <p>{resourceSummary(target)}</p>
           {target.readiness_checked_at && <small>Last check: {new Date(target.readiness_checked_at).toLocaleString()}</small>}
           <div className="compute-settings__actions">
             <button disabled={busy !== null} onClick={() => void perform(`Checking ${target.alias}…`, async () => {
@@ -109,13 +156,15 @@ export default function ComputeSettings({ api }: { api?: ResearchDesktopApi }) {
           <button type="button" onClick={() => setEditing(null)}>Cancel</button></div>
       </fieldset></form>}
       {studyOnly.length > 0 && <div className="compute-settings__study"><h4>From this study</h4>
-        {studyOnly.map(target => <div key={target.id}><span>{target.alias}</span><button disabled={busy !== null}
+        {studyOnly.map(target => <div key={`${studyBinding}-${target.id}`}>
+          <div><strong>{target.alias}</strong><br /><small>{resourceSummary(target)}</small></div>
+          <button disabled={busy !== null || listingPending}
           onClick={() => void perform("Saving target for other studies…", async () => {
-            await updateTarget("remember", { alias: target.alias, expected_revision: 0 });
+            await updateTarget("remember", { study_binding: studyBinding, id: target.id, revision: target.revision, expected_revision: 0 });
             if (mounted.current) setMessage(`${target.alias} is now available in every study.`);
           })}>Save for all studies</button></div>)}
       </div>}
-      {!adding && <button disabled={busy !== null} onClick={() => {
+      {!adding && <button disabled={busy !== null || listingPending || listError !== null} onClick={() => {
         setAdding(true); setEditing(null); setDraft(null); setAlias(""); setResources({ ...CPU });
         setRuntime(""); setProjectRoot(""); setOutputRoot(""); setScheduler("pbspro");
         setSchedulerBin(""); setQueue(""); setAccount("");
@@ -162,7 +211,11 @@ export default function ComputeSettings({ api }: { api?: ResearchDesktopApi }) {
           <button type="button" onClick={() => { setAdding(false); setDraft(null); }}>Cancel</button></div>
       </fieldset></form>}
       {busy && <p role="status">{busy}</p>}{message && <p role="status">{message}</p>}
-      {error && <p className="settings-field-error" role="alert">{error}</p>}
+      {(error || listError) && <div className="settings-field-error" role="alert">
+        {error && <p>{error}</p>}
+        {listError && listError !== error && <p>{listError}</p>}
+        {listError && <button disabled={listingPending} onClick={() => void refresh()}>Refresh targets</button>}
+      </div>}
     </>}
   </div>;
 }

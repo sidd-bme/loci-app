@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
 
-import { selectResultSection, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { selectResultSection, selectWorkbenchTool, sourceRowByName } from "./workbench-qa-helpers.mjs";
 
 // This is an independent decoder for the exact exported NIfTI-1 QA subset.
 // It does not participate in application import, analysis, or publication.
@@ -58,7 +58,7 @@ export async function qualifyMedicalWorkflow({ app, page, runRoot, screenshot, n
     }
     throw new Error("Medical workflow did not complete: " + label);
   };
-  await page.locator(".research-sources").getByRole("button", { name: /^oblique_scalar\.nii/ }).click();
+  await (await sourceRowByName(page, "oblique_scalar.nii")).click();
   await click("Display");
   await openAnalysisRegion();
   for (const [label, value] of [["X", "0"], ["Y", "0"], ["Z", "0"], ["Width", "5"], ["Height", "6"]])

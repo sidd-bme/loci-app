@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron } from "playwright";
+import { closeSettings, escapeSettings, openSettings, resolveSettings } from "./settings-qa-helpers.mjs";
 
 // Presentation qualification only. Analysis/result-integrity journeys remain
 // the authority for numerical behavior; this harness never inserts results.
@@ -32,7 +33,7 @@ const artifacts = {
   asar: path.join(appPath, "Contents/Resources/app.asar"),
   worker: path.join(appPath, "Contents/Resources/loci-engine/loci-engine"),
 };
-const themes = ["graphite", "midnight", "paper", "aurora", "ember", "lagoon", "fiji"];
+const themes = ["graphite", "midnight", "black", "paper", "aurora", "ember", "lagoon", "fiji"];
 const sizes = [{ width: 1280, height: 800 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }];
 const categories = ["Appearance", "Viewing & help", "Saving & export", "Capabilities", "User guide"];
 const startedAt = new Date().toISOString();
@@ -116,8 +117,8 @@ async function audit(name, target = page) {
       root_scroll_width: document.documentElement.scrollWidth,
       body_scroll_width: document.body.scrollWidth,
       inspector: scrolling,
-      overlays: [...document.querySelectorAll('[role="dialog"], [role="listbox"], details.workbench-file-menu[open] > div, details.source-information[open] > .source-information-content, .context-tooltip')]
-        .filter(visible).map((element) => ({ role: element.getAttribute("role") ?? "popover",
+      overlays: [...document.querySelectorAll('dialog[open], [role="dialog"], [role="listbox"], details.workbench-file-menu[open] > div, details.source-information[open] > .source-information-content, .context-tooltip')]
+        .filter(visible).map((element) => ({ role: element.getAttribute("role") ?? (element.matches("dialog") ? "dialog" : "popover"),
           label: element.getAttribute("aria-label") ?? element.className, ...rect(element) })),
       task_buttons: [...document.querySelectorAll('[aria-label="Task groups"] button')]
         .filter(visible).map((element) => ({ text: element.textContent.trim(), ...rect(element) })),
@@ -281,17 +282,21 @@ async function resize({ width, height }) {
     mode: constrained ? "simulated-larger-monitor-renderer-viewport" : "native-content-resize",
     emulation: constrained ? "CDP Emulation.setDeviceMetricsOverride; deviceScaleFactor=1; mobile=false" : null });
 }
-async function settings() {
-  await page.getByRole("button", { name: "Open settings", exact: true }).click();
-  await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
-}
 async function appearance(theme, textSize) {
-  await settings();
-  await page.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(theme);
-  await page.getByRole("radio", { name: textSize === "large" ? "Large" : "Standard", exact: true }).click();
+  const surface = await openSettings(app, page);
+  await surface.dialog.getByRole("combobox", { name: "Application theme", exact: true }).selectOption(theme);
+  await surface.dialog.getByRole("radio", { name: textSize === "large" ? "Large" : "Standard", exact: true }).click();
   await page.waitForFunction((value) => document.documentElement.dataset.theme === value.theme &&
     document.documentElement.dataset.textSize === value.textSize, { theme, textSize });
-  await page.getByRole("button", { name: "Done", exact: true }).click();
+  const geometry = await surface.dialog.evaluate((element) => {
+    const { x, y, right, bottom } = element.getBoundingClientRect();
+    const pane = element.querySelector(".settings-pane");
+    return { x, y, right, bottom, width: innerWidth, height: innerHeight, paneOverflow: pane.scrollWidth - pane.clientWidth };
+  });
+  assert.ok(geometry.x > 0 && geometry.y > 0 && geometry.right < geometry.width && geometry.bottom < geometry.height,
+    `${theme}/${textSize}: Settings must fit inside the workbench`);
+  assert.ok(geometry.paneOverflow <= 1, `${theme}/${textSize}: Settings pane clips horizontally`);
+  await closeSettings(surface);
 }
 async function selectTool(group, label) {
   await page.getByRole("navigation", { name: "Task groups" }).getByRole("button", { name: group, exact: true }).click();
@@ -423,18 +428,22 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     await nativeMenu("Help", "User guide");
     const guide = page.getByRole("dialog", { name: "User manual", exact: true });
     await guide.waitFor();
-    await guide.getByRole("textbox", { name: "Search user manual" }).fill("qa-no-such-workflow-78291");
+    const search = guide.getByRole("searchbox", { name: "Search user manual" });
+    await search.fill("qa-no-such-workflow-78291");
     await guide.getByRole("status").filter({ hasText: "No matching section" }).waitFor();
     await audit("native-guide-no-results");
     await capture("native-guide-no-results");
+    await search.press("Escape");
+    assert.equal(await search.inputValue(), "");
     await page.keyboard.press("Escape");
     await guide.waitFor({ state: "hidden" });
   });
   await step("02-native-settings", async () => {
     await nativeMenu("app", "Settings…");
-    await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor();
-    await audit("native-settings-dialog"); await capture("native-settings-dialog");
-    await page.keyboard.press("Escape");
+    const surface = await resolveSettings(app, page);
+    await audit("native-settings-dialog", surface.page);
+    await capture("native-settings-dialog", true, surface.page);
+    await escapeSettings(surface);
   });
   await step("03-native-open-images-research-route", async () => {
     await nativeMenu("File", "Open images…");
@@ -620,22 +629,23 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
   }
   await resize(sizes[0]); await appearance("graphite", "large");
   for (const category of categories) await step(`settings-${category.toLowerCase().replaceAll(/[^a-z]+/g, "-")}`, async () => {
-    await settings();
-    await page.getByRole("tab", { name: category, exact: true }).click();
-    await page.getByRole("tabpanel", { name: category, exact: true }).waitFor();
+    const surface = await openSettings(app, page);
+    await surface.dialog.getByRole("tab", { name: category, exact: true }).click();
+    await surface.dialog.getByRole("tabpanel", { name: category, exact: true }).waitFor();
     if (category === "Saving & export") {
-      const dpi = page.getByRole("textbox", { name: "Default figure DPI", exact: true });
+      const dpi = surface.dialog.getByRole("textbox", { name: "Default figure DPI", exact: true });
       await dpi.fill("invalid draft"); await dpi.press("Enter");
       assert.equal(await dpi.inputValue(), "invalid draft");
       assert.equal(await dpi.getAttribute("aria-invalid"), "true");
-      await page.getByRole("alert").filter({ hasText: "Enter a whole number" }).waitFor();
-      await capture("dpi-invalid-draft");
+      await surface.dialog.getByRole("alert").filter({ hasText: "Enter a whole number" }).waitFor();
+      await capture("dpi-invalid-draft", true, surface.page);
       await dpi.press("Escape");
       assert.equal(await dpi.inputValue(), "300");
-      assert.equal(await page.getByRole("dialog", { name: "Settings", exact: true }).isVisible(), true);
+      assert.equal(await surface.dialog.isVisible(), true);
     }
-    await audit(`settings-${category}-dialog`); await capture(`settings-${category.replaceAll(/[^a-zA-Z]+/g, "-")}-dialog`);
-    await page.getByRole("button", { name: "Done", exact: true }).click();
+    await audit(`settings-${category}-dialog`, surface.page);
+    await capture(`settings-${category.replaceAll(/[^a-zA-Z]+/g, "-")}-dialog`, true, surface.page);
+    await closeSettings(surface);
   });
 
   for (const group of ["View", "Annotate", "Analyze", "Results"]) {
@@ -656,7 +666,7 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     }
   }
   assert.equal(toolCoverage.length, 16, "Every current primary and advanced tool must remain discoverable");
-  for (const advanced of ["Connect an assistant", "Remote compute", "Import & share results", "Convert vendor images"])
+  for (const advanced of ["Connect an assistant", "Remote compute", "Import & share results", "Convert image format"])
     assert.ok(toolCoverage.some((item) => item.label === advanced && !item.disabled), `Missing advanced tool: ${advanced}`);
 
   await step("search-keyboard-no-results", async () => {
@@ -691,12 +701,18 @@ tifffile.imwrite(output, image, ome=True, metadata={"axes": "TCYX",
     await page.locator(".research-inspector").evaluate((element) => { element.scrollTop = 0; });
   });
   await step("compact-settings-and-guide", async () => {
-    await settings(); await audit("compact-settings"); await capture("compact-settings");
-    await page.getByRole("tab", { name: "User guide", exact: true }).click();
-    await page.getByRole("button", { name: "Open user guide", exact: true }).click();
-    await page.getByRole("dialog", { name: "User manual", exact: true }).waitFor();
-    await audit("compact-guide"); await capture("compact-guide");
-    await page.keyboard.press("Escape");
+    const surface = await openSettings(app, page);
+    await audit("compact-settings", surface.page);
+    await capture("compact-settings", true, surface.page);
+    await surface.dialog.getByRole("tab", { name: "User guide", exact: true }).click();
+    await surface.dialog.getByRole("button", { name: "Open user guide", exact: true }).click();
+    const guide = surface.page.getByRole("dialog", { name: "User manual", exact: true });
+    await guide.waitFor();
+    await audit("compact-guide", surface.page);
+    await capture("compact-guide", true, surface.page);
+    await surface.page.keyboard.press("Escape");
+    await guide.waitFor({ state: "hidden" });
+    await closeSettings(surface);
   });
   await resize(sizes[0]);
   let savedBindings;

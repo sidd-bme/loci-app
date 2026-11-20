@@ -1,12 +1,19 @@
+import { checkedImageConversion, checkedImageConversionReceipt } from "../shared/image-conversion";
 import { checkedMethodInput, checkedMethodRights } from "../shared/controlled-method-contracts";
 import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
-import { app, dialog, ipcMain } from "electron";
+import { app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { openModelLibraryLink } from "./model-library-links";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { totalmem } from "node:os";
 import { checkedVisionRequest, checkedVisionReceipt } from "../shared/vision-handoff";
+import {
+  checkedLabelsBinding,
+  checkedUsamHandoffReceipt,
+  checkedUsamHandoffRecords,
+} from "../shared/usam-handoff";
 import { recipeResources } from "../shared/recipe-resources";
 import {
   ManagedResearchSessionStore,
@@ -230,9 +237,10 @@ export class ResearchBridge {
   private tissueSetup: TissueSetupOperation | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
+  private computeStudyBinding: string | null = null;
   private readonly viewDocumentListeners = new Set<() => void>();
   private vendorGrants = new Map<string, {
-    project: string; source: string; jar: string; java: string; sourceSha256: string;
+    project: string; source: string; jar: string; java: string; sourceSha256: string; javaSha256: string;
   }>();
   private readonly viewAccess = new ResearchViewAccess({
     documentState: () => ({
@@ -263,6 +271,7 @@ export class ResearchBridge {
     this.sessionId = sessionId;
     this.vendorGrants.clear();
     this.viewDocumentEpoch += 1;
+    this.computeStudyBinding = project ? randomUUID() : null;
     for (const listener of [...this.viewDocumentListeners]) listener();
   }
 
@@ -1383,6 +1392,32 @@ export class ResearchBridge {
       } finally { this.switching = false; }
   }
 
+  async computeTargets(operation: unknown, request: unknown): Promise<unknown> {
+    if (typeof operation !== "string" ||
+        !["list", "import_ssh", "save", "test", "resources", "remember", "use", "forget"].includes(operation) ||
+        !request || typeof request !== "object" || Array.isArray(request))
+      throw new Error("Invalid compute settings request.");
+    assertResearchRequestBound("compute-targets", request);
+    if (this.switching) throw new Error("Wait for the study to finish opening.");
+    const project = this.project, epoch = this.viewDocumentEpoch;
+    let workerRequest = request;
+    if (operation === "remember") {
+      const { study_binding, ...profile } = request as Record<string, unknown>;
+      if (!project || study_binding !== this.computeStudyBinding)
+        throw new Error("The study changed. Refresh Settings and select the target again.");
+      workerRequest = profile;
+    }
+    if (operation === "use") this.requireProject();
+    const output = await this.compute.request<Record<string, unknown>>("research_compute_targets", {
+      directory: path.join(app.getPath("userData"), "compute-targets-v1.loci-study"),
+      operation, request: workerRequest, project,
+    }, 0);
+    if (["use", "list"].includes(operation) &&
+        (this.project !== project || this.viewDocumentEpoch !== epoch))
+      throw new Error("The study changed during compute setup. Reload the target list.");
+    return operation === "list" ? { ...output, study_binding: this.computeStudyBinding } : output;
+  }
+
   register(trusted: (event: IpcMainInvokeEvent) => void): void {
     const handle = (
       name: string,
@@ -1405,24 +1440,11 @@ export class ResearchBridge {
       );
     };
     handle("recipe-resources", async () => recipeResources(totalmem()));
-    handle("compute-targets", async (operation, request) => {
-      if (typeof operation !== "string" ||
-          !["list", "import_ssh", "save", "test", "resources", "remember", "use", "forget"].includes(operation) ||
-          !request || typeof request !== "object" || Array.isArray(request))
-        throw new Error("Invalid compute settings request.");
-      assertResearchRequestBound("compute-targets", request);
-      if (this.switching) throw new Error("Wait for the study to finish opening.");
-      const project = this.project, epoch = this.viewDocumentEpoch;
-      if (["remember", "use"].includes(operation)) this.requireProject();
-      const output = await this.compute.request("research_compute_targets", {
-        directory: path.join(app.getPath("userData"), "compute-targets-v1.loci-study"),
-        operation, request, project,
-      }, 0);
-      if (["remember", "use", "list"].includes(operation) &&
-          (this.project !== project || this.viewDocumentEpoch !== epoch))
-        throw new Error("The study changed during compute setup. Reload the target list.");
-      return output;
+    handle("model-library-link", async (...args) => {
+      if (args.length !== 1) throw new Error("Choose a registered official model-library source.");
+      await openModelLibraryLink(args[0], (url) => shell.openExternal(url));
     });
+    handle("compute-targets", (operation, request) => this.computeTargets(operation, request));
     handle("create", () => this.choose(true));
     handle("open", () => this.choose(false));
     handle("snapshot", () => this.snapshot());
@@ -1589,6 +1611,7 @@ export class ResearchBridge {
       const project = this.requireProject();
       if (this.running || this.switching) throw new Error("Finish the active study operation first.");
       this.switching = true;
+      this.vendorGrants.clear();
       try {
         const source = await dialog.showOpenDialog({
           title: "Inspect a vendor file for explicit conversion",
@@ -1608,18 +1631,17 @@ export class ResearchBridge {
           properties: ["openFile", "showHiddenFiles"],
         });
         if (java.canceled || !java.filePaths[0]) return null;
-        const inspection = await this.control.request<{ source_sha256: string }>(
+        const inspection = await this.control.request<{ source_sha256: string; runtime: { java_sha256: string } }>(
           "research_vendor_inspect", {
             source: source.filePaths[0], jar: jar.filePaths[0], java: java.filePaths[0],
           }, 0,
         );
-        if (!/^[a-f0-9]{64}$/.test(inspection.source_sha256))
+        if (!/^[a-f0-9]{64}$/.test(inspection.source_sha256) || !/^[a-f0-9]{64}$/.test(inspection.runtime?.java_sha256))
           throw new Error("Vendor inspection returned an invalid fingerprint.");
         const grantId = randomUUID();
-        this.vendorGrants.clear();
         this.vendorGrants.set(grantId, {
           project, source: source.filePaths[0], jar: jar.filePaths[0],
-          java: java.filePaths[0], sourceSha256: inspection.source_sha256,
+          java: java.filePaths[0], sourceSha256: inspection.source_sha256, javaSha256: inspection.runtime.java_sha256,
         });
         return { grant_id: grantId, source_name: path.basename(source.filePaths[0]),
           source_sha256: inspection.source_sha256, inspection };
@@ -1645,7 +1667,7 @@ export class ResearchBridge {
         return await this.control.request("research_vendor_convert", {
           project, source: grant.source, jar: grant.jar, java: grant.java,
           destination: destination.filePath, request: selection,
-          expected_source_sha256: grant.sourceSha256,
+          expected_source_sha256: grant.sourceSha256, expected_java_sha256: grant.javaSha256,
         }, 0);
       } finally { this.switching = false; }
     });
@@ -1977,34 +1999,30 @@ export class ResearchBridge {
         } finally { this.switching = false; }
       });
     }
-    handle("labels-import-preview", async (binding) => {
+    handle("labels-import-preview", async (binding, ...extra) => {
+      if (extra.length) throw new Error("Invalid label-import binding or memory budget.");
       const project = this.requireProject();
       if (this.running || this.switching) throw new Error("Finish the active study operation first.");
-      if (!binding || typeof binding !== "object" || Array.isArray(binding))
-        throw new Error("Select a valid native source plane.");
-      const input = binding as Record<string, unknown>;
-      if (Object.keys(input).sort().join(",") !== "selection,source_id,source_sha256,working_bytes" ||
-          typeof input.source_id !== "string" || !/^[a-f0-9]{32}$/u.test(input.source_id) ||
-          typeof input.source_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(input.source_sha256) ||
-          !Number.isSafeInteger(input.working_bytes) || Number(input.working_bytes) < 1024 * 1024 ||
-          Number(input.working_bytes) > 8 * 1024 ** 3)
-        throw new Error("Invalid label-import binding or memory budget.");
-      const plane = input.selection;
-      if (!plane || typeof plane !== "object" || Array.isArray(plane) ||
-          !["c,height,level,t,width,x,y,z", "c,height,level,t,width,x,y,z,z_stop"].includes(Object.keys(plane).sort().join(",")))
-        throw new Error("Label import requires an explicit native YX plane or ZYX volume.");
-      const selection = plane as Record<string, unknown>;
-      if (Object.values(selection).some((value) => !Number.isSafeInteger(value) || Number(value) < 0) ||
-          selection.level !== 0 || selection.x !== 0 || selection.y !== 0 ||
-          Number(selection.width) < 1 || Number(selection.height) < 1 ||
-          selection.z_stop !== undefined && Number(selection.z_stop) < Number(selection.z) + 2)
-        throw new Error("Label import requires a full level-0 native grid and at least two planes for a volume.");
+      const input = checkedLabelsBinding(binding, { allowHandoff: true });
+      const { handoff_id, use_handoff_manifest, ...baseBinding } = input;
       // Reserve the captured document before awaiting the native picker or engine.
       this.switching = true;
       const epoch = this.viewDocumentEpoch;
       try {
+        let manifestPath: string | undefined;
+        if (use_handoff_manifest) {
+          const pickedManifest = await dialog.showOpenDialog({
+            title: "Select μSAM handoff manifest.json",
+            properties: ["openFile"],
+            filters: [{ name: "μSAM handoff manifest", extensions: ["json"] }],
+          });
+          if (pickedManifest.canceled || !pickedManifest.filePaths[0]) return null;
+          if (this.project !== project || this.viewDocumentEpoch !== epoch)
+            throw new Error("The label-import study changed while choosing the manifest.");
+          manifestPath = pickedManifest.filePaths[0];
+        }
         const picked = await dialog.showOpenDialog({
-          title: selection.z_stop === undefined ? "Import labels on this plane" : "Import labels on this volume",
+          title: input.selection.z_stop === undefined ? "Import labels on this plane" : "Import labels on this volume",
           properties: ["openFile"],
           filters: [{ name: "Integer label TIFF", extensions: ["tif", "tiff"] }],
         });
@@ -2012,7 +2030,11 @@ export class ResearchBridge {
         if (this.project !== project || this.viewDocumentEpoch !== epoch)
           throw new Error("The label-import study changed while choosing the file.");
         const output = await this.control.request("research_labels_import_grant", {
-          project, path: picked.filePaths[0], ...input,
+          project,
+          path: picked.filePaths[0],
+          ...baseBinding,
+          ...(handoff_id ? { handoff_id } : {}),
+          ...(manifestPath ? { handoff_manifest_path: manifestPath } : {}),
         }, 0);
         if (this.project !== project || this.viewDocumentEpoch !== epoch)
           throw new Error("The label-import study changed while checking the file.");
@@ -2020,6 +2042,70 @@ export class ResearchBridge {
       } finally {
         this.switching = false;
       }
+    });
+    handle("convert-study-image", async (binding, ...extra) => {
+      if (extra.length) throw new Error("Invalid conversion request.");
+      const project = this.requireProject();
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+      const input = checkedImageConversion(binding);
+      const epoch = this.viewDocumentEpoch;
+      const current = () => {
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The active study changed during image conversion.");
+      };
+      this.switching = true;
+      try {
+        const picked = await dialog.showSaveDialog({
+          title: "Save converted image", defaultPath: "Converted image", buttonLabel: "Convert",
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        current();
+        const output = await this.control.request("research_image_convert", {
+          ...input, project, destination: picked.filePath,
+        }, 0);
+        current();
+        return checkedImageConversionReceipt(output, input.format);
+      } finally {
+        this.switching = false;
+      }
+    });
+    handle("usam-handoff-export", async (binding, ...extra) => {
+      if (extra.length) throw new Error("Invalid label-import binding or memory budget.");
+      const project = this.requireProject();
+      if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+      const input = checkedLabelsBinding(binding, { allowHandoff: false });
+      this.switching = true;
+      const epoch = this.viewDocumentEpoch;
+      try {
+        const picked = await dialog.showSaveDialog({
+          title: input.selection.z_stop === undefined ? "Export native TIFF for μSAM" : "Export native ZYX TIFF for μSAM",
+          defaultPath: input.selection.z_stop === undefined ? "Loci-uSAM-plane" : "Loci-uSAM-volume",
+          buttonLabel: "Export handoff",
+        });
+        if (picked.canceled || !picked.filePath) return null;
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The active study changed before exporting the μSAM handoff.");
+        const output = await this.control.request("research_usam_handoff_export", {
+          project,
+          destination: picked.filePath,
+          ...input,
+        }, 0);
+        if (this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The active study changed while exporting the μSAM handoff.");
+        return checkedUsamHandoffReceipt(output, input.source_id, input.source_sha256, input.selection);
+      } finally {
+        this.switching = false;
+      }
+    });
+    handle("usam-handoffs", async (...extra) => {
+      if (extra.length) throw new Error("Invalid μSAM handoff query.");
+      const project = this.requireProject();
+      if (this.switching) throw new Error("Wait for the active study operation to finish.");
+      const epoch = this.viewDocumentEpoch;
+      const output = await this.control.request("research_usam_handoffs", { project }, 0);
+      if (this.project !== project || this.viewDocumentEpoch !== epoch)
+        throw new Error("The active study changed while reading μSAM handoffs.");
+      return checkedUsamHandoffRecords(output);
     });
     handle("batch-submit", (tasks) => this.submitBatch(tasks));
     handle("batch-run", (batchId, jobId) => this.runBatchJob(batchId, jobId));

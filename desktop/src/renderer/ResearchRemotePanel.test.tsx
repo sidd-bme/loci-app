@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDesktopApi,
@@ -343,6 +343,7 @@ describe("ResearchRemotePanel", () => {
     const selector = await screen.findByLabelText("Attached runtime result");
     expect(selector).toHaveValue(first);
     fireEvent.change(selector, { target: { value: second } });
+    expect(selector).toHaveValue(second);
     await waitFor(() => expect(execute).toHaveBeenCalledWith(
       "result", { result_id: second, offset: 0, limit: 1 },
     ));
@@ -363,9 +364,33 @@ describe("ResearchRemotePanel", () => {
     expect(runtime).toHaveTextContent("Resolved devicecuda");
     expect(runtime).toHaveTextContent("Fallbacknone");
     expect(runtime).not.toHaveTextContent("numpy-scipy-cpu");
-    resolveFirst({ provenance: { runtime: {
-      requested_device: "cpu", resolved_device: "cpu", fallback_reason: null,
-    } } });
-    await waitFor(() => expect(runtime).toHaveTextContent("Resolved devicecuda"));
+    await act(async () => {
+      resolveFirst({ provenance: { runtime: {
+        requested_device: "cpu", resolved_device: "cpu", fallback_reason: null,
+      } } });
+    });
+    expect(runtime).toHaveTextContent("Resolved devicecuda");
+  });
+
+  it("requests only the current attachment when switching directly between saved runs", async () => {
+    const resultIds = ["6".repeat(32), "7".repeat(32)];
+    const runs = resultIds.map((resultId, index) => ({
+      request_key: String(index + 8).repeat(32), request_sha256: "c".repeat(64), alias: "vanda",
+      state: "attached", remote_state: "finished", remote_job_id: "456.server",
+      status_detail: null, outputs: [], remote_cleanup: null,
+      attachment: { task_results: [{ local_result_id: resultId }] },
+    }));
+    const execute = vi.fn((operation: string, _request: Record<string, unknown>) => {
+      if (operation === "remote_profile_list") return Promise.resolve({ profiles: [profile] });
+      if (operation === "remote_run_list") return Promise.resolve({ runs });
+      return Promise.resolve({ provenance: {} });
+    });
+    renderPanel(execute);
+
+    await screen.findByText(`Exact attached result: ${resultIds[0].slice(0, 8)}`);
+    fireEvent.change(screen.getByLabelText("Saved remote run"), { target: { value: runs[1].request_key } });
+    await screen.findByText(`Exact attached result: ${resultIds[1].slice(0, 8)}`);
+    expect(execute.mock.calls.filter(([operation]) => operation === "result").map(([, request]) => request.result_id))
+      .toEqual(resultIds);
   });
 });

@@ -16,6 +16,7 @@ import { CompactChannelControls } from "./CompactChannelControls";
 import { GuidedExplorationPanel } from "./GuidedExplorationPanel";
 import type { ImageWindowPresentation } from "../shared/image-window-api";
 import { RecipeResourcePanel } from "./RecipeResourcePanel";
+import { PreprocessingPanel, PreprocessingScopeControl } from "./PreprocessingPanel";
 import { ResearchLabelsImportPanel } from "./ResearchLabelsImportPanel";
 import { ResearchCorrectionEffectPanel, type CorrectionEffectSeed } from "./ResearchCorrectionEffectPanel";
 import { SegmentationInputControl } from "./SegmentationInputControl";
@@ -25,9 +26,21 @@ import { SourceTree } from "./SourceTree";
 import { BatchSourcePicker } from "./BatchSourcePicker";
 import { sourceDisplayPath, sourceLabelForId } from "./source-browser";
 import {
+  ArrowLeftToLine,
+  ChartNoAxesColumn,
+  Columns2,
+  Layers3,
+  ChevronDown,
   ChevronLeft,
   FolderOpen,
+  LayoutGrid,
   PanelsTopLeft,
+  PanelLeft,
+  PanelRight,
+  Maximize2,
+  Minimize2,
+  ChevronRight,
+  Layers,
   PictureInPicture2,
   ImagePlus,
   Lightbulb,
@@ -68,6 +81,7 @@ import type {
   ManagedSessionState,
 } from "../shared/research-contracts";
 import "./ResearchWorkbench.css";
+import "./ResearchPropertyGrid.css";
 import { firstStudyDisplayChannels } from "./first-study-display";
 import { initialSourceDisplay, rgbChannelsForPlane, type SourceDisplayDefaults } from "./initial-source-display";
 import { ResultContextPanel } from "./ResultContextPanel";
@@ -84,6 +98,7 @@ import {
 } from "./ResearchCorrectionPanel";
 import { ResearchRegistrationPanel } from "./ResearchRegistrationPanel";
 import { ResearchPopulationExplorer } from "./ResearchPopulationExplorer";
+import { populationDisplayUnit } from "./PopulationChart";
 import { ResearchWorkflowPanel } from "./ResearchWorkflowPanel";
 import { ResearchQuantificationPanel } from "./ResearchQuantificationPanel";
 import { SpatialSummary } from "./ResearchSpatialPanel";
@@ -100,7 +115,7 @@ import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewCo
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
 import { ResearchPortabilityPanel } from "./ResearchPortabilityPanel";
-import { ResearchVendorPanel } from "./ResearchVendorPanel";
+import { ImageConversionPanel } from "./ImageConversionPanel";
 import { ResearchRemotePanel } from "./ResearchRemotePanel";
 import { activeComputeRun, ResearchComputeControl, ResearchComputeJobs, useResearchCompute, type ResearchComputeController } from "./ResearchCompute";
 import { ResearchSurfaceView } from "./ResearchSurfaceView";
@@ -110,13 +125,14 @@ import {
   maxNativeViewPixels,
 } from "./ResearchNativeViewport";
 import { ResearchHistologyPanel } from "./ResearchHistologyPanel";
-import { ImageViewport, type ImageAnnotation, type ImagePoint, type ViewerChannel } from "./ImageViewport";
+import { ImageViewport, type DisplaySamplingMode, type ImageAnnotation, type ImagePoint, type ViewerChannel } from "./ImageViewport";
 import { resolveResultPlaneOverlay, resultPixelToSourcePoint, sourcePointToResultPixel } from "./result-plane-overlay";
 import { SourceAnnotationPanel } from "./SourceAnnotationPanel";
 import { useAnnotationDrafts } from "./annotation-draft";
 import { subscribeWorkbenchCommands, type WorkbenchCommand } from "./workbench-commands";
 import { ValidatedNumberInput, useNumericValidity } from "./ValidatedNumberInput";
-import { ImageWelcome, WorkbenchTools, type WorkbenchTab } from "./WorkbenchChrome";
+import { WorkbenchFilename } from "./WorkbenchFilename";
+import { ImageWelcome, WorkbenchTools, workbenchModifier, workbenchShortcutAvailable, type WorkbenchTab } from "./WorkbenchChrome";
 import { FirstStudyGuide } from "./FirstStudyGuide";
 import { sourceRelinkKind } from "../shared/source-relink";
 import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
@@ -134,6 +150,11 @@ import {
   ResearchCellposePanel,
   type ResearchCellposeBatchConfiguration,
 } from "./ResearchCellposePanel";
+import ModelLibraryDialog from "./ModelLibraryDialog";
+import type {
+  ModelLibraryId,
+  ModelLibraryWorkbenchRouteKind,
+} from "../shared/model-library";
 
 type Props = {
   initialSourceId?: string | null;
@@ -163,7 +184,7 @@ function resultRowDiscriminators(results: ResearchResult[]): Map<string, string>
     groups.set(key, group);
   }
   const labels = new Map<string, string>();
-  const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: "short", timeStyle: "medium" });
+  const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     const byTime = new Map<string, ResearchResult[]>();
@@ -389,6 +410,8 @@ function useComparisonPane(
   onError: (value: string) => void,
 ) {
   const token = useRef(0);
+  const observedCamera = useRef<Camera | null>(null);
+  const observeCamera = useCallback((camera: Camera) => { observedCamera.current = camera; }, []);
   const dimensions = useMemo(() => meta(source).dimensions, [source.id, source.sha256]);
   const [view, setView] = useState<ComparisonPaneView>(() => ({
     sourceId: source.id,
@@ -401,6 +424,7 @@ function useComparisonPane(
 
   useEffect(() => {
     const currentToken = ++token.current;
+    observedCamera.current = null;
     setView({
       sourceId: source.id,
       sourceSha256: source.sha256,
@@ -458,7 +482,7 @@ function useComparisonPane(
       ? { ...previous, channels }
       : previous);
   }, [source.id, source.sha256]);
-  return { ...view, ready, setSelection, setChannels };
+  return { ...view, ready, setSelection, setChannels, observedCamera, observeCamera };
 }
 
 function displayMatchCompatibility(
@@ -499,7 +523,8 @@ function ComparisonPane({
   pane,
   preferences,
   controlledCamera,
-  onCamera,
+  cameraLinked,
+  onCameraGesture,
   onError,
 }: {
   label: "A" | "B";
@@ -508,10 +533,13 @@ function ComparisonPane({
   pane: ReturnType<typeof useComparisonPane>;
   preferences: UserPreferences;
   controlledCamera: Camera | null;
-  onCamera: (camera: Camera) => void;
+  cameraLinked: boolean;
+  onCameraGesture: (pane: "A" | "B", camera: Camera) => void;
   onError: (value: string) => void;
 }) {
+  const reportGesture = useCallback((camera: Camera) => onCameraGesture(label, camera), [label, onCameraGesture]);
   const dimensions = meta(source).dimensions;
+  const [displaySampling, setDisplaySampling] = useState<DisplaySamplingMode>("auto");
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
   const visible = pane.channels.filter((item) => item.visible).map((item) => item.channel);
   const channelMode = visible.length === 1
@@ -560,6 +588,9 @@ function ComparisonPane({
     </div>
     <div className="research-ab-viewport">
       {pane.ready ? <ImageViewport
+        dockedControls
+        displaySampling={displaySampling}
+        onDisplaySamplingChange={setDisplaySampling}
         showScaleBar={preferences.viewer.showScaleBar}
         showNavigator={preferences.viewer.showNavigator}
         api={api}
@@ -569,7 +600,9 @@ function ComparisonPane({
         projection="plane"
         initialCamera={pane.initialCamera}
         controlledCamera={controlledCamera}
-        onCamera={onCamera}
+        cameraLinked={cameraLinked}
+        onCamera={pane.observeCamera}
+        onCameraGesture={reportGesture}
         onError={onError}
         requestLane={`comparison-${label.toLowerCase()}`}
       /> : <p role="status" className="research-ab-loading">Preparing {source.name}…</p>}
@@ -599,36 +632,25 @@ function ResearchAbComparison({
   const sourceB = sources.find((item) => item.id === sourceBId) ?? sourceA;
   const paneA = useComparisonPane(api, sourceA, onError);
   const paneB = useComparisonPane(api, sourceB, onError);
-  const [linkPanZoom, setLinkPanZoom] = useState(false);
-  const linkPanZoomRef = useRef(false);
-  linkPanZoomRef.current = linkPanZoom;
-  const [linkedCamera, setLinkedCamera] = useState<Camera | null>(null);
-  const [cameraA, setCameraA] = useState<Camera | null>(null);
-  const [cameraB, setCameraB] = useState<Camera | null>(null);
+  const [link, setLink] = useState<{
+    sourceId: string; sourceSha256: string; from: "A" | "B"; camera: Camera | null;
+  } | null>(null);
   const [matchNotice, setMatchNotice] = useState<string | null>(null);
   const exactCoordinateBasis = sourceA.id === sourceB.id && sourceA.sha256 === sourceB.sha256;
+  const activeLink = exactCoordinateBasis && link?.sourceId === sourceA.id &&
+    link.sourceSha256 === sourceA.sha256 ? link : null;
   const match = displayMatchCompatibility(sourceA, sourceB, paneA.channels, paneB.channels);
 
   useEffect(() => {
-    if (exactCoordinateBasis) return;
-    setLinkPanZoom(false);
-    setLinkedCamera(null);
-  }, [exactCoordinateBasis]);
+    if (link && !activeLink) setLink(null);
+  }, [link, activeLink]);
   useEffect(() => { setMatchNotice(null); }, [sourceA.id, sourceA.sha256, sourceB.id, sourceB.sha256]);
 
-  const publishLinkedCamera = useCallback((camera: Camera) => {
-    setLinkedCamera((previous) => previous && previous.x === camera.x && previous.y === camera.y &&
-      previous.scale === camera.scale ? previous : camera);
-  }, []);
-
-  const onCameraA = useCallback((camera: Camera) => {
-    setCameraA(camera);
-    if (linkPanZoomRef.current) publishLinkedCamera(camera);
-  }, [publishLinkedCamera]);
-  const onCameraB = useCallback((camera: Camera) => {
-    setCameraB(camera);
-    if (linkPanZoomRef.current) publishLinkedCamera(camera);
-  }, [publishLinkedCamera]);
+  const publishGesture = useCallback((from: "A" | "B", camera: Camera) => {
+    if (!exactCoordinateBasis) return;
+    setLink(previous => previous?.sourceId === sourceA.id && previous.sourceSha256 === sourceA.sha256
+      ? { ...previous, from, camera } : previous);
+  }, [exactCoordinateBasis, sourceA.id, sourceA.sha256]);
   const matchDisplaySettings = () => {
     if (!match.compatible) return;
     const byIndex = new Map(paneA.channels.map((item) => [item.channel, item]));
@@ -666,12 +688,14 @@ function ResearchAbComparison({
         : "Disabled: no verified coordinate transform connects these sources"}>
         <input type="checkbox" aria-label="Link pan and zoom"
           disabled={!exactCoordinateBasis || !paneA.ready || !paneB.ready}
-          checked={linkPanZoom && exactCoordinateBasis}
+          checked={Boolean(activeLink)}
           onChange={(event) => {
-            const checked = event.target.checked;
-            setLinkPanZoom(checked);
-            linkPanZoomRef.current = checked;
-            setLinkedCamera(checked ? cameraA ?? paneA.initialCamera ?? cameraB ?? paneB.initialCamera : null);
+            const cameraA = paneA.observedCamera.current ?? paneA.initialCamera;
+            const cameraB = paneB.observedCamera.current ?? paneB.initialCamera;
+            setLink(event.target.checked && exactCoordinateBasis ? {
+              sourceId: sourceA.id, sourceSha256: sourceA.sha256,
+              from: cameraA ? "A" : "B", camera: cameraA ?? cameraB,
+            } : null);
           }} />
         Link pan/zoom ({exactCoordinateBasis ? "Exact source" : "No verified transform"})
       </label>
@@ -680,9 +704,11 @@ function ResearchAbComparison({
     {matchNotice && <div role="status" className="research-ab-notice">{matchNotice}</div>}
     <div className="research-ab-container">
       <ComparisonPane label="A" api={api} source={sourceA} pane={paneA} preferences={preferences}
-        controlledCamera={linkPanZoom ? linkedCamera : null} onCamera={onCameraA} onError={onError} />
+        cameraLinked={Boolean(activeLink?.camera)} controlledCamera={activeLink?.from === "B" ? activeLink.camera : null}
+        onCameraGesture={publishGesture} onError={onError} />
       <ComparisonPane label="B" api={api} source={sourceB} pane={paneB} preferences={preferences}
-        controlledCamera={linkPanZoom ? linkedCamera : null} onCamera={onCameraB} onError={onError} />
+        cameraLinked={Boolean(activeLink?.camera)} controlledCamera={activeLink?.from === "A" ? activeLink.camera : null}
+        onCameraGesture={publishGesture} onError={onError} />
     </div>
   </div>;
 }
@@ -860,7 +886,8 @@ export default function ResearchWorkbench({
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
   const [channelSettings, setChannelSettings] = useState<Channel[]>([]);
   const [image, setImage] = useState<string | null>(null);
-  const [volume, setVolume] = useState<Volume | null>(null);
+  const [orthogonalCrop, setOrthogonalCrop] = useState<{ scope: string; value: Volume } | null>(null);
+  const orthogonalRequest = useRef(0);
   const [projection, setProjection] = useState<"plane" | "max" | "mean">(
     "plane",
   );
@@ -926,6 +953,23 @@ export default function ResearchWorkbench({
     return 210;
   });
   const [inspectorWidth, setInspectorWidth] = useState(loadInspectorWidth);
+  const [sourcesHidden, setSourcesHidden] = useState(false);
+  const [toolsHidden, setToolsHidden] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(true);
+  const sourcesToggle = useRef<HTMLButtonElement>(null);
+  const toolsToggle = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    function toggleSidePanel(event: KeyboardEvent) {
+      if (!workbenchShortcutAvailable(event) || !sourcesToggle.current) return;
+      if (event.key === "[") {
+        event.preventDefault(); setSourcesHidden(hidden => !hidden); sourcesToggle.current.focus();
+      } else if (event.key === "]") {
+        event.preventDefault(); setToolsHidden(hidden => !hidden); toolsToggle.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", toggleSidePanel);
+    return () => window.removeEventListener("keydown", toggleSidePanel);
+  }, []);
   const [isDraggingSources, setIsDraggingSources] = useState(false);
   const sourcesWidthRef = useRef(sourcesWidth);
   sourcesWidthRef.current = sourcesWidth;
@@ -1010,8 +1054,15 @@ export default function ResearchWorkbench({
   const [savedCamera, setSavedCamera] = useState<Camera | null>(null);
   const [viewCamera, setViewCamera] = useState<Camera | null>(null);
   const [controlledViewCamera, setControlledViewCamera] = useState<Camera | null>(null);
+  const [displaySampling, setDisplaySampling] = useState<DisplaySamplingMode>("auto");
   const [viewReadyKey, setViewReadyKey] = useState("");
   const [abCompareMode, setAbCompareMode] = useState(false);
+  const [modelLibraryState, setModelLibraryState] = useState<{
+    initialModelId?: ModelLibraryId;
+  } | null>(null);
+  const externalLabelsDisclosureRef = useRef<HTMLDetailsElement | null>(null);
+  const usamDisclosureRef = useRef<HTMLDetailsElement | null>(null);
+  const [labelDestination, setLabelDestination] = useState<"labels-import" | "labels-usam-handoff" | null>(null);
   const [drawingAnalysisRegion, setDrawingAnalysisRegion] = useState(false);
   const [viewSettingsReady, setViewSettingsReady] = useState(false);
   const [sourcePreparation, setSourcePreparation] = useState<{
@@ -1161,6 +1212,10 @@ export default function ResearchWorkbench({
     // caller has already captured the source/plane and navigation intent.
     ...(desktopApi.labelsImportPreview ? { labelsImportPreview: (request) =>
       switchDocument(() => desktopApi.labelsImportPreview!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.convertStudyImage ? { convertStudyImage: (request) =>
+      switchDocument(() => desktopApi.convertStudyImage!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.exportUsamHandoff ? { exportUsamHandoff: (request) =>
+      switchDocument(() => desktopApi.exportUsamHandoff!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.importControlledMethod ? { importControlledMethod: () =>
       switchDocument(() => desktopApi.importControlledMethod!(), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.reviewControlledMethodRights ? { reviewControlledMethodRights: (request) =>
@@ -1253,6 +1308,8 @@ export default function ResearchWorkbench({
   );
   const isRgb = sourceMeta?.sample_semantics === "RGB" || sourceMeta?.sample_semantics === "RGBA";
   const rawVolumeUnavailable = source ? rawVolumeUnavailableReason(source) : null;
+  // A 3D scene can be saved only after this exact source's display store exists.
+  const canOpenRawVolume = currentSourcePreparation?.phase === "ready" && !rawVolumeUnavailable;
   const dimensions =
     sourceMeta?.levels?.find((level) => level.index === selection.level)
       ?.dimensions ??
@@ -1442,7 +1499,7 @@ export default function ResearchWorkbench({
         setRawVolumeOpen(false);
         setSurfaceOpen(false);
         if (next.sources.length === 0) {
-          setImage(null); setVolume(null); setResultId(null); setResultView(null);
+          setImage(null); setOrthogonalCrop(null); setResultId(null); setResultView(null);
           setRows([]); setSelectedRow(null); setCorrectionPoints([]); setRedoStack([]);
         }
       }
@@ -1589,14 +1646,15 @@ export default function ResearchWorkbench({
   const selectSourcePlane = (next: ResearchSelection) => {
     if (!viewSettingsReady || sourceIsChanging || documentSwitching) return;
     if (isRgb && next.c !== shownSelection.c) {
-      setResultId(null); setResultView(null); setImage(null); setVolume(null);
+      setResultId(null); setResultView(null); setImage(null); setOrthogonalCrop(null);
     }
     setSelection(next);
   };
-  const labelImportScope = JSON.stringify([documentEpoch, source?.id, source?.sha256, shownSelection]);
-  const liveLabelImportScope = useRef(labelImportScope);
+  const selectionScope = JSON.stringify([documentEpoch, source?.id, source?.sha256, shownSelection]);
+  const liveSelectionScope = useRef(selectionScope);
   const labelImportBusyOwner = useRef<{ owner: string; message: string } | null>(null);
-  liveLabelImportScope.current = labelImportScope;
+  liveSelectionScope.current = selectionScope;
+  const volume = orthogonalCrop?.scope === selectionScope ? orthogonalCrop.value : null;
   const annotationState = useAnnotationDrafts(documentEpoch, snapshot?.sources ?? [], source, shownSelection,
     tab === "Epidermis" ? "epidermis" : "general");
   const { tool: annotationTool, setTool: setAnnotationTool, points: annotationDraft, setPoints: setAnnotationDraft } = annotationState;
@@ -1670,7 +1728,7 @@ export default function ResearchWorkbench({
       setRawVolumeOpen(false);
       setSurfaceOpen(false);
       setRawVolume(null);
-      setVolume(null);
+      setOrthogonalCrop(null);
       return;
     }
     if (!dimensions) return;
@@ -1761,7 +1819,7 @@ export default function ResearchWorkbench({
         error: message(caught, "Could not prepare source display settings.") });
     });
     setImage(null);
-    setVolume(null);
+    setOrthogonalCrop(null);
     setResultId(null);
     setResultView(null);
     setRows([]);
@@ -1845,7 +1903,7 @@ export default function ResearchWorkbench({
   }, [viewSettingsReady, interpretation, channels, projection, shownSelection, viewCamera, rgbMapping, source?.id, assistantFollowing, assistantFollowBusy]);
   useEffect(() => () => { void viewStore.current?.flush(); }, []);
   const requestRawVolume = useCallback(async (refinement?: RawVolumeRefinementRequest) => {
-    if (documentSwitch.current || !source) return;
+    if (documentSwitch.current || !source || !canOpenRawVolume) return;
     const token = ++rawVolumeToken.current;
     setRawVolumeLoading(true); setRawVolumeError(null);
     try {
@@ -1860,14 +1918,14 @@ export default function ResearchWorkbench({
       setRawVolume(output);
     } catch (caught) { if (rawVolumeToken.current === token) setRawVolumeError(message(caught, "Could not prepare the volume.")); }
     finally { if (rawVolumeToken.current === token) setRawVolumeLoading(false); }
-  }, [api, source, shownSelection.t, shownSelection.c, channels, volumeTarget]);
+  }, [api, source, shownSelection.t, shownSelection.c, channels, volumeTarget, canOpenRawVolume]);
   const volumeChannelKey = channels.filter((item) => item.visible).map((item) => item.channel).join(",");
   useEffect(() => { if (!volumeSharedLocked.current) setVolumeTarget(null); }, [source?.id, shownSelection.t, volumeChannelKey]);
   useEffect(() => {
-    if (!rawVolumeOpen) return;
+    if (!rawVolumeOpen || !canOpenRawVolume) return;
     setRawVolume(null);
     void requestRawVolume();
-  }, [rawVolumeOpen, source?.id, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
+  }, [rawVolumeOpen, canOpenRawVolume, source?.id, source?.sha256, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
   useEffect(() => {
     const key = JSON.stringify([
       source?.id,
@@ -1898,6 +1956,36 @@ export default function ResearchWorkbench({
     modelMeasurementChannels,
     modelWorkingBytes,
   ]);
+  useEffect(() => {
+    const labels = externalLabelsDisclosureRef.current;
+    const handoff = usamDisclosureRef.current;
+    if (!labelDestination || tab !== "Analyze" || !labels || !handoff) return;
+    labels.open = true;
+    handoff.open = labelDestination === "labels-usam-handoff";
+    (handoff.open ? handoff : labels).querySelector("summary")?.focus();
+    setLabelDestination(null);
+  }, [labelDestination, tab]);
+  const handleSelectModelLibraryRoute = (
+    route: ModelLibraryWorkbenchRouteKind,
+  ) => {
+    setModelLibraryState(null);
+    if (!source || !dimensions) return;
+    setToolsHidden(false);
+    if (route === "segment-cellpose-v2") {
+      setSegmentationFamily("cellpose-sam-v2");
+      openWorkbenchTab("Analyze");
+    } else if (
+      route === "labels-usam-handoff" ||
+      route === "labels-import"
+    ) {
+      openWorkbenchTab("Analyze");
+      setLabelDestination(route);
+    } else if (route === "onnx-model-package") {
+      openWorkbenchTab("Model");
+    } else if (route === "tissue-epidermis") {
+      openWorkbenchTab("Tissue model");
+    }
+  };
   const refreshModels = useCallback(async () => {
     const output = await report(
       () =>
@@ -2126,8 +2214,15 @@ export default function ResearchWorkbench({
       window.removeEventListener("blur", blur);
     };
   }, []);
+  const hideOrthogonalCrop = () => {
+    orthogonalRequest.current++;
+    setOrthogonalCrop(null);
+    setBusy(current => current === "volume" ? null : current);
+  };
   const openVolume = async (crosshair?: [number, number, number]) => {
-    if (!source || !dimensions) return;
+    if (!source || !dimensions || !viewSettingsReady || sourceIsChanging || documentSwitch.current) return;
+    const request = ++orthogonalRequest.current;
+    const isCurrent = () => request === orthogonalRequest.current && selectionScope === liveSelectionScope.current && !documentSwitch.current;
     setBusy("volume");
     const scoped = {
       ...shownSelection,
@@ -2149,9 +2244,10 @@ export default function ResearchWorkbench({
           include_volume: false,
         }) as Promise<Volume>,
       "Could not render linked orthogonal planes.",
+      isCurrent,
     );
-    if (output) setVolume(output);
-    setBusy(null);
+    if (output && isCurrent()) setOrthogonalCrop({ scope: selectionScope, value: output });
+    if (request === orthogonalRequest.current) setBusy(current => current === "volume" ? null : current);
   };
   const loadResult = async (id: string, knownResult?: ResearchResult, isCurrent: () => boolean = () => true, manageBusy = true, nextSection: "review" | "export" = "review") => {
     if (!isCurrent() || documentSwitch.current) return;
@@ -3159,6 +3255,7 @@ export default function ResearchWorkbench({
   const redoTargetId =
     redoStack.at(-1) ?? (redoChildren.length === 1 ? redoChildren[0].id : null);
   const openWorkbenchTab = async (next: WorkbenchTab) => {
+    setToolsHidden(false);
     if (rawVolumeOpen && ["Workflow", "Annotate", "Epidermis", "Correction"].includes(next)) {
       try { await volumeSceneFlush.current(); }
       catch (caught) { setVolumeSceneError(message(caught, "Save the current 3D view before changing workspaces.")); return; }
@@ -3185,7 +3282,7 @@ export default function ResearchWorkbench({
       setProjection("plane");
       setSelection((previous) => { const { z_stop: _stop, ...plane } = previous; return plane; });
       if (next === "Epidermis") {
-        setResultId(null); setResultView(null); setImage(null); setVolume(null);
+        setResultId(null); setResultView(null); setImage(null); setOrthogonalCrop(null);
       }
     }
   };
@@ -3217,7 +3314,7 @@ export default function ResearchWorkbench({
     resultLoadToken.current++; resultViewToken.current++;
     pendingStudyNavigation.current = null;
     setPendingResultNavigation(null); setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
-    setPopulationObject(null); setLargeObject(null); setCorrectionObjectTarget(null); setImage(null); setVolume(null);
+    setPopulationObject(null); setLargeObject(null); setCorrectionObjectTarget(null); setImage(null); setOrthogonalCrop(null);
     setRawVolumeOpen(false); setSurfaceOpen(false); setAbCompareMode(false); setProjection("plane");
     setSelectedSourceIds([exact.id]); setSelectionAnchorId(exact.id); setSelectionPivotIds([exact.id]);
     setSourceId(exact.id);
@@ -3368,7 +3465,7 @@ export default function ResearchWorkbench({
           }
         }}>
         <header className="image-first-header"><div className="brand-lockup"><BrandMark /><span className="brand-name">Loci</span></div>
-          <span />{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
+          <span /><button type="button" className="model-library-header-btn" onClick={() => setModelLibraryState({})}>Model Zoo</button>{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
         <ImageWelcome api={api} onOpen={(kind) => void openImages(kind)}
           onConvert={() => openWorkbenchTab("Vendor import")}
           onExample={api.tryExample ? () => { resetEmptyDrop(); void report(() => api.tryExample!().then(adopt), "Could not create the offline example."); } : undefined}
@@ -3379,6 +3476,20 @@ export default function ResearchWorkbench({
         {(busy || documentSwitching) && <div className="welcome-progress" role="status">{documentSwitching ? "Updating workspace…" : "Opening images…"}</div>}
         {error && <ResearchError error={error} onDismiss={() => setError(null)} />}
         <ContextHelp enabled={preferences.viewer.contextualHelp && !error} />
+        {modelLibraryState !== null && (
+          <ModelLibraryDialog
+            onClose={() => setModelLibraryState(null)}
+            initialModelId={modelLibraryState.initialModelId}
+            reducedMotion={preferences.motion === "reduced"}
+            onOpenLink={
+              api.openModelLibraryLink
+                ? (linkId) => api.openModelLibraryLink!(linkId)
+                : undefined
+            }
+            workbenchRouteUnavailableReason="Open an image first to configure this tool in the inspector."
+            onSelectWorkbenchRoute={() => setModelLibraryState(null)}
+          />
+        )}
       </main>
     );
   const changeSegmentationChannel = (channel: number) => {
@@ -3391,9 +3502,15 @@ export default function ResearchWorkbench({
     declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
   const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent", "Density", "Wound", "Morphology"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
-  const panelFocused = canFocusPanel && focusedPanel === tab;
+  const panelFocused = !toolsHidden && canFocusPanel && focusedPanel === tab;
+  const focusLabel = panelFocused ? "Show image" : tab === "Workflow" ? "Focus workflow" : tab === "Model" || tab === "Agent" ? "Focus setup" : "Focus panel";
+  const pathLabel = source?.browser_location ? sourceDisplayPath(source, snapshot.sources) : null;
+  const imageTitle = pathLabel ?? source?.name ?? (snapshot.sources.length ? snapshot.project.title : "No image open");
+  const sourceStem = source?.name.replace(/\.[^.]+$/, "");
+  const showStudyTitle = source && ![source.name, sourceStem, sourceStem?.replace(/\.ome$/i, "")].includes(snapshot.project.title);
   return (
-    <main className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
+    <main data-sources-hidden={sourcesHidden} data-tools-hidden={toolsHidden}
+      className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
       inert={documentSwitching} aria-busy={documentSwitching || undefined}
       style={
         {
@@ -3421,17 +3538,23 @@ export default function ResearchWorkbench({
 >
       <header>
         <div className="brand-lockup"><BrandMark /><span className="brand-name">Loci</span></div>
-        <strong className="active-image-name" aria-label="Active image">
-          {source?.name ?? (snapshot.sources.length === 0 ? "No image open" : snapshot.project.title)}
-        </strong>
-        <span className="session-save-state" title="Changes to annotations, results and study records are saved locally. Original images remain in their selected locations.">{session.status === "ready" && session.storage === "managed" ? "Autosaved session" : "Saved locally"}</span>
-        <button title="Open images without changing the active study's existing sources" onClick={() => void openImages()}><ImagePlus /> Add images…</button>
-        <button aria-label="Save study" title="Choose a name and location for this study" disabled={!api.saveAs}
-          onClick={() => void report(() => api.saveAs!().then(adopt), "Could not save this study.")}><Save /> Save study…</button>
+        <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
+        <button ref={sourcesToggle} className="shell-panel-toggle" type="button" aria-controls="research-image-list"
+          aria-expanded={!sourcesHidden} aria-label={sourcesHidden ? "Show image list" : "Hide image list"}
+          title={`${sourcesHidden ? "Show" : "Hide"} image list (${workbenchModifier()}[)`} onClick={() => setSourcesHidden(value => !value)}><PanelLeft /></button>
+        <div className="workbench-document" title={snapshot.project.title}>
+          {showStudyTitle && <><span className="workbench-study-title" title={snapshot.project.title}>{snapshot.project.title}</span><ChevronRight aria-hidden="true" /></>}
+          <strong className="active-image-name" aria-label="Active image"><span aria-label={pathLabel ? "Current image path" : undefined}><WorkbenchFilename name={imageTitle} /></span></strong>
+        </div>
+        <span className="session-save-state" title="Changes to annotations, results and study records are saved locally. Original images remain in their selected locations."><CheckCircle2 aria-hidden="true" /><span className="session-save-state__label">{session.status === "ready" && session.storage === "managed" ? "Autosaved session" : "Saved locally"}</span></span>
+        <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
+        <button className="shell-file-action" aria-label="Add images…" title="Add images to this study" onClick={() => void openImages()}><ImagePlus /><span>Add images…</span></button>
+        <button className="shell-file-action" aria-label="Save study" title="Choose a name and location for this study" disabled={!api.saveAs}
+          onClick={() => void report(() => api.saveAs!().then(adopt), "Could not save this study.")}><Save /><span>Save study…</span></button>
         <details className="workbench-file-menu"
           onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}
           onBlur={(event) => { if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
-          onClick={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.currentTarget.open = false; }}><summary title="Open folders, series and studies; save a study copy">File</summary><div>
+          onClick={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.currentTarget.open = false; }}><summary title="Open folders, series and studies; save a study copy">File<ChevronDown aria-hidden="true" /></summary><div>
           <button onClick={() => void openImages("folder")}>Open folder</button>
           <button onClick={() => void openImages("dicom")}>Open DICOM series</button>
           <button onClick={() => void openImages("ome_zarr")}>Open OME-Zarr store</button>
@@ -3446,16 +3569,21 @@ export default function ResearchWorkbench({
             viewStore.current = null; projectionSourceId.current = null; displayToken.current++;
             setViewSettingsReady(false); setSnapshot(null); void api.sessionState?.().then(setSession);
           }, "Could not open recent work.")}>Recent work</button>
+          <button type="button" onClick={() => setModelLibraryState({})}>Model Zoo…</button>
         </div></details>
+        <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
+        <button ref={toolsToggle} type="button" className="shell-panel-toggle" aria-controls="research-tools-pane"
+          aria-expanded={!toolsHidden} aria-label={toolsHidden ? "Show tools panel" : "Hide tools panel"}
+          title={`${toolsHidden ? "Show" : "Hide"} tools panel (${workbenchModifier()}])`} onClick={() => setToolsHidden(value => !value)}><PanelRight /></button>
         {onOpenSettings && (
-          <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}>
+          <button className="shell-panel-toggle" title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}>
             <Settings2 />
           </button>
         )}
       </header>
       {displayedError && <ResearchError error={displayedError} onDismiss={dismissDisplayedError} />}
       <ContextHelp enabled={preferences.viewer.contextualHelp && !displayedError} />
-      <div className="research-sources-pane">
+      <div className="research-sources-pane" id="research-image-list" hidden={sourcesHidden}>
         <aside className="research-sources">
           <div className="research-sources-header">
             <h2>
@@ -3501,7 +3629,8 @@ export default function ResearchWorkbench({
             onToggleSelection={toggleSourceSelection}
             onReorder={persistSourceOrder} reorderDisabled={busy !== null || documentSwitching}
             dimensions={(item) => meta(item).dimensions} />
-          <div className="research-layers-heading"><h2>Layers & results</h2>
+          <div className="research-layers-heading"><h2><button type="button" aria-controls="research-layer-stack" aria-expanded={layersOpen}
+            onClick={() => setLayersOpen(open => !open)}><ChevronRight aria-hidden="true" />Layers &amp; results</button></h2>
           {source && window.lociImageWindows && <div className="research-window-actions"><button aria-label="Restore image windows" title="Restore image windows" disabled={Boolean(busy) || documentSwitching}
             onClick={() => void report(async () => {
               await viewStore.current?.flush();
@@ -3523,10 +3652,14 @@ export default function ResearchWorkbench({
               await window.lociImageWindows!.open(source.id, { sourceSha256: source.sha256, presentation });
             }, "Could not open the image window.")}><PictureInPicture2 /></button></div>}
           </div>
-          {source && <button className={!resultId ? "selected" : ""} aria-pressed={!resultId}
-            onClick={() => { largeNavigationIntent.current++; largeSelectionIntent.current++; objectPickToken.current++; setPopulationObject(null); setSelectedRow(null); setResultId(null); setResultView(null); setImage(null); }}>Original image</button>}
+          <div id="research-layer-stack" className="research-layer-stack" hidden={!layersOpen}>
+          {source && <button className={!resultId ? "selected original-layer" : "original-layer"} aria-pressed={!resultId}
+            onClick={() => { largeNavigationIntent.current++; largeSelectionIntent.current++; objectPickToken.current++; setPopulationObject(null); setSelectedRow(null); setResultId(null); setResultView(null); setImage(null); }}><Layers aria-hidden="true" />Original image</button>}
           {sourceResults.map((item) => {
               const discriminator = resultDiscriminators.get(item.id);
+              const state = resultReviewState(item);
+              const disposition = state === "pending" ? "To review" : reviewLabel(item.review);
+              const StateIcon = state === "reviewed" ? CheckCircle2 : state === "excluded" ? Ban : Clock3;
               const isSavedSelection = snapshot.selections.some(
                 (sel) => sel.id === sourceId && sel.data?.result_id === item.id && sel.data?.revision_hash === item.revision_hash,
               );
@@ -3538,8 +3671,9 @@ export default function ResearchWorkbench({
                 key={item.id}
                 disabled={sourceIsChanging}
                 data-result-id={item.id}
-                data-review-state={resultReviewState(item)}
-                title={`${resultTitle(item)} · ${new Date(item.created_at).toLocaleString()}`}
+                data-review-state={state}
+                aria-description={disposition}
+                title={`${resultTitle(item)} · ${item.created_at}`}
                 aria-label={`${resultTitle(item)}, ${discriminator ? `${discriminator}, ` : ""}${resultSummary(item, false)}, ${resultReviewState(item)} review`}
                 className={item.id === resultId ? "selected" : ""}
                 aria-pressed={item.id === resultId}
@@ -3552,12 +3686,13 @@ export default function ResearchWorkbench({
               >
                 <span className="research-result-kind">{resultTitle(item)}</span>
                 {discriminator && <small className="research-result-meta">{discriminator}</small>}
-                <small className="research-result-meta">{resultSummary(item)} · {reviewLabel(item.review)}{isSavedSelection ? " · Saved selection" : ""}</small>
+                <small className="research-result-meta">{resultSummary(item)} · <span className="result-review-label"><StateIcon aria-hidden="true" />{disposition}</span>{isSavedSelection ? " · Saved selection" : ""}</small>
                 {parentResult && <small className="research-result-meta">{resultParentRelation(item)} {resultTitle(parentResult)}{resultDiscriminators.has(parentResult.id) ? ` · ${resultDiscriminators.get(parentResult.id)}` : ""} ({resultSummary(parentResult)})</small>}
                 {item.label_import && <small className="research-result-meta">{item.parent_id ? "Corrected from " : "Imported "}{item.label_import.file_name} · {item.label_import.producer?.name ?? "Unknown producer"}</small>}
               </button>
               );
             })}
+          </div>
           <WorkspaceRecordActions key={studyEpoch} api={api} snapshot={snapshot} source={source}
             busy={busy !== null} onBusy={setBusy} onError={setError} onChange={(next) => {
               if (resultId && !next.results.some((item) => item.id === resultId)) {
@@ -3571,92 +3706,81 @@ export default function ResearchWorkbench({
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize image panel"
+          aria-valuemin={160} aria-valuemax={500} aria-valuenow={sourcesWidth}
+          title="Resize image panel · double-click to reset"
+          onDoubleClick={() => { setSourcesWidth(210); try { localStorage.setItem("loci-research-sources-width", "210"); } catch { /* Optional layout preference. */ } }}
           tabIndex={0}
           className={`research-sources-resizer ${isDraggingSources ? "is-dragging" : ""}`}
           onPointerDown={handleSourcesResizeStart}
           onKeyDown={handleSourcesResizeKeyDown}
         />
       </div>
-      <section id="research-image-stage" className="research-canvas" hidden={panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused)}>
+      <section id="research-image-stage" className="research-canvas" hidden={!toolsHidden && (panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused))}>
         <AgentPreviewComparison key={exportDraftStudy}
           preview={sharedPreview?.study === exportDraftStudy && sharedPreview.preview.source_id === source?.id &&
             sharedPreview.preview.source_sha256 === source?.sha256 ? sharedPreview.preview : null}
           sourceLabel={source ? sourceLabelForId(snapshot.sources, source.id) : "Source"} onClose={closeSharedPreview} />
         <div className="research-view-toolbar">
-        {tab !== "Display" && source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
-          source={source} channels={channels} onChannels={setChannels}
-          onSourceChannel={(c) => selectSourcePlane({ ...shownSelection, c })}
-          disabled={documentSwitching || assistantFollowing || assistantFollowBusy}
-          onOpenDisplay={() => openWorkbenchTab("Display")} />}
-        {(source?.browser_location || resultId || (dimensions && dimensions.z > 1) || snapshot.sources.length >= 2) && <div className="research-canvas-toolbar">
-          {source?.browser_location && <span className="source-browser-breadcrumb" aria-label="Current image path"
-            title={sourceDisplayPath(source, snapshot.sources)}>{sourceDisplayPath(source, snapshot.sources)}</span>}
-          {snapshot.sources.length >= 2 && !rawVolumeOpen && !surfaceOpen && !resultId && (
-            <button
-              className={abCompareMode ? "active" : ""}
-              aria-pressed={abCompareMode}
-              title="Visual comparison of two pinned images side by side"
-              onClick={() => setAbCompareMode((previous) => !previous)}
-            >
-              Compare A/B
-            </button>
-          )}
-          {resultId && !sourceResultOverlay && !pendingSourceResultCanvas && <div className="research-actions" aria-label="Image scale">
-            <button
-              className={imageScale === "fit" ? "active" : ""}
-              aria-pressed={imageScale === "fit"}
-              onClick={() => setImageScale("fit")}
-            >
-              Fit
-            </button>
-            <button
-              className={imageScale === "actual" ? "active" : ""}
-              aria-pressed={imageScale === "actual"}
-              onClick={() => setImageScale("actual")}
-            >
-              1:1
-            </button>
-          </div>}
-          {sourceResultOverlay && (
-            <>
+          <div className="research-canvas-toolbar" role="group" aria-label="Image view">
+            {sourceResultOverlay && !rawVolumeOpen && !surfaceOpen && <div className="research-stage-context">
               <span className="result-source-link">Result on source · Z {(selectedResult?.selection?.z ?? 0) + 1}, T {(selectedResult?.selection?.t ?? 0) + 1}</span>
               {selectedResult && <span className="result-source-count">{resultSummary(selectedResult)}</span>}
-              <button
-                type="button"
-                className="research-review-export-quick-btn"
-                title="Inspect measurements and export results in Review panel"
-                onClick={() => setTab("Info")}
-              >
-                Review & Export
-              </button>
-            </>
-          )}
-          {pendingSourceResultCanvas && <span className="result-source-link" role="status">Loading result…</span>}
-          {dimensions && dimensions.z > 1 && <><button title={rawVolumeOpen ? "Return to the 2D source plane" : rawVolumeUnavailable ?? "Explore the complete raw volume"} aria-pressed={rawVolumeOpen}
-            disabled={!rawVolumeOpen && Boolean(rawVolumeUnavailable)}
-            onClick={() => { void report(async () => { if (rawVolumeOpen) await volumeSceneFlush.current(); setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }, "Could not save the 3D view before closing it."); }}><Box />{rawVolumeOpen ? "2D image" : "3D volume"}</button>
-            {!rawVolumeOpen && rawVolumeUnavailable && <span role="status">{rawVolumeUnavailable}</span>}</>}
-          {surfaceAvailable && <button
-            aria-pressed={surfaceOpen}
-            onClick={() => setSurfaceOpen((open) => !open)}
-          >
-            Surface
-          </button>}
-          {resultId && (
-            <button
-              onClick={() => {
+            </div>}
+            {pendingSourceResultCanvas && <span className="result-source-link" role="status">Loading result…</span>}
+            {displayedResultView && !sourceResultOverlay && !pendingSourceResultCanvas && !rawVolumeOpen && !surfaceOpen &&
+              selectedResult && !isLargeResult(selectedResult) && <div className="research-stage-context">
+                <span className="result-source-link">{displayedPlane} · {displayedResultView.axis.toUpperCase()} {displayedResultView.index + 1}{selectedResult.selection?.t != null && `, T ${selectedResult.selection.t + 1}`}</span>
+                <span className="result-source-count">{resultSummary(selectedResult)}</span>
+                <span className="result-display-sampling">Nearest pixel</span>
+              </div>}
+            {resultId && !sourceResultOverlay && !pendingSourceResultCanvas && <div className="research-stage-scale" role="group" aria-label="Image scale">
+              <button type="button" aria-pressed={imageScale === "fit"} onClick={() => setImageScale("fit")}>Fit</button>
+              <button type="button" aria-pressed={imageScale === "actual"} onClick={() => setImageScale("actual")}>1:1</button>
+            </div>}
+            <div className="research-stage-actions">
+              {snapshot.sources.length >= 2 && !rawVolumeOpen && !surfaceOpen && !resultId && <button
+                type="button" aria-label="Compare A/B" aria-pressed={abCompareMode}
+                title="Compare A/B · two pinned images side by side" onClick={() => setAbCompareMode((previous) => !previous)}>
+                <Columns2 /><span>Compare A/B</span>
+              </button>}
+              {dimensions && dimensions.z > 1 && <button type="button" aria-label={rawVolumeOpen ? "2D image" : "3D volume"}
+                title={rawVolumeOpen ? "Return to the 2D source plane" : rawVolumeUnavailable ??
+                  (canOpenRawVolume ? "Explore the complete raw volume" : "Opening 3D requires a ready source display")}
+                aria-pressed={rawVolumeOpen} disabled={!rawVolumeOpen && !canOpenRawVolume}
+                onClick={() => { void report(async () => { if (rawVolumeOpen) await volumeSceneFlush.current(); setRawVolumeOpen((open) => !open); setSurfaceOpen(false); }, "Could not save the 3D view before closing it."); }}>
+                <Box /><span>{rawVolumeOpen ? "2D image" : "3D volume"}</span>
+              </button>}
+              {dimensions && dimensions.z > 1 && !rawVolumeOpen && <button type="button"
+                aria-label={volume ? "Hide linked orthogonal crop" : "Load linked orthogonal crop"}
+                aria-pressed={Boolean(volume)}
+                disabled={!viewSettingsReady || sourceIsChanging || documentSwitching || source?.locator_state === "relink-required"}
+                title={volume ? "Hide linked orthogonal crop" : "Load linked orthogonal crop"}
+                onClick={() => volume ? hideOrthogonalCrop() : void openVolume()}>
+                <LayoutGrid aria-hidden="true" /><span>Orthogonal crop</span>
+              </button>}
+              {surfaceAvailable && <button type="button" aria-label="Surface" title="Inspect the result surface" aria-pressed={surfaceOpen}
+                onClick={() => setSurfaceOpen((open) => !open)}><Layers3 /><span>Surface</span></button>}
+              {sourceResultOverlay && <button type="button" className="research-review-export-quick-btn" aria-label="Review & Export"
+                title="Review & Export · inspect measurements and export results" onClick={() => setTab("Info")}>
+                <ChartNoAxesColumn /><span>Review &amp; Export</span>
+              </button>}
+              {resultId && <button type="button" aria-label="Show source" title="Show source image" onClick={() => {
                 largeNavigationIntent.current++;
                 largeSelectionIntent.current++;
                 setResultId(null);
                 setResultView(null);
                 setSelectedRow(null);
                 setRedoStack([]);
-              }}
-            >
-              Show source
-            </button>
-          )}
-        </div>}
+              }}><ArrowLeftToLine /><span>Show source</span></button>}
+            </div>
+          </div>
+          {tab !== "Display" && source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
+            source={source} channels={channels} onChannels={setChannels}
+            onSourceChannel={(c) => selectSourcePlane({ ...shownSelection, c })}
+            disabled={documentSwitching || assistantFollowing || assistantFollowBusy}
+            onOpenDisplay={() => openWorkbenchTab("Display")} />}
+          {dimensions && dimensions.z > 1 && !rawVolumeOpen && rawVolumeUnavailable &&
+            <span className="research-stage-unavailable" role="status">{rawVolumeUnavailable}</span>}
         </div>
         {selectedResult && isLargeResult(selectedResult) ? (
           <LargeResultViewport key={selectedResult.revision_hash} api={api} result={selectedResult} focus={largeFocus} groupCentroids={exactGroupHighlight?.centroids.map((row) => ({ u: row.centroid_index[1], v: row.centroid_index[0] }))}
@@ -3775,6 +3899,7 @@ export default function ResearchWorkbench({
                 (correctionPoints.length > 0 ||
                   correctionPreview.savedSeeds.length > 0) && (
                   <svg
+                    preserveAspectRatio="none"
                     viewBox={`-0.5 -0.5 ${displayedPlaneDimensions.width} ${displayedPlaneDimensions.height}`}
                     aria-label="Correction drawing preview"
                   >
@@ -3874,10 +3999,11 @@ export default function ResearchWorkbench({
                     )}
                   </svg>
                 )}
-              <GroupCentroidOverlay points={groupCentroids} width={displayedPlaneDimensions.width} height={displayedPlaneDimensions.height} />
+              <GroupCentroidOverlay calibratedAspect points={groupCentroids} width={displayedPlaneDimensions.width} height={displayedPlaneDimensions.height} />
               {displayedCentroid && (
                 <svg
-                  viewBox={`-0.5 -0.5 ${displayedPlaneDimensions.width} ${displayedPlaneDimensions.height}`}
+                  preserveAspectRatio="none"
+                    viewBox={`-0.5 -0.5 ${displayedPlaneDimensions.width} ${displayedPlaneDimensions.height}`}
                   aria-label="Selected object centroid"
                 >
                   <circle
@@ -3907,6 +4033,9 @@ export default function ResearchWorkbench({
           />
         ) : source && channels.length && viewSettingsReady && !sourceIsChanging ? (
           <ImageViewport
+            dockedControls
+            displaySampling={displaySampling}
+            onDisplaySamplingChange={setDisplaySampling}
             showScaleBar={preferences.viewer.showScaleBar}
             showNavigator={preferences.viewer.showNavigator}
             paused={documentSwitching}
@@ -3977,32 +4106,33 @@ export default function ResearchWorkbench({
             </div>
           </div>
         )}
-        {dimensions && dimensions.z > 1 && !rawVolumeOpen && <div className="research-orthogonal">
-          {dimensions && dimensions.z > 1 && (
-            <button disabled={source?.locator_state === "relink-required"} onClick={() => void openVolume()}>
-              Load linked orthogonal crop
-            </button>
-          )}
-          {volume && (
-            <Orthogonal
-              volume={volume}
-              onCrosshair={(crosshair) => void openVolume(crosshair)}
-            />
-          )}
+        {dimensions && dimensions.z > 1 && !rawVolumeOpen && volume && <div className="research-orthogonal">
+          <div className="research-orthogonal__bar">
+            <span>Linked orthogonal crop</span>
+            <div className="research-orthogonal__actions">
+              <button type="button" disabled={source?.locator_state === "relink-required"} onClick={() => void openVolume()}>
+                Refresh crop
+              </button>
+              <button type="button" className="research-orthogonal__close" aria-label="Hide orthogonal crop" title="Hide orthogonal crop" onClick={hideOrthogonalCrop}>
+                <X size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+          <Orthogonal
+            volume={volume}
+            onCrosshair={(crosshair) => void openVolume(crosshair)}
+          />
         </div>}
       </section>
-      <div className="research-inspector-shell">
+      <div id="research-tools-pane" className="research-inspector-shell" hidden={toolsHidden}>
       {!panelFocused && tab !== "Workflow" && tab !== "Population" && tab !== "Study" && <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />}
       <aside className="research-inspector">
         <div ref={toolHeaderRef} className={`research-tool-header${canFocusPanel ? " has-layout-tools" : ""}`}>
-          <WorkbenchTools tab={tab} onTab={openWorkbenchTab} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0} />
-          {canFocusPanel && <div className="research-panel-layout-tools" role="group" aria-label="Panel layout">
-            <span title={source?.name}>{source?.name}</span>
-            <button type="button" aria-pressed={panelFocused} aria-controls="research-image-stage"
-              onClick={() => setFocusedPanel((current) => current === tab ? null : tab)}>
-              {panelFocused ? "Show image" : tab === "Workflow" ? "Focus workflow" : tab === "Model" || tab === "Agent" ? "Focus setup" : "Focus panel"}
-            </button>
-          </div>}
+          <WorkbenchTools tab={tab} onTab={openWorkbenchTab} onReveal={() => setToolsHidden(false)} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0}
+            layoutControl={canFocusPanel && <div className="research-panel-layout-tools" role="group" aria-label="Panel layout">
+              <button type="button" aria-label={focusLabel} title={focusLabel} aria-pressed={panelFocused} aria-controls="research-image-stage"
+                onClick={() => setFocusedPanel((current) => current === tab ? null : tab)}>{panelFocused ? <Minimize2 /> : <Maximize2 />}</button>
+            </div>} />
         </div>
         {workflowOpened && source && dimensions && <div className="workflow-workspace-host" hidden={tab !== "Workflow"}>
           <ResearchWorkflowPanel key={documentEpoch}
@@ -4058,7 +4188,24 @@ export default function ResearchWorkbench({
             </div>
           </div>
         )}
-        {source && dimensions && ["Process", "Analyze", "Quantify", "Model"].includes(tab) && <div className="analysis-scope-control">
+        {source && dimensions && tab === "Process" && (
+          <PreprocessingScopeControl
+            selection={shownSelection}
+            dimensions={dimensions}
+            drawing={drawingAnalysisRegion}
+            onSelectWholeImage={() => {
+              setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 }));
+              setDrawingAnalysisRegion(false);
+            }}
+            onStartDrawRegion={() => {
+              setDrawingAnalysisRegion(true);
+              setRawVolumeOpen(false);
+              setResultId(null);
+            }}
+            onCancelDrawRegion={() => setDrawingAnalysisRegion(false)}
+          />
+        )}
+        {source && dimensions && ["Analyze", "Quantify", "Model"].includes(tab) && <div className="analysis-scope-control">
           <span>Analysis scope</span><strong>{shownSelection.width === dimensions.x && shownSelection.height === dimensions.y ? "Whole image" : "Selected region"}</strong>
           <small>{shownSelection.width.toLocaleString()} × {shownSelection.height.toLocaleString()}{shownSelection.z_stop ? ` × ${shownSelection.z_stop - shownSelection.z} Z` : " · one plane"}</small>
           <div><button aria-pressed={drawingAnalysisRegion} onClick={() => { setDrawingAnalysisRegion((value) => !value); setRawVolumeOpen(false); setResultId(null); }}>{drawingAnalysisRegion ? "Cancel drawing" : "Draw region"}</button>
@@ -4070,12 +4217,12 @@ export default function ResearchWorkbench({
             {dimensions.z > 1 && <label><span>Z <output>{shownSelection.z + 1} / {dimensions.z}</output></span>
               <input aria-label="Z plane" type="range" min={0} max={dimensions.z - 1} value={shownSelection.z}
                 onChange={(event) => { const z = Number(event.target.value); setProjection("plane");
-                  setResultId(null); setResultView(null); setImage(null); setVolume(null); setRawVolumeOpen(false);
+                  setResultId(null); setResultView(null); setImage(null); setOrthogonalCrop(null); setRawVolumeOpen(false);
                   setSelection((old) => { const { z_stop: _stop, ...plane } = old; return { ...plane, z }; }); }} /></label>}
             {dimensions.t > 1 && <label><span>Time <output>{shownSelection.t + 1} / {dimensions.t}</output></span>
               <input aria-label="Time frame" type="range" min={0} max={dimensions.t - 1} value={shownSelection.t}
                 onChange={(event) => { const t = Number(event.target.value); setProjection("plane");
-                  setResultId(null); setResultView(null); setImage(null); setVolume(null); setRawVolumeOpen(false);
+                  setResultId(null); setResultView(null); setImage(null); setOrthogonalCrop(null); setRawVolumeOpen(false);
                   setSelection((old) => { const { z_stop: _stop, ...plane } = old; return { ...plane, t }; }); }} /></label>}
           </div>}
         {source && source.locator_state !== "relink-required" && <div hidden={tab !== "Annotate" && tab !== "Epidermis"}><SourceAnnotationPanel key={`${documentEpoch}:${source.id}:${source.sha256}`} api={api} source={source}
@@ -4083,7 +4230,7 @@ export default function ResearchWorkbench({
           selection={shownSelection} tool={annotationTool} onTool={(tool) => {
             setAnnotationTool(tool);
             if (tool !== "navigate") {
-              setResultId(null); setResultView(null); setImage(null); setVolume(null);
+              setResultId(null); setResultView(null); setImage(null); setOrthogonalCrop(null);
               setProjection("plane");
               setSelection((previous) => { const { z_stop: _stop, ...plane } = previous; return plane; });
             }
@@ -4178,11 +4325,11 @@ export default function ResearchWorkbench({
             interpretation={interpretation}
             onInterpretation={(value) => {
               setInterpretation(value);
-              setRawVolumeOpen(value === "volume" && dimensions.z > 1 && !rawVolumeUnavailable);
+              setRawVolumeOpen(value === "volume" && dimensions.z > 1 && canOpenRawVolume);
               if (value === "histology" && isRgb) setSegmentationFamily("stain");
               else setSegmentationFamily("classical");
             }}
-            onTask={(task) => { if (task === "volume") setRawVolumeOpen(!rawVolumeUnavailable); else openWorkbenchTab(task); }}
+            onTask={(task) => { if (task === "volume") setRawVolumeOpen(canOpenRawVolume); else openWorkbenchTab(task); }}
             onReset={() => { setChannels(defaultChannels); setRgbMapping(null); }}
             onCompare={setCompareDefault}
             onAuto={(channel) => {
@@ -4210,17 +4357,37 @@ export default function ResearchWorkbench({
           <p>Finish numeric fields before running analysis or saving a recipe.</p>
           <button disabled={busy !== null} onClick={restoreAppliedNumbers}>Restore applied numbers</button>
         </div>}
-        {source && (tab === "Process" || (tab === "Analyze" && segmentationFamily === "classical")) &&
+        {source && tab === "Analyze" && segmentationFamily === "classical" &&
           <RecipeResourcePanel api={api} source={source} selection={shownSelection} recipe={recipe}
             suspended={documentSwitching} busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
-          <Process
-            key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("process", valid)}
-            recipe={recipe}
-            setRecipe={setRecipe}
-            onPreview={() => void preview()}
-            busy={busy !== null}
-          />
+          <>
+            <PreprocessingPanel
+              key={numberScope}
+              source={source}
+              selection={shownSelection}
+              numberKey={numberKey}
+              configurationValid={configurationValid}
+              onNumberValidity={(valid) => reportNumberValidity("process", valid)}
+              recipe={recipe}
+              setRecipe={setRecipe}
+              onPreview={() => void preview()}
+              busy={busy !== null}
+            />
+            {source && (
+              <div className="preprocess-inspector-memory">
+                <RecipeResourcePanel
+                  api={api}
+                  source={source}
+                  selection={shownSelection}
+                  recipe={recipe}
+                  suspended={documentSwitching}
+                  busy={busy !== null}
+                  onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))}
+                />
+              </div>
+            )}
+          </>
         )}
         {source && dimensions && tab === "Analyze" && (
           <>
@@ -4230,6 +4397,22 @@ export default function ResearchWorkbench({
           <ResearchComputeControl compute={compute} sources={[source]} learned={segmentationFamily.startsWith("cellpose")}
             supported={segmentationFamily === "classical" || segmentationFamily.startsWith("cellpose")}
             busy={busy !== null || documentSwitching} onSetup={onOpenCompute ?? (() => openWorkbenchTab("Remote"))} />
+          <div className="segmentation-model-library-row">
+            <button
+              type="button"
+              className="model-library-launch-btn"
+              onClick={() =>
+                setModelLibraryState({
+                  initialModelId:
+                    segmentationFamily === "cellpose-sam-v2"
+                      ? "cellpose-sam-v2"
+                      : undefined,
+                })
+              }
+            >
+              Browse Model Zoo…
+            </button>
+          </div>
           {segmentationFamily === "large-components" ? <LargeAnalysisPanel api={api} source={source} selection={shownSelection}
             busy={busy !== null} onBusy={setBusy} onError={setError}
             onRunStart={() => largeNavigationIntent.current}
@@ -4287,8 +4470,8 @@ export default function ResearchWorkbench({
                     <span>{resultSummary(selectedResult)} · {reviewLabel(selectedResult.review)} · rev {selectedResult.revision_hash.slice(0, 8)}</span>
                   </div>
                   <div className="research-actions">
-                    <button type="button" onClick={() => openWorkbenchTab("Population")}>Inspect in Statistics &amp; objects</button>
-                    <button type="button" onClick={() => openWorkbenchTab("Info")}>Proceed to Review &amp; export</button>
+                    <button type="button" onClick={() => openWorkbenchTab("Population")}>Statistics &amp; objects</button>
+                    <button type="button" onClick={() => openWorkbenchTab("Info")}>Review &amp; export</button>
                   </div>
                 </div>
               )}
@@ -4331,10 +4514,11 @@ export default function ResearchWorkbench({
               onBusyChange={value => setBusy(current => value ? (current ?? "controlled method") : current === "controlled method" ? null : current)}
               onPublished={publishGeneratedResult} />}
           </details>
-          <details className="external-labels-disclosure"><summary>Import existing labels</summary>
+          <details ref={externalLabelsDisclosureRef} className="external-labels-disclosure"><summary>Import existing labels</summary>
           <ResearchLabelsImportPanel api={api} source={source} selection={shownSelection} workingBytes={recipe.working_bytes}
+            usamDisclosureRef={usamDisclosureRef}
             navigationIntent={() => largeNavigationIntent.current}
-            scope={labelImportScope} busy={busy !== null || documentSwitching || sourceIsChanging || !viewSettingsReady} onBusy={(message, owner) => {
+            scope={selectionScope} busy={busy !== null || documentSwitching || sourceIsChanging || !viewSettingsReady} onBusy={(message, owner) => {
               if (message) { labelImportBusyOwner.current = { owner, message }; setBusy(message); }
               else if (labelImportBusyOwner.current?.owner === owner) {
                 const ownMessage = labelImportBusyOwner.current.message;
@@ -4343,8 +4527,8 @@ export default function ResearchWorkbench({
               }
             }}
             onResult={async (target, measurements, isCurrent) => {
-              const capturedScope = labelImportScope;
-              const current = () => isCurrent() && liveLabelImportScope.current === capturedScope && !documentSwitch.current;
+              const capturedScope = selectionScope;
+              const current = () => isCurrent() && liveSelectionScope.current === capturedScope && !documentSwitch.current;
               if (await persistRevision(target, measurements, undefined, current, true) && current()) {
                 setRedoStack([]); setCorrectionObjectTarget(null); openWorkbenchTab("Population");
               }
@@ -4536,6 +4720,11 @@ export default function ResearchWorkbench({
             api={api}
             models={models}
             onOpenMethods={() => openWorkbenchTab("Analyze")}
+            onOpenModelLibrary={() =>
+              setModelLibraryState({
+                initialModelId: "bioimageio-nuclei-boundary-onnx",
+              })
+            }
             refreshModels={refreshModels}
             report={report}
             modelId={modelId}
@@ -4677,7 +4866,7 @@ export default function ResearchWorkbench({
           ) : <div className="research-panel"><p>Select an image to configure a batch.</p></div>}
         />
         {tab === "Vendor import" && (
-          <ResearchVendorPanel api={api} snapshot={snapshot} report={report}
+          <ImageConversionPanel source={source} api={api} snapshot={snapshot} report={report}
             busy={busy !== null}
             onBusyChange={(value) => setBusy((current) => value ? (current ?? "vendor") :
               current === "vendor" ? null : current)}
@@ -4780,7 +4969,11 @@ export default function ResearchWorkbench({
       <footer className="workbench-status">
         <button className={`workbench-jobs__trigger ${jobsOpen ? "active" : ""}`} title="View running and completed jobs" onClick={() => setJobsOpen((open) => !open)}><Activity size={14} aria-hidden="true" /> Jobs{localJobCount + remoteJobCount > 0 ? <span className="workbench-jobs__badge">{localJobCount + remoteJobCount}</span> : null}</button>
         <span role="status">{documentSwitching ? "Updating workspace…" : busy ? `Working: ${busy}` : remoteJobCount ? `${remoteJobCount} remote ${remoteJobCount === 1 ? "job" : "jobs"}` : "Local"}</span>
-        <span>{source ? `${meta(source).dimensions.x.toLocaleString()} × ${meta(source).dimensions.y.toLocaleString()}` : ""}</span>
+        {source && dimensions && <span className="workbench-status-grid" title="Source image dimensions">
+          {dimensions.x.toLocaleString()} × {dimensions.y.toLocaleString()} px
+          {dimensions.z > 1 && <span> Z {shownSelection.z + 1}/{dimensions.z}</span>}
+          {dimensions.t > 1 && <span> T {shownSelection.t + 1}/{dimensions.t}</span>}
+        </span>}
         <AgentSessionIndicator
           key={exportDraftStudy}
           api={api}
@@ -4883,127 +5076,29 @@ export default function ResearchWorkbench({
           )}
         </div>
       </section>}
+      {modelLibraryState !== null && (
+        <ModelLibraryDialog
+          onClose={() => setModelLibraryState(null)}
+          initialModelId={modelLibraryState.initialModelId}
+          reducedMotion={preferences.motion === "reduced"}
+          onOpenLink={
+            api.openModelLibraryLink
+              ? (linkId) => api.openModelLibraryLink!(linkId)
+              : undefined
+          }
+          workbenchRouteUnavailableReason={
+            source && dimensions
+              ? null
+              : "Open an image first to configure this tool in the inspector."
+          }
+          onSelectWorkbenchRoute={handleSelectModelLibraryRoute}
+        />
+      )}
     </main>
   );
 }
 
-const processLabels: Record<string, string> = { gaussian: "Gaussian blur", subtract_background: "Background subtraction", subtract_constant: "Subtract constant", median: "Median filter", opening: "Morphological opening", closing: "Morphological closing" };
-
 type NumericFormProps = { numberKey: string; onNumberValidity: (valid: boolean) => void; configurationValid: boolean };
-
-function Process({
-  recipe,
-  setRecipe,
-  onPreview,
-  busy,
-  numberKey, onNumberValidity, configurationValid,
-}: NumericFormProps & {
-  recipe: typeof DEFAULT_RECIPE;
-  setRecipe: React.Dispatch<React.SetStateAction<typeof DEFAULT_RECIPE>>;
-  onPreview: () => void;
-  busy: boolean;
-}) {
-  const numbers = useNumericValidity(onNumberValidity);
-  const add = (op: string) =>
-    setRecipe((old) => ({
-      ...old,
-      steps: [
-        ...old.steps,
-        op === "gaussian" || op === "subtract_background"
-          ? { op, sigma: 1 }
-          : op === "subtract_constant"
-            ? { op, value: 0 }
-            : { op, radius: 1 },
-      ],
-    }));
-  const patch = (index: number, values: Record<string, unknown>) =>
-    setRecipe((old) => ({
-      ...old,
-      steps: old.steps.map((step, i) =>
-        i === index ? { ...step, ...values } : step,
-      ),
-    }));
-  const move = (index: number, delta: number) =>
-    setRecipe((old) => {
-      const steps = [...old.steps];
-      const target = index + delta;
-      if (target < 0 || target >= steps.length) return old;
-      [steps[index], steps[target]] = [steps[target], steps[index]];
-      return { ...old, steps };
-    });
-  return (
-    <div className="research-panel">
-      <h2>Preprocess</h2>
-      <p>
-        Steps execute in this order. Spatial scales use the selected source
-        geometry units.
-      </p>
-      <div className="research-actions">
-        {[
-          "gaussian",
-          "subtract_background",
-          "subtract_constant",
-          "median",
-          "opening",
-          "closing",
-        ].map((op) => (
-          <button key={op} onClick={() => add(op)}>
-            <Plus size={12} /> {processLabels[op]}
-          </button>
-        ))}
-      </div>
-      <ol>
-        {recipe.steps.map((step, index) => {
-          const parameter =
-            "sigma" in step ? "sigma" : "radius" in step ? "radius" : "value";
-          return (
-            <li key={index}>
-              <strong>{processLabels[String(step.op)] ?? String(step.op)}</strong>
-              <label>
-                {parameter}
-                <ValidatedNumberInput key={`${numberKey}:${index}:${parameter}`}
-                  label={`Step ${index + 1} ${parameter}`} value={Number(step[parameter])}
-                  minimum={parameter === "value" ? -1e15 : 0} maximum={parameter === "value" ? 1e15 : 1e6}
-                  commitOnChange onValidity={(valid) => numbers.setValidity(`step-${index}-${parameter}`, valid)}
-                  onValue={(value) => { patch(index, { [parameter]: value }); return true; }} />
-              </label>
-              <div className="research-actions">
-                <button
-                  aria-label={`Move step ${index + 1} up`}
-                  disabled={index === 0}
-                  onClick={() => move(index, -1)}
-                >
-                  Up
-                </button>
-                <button
-                  aria-label={`Move step ${index + 1} down`}
-                  disabled={index === recipe.steps.length - 1}
-                  onClick={() => move(index, 1)}
-                >
-                  Down
-                </button>
-                <button
-                  aria-label={`Remove ${String(step.op)}`}
-                  onClick={() =>
-                    setRecipe((old) => ({
-                      ...old,
-                      steps: old.steps.filter((_, i) => i !== index),
-                    }))
-                  }
-                >
-                  <X size={12} /> Remove
-                </button>
-              </div>
-            </li>
-          );
-        })}
-      </ol>
-      <button disabled={busy || !numbers.valid || !configurationValid} onClick={onPreview}>
-        Preview selected crop
-      </button>
-    </div>
-  );
-}
 function Analyze({
   recipe,
   channelCount,
@@ -5152,12 +5247,12 @@ function Analyze({
           </select>
         </label>
       )}
-      {rgbIntensity && <label>Intensity input<select aria-label="RGB analysis input" value={recipe.input_transform ?? ""} onChange={(event) => {
+      {rgbIntensity && <div className="research-property-grid"><label>Intensity input<select aria-label="RGB analysis input" value={recipe.input_transform ?? ""} onChange={(event) => {
         const { input_transform: _conversion, ...scalar } = recipe;
         setRecipe(event.target.value === "rgb_intensity" ? { ...scalar, input_transform: "rgb_intensity", measurement_channels: [], gates: [],
           segmentation: { ...recipe.segmentation, threshold: 0.5 } } : { ...scalar, measurement_channels: [0] });
       }}><option value="">Choose an explicit conversion…</option><option value="rgb_intensity">Weighted RGB intensity</option></select>
-      <small>Derived intensity · 0–1</small></label>}
+      <small>Derived intensity · 0–1</small></label></div>}
       {isRgb && (
         <>
           <h3>Stain separation</h3>
@@ -5320,61 +5415,61 @@ function Analyze({
       )}
       {!isRgb && (
         <>
-          {!rgbIntensity && <SegmentationInputControl channelCount={channelCount} channelNames={channelNames}
-            selection={selection} disabled={busy || inputUnavailable} onChange={onSegmentationChannel} />}
-          <label>
-            Threshold
-            <ValidatedNumberInput key={`${numberKey}:Threshold`} label="Threshold" value={Number(segmentation.threshold)}
-                  commitOnChange onValidity={(valid) => numbers.setValidity("Threshold", valid)}
-                  onValue={(value) => { patch({ threshold: value }); return true; }} />
-          </label>
-          <label>
-            Method
-            <select
-              aria-label="Segmentation method"
-              value={String(segmentation.method)}
-              onChange={(event) => patch({ method: event.target.value })}
-            >
-              <option value="components">Components</option>
-              <option value="watershed">Watershed</option>
-            </select>
-          </label>
-          {segmentation.method === "watershed" && (
+          <div className="research-property-grid">
+            {!rgbIntensity && <SegmentationInputControl channelCount={channelCount} channelNames={channelNames}
+              selection={selection} disabled={busy || inputUnavailable} onChange={onSegmentationChannel} />}
             <label>
-              Watershed split height
-              <ValidatedNumberInput key={`${numberKey}:Watershed split height`} label="Watershed split height" value={Number(segmentation.split_height ?? 1)} minimum={1e-9} maximum={1e9}
-                  commitOnChange onValidity={(valid) => numbers.setValidity("Watershed split height", valid)}
-                  onValue={(value) => { patch({ split_height: value }); return true; }} />
+              Threshold
+              <ValidatedNumberInput key={`${numberKey}:Threshold`} label="Threshold" value={Number(segmentation.threshold)}
+                    commitOnChange onValidity={(valid) => numbers.setValidity("Threshold", valid)}
+                    onValue={(value) => { patch({ threshold: value }); return true; }} />
             </label>
-          )}
-          <div className="research-grid">
+            <label>
+              Method
+              <select
+                aria-label="Segmentation method"
+                value={String(segmentation.method)}
+                onChange={(event) => patch({ method: event.target.value })}
+              >
+                <option value="components">Components</option>
+                <option value="watershed">Watershed</option>
+              </select>
+            </label>
+            {segmentation.method === "watershed" && (
+              <label>
+                Watershed split height
+                <ValidatedNumberInput key={`${numberKey}:Watershed split height`} label="Watershed split height" value={Number(segmentation.split_height ?? 1)} minimum={1e-9} maximum={1e9}
+                    commitOnChange onValidity={(valid) => numbers.setValidity("Watershed split height", valid)}
+                    onValue={(value) => { patch({ split_height: value }); return true; }} />
+              </label>
+            )}
             <label>Foreground<select aria-label="Object foreground" value={String(segmentation.polarity ?? "bright")} onChange={(event) => patch({ polarity: event.target.value })}>
               <option value="bright">Above threshold</option><option value="dark">Below threshold</option>
             </select></label>
             <label>Minimum object {measureLabel}<ValidatedNumberInput key={`${numberKey}:Minimum object measure`} label="Minimum object measure" value={Number(segmentation.min_size ?? 0)} minimum={0} maximum={1e20}
                   commitOnChange onValidity={(valid) => numbers.setValidity("Minimum object measure", valid)}
                   onValue={(value) => { patch({ min_size: value }); return true; }} /></label>
+            <label className="research-check" title="Exclude objects touching the declared analysis region boundary"><input type="checkbox" checked={Boolean(segmentation.exclude_border)} onChange={(event) => patch({ exclude_border: event.target.checked })} /> Exclude border objects</label>
+            {!rgbIntensity && <label>
+              Raw measurement channel
+              <select
+                aria-label="Measurement channel"
+                value={recipe.measurement_channels[0]}
+                onChange={(event) =>
+                  setRecipe((old) => ({
+                    ...old,
+                    measurement_channels: [Number(event.target.value)],
+                  }))
+                }
+              >
+                {Array.from({ length: channelCount }, (_, index) => (
+                  <option key={index} value={index}>
+                    {index + 1}: {channelNames?.[index]?.trim() || `Channel ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>}
           </div>
-          <label className="research-check" title="Exclude objects touching the declared analysis region boundary"><input type="checkbox" checked={Boolean(segmentation.exclude_border)} onChange={(event) => patch({ exclude_border: event.target.checked })} /> Exclude border objects</label>
-          {!rgbIntensity && <label>
-            Raw measurement channel
-            <select
-              aria-label="Measurement channel"
-              value={recipe.measurement_channels[0]}
-              onChange={(event) =>
-                setRecipe((old) => ({
-                  ...old,
-                  measurement_channels: [Number(event.target.value)],
-                }))
-              }
-            >
-              {Array.from({ length: channelCount }, (_, index) => (
-                <option key={index} value={index}>
-                  {index + 1}: {channelNames?.[index]?.trim() || `Channel ${index + 1}`}
-                </option>
-              ))}
-            </select>
-          </label>}
           <button className="research-primary" disabled={busy || inputUnavailable || !numbers.valid || !configurationValid || (rgbIntensity && recipe.input_transform !== "rgb_intensity")} onClick={onRun}>
             <Play /> {busy ? "Running…" : "Run recipe"}
           </button>
@@ -5387,8 +5482,8 @@ function Analyze({
             <span>{resultSummary(activeResult)} · {reviewLabel(activeResult.review)} · rev {activeResult.revision_hash.slice(0, 8)}</span>
           </div>
           <div className="research-actions">
-            {onOpenPopulation && <button type="button" onClick={onOpenPopulation}>Inspect in Statistics &amp; objects</button>}
-            {onOpenReviewExport && <button type="button" onClick={onOpenReviewExport}>Proceed to Review &amp; export</button>}
+            {onOpenPopulation && <button type="button" onClick={onOpenPopulation}>Statistics &amp; objects</button>}
+            {onOpenReviewExport && <button type="button" onClick={onOpenReviewExport}>Review &amp; export</button>}
           </div>
         </div>
       )}
@@ -5436,10 +5531,12 @@ function ModelPanel({
   onPreview,
   onAdopt,
   busy,
+  onOpenModelLibrary,
   numberKey, onNumberValidity, configurationValid,
 }: NumericFormProps & {
   api: ResearchDesktopApi;
   onOpenMethods: () => void;
+  onOpenModelLibrary?: () => void;
   models: ModelRecord[];
   refreshModels: () => Promise<void>;
   report: <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
@@ -5561,19 +5658,27 @@ function ModelPanel({
     <div className="research-actions">
       {api.importModel && <button className="research-primary" disabled={busy || importing} onClick={() => void importPackage()}>Import model package…</button>}
       <button onClick={onOpenMethods}>Open Segment &amp; measure</button>
+      {onOpenModelLibrary && <button type="button" onClick={onOpenModelLibrary}>Browse Model Zoo…</button>}
     </div>{resources}{requirements}
   </section>;
   return (
     <div className="research-panel">
       <h2>Use a model</h2>
-      {api.importModel && (
-        <button
-          disabled={busy || importing}
-          onClick={() => void importPackage()}
-        >
-          Import model package…
-        </button>
-      )}
+      <div className="research-actions">
+        {api.importModel && (
+          <button
+            disabled={busy || importing}
+            onClick={() => void importPackage()}
+          >
+            Import model package…
+          </button>
+        )}
+        {onOpenModelLibrary && (
+          <button type="button" onClick={onOpenModelLibrary}>
+            Browse Model Zoo…
+          </button>
+        )}
+      </div>
       {recoverable && <section className="research-prerequisite"><p>This model’s files are unavailable. Re-import the same package to restore it.</p>
         {api.importModel && <button disabled={busy || importing} onClick={() => void importPackage(true)}>Re-import model package…</button>}</section>}
       <label>
@@ -6555,11 +6660,15 @@ const measurementHeadings: Record<string, string> = {
   area: "Area", volume: "Volume", centroid_index: "Centroid (index)",
   centroid_world_xyz: "Centroid (x, y, z)", intensity: "Channel intensity",
 };
+const numericalMeasurementFields = new Set(["measure", "area", "volume", "centroid_index", "centroid_world_xyz"]);
 const intensityHeadings: Record<string, string> = {
   mean: "Mean", sum: "Sum", min: "Minimum", max: "Maximum", std_population: "Population SD",
 };
 
 function MeasurementCell({ field, value }: { field: string; value: unknown }): React.JSX.Element {
+  if (field === "measure_unit" && typeof value === "string") {
+    return <span title={value}>{populationDisplayUnit(value)}</span>;
+  }
   if (field === "intensity" && value && typeof value === "object" && !Array.isArray(value)) {
     const channels = Object.entries(value);
     return <details className="research-intensity-values" onClick={(event) => event.stopPropagation()}>
@@ -6591,7 +6700,7 @@ function ResultTable({
   useEffect(() => {
     if (selected !== null && selectedRowRef.current) {
       const prefersReducedMotion =
-        typeof window !== "undefined" &&
+        document.documentElement.dataset.motion === "reduced" ||
         window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
       selectedRowRef.current.scrollIntoView({
         block: "nearest",
@@ -6645,7 +6754,8 @@ function ResultTable({
         <thead>
           <tr role="row">
             {fields.map((field) => (
-              <th key={field} role="columnheader" data-field={field}>{measurementHeadings[field]}</th>
+              <th key={field} role="columnheader" scope="col" data-field={field}
+                data-align={numericalMeasurementFields.has(field) ? "numeric" : undefined}>{measurementHeadings[field]}</th>
             ))}
           </tr>
         </thead>
@@ -6663,7 +6773,8 @@ function ResultTable({
                 onClick={() => onSelect(index)}
               >
                 {fields.map((field) => (
-                  <td key={field} role="gridcell" data-field={field}>
+                  <td key={field} role="gridcell" data-field={field}
+                    data-align={numericalMeasurementFields.has(field) ? "numeric" : undefined}>
                     <MeasurementCell field={field} value={row[field]} />
                   </td>
                 ))}
@@ -7117,32 +7228,28 @@ export function Info({
                   )}
                 </div>
                 {result && result.object_count > rows.length && <p>Summary of the first {rows.length} of {result.object_count} objects. Use Statistics & objects for the full population.</p>}
-                <div className="research-stat-grid">
+                <dl className="research-stat-grid">
                   <div className="research-stat-item">
-                    <span className="research-stat-label">
-                      Rows
-                    </span>
-                    <span className="research-stat-value">
-                      {rows.length}
-                    </span>
+                    <dt className="research-stat-label">Rows</dt>
+                    <dd className="research-stat-value">{rows.length}</dd>
                   </div>
                   {stats && stats.mean !== null && stats.min !== null && stats.max !== null && (
                     <>
                       <div className="research-stat-item">
-                        <span className="research-stat-label">Mean {stats.metric}</span>
-                        <span className="research-stat-value">
-                          {stats.mean} {stats.unit && <small>{stats.unit}</small>}
-                        </span>
+                        <dt className="research-stat-label">Mean {stats.metric}</dt>
+                        <dd className="research-stat-value">
+                          {stats.mean}{stats.unit && <small title={stats.unit}>&nbsp;{populationDisplayUnit(stats.unit)}</small>}
+                        </dd>
                       </div>
-                      <div className="research-stat-item">
-                        <span className="research-stat-label">Range</span>
-                        <span className="research-stat-value">
-                          {stats.min} – {stats.max} {stats.unit && <small>{stats.unit}</small>}
-                        </span>
+                      <div className="research-stat-item research-stat-item--range">
+                        <dt className="research-stat-label">Range</dt>
+                        <dd className="research-stat-value">
+                          {stats.min} – {stats.max}{stats.unit && <small title={stats.unit}>&nbsp;{populationDisplayUnit(stats.unit)}</small>}
+                        </dd>
                       </div>
                     </>
                   )}
-                </div>
+                </dl>
                 {stats?.incompatibleReason && (
                   <p className="research-stat-notice" role="status">
                     {stats.incompatibleReason}
@@ -7179,7 +7286,10 @@ export function Info({
             {result.label_import && <details><summary>Imported label details</summary><dl className="research-label-import-metadata" aria-label="Label import identity">
               <div><dt>Label file</dt><dd>{result.label_import.file_name}</dd></div>
               <div><dt>Producer</dt><dd>{result.label_import.producer ? `${result.label_import.producer.name}${result.label_import.producer.version ? ` · ${result.label_import.producer.version}` : " · version unknown"} (declared)` : "Unknown"}</dd></div>
-              <div><dt>Import profile</dt><dd>{result.label_import.profile} · {result.label_import.original_dtype} · {result.label_import.shape.join(" × ")} YX</dd></div>
+              <div><dt>Import profile</dt><dd>{result.label_import.profile} · {result.label_import.original_dtype} · {result.label_import.shape.join(" × ")} {result.label_import.profile === "scalar-native-zyx/v1" ? "ZYX" : "YX"}</dd></div>
+              {result.label_import.producer?.model && <div><dt>Declared model</dt><dd>{result.label_import.producer.model}</dd></div>}
+              {result.label_import.producer?.mode && <div><dt>Declared mode</dt><dd>{result.label_import.producer.mode}</dd></div>}
+              {result.label_import.handoff && <div><dt>Native TIFF handoff</dt><dd>{result.label_import.handoff.handoff_id}</dd></div>}
               <div><dt>Input SHA-256</dt><dd>{result.label_import.file_sha256}</dd></div>
               <div><dt>Upstream settings</dt><dd>Unknown</dd></div>
               {result.parent_id && <div><dt>Correction parent</dt><dd>{result.parent_id}</dd></div>}

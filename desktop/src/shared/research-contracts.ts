@@ -26,6 +26,7 @@ export interface ResearchSource {
   };
   size_bytes?: number;
   source_kind?: "native" | "whole_slide" | "ome_zarr" | "medical";
+  derivation?: Record<string, unknown>;
   locator_state?: "relink-required";
   relink_hint?: {
     selection_kind?: "series" | "file";
@@ -121,6 +122,13 @@ export interface ResearchResultContextField {
   /** Exact allowlisted location in the immutable result record. */
   source: string;
 }
+export interface ResearchResultCliRecipe {
+  status: "available" | "unsupported";
+  route: "native-2d-level0-cpu-components-run-recipe" | null;
+  operation: "run_recipe" | null;
+  recipe_sha256: string | null;
+  reason: string | null;
+}
 /** Desktop execute("describe_result", { result_id, revision_hash }); read-only.
  * No measurement rows, arbitrary provenance trees or canonical paths are returned.
  * Replay is a copied original request, never an instruction to execute it.
@@ -155,26 +163,105 @@ export interface ResearchResultContext {
   unavailable: string[];
   replay: {
     status: "available" | "unsupported";
-    operation: "run_recipe" | "classical_run" | null;
+    operation: "run_recipe" | "classical_run" | "morphometrics_run" | null;
     request: Record<string, unknown> | null;
     reason: string | null;
   };
+  cli_recipe?: ResearchResultCliRecipe;
+}
+export interface ResearchLabelImportProducer {
+  name: string;
+  version: string | null;
+  model?: string;
+  mode?: string;
+  checkpoint?: string;
+  checkpoint_digest?: string;
+}
+export interface ResearchUsamHandoffBinding {
+  schema: "loci.usam-handoff-binding/v1";
+  handoff_id: string;
+  manifest_sha256: string;
+  export_identity_basis: "verified-loci-study-handoff";
+  binding_source: "manifest-and-study-handoff" | "study-handoff-id";
+  exported_input_file_sha256: string;
+  exported_input_array_sha256: string;
+  exported_input_dtype: string;
+  exported_input_shape: [number, number] | [number, number, number];
+  exported_input_axes: "YX" | "ZYX";
+  mask_origin_verified_by_loci: false;
+  model_validation: "unknown";
+}
+export interface ResearchUsamHandoffInput {
+  file_name: "input.tif";
+  file_sha256: string;
+  file_size_bytes: number;
+  array_sha256: string;
+  dtype: string;
+  shape: [number, number] | [number, number, number];
+  axes: "YX" | "ZYX";
+  compression: string;
+  value_preservation: "exact-original-native-scalar-samples";
+}
+export interface ResearchUsamHandoffRecord {
+  schema: "loci.usam-handoff/v1";
+  handoff_id: string;
+  export_origin: "verified-loci-native-export";
+  source_id: string;
+  source_sha256: string;
+  source_name: string;
+  selection: ResearchSelection;
+  measurement_channel: { index: number; name: string; basis: "raw-source-channel-values" };
+  geometry: ResearchResult["geometry"];
+  calibration: { status: "known" | "unknown"; unit: string; axes: "YX" | "ZYX"; spacing: number[] | null };
+  input: ResearchUsamHandoffInput;
+  label_profile: {
+    profile: "scalar-native-yx/v1" | "scalar-native-zyx/v1";
+    alignment: "same-native-yx-grid" | "same-native-zyx-grid";
+    axes: "YX" | "ZYX";
+    shape: [number, number] | [number, number, number];
+    allowed_dtypes: Array<"uint8" | "uint16" | "uint32">;
+    background_value: 0;
+    format: "TIFF";
+  };
+  upstream_reference: { tool: "micro-sam"; version: string; commit: string };
+  validation: "not-established";
+  manifest_sha256: string;
+}
+export interface ResearchUsamHandoffReceipt {
+  schema: "loci.usam-handoff-receipt/v1";
+  basename: string;
+  handoff_id: string;
+  manifest_sha256: string;
+  export_origin: "verified-loci-native-export";
+  source_id: string;
+  source_sha256: string;
+  selection: ResearchSelection;
+  measurement_channel: { index: number; name: string; basis: "raw-source-channel-values" };
+  geometry: ResearchResult["geometry"];
+  calibration: { status: "known" | "unknown"; unit: string; axes: "YX" | "ZYX"; spacing: number[] | null };
+  input: ResearchUsamHandoffInput;
+  label_profile: ResearchUsamHandoffRecord["label_profile"];
+  validation: "not-established";
+  artifacts: Record<"input.tif" | "manifest.json" | "README.md", { sha256: string; size_bytes: number }>;
 }
 export interface ResearchLabelImportIdentity {
   file_name: string;
-  producer: { name: string; version: string | null } | null;
+  producer: ResearchLabelImportProducer | null;
   format: string;
   profile: string;
   source_sha256: string;
   file_sha256: string;
   original_dtype: string;
   shape: [number, number] | [number, number, number];
+  handoff?: ResearchUsamHandoffBinding;
 }
 export interface ResearchLabelsImportBinding {
   source_id: string;
   source_sha256: string;
   selection: ResearchSelection;
   working_bytes: number;
+  handoff_id?: string;
+  use_handoff_manifest?: boolean;
 }
 export interface ResearchLabelsImportPreview extends ResearchLabelsImportBinding {
   grant_id: string;
@@ -196,6 +283,7 @@ export interface ResearchLabelsImportPreview extends ResearchLabelsImportBinding
     selection: ResearchSelection;
     basis: "single-native-plane-overlay";
   };
+  handoff?: ResearchUsamHandoffBinding;
   estimated_working_bytes: number;
   measurement_channel: { index: number; name: string; basis: "raw-source-channel-values" };
   calibration_handling: Record<string, unknown>;
@@ -910,6 +998,11 @@ export interface ResearchDesktopApi {
   chooseControlledMethodOutput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ output_grant_id: string; output_sha256: string; preflight_hash: string } | null>;
   exportControlledMethodInput?(request: import("./controlled-method-contracts").ControlledMethodInputBinding): Promise<{ basename: string; sha256: string; preflight_hash: string } | null>;
   labelsImportPreview?(binding: ResearchLabelsImportBinding): Promise<ResearchLabelsImportPreview | null>;
+  convertStudyImage?(request: import("./image-conversion").ImageConversionRequest): Promise<import("./image-conversion").ImageConversionReceipt | null>;
+  exportUsamHandoff?(binding: ResearchLabelsImportBinding): Promise<ResearchUsamHandoffReceipt | null>;
+  listUsamHandoffs?(): Promise<ResearchUsamHandoffRecord[]>;
+  /** Opens a pinned official model-library card, weights record, or DOI by fixed ID only. */
+  openModelLibraryLink?(linkId: import("./model-library").ModelLibraryLinkId): Promise<void>;
   recipeResources?(): Promise<import("./recipe-resources").RecipeResources>;
   updateWorkspace?(request: ResearchWorkspaceChange): Promise<ResearchSnapshot>;
   reorderSources?(request: ResearchSourceOrderChange): Promise<ResearchSnapshot>;
@@ -1052,6 +1145,7 @@ export interface ResearchVendorGrant {
 }
 export interface ResearchVendorRequest {
   grant_id: string; series: number; c: number; z: number; t: number;
+  end_exclusive?: { c: number; z: number; t: number };
   crop: { x: number; y: number; width: number; height: number } | null;
   heap_mib: number; timeout_seconds: number; max_output_bytes: number;
 }

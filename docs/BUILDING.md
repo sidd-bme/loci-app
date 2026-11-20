@@ -305,6 +305,25 @@ file with `source_commit`, `executable_sha256`, `asar_sha256` and `worker_sha256
 This is automated synthetic software QA, including a simulated GUI review gate,
 and does not supply human scientific approval or biological qualification.
 
+## Verify desktop recipe replay and standalone μSAM interchange
+
+From the repository root at the clean commit used to package the app, run
+the two journeys in sequence. They use the packaged desktop and bundled CLI,
+a synthetic microscopy study and the locked Python environment in
+`engine/.venv`. Set `LOCI_QA_PYTHON` if you installed that environment elsewhere.
+
+```sh
+export LOCI_PACKAGED_APP="$PWD/.loci/builds/staging/Loci-darwin-arm64/Loci.app"
+export LOCI_QA_SOURCE_COMMIT="$(git rev-parse HEAD)"
+export LOCI_QA_OUTPUT_ROOT="$(pwd -P)/.loci/evidence/replay-and-handoff"
+node desktop/tests/cli-recipe.qa.mjs
+node desktop/tests/microsam-handoff.qa.mjs
+```
+
+Each run writes a receipt and a screenshot. The handoff test uses known
+instance labels to check native pixels, object IDs and measurements. Running
+a segmentation model is a separate step in the researcher's μSAM environment.
+
 ## Agent-session and palette TIFF packaged journeys
 
 Run these serially against an explicitly selected macOS candidate. Use Node 24

@@ -143,7 +143,7 @@ try {
   await until(async () => (await pageA.evaluate(() => window.lociImageWindows.presentation()))?.presentation.tool === "rectangle", "rectangle tool synchronized");
   // Draw through the real native child canvas using independently chosen source coordinates.
   const geometry = await pageA.locator(".image-viewport").evaluate((node) => ({
-    bounds: (() => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })(),
+    bounds: (() => { const r = node.querySelector("canvas").getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })(),
     camera: JSON.parse(node.getAttribute("data-camera")),
   }));
   const screenPoint = (x, y) => ({ x: geometry.bounds.x + geometry.bounds.width / 2 + (x - geometry.camera.x) * geometry.camera.scale,

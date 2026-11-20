@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 import stat
 import uuid
 from collections.abc import Callable
@@ -27,6 +28,7 @@ from .native_image import (
 from .quantitative import MAX_OBJECTS, exact_keys, integer, measure_objects
 from .research_project import (
     MAX_ARTIFACT_BYTES,
+    SHA_PATTERN,
     canonical_json,
     checked_id,
     checked_text,
@@ -41,6 +43,9 @@ ALIGNMENT = "same-native-yx-grid"
 VOLUME_PROFILE = "scalar-native-zyx/v1"
 VOLUME_ALIGNMENT = "same-native-zyx-grid"
 REQUEST_KEYS = {"source_id", "source_sha256", "grant_id", "alignment", "producer"}
+_PRODUCER_KEYS = {"name", "version", "model", "mode", "checkpoint", "checkpoint_digest"}
+_DIGEST_PATTERN = re.compile(r"^(?:(?:sha256):[a-f0-9]{64}|(?:xxh128):[a-f0-9]{32}|[a-f0-9]{64})$")
+_WINDOWS_DRIVE_PREFIX = re.compile(r"^[A-Za-z]:")
 
 
 def _digest(value: Any) -> str:
@@ -70,20 +75,38 @@ def _verify_input_identity(path: Path, record: dict[str, Any]) -> None:
 
 
 def _source_binding(
-    workbench: Workbench, source_id: str, source_sha256: str, selection: Any
+    workbench: Workbench,
+    source_id: str,
+    source_sha256: str,
+    selection: Any,
+    *,
+    require_original: bool = False,
 ) -> dict[str, Any]:
+    if not isinstance(source_sha256, str) or not SHA_PATTERN.fullmatch(source_sha256):
+        raise ValueError("Import source fingerprint must be a 64-character SHA-256 hex digest")
     source = workbench.project.source(checked_id(source_id), verify=True)
     if source["sha256"] != source_sha256:
         raise ValueError("Import source fingerprint differs from the captured source")
     if source.get("source_kind") != "native":
         raise ValueError("Label import requires a scalar native image source")
+    if require_original and source.get("derivation") is not None:
+        raise ValueError(
+            "μSAM handoff requires an original native scalar source, not a derived source"
+        )
     if not isinstance(selection, dict) or not {"t", "c", "z", "level"} <= selection.keys():
         raise ValueError("Label import requires explicit T/C/Z and native level zero")
     session = workbench._session(source_id)
     session.verify_strict()
     metadata = session.metadata
-    if metadata.dimensions.s != 1:
-        raise ValueError("RGB samples cannot supply the scalar import measurement channel")
+    if (
+        metadata.dimensions.s != 1
+        or metadata.sample_semantics != "none"
+        or metadata.palette is not None
+        or "S" in metadata.axes
+    ):
+        raise ValueError(
+            "RGB or palette samples cannot supply the scalar import measurement channel"
+        )
     dims = metadata.levels[0].dimensions
     resolved = workbench.selection(
         source_id, {"x": 0, "y": 0, "width": dims.x, "height": dims.y, **selection}
@@ -100,8 +123,26 @@ def _source_binding(
     if volume and resolved["z_stop"] - resolved["z"] < 2:
         raise ValueError("ZYX label import requires at least two native Z planes")
     geometry = workbench._native_geometry(session, resolved, volume)
+    expected_axes = "ZYX" if volume else "YX"
+    if geometry.axes != expected_axes:
+        raise ValueError("Resolved source geometry axes disagree with the selected grid")
+    affine = np.asarray(geometry.affine, dtype=np.float64)
+    if affine.shape != (4, 4) or not np.all(np.isfinite(affine)):
+        raise ValueError("Resolved source geometry affine is invalid")
+    for col in (0, 1, *([2] if volume else [])):
+        spacing = float(np.linalg.norm(affine[:3, col]))
+        if not (np.isfinite(spacing) and spacing > 0):
+            raise ValueError("Resolved source calibration spacing must be strictly positive")
     declarations = workbench.channel_metadata(source_id)
     channel = resolved["c"]
+    if require_original:
+        from .research_channels import validate_declarations
+
+        if declarations["original_names"] != list(metadata.channel_names):
+            raise ValueError("Channel metadata differs from the native acquisition channels")
+        channels = validate_declarations(declarations["channels"], len(metadata.channel_names))
+        for field in ("name", "marker", "fluorophore", "declaration"):
+            _validate_no_path_text(channels[channel][field])
     return {
         "source_id": source_id,
         "source_sha256": source_sha256,
@@ -216,10 +257,30 @@ def _read_labels(
             raise ValueError("Labels require one TIFF series with one page per selected Z plane")
         series = tif.series[0]
         if len(series.levels) != 1 or series.axes != axes or len(series.pages) != depth:
-            raise ValueError(f"Labels require exactly one native {axes} TIFF level")
+            raise ValueError(
+                f"Labels require exactly one native {axes} TIFF level "
+                f"(got axes {series.axes!r}, pages {len(series.pages)})"
+            )
         dtype = np.dtype(series.dtype)
         if dtype.kind != "u" or dtype.itemsize not in {1, 2, 4}:
-            raise ValueError("Labels must use uint8, uint16 or uint32 samples")
+            if dtype.kind == "i":
+                raise ValueError(
+                    f"Labels must use unsigned uint8, uint16 or uint32 samples, got signed "
+                    f"{dtype}; Loci never converts signed labels implicitly. Verify all IDs are "
+                    "non-negative (0 = background) within uint32 range and explicitly re-save "
+                    "as uint8, uint16 or uint32."
+                )
+            if dtype.kind == "u":
+                raise ValueError(
+                    f"Labels must use uint8, uint16 or uint32 samples, got {dtype}; "
+                    "Loci does not convert 64-bit labels implicitly. Verify IDs fit uint32 and "
+                    "explicitly re-save as uint8, uint16 or uint32."
+                )
+            raise ValueError(
+                f"Labels must use discrete unsigned uint8, uint16 or uint32 samples, got "
+                f"{dtype}; floating-point or boolean arrays are never converted implicitly. "
+                "Explicitly export discrete non-negative object IDs as uint8, uint16 or uint32."
+            )
         for page in tif.pages:
             page = _tiff_actual_page(page)
             if (
@@ -317,24 +378,75 @@ def _grant(workbench: Workbench, grant_id: str) -> dict[str, Any]:
     return grant
 
 
+def _validate_no_path_text(value: str) -> None:
+    if (
+        "/" in value
+        or "\\" in value
+        or value.strip() in {".", ".."}
+        or _WINDOWS_DRIVE_PREFIX.match(value.lstrip())
+        or value.lstrip().lower().startswith(("file:", "s3:", "http:", "https:", "smb:"))
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        raise ValueError("Identity text must not contain filesystem paths or control characters")
+
+
+def _normalize_producer(producer: dict[str, Any] | None) -> dict[str, Any] | None:
+    if producer is None:
+        return None
+    raw_version = producer.get("version")
+    normalized: dict[str, Any] = {
+        "name": producer["name"].strip(),
+        "version": raw_version.strip() if isinstance(raw_version, str) else None,
+    }
+    for key in ("model", "mode", "checkpoint"):
+        value = producer.get(key)
+        if isinstance(value, str):
+            normalized[key] = value.strip()
+    digest = producer.get("checkpoint_digest")
+    if isinstance(digest, str):
+        clean_digest = digest.strip().lower()
+        normalized["checkpoint_digest"] = (
+            clean_digest if ":" in clean_digest else f"sha256:{clean_digest}"
+        )
+    return normalized
+
+
+def validate_producer(producer: Any) -> None:
+    if producer is not None:
+        exact_keys(producer, _PRODUCER_KEYS, "declared external producer")
+        checked_text(producer.get("name"), "Declared producer name", 128)
+        for key, label, limit in (
+            ("version", "Declared producer version", 128),
+            ("model", "Declared external model", 128),
+            ("mode", "Declared external mode", 64),
+            ("checkpoint", "Declared checkpoint identity", 128),
+        ):
+            if producer.get(key) is not None:
+                checked_text(producer[key], label, limit)
+        if producer.get("checkpoint_digest") is not None:
+            raw_digest = producer["checkpoint_digest"]
+            if not isinstance(raw_digest, str) or len(raw_digest) > 128:
+                raise ValueError(
+                    "Declared checkpoint digest must be a bounded SHA-256 or xxh128 digest"
+                )
+            clean_digest = raw_digest.strip().lower()
+            if not _DIGEST_PATTERN.fullmatch(clean_digest):
+                raise ValueError(
+                    "Declared checkpoint digest must be sha256:<64 hex>, xxh128:<32 hex>, "
+                    "or 64 hex characters"
+                )
+        # Portable methods must not receive path-like declarations.
+        for value in producer.values():
+            if isinstance(value, str):
+                _validate_no_path_text(value)
+
+
 def validate_request(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     exact_keys(request, REQUEST_KEYS, "external label adoption")
     if not {"source_id", "source_sha256", "grant_id", "alignment"} <= request.keys():
         raise ValueError("External label adoption requires complete bindings and alignment")
     producer = request.get("producer")
-    if producer is not None:
-        exact_keys(producer, {"name", "version"}, "declared external producer")
-        checked_text(producer.get("name"), "Declared producer name", 128)
-        if producer.get("version") is not None:
-            checked_text(producer["version"], "Declared producer version", 128)
-        # Portable methods must not receive path-like declarations.
-        for value in producer.values():
-            if isinstance(value, str) and (
-                "/" in value
-                or "\\" in value
-                or any(ord(char) < 32 or ord(char) == 127 for char in value)
-            ):
-                raise ValueError("Producer identity must not contain filesystem paths")
+    validate_producer(producer)
     grant = _grant(workbench, request["grant_id"])
     alignment = VOLUME_ALIGNMENT if grant["axes"] == "ZYX" else ALIGNMENT
     if request["alignment"] != alignment:
@@ -354,11 +466,21 @@ def create_import_grant(
     source_sha256: str,
     selection: dict[str, Any],
     working_bytes: int = 512 * 1024**2,
+    *,
+    handoff_id: str | None = None,
+    handoff_manifest_path: str | None = None,
 ) -> dict[str, Any]:
     """Create a path-redacted receipt, including path-redacted I/O errors."""
     try:
         return _create_import_grant(
-            workbench, path, source_id, source_sha256, selection, working_bytes
+            workbench,
+            path,
+            source_id,
+            source_sha256,
+            selection,
+            working_bytes,
+            handoff_id=handoff_id,
+            handoff_manifest_path=handoff_manifest_path,
         )
     except OSError as exc:
         raise ValueError(
@@ -373,9 +495,26 @@ def _create_import_grant(
     source_sha256: str,
     selection: dict[str, Any],
     working_bytes: int = 512 * 1024**2,
+    *,
+    handoff_id: str | None = None,
+    handoff_manifest_path: str | None = None,
 ) -> dict[str, Any]:
     working_bytes = integer(working_bytes, "working-memory budget", 1024**2, 8 * 1024**3)
-    binding = _source_binding(workbench, source_id, source_sha256, selection)
+    bound = handoff_id is not None or handoff_manifest_path is not None
+    binding = _source_binding(
+        workbench, source_id, source_sha256, selection, require_original=bound
+    )
+    handoff_record: dict[str, Any] | None = None
+    if bound:
+        _validate_no_path_text(Path(path).name)
+        from .research_usam_handoff import resolve_verified_handoff
+
+        handoff_record = resolve_verified_handoff(
+            workbench,
+            binding,
+            handoff_id=handoff_id,
+            manifest_path=handoff_manifest_path,
+        )
     labels, input_record = _read_labels(Path(path), binding, working_bytes)
     preview_selection = copy.deepcopy(binding["selection"])
     preview_record = {}
@@ -406,14 +545,24 @@ def _create_import_grant(
     )
     rgb = np.where((preview_labels > 0)[..., None], 0.6 * rgb + 0.4 * tint, rgb)
     # Revalidate source/channel declarations and input identities after preview.
-    if _source_binding(workbench, source_id, source_sha256, binding["selection"]) != binding:
+    if (
+        _source_binding(
+            workbench, source_id, source_sha256, binding["selection"], require_original=bound
+        )
+        != binding
+    ):
         raise ValueError("Source grid or channel declaration changed during label preview")
+    if handoff_record is not None:
+        from .research_usam_handoff import verify_bound_handoff_current
+
+        verify_bound_handoff_current(workbench, binding, handoff_record)
     _verify_input_identity(Path(path), input_record)
     grant = {
         "schema": "loci.labels-import-grant/v1",
         **binding,
         **input_record,
         **preview_record,
+        **({"handoff": handoff_record} if handoff_record is not None else {}),
         "working_bytes": working_bytes,
         "private_path": str(Path(path)),
         "private_project_id": workbench.project.meta["project_id"],
@@ -455,10 +604,18 @@ def import_labels(
     }
     binding = {key: grant[key] for key in binding_keys}
     current = _source_binding(
-        workbench, grant["source_id"], grant["source_sha256"], grant["selection"]
+        workbench,
+        grant["source_id"],
+        grant["source_sha256"],
+        grant["selection"],
+        require_original="handoff" in grant,
     )
     if canonical_json(current) != canonical_json(binding):
         raise ValueError("Source grid or channel declaration changed after label preview")
+    if "handoff" in grant:
+        from .research_usam_handoff import verify_bound_handoff_current
+
+        verify_bound_handoff_current(workbench, current, grant["handoff"])
     labels, input_record = _read_labels(
         Path(grant["private_path"]), binding, grant["working_bytes"], expected=grant
     )
@@ -480,15 +637,14 @@ def import_labels(
         for key, value in input_record.items()
         if not key.startswith("private_")
     }
-    producer = request.get("producer")
+    producer = _normalize_producer(request.get("producer"))
     external.update(
         {
             "schema": "loci.external-labels/v1",
             "alignment": request["alignment"],
-            "producer": {"name": producer["name"], "version": producer.get("version")}
-            if producer is not None
-            else None,
+            "producer": producer,
             "producer_identity_basis": "user-declared" if producer else "unknown",
+            "mask_origin_basis": "user-declared" if producer else "unknown",
             "upstream_settings": None,
             "upstream_model": None,
             "upstream_runtime": None,
@@ -502,6 +658,8 @@ def import_labels(
     )
     if "preview" in grant:
         external["preview"] = copy.deepcopy(grant["preview"])
+    if "handoff" in grant:
+        external["handoff"] = copy.deepcopy(grant["handoff"])
     provenance = {
         "geometry": geometry.to_dict(),
         "selection": selection,
@@ -524,10 +682,19 @@ def import_labels(
             raise ValueError("Label adoption was cancelled before publication")
         if _grant(workbench, request["grant_id"]) != grant:
             raise ValueError("Label preview grant changed before publication")
-        if canonical_json(
-            _source_binding(workbench, grant["source_id"], grant["source_sha256"], selection)
-        ) != canonical_json(binding):
+        live_binding = _source_binding(
+            workbench,
+            grant["source_id"],
+            grant["source_sha256"],
+            selection,
+            require_original="handoff" in grant,
+        )
+        if canonical_json(live_binding) != canonical_json(binding):
             raise ValueError("Source grid or channel declaration changed before publication")
+        if "handoff" in grant:
+            from .research_usam_handoff import verify_bound_handoff_current
+
+            verify_bound_handoff_current(workbench, live_binding, grant["handoff"])
         _verify_input_identity(Path(grant["private_path"]), grant)
 
     result = workbench.project.save_result(

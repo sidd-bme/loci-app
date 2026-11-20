@@ -1,0 +1,142 @@
+{
+  "modelId": "cellpose-sam-v2",
+  "modelVersion": "Cellpose 4.2.1.1 · cpsam_v2, publisher revision 7c61431b5fbb",
+  "kind": "prediction",
+  "subject": "Single optical section through the center of a human induced pluripotent stem cell colony. Membrane, beta-actin and DNA are displayed in red, green and blue.",
+  "attribution": "AICS Microscopy & Image Analysis Team, Allen Institute for Cell Science. Thirstrup et al. (2018), BBBC034v1, distributed by the Broad Bioimage Benchmark Collection (Ljosa et al., 2012). Channel composition, Cellpose prediction and contours prepared by Loci.",
+  "imageLicense": "CC BY 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+  "sourceUrl": "https://bbbc.broadinstitute.org/BBBC034",
+  "publicationUrl": "https://doi.org/10.1038/nmeth.2083",
+  "displayTransform": "Native 924 × 624 optical section, zero-based Z=40. A separate linear intensity window maps each source channel to 8-bit RGB. Overlay adds a one-pixel mint contour at each predicted boundary. Both views retain identical sample positions.",
+  "predictionOrigin": "The registered cpsam_v2 checkpoint ran on this exact three-channel section with Cellpose 4.2.1.1 and CUDA. The 38 instance contours follow the returned integer labels. The dataset supplies no reference annotation for this colony-center field.",
+  "dataset": "BBBC034v1",
+  "sourceArchiveUrl": "https://data.broadinstitute.org/bbbc/BBBC034/BBBC034_v1_dataset.zip",
+  "archiveSha256": "29c8981502e9f3bc84d0055e0ed6488f0145f712a1cf79389b934c83193cd381",
+  "sourceChannels": [
+    {
+      "rgb": "R",
+      "sourceFile": "colony_center_C=1_DeepRed.tif",
+      "sha256": "d6ec4e78faa41117fb8813ce0afb5053e056ae2e00ac339f7db97c463c077b69",
+      "marker": "CellMask Deep Red plasma membrane",
+      "linearWindow": [
+        715,
+        3221
+      ],
+      "planeSha256": "c095822d4c86db628486f95a673e13521f6ab9a14dd778aea521bd27d16055d4",
+      "dtype": "uint16"
+    },
+    {
+      "rgb": "G",
+      "sourceFile": "colony_center_C=3_EGFP.tif",
+      "sha256": "355dc700352a97ad8c93f6c0108d2891b87ae68f19f406f71b4115ab14ba8ca7",
+      "marker": "EGFP beta-actin",
+      "linearWindow": [
+        483,
+        1101
+      ],
+      "planeSha256": "58b7cb0802071e1afe0b7d72d60976f4ca5bf0334c823c1cf0ffa6c6817d2f1a",
+      "dtype": "uint16"
+    },
+    {
+      "rgb": "B",
+      "sourceFile": "colony_center_C=5_Hoechst.tif",
+      "sha256": "a3d0ba15b9c1f7d7ed00d103a6b9f253d06d588ceb53cf2e5beb3a86539289d0",
+      "marker": "Hoechst DNA",
+      "linearWindow": [
+        393,
+        527
+      ],
+      "planeSha256": "d482b8b8855f205323592feee6bc3421cc3348663a39391c668334a6ee2f706d",
+      "dtype": "uint16"
+    }
+  ],
+  "zeroBasedZ": 40,
+  "inputPngSha256": "fa6edeffbf6f4c2a6de2bf15ca8737ccdc35ac268bf2922a9d748e04bb2a1bcb",
+  "sourceShapeYX": [
+    624,
+    924
+  ],
+  "modelCheckpointSha256": "0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667",
+  "modelWeightsUrl": "https://huggingface.co/mouseland/cellpose-sam/blob/7c61431b5fbb078f3296754bd15d9f51b320f837/cpsam_v2",
+  "device": "NVIDIA A40",
+  "runtimeVersions": {
+    "python": "3.13.12",
+    "torch": "2.10.0+cu128",
+    "numpy": "2.4.6",
+    "scipy": "1.18.1",
+    "cellpose": "4.2.1.1"
+  },
+  "predictionSettings": {
+    "max_edge_px": 1000,
+    "diameter_px": 0.0,
+    "flow_threshold": 0.4,
+    "cellprob_threshold": 0.0,
+    "min_size_px": 15,
+    "max_size_fraction": 0.4,
+    "niter": 250,
+    "batch_size": 8,
+    "resample": true,
+    "augment": false,
+    "tile_overlap": 0.1,
+    "normalize": true,
+    "percentile_low": 1.0,
+    "percentile_high": 99.0,
+    "tile_norm_blocksize": 0,
+    "sharpen_radius": 0.0,
+    "smooth_radius": 0.0,
+    "invert": false,
+    "device": "auto"
+  },
+  "predictionRunReceiptSha256": "b2e4f9ff6e9dc201c5ffdfa96dbd93468561d6fa498504f8d2b13d110d85436d",
+  "predictedLabelArraySha256": "6c76f68b566f19beba9f9d26759d47aac7bf9218dedfce62dc0edc8777d9c14b",
+  "predictedInstanceCount": 38,
+  "predictedForegroundPixels": 571663,
+  "predictionDtype": "uint16",
+  "overlayContour": {
+    "widthPx": 1,
+    "connectivity": 4,
+    "rgb": [
+      142,
+      245,
+      215
+    ],
+    "opacity": 0.9
+  },
+  "files": {
+    "original.webp": {
+      "sha256": "4f93cd704dcb9a78c786682f7ac82c36d683055927a03e05c4273d47b74c8fef",
+      "dimensionsXY": [
+        924,
+        624
+      ]
+    },
+    "overlay.webp": {
+      "sha256": "c43cae72af974314098de3437dea6047c42ff861d5c2e386f43d28dc05d1d13e",
+      "dimensionsXY": [
+        924,
+        624
+      ]
+    },
+    "prediction.png": {
+      "sha256": "e8a068faf8e7679d59d90c34e4d5dbbb5e320c2cdbcade1d9b788c78273cc544",
+      "dimensionsXY": [
+        924,
+        624
+      ]
+    },
+    "thumbnail.webp": {
+      "sha256": "1c6d8f10458efc3efc14acbc2555126e6c84e4037207fdd2bf1e8ee6e3d9837d",
+      "dimensionsXY": [
+        770,
+        520
+      ]
+    }
+  },
+  "cardDisplay": {
+    "source": "overlay.webp",
+    "resampling": "Lanczos at recorded thumbnail dimensions",
+    "encoding": "lossless WebP",
+    "field": "same full-resolution field as the detail viewer"
+  }
+}
