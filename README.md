@@ -1,140 +1,70 @@
 <p align="center">
-  <img src="desktop/assets/loci-mark-128.png" width="72" alt="Loci">
+  <img src="desktop/assets/loci-mark-128.png" width="68" alt="Loci">
 </p>
 
 <h1 align="center">Loci</h1>
-<p align="center"><strong>An open imaging workbench for life-science research.</strong></p>
-<p align="center">Explore images, develop repeatable analyses, and work with an authorized AI assistant while keeping each result connected to its source.</p>
+
+<p align="center"><strong>An open-source workbench for biomedical imaging.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for macOS</a> ·
-  <a href="docs/README.md">Documentation</a> ·
-  <a href="https://github.com/sidd-bme/loci-app/issues">Feedback</a> ·
-  <a href="https://ko-fi.com/lociimaging">Support on Ko-fi</a>
+  <a href="https://github.com/sidd-bme/loci-app/releases">Download for macOS</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/INSTALLATION.md">Install</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/README.md">Documentation</a> ·
+  <a href="docs/MODEL_LIBRARY.md">Model Zoo</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/issues">Issues</a> ·
+  <a href="https://ko-fi.com/lociimaging">Ko-fi</a>
 </p>
 
-The current download is **v0.2.0-beta.2 for Apple Silicon Macs**. Newer shared
-agent workflows, scientific data packages and researcher-interface refinements
-are available in the source tree; they are not all included in that download.
-Staged development apps remain unreleased candidates. See the
-[release record](docs/RELEASE_STATUS.md) and [capability guide](docs/CAPABILITY_MATRIX.md)
-for the difference.
-
-## See Loci in action
+Follow a structure through a fluorescence stack, outline a region on a tissue section, or measure individual cells. Loci brings the image, the analysis and the measurements into one desktop workspace. Viewing and core analysis run on your computer. Your original files stay intact, and each saved result keeps its source fingerprint, analysis settings and review history.
 
 https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3
 
-Loci brings your images, measurements and analysis tools into one desktop workspace. Move from a tissue overview to individual cells, explore a volume, refine a segmentation, and keep the results connected to the image they came from.
+<sub>Recorded product tour (<a href="https://github.com/sidd-bme/loci-app/blob/main/docs/media/launch-credits.md">film and image credits</a>).</sub>
 
-Your original data stays intact. Core viewing and analysis run on your computer, with no account or cloud service required. Model checkpoints are supplied separately, with explicit runtime/profile requirements; you choose whether to connect an external assistant or configured remote computer.
+## Viewing and display
 
-The existing film and captures show recorded development-app views, not a version-specific feature guarantee for the download. [Media credits and capture provenance](docs/media/README.md) describe their sources and limits.
+Open images, folders, OME-Zarr stores or a selected CT/MR DICOM series. Explore whole-slide scans (SVS and NDPI) from a tissue overview down to native detail, or move through a stack by channel, depth and time. Loci autosaves your session. Save a named `.loci-study` to return to the work without copying the original images.
 
-## See the whole picture
+Adjust channel ranges, colour maps, RGB tone curves, Z projections and pixel sampling while preserving raw measurements. Put two images side by side in **Compare A/B**, or move a view to a second display. Pan and zoom can be linked when both views share a source and grid. For volumes, follow the same point through axial, coronal and sagittal slices alongside the 3D rendering. [Viewing guide](docs/USING_LOCI.md#view-images-and-set-display) · [Supported formats and capabilities](docs/CAPABILITY_MATRIX.md)
 
-Open microscopy images, whole-slide scans and 3D volumes. Navigate channels, depth and time, then set the colours and contrast that make the structures you care about easier to see.
-
-![Histology in Loci, with native image navigation and display controls](docs/media/histology-current.png)
-
-| Follow your channels | Explore in three dimensions |
+| Three-channel kidney fluorescence | Linked slices through the MNI ICBM152 MRI template |
 | :--- | :--- |
-| ![Multichannel fluorescence and channel controls](docs/media/multichannel.png) | ![Fluorescence volume with independent channel display controls](docs/media/fluorescence-volume-current.png) |
-| Adjust each channel without changing the source pixels. | Rotate a volume and tune its colour and opacity. |
+| ![Kidney section displayed in three fluorescence channels with the Z slider and individual channel controls](docs/media/multichannel.png) | ![Axial, coronal and sagittal views intersect at one point beside a 3D rendering of the brain template](https://raw.githubusercontent.com/sidd-bme/loci-app/main/docs/media/linked-mri-current.png) |
 
-### Connect the slices
+## Annotations, preprocessing, and analysis
 
-Linked orthogonal views keep a point in context across the volume. Inspect the planes alongside a 3D view and move between them as you explore.
+Mark points, trace freehand regions or measure tissue thickness along calibrated transects. Choose the whole image or draw an analysis region independently of the camera. In **Analyze → Preprocess**, add smoothing, background subtraction or morphology to an ordered pipeline. Select a step to edit its parameters, change its position and preview the effect on your crop. [Preprocessing guide](docs/USING_LOCI.md#preprocessing-pipeline)
 
-![Linked MRI slices and a rotating 3D template volume in Loci](docs/media/medical-volume.gif)
+Segment objects offline with thresholding, connected components or watershed. Measure fluorescence, cell shape or wound closure, track objects over time, and register images. Correct a label in a new revision, inspect which measurements changed, or compare raw intensities across samples and declared replicates. Export a figure, an object table or a scientific data package with readers for Python and R. [Object populations](docs/OBJECT_POPULATIONS.md) · [Intensity comparisons](docs/EXPERIMENT_INTENSITY.md) · [Scientific exports](docs/SCIENTIFIC_DATA_EXPORT.md)
 
-## From objects to answers
+## Model Zoo and external labels
 
-Bring your own model and keep the rest of your workflow in one place. Use a [compatible local model](docs/MODEL_PACKAGE_FORMAT.md), a configured Cellpose profile, or import labels from another segmentation tool. Inspect individual objects, filter their measurements, refine labels, and compare distributions in the statistics workspace. Save a study when you pause and return with the images, settings and results together.
+![Five credited specimens in the Model Zoo, including fluorescence cell contours, a DAPI optical section and predicted epidermis on melanoma histology](docs/media/model-zoo.webp)
 
-![Cellpose segmentation labels overlaid on a complex image, alongside full-population statistics](docs/media/cellpose-population-current.png)
+Open **File → Model Zoo…** to browse five microscopy profiles offline. Four examples let you slide between a specimen and the prediction on that same field. Each entry identifies the model version, gives image credits, links to the publisher’s files and opens the corresponding workflow. You choose which weights to download. [Model Zoo and specimen credits](docs/MODEL_LIBRARY.md)
 
-*4,837 imported Cellpose objects, with measurements and distributions linked to the source image. This view shows retained imported labels, not a new inference run or an accuracy benchmark.*
+- **Local models.** Use Cellpose-SAM v2 to outline individual cells, the BioImage.IO 2D nuclei boundary ONNX model for fluorescence nuclei, or the PUMA fold-4 tissue nnU-Net for melanoma histology. Each uses its own local runtime and model files. [Cellpose](docs/CELLPOSE_COMPATIBILITY.md) · [ONNX packages](docs/MODEL_PACKAGE_FORMAT.md) · [PUMA tissue model](docs/TISSUE_MODELS.md)
+- **External labels.** Inspect the StarDist nuclear contours on its authors’ fluorescence example. The μSAM Light Microscopy Generalist entry shows an original DAPI section. Export a native TIFF to standalone μSAM and bring the labels back to Loci, where you can check alignment and measure the underlying channel. [Standalone μSAM handoff](docs/EXTERNAL_LABELS.md#offline-standalone-μsam-interchange)
 
-- **Measure in context.** Draw regions and annotations, inspect object measurements, and keep calibration and units alongside the results.
-- **Review and refine.** Edit labels, compare correction effects, and choose the results you want to export.
-- **Build a repeatable workflow.** Save recipes, run batches, and use the command line or local MCP connection for supported automation.
-- **Share the result.** Export tables, rendered figures and portable studies.
+## Verified format conversion
 
-Current source also includes [scientific data packages](docs/SCIENTIFIC_DATA_EXPORT.md)
-with exact stored measurements, provenance and Python/R readers, plus
-[sample sheets and raw mean intensity comparisons](docs/EXPERIMENT_INTENSITY.md)
-that retain image and declared replicate grouping. The study workspace separates
-samples, intensity, batches and correction comparisons; result review and export
-have their own sections. Inspect exact result identities, object labels and stored
-values when you need them. These additions are available when building from source;
-see the [release record](docs/RELEASE_STATUS.md) for downloadable availability.
+Under **View → Import & conversion → Convert image format**, convert supported scalar TIFF, OME-TIFF, Imaris IMS and OME-Zarr series to tiled OME-TIFF or chunked OME-Zarr 0.4. Loci reopens the output, checks every pixel, and records the numeric type, channel order and calibration in `conversion.json`. [Native conversion](docs/USING_LOCI.md#convert-study-images-to-ome-tiff-or-ome-zarr)
 
-When building from source, you can repeat a saved, single-plane CPU Components
-analysis from the command line or send one native channel to standalone μSAM
-and return its instance labels for measurement. [Replay a desktop result](docs/CLI.md#repeat-a-desktop-components-result) · [Use standalone μSAM](docs/EXTERNAL_LABELS.md#offline-standalone-μsam-interchange)
+For CZI, LIF and ND2 files, supply Bio-Formats 8.5.0 and a local JDK 11 or later for stacks. Convert a whole scalar series, a range of channels, Z planes and timepoints, or an XY crop. The verified OME-TIFF retains the original sample values and the spacing, plane times and stage coordinates reported by the reader. [Vendor conversion](docs/VENDOR_CONVERSION.md)
 
-From the same workbench you can convert a scalar image to OME-TIFF or OME-Zarr,
-or use Bio-Formats for a CZI, LIF or ND2 series. Conversion verifies the
-output pixels. Open **File → Model Zoo…** to inspect microscopy examples, compare
-model output where available, and find the exact publisher files. **F1** opens the searchable offline manual.
-[Image conversion](docs/USING_LOCI.md#convert-study-images-to-ome-tiff-or-ome-zarr) · [Model Zoo](docs/MODEL_LIBRARY.md)
+## Automation and workspace
 
-## Work your way
+- **Repeat an analysis.** Copy the verified recipe JSON from an original, native single-plane CPU Components result. Run it against the saved study with a fresh request key. The bundled `loci` CLI also supports study inspection, object queries, conversion and export. [CLI guide](docs/CLI.md) · [Replay a desktop result](docs/CLI.md#repeat-a-desktop-components-result)
+- **Run a series of analyses.** Build multi-step workflows, resume a batch or send supported classical and Cellpose jobs to a configured SSH or cluster runtime. [Workflows](docs/WORKFLOWS.md) · [Remote compute](docs/REMOTE_WORKFLOW.md)
+- **Connect an assistant.** Through the local Model Context Protocol (MCP) connection, choose the sources and operations an assistant can access. Inspect its plan and follow its actions in the study. [Agent access](docs/AGENT_ACCESS.md)
+- **Settings and help.** Press **⌘,** (or **Ctrl+,**) to open Settings over the active image. Press **F1** for the searchable offline manual. [Settings and help](docs/USING_LOCI.md#settings-recovery-and-help)
 
-Use the desktop for exploration and the command line for repeatable work. Discover commands, inspect a study and run supported operations from a local terminal.
+## Getting started
 
-![Loci command-line workflow, replayed from recorded terminal output](docs/media/cli-workflow.gif)
+On an Apple silicon Mac, install Loci and try the offline first-study walkthrough. It takes you from opening an image to reviewing a measured result. [Download](https://github.com/sidd-bme/loci-app/releases) · [Installation](https://github.com/sidd-bme/loci-app/blob/main/docs/INSTALLATION.md) · [First study](docs/workflows/FIRST_STUDY.md) · [Build from source](docs/BUILDING.md)
 
-### Connect an assistant
-
-Through a local MCP connection, an authorized assistant can inspect granted sources, prepare supported recipes, follow permitted tasks and inspect results. The current source adds named workflow, exploration, population and study actions, retained image previews and comparisons, exact activity links, expiring approvals and explicit Follow controls. Availability depends on the granted operations and each action’s documented source and method limits.
-
-You choose the sources, operations and response categories it may access. A cloud-hosted assistant can receive the data its client is permitted to read; local execution does not make that external client private by itself. A prepared access bundle or SDK check does not establish a completed journey in a particular agent host. You remain in control of permissions, and review history distinguishes researcher decisions from explicitly delegated agent decisions.
-
-![MCP capabilities: source inspection, recipe preparation, execution, results and reviewed export](docs/media/mcp-overview.svg)
-
-*Capability illustration, not a connected-host recording.*
-
-[Set up agent access](docs/AGENT_ACCESS.md) · [Explore the CLI](docs/CLI.md)
-
-## Start a study
-
-**[Download the development beta for Apple Silicon Macs](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2)**, follow the **[installation guide](docs/INSTALLATION.md)**, then **[open your first image](docs/workflows/FIRST_STUDY.md)**.
-
-This beta is unnotarized, so macOS requires an explicit first-launch approval. Model weights are supplied separately. The guides cover both steps.
-
-| Learn | Make it your own |
-| :--- | :--- |
-| [User manual](docs/USING_LOCI.md) | [Command line](docs/CLI.md) |
-| [Formats and capabilities](docs/CAPABILITY_MATRIX.md) | [Local agent and MCP access](docs/AGENT_ACCESS.md) |
-| [Analysis workflows](docs/WORKFLOWS.md) | [Build from source](docs/BUILDING.md) |
-| [What's new](CHANGELOG.md) | [Contribute](CONTRIBUTING.md) |
-
-## Looking ahead
-
-Current source refinements focus on first-study guidance, clearer analysis scope,
-unfinished numeric drafts and reachable actions in longer forms. They preserve
-the existing methods, source data and review boundaries; their availability is
-separate from the published beta.
-
-Next development directions are:
-
-- A complete journey with one named, supported assistant client.
-- Clearer complex-data inspection and explicit preparation routes.
-- Bounded method extensions that keep the Apache-2.0 local core independent.
-- Complete quantitative 3D workflows, from declared scope to reviewed export.
-
-Model training, additional platforms and easier distribution remain later
-directions. These are development priorities, not promises for the current download.
-
-## Made for everyday research
-
-Loci started with a practical cell-counting workflow. It is growing into the imaging workspace I wanted to use: approachable enough for a quick look with room to follow an analysis further.
-
-Found a rough edge, have a workflow in mind, or want to help? [Open an issue](https://github.com/sidd-bme/loci-app/issues). If Loci is useful to you, [supporting it on Ko-fi](https://ko-fi.com/lociimaging) helps keep the project moving.
+When publishing results, cite Loci and credit the models and datasets you used. The manual covers daily workflows, and the contributing guide explains how to report a problem or help develop the workbench. [User manual](docs/USING_LOCI.md) · [Changelog](https://github.com/sidd-bme/loci-app/blob/main/CHANGELOG.md) · [Contributing](https://github.com/sidd-bme/loci-app/blob/main/CONTRIBUTING.md)
 
 ---
 
-[Apache-2.0](LICENSE) · [Image and film credits](docs/media/README.md) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Security](SECURITY.md)
-
-<sub>Research software in active development; not intended for clinical diagnosis.</sub>
+[Apache-2.0](LICENSE) · [Notice](NOTICE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Media credits](docs/media/README.md) · [Film credits](https://github.com/sidd-bme/loci-app/blob/main/docs/media/launch-credits.md) · [Security](https://github.com/sidd-bme/loci-app/blob/main/SECURITY.md)

@@ -1,11 +1,8 @@
 # First study with synthetic shapes
 
-Choose **Try an example** on Loci's opening screen. This optional offline workflow creates a normal managed study and one small scalar OME-TIFF. It creates no analysis result or review decision. You can open your own data instead at any time.
+Choose **Try a synthetic example** on Loci's opening screen. This optional offline workflow creates a normal managed study and one small scalar OME-TIFF. It creates no analysis result or review decision. You can open your own data instead at any time.
 
-These instructions describe current source. The published beta may use earlier
-control labels; see [release status](../RELEASE_STATUS.md). The optional inspector
-guide is named **Practice: inspect, measure and export** and links to the same
-tools without configuring or running analysis for you.
+The optional inspector guide **Practice: inspect, measure and export** links to each tool as you work through the example.
 
 The exact example starts with display contrast 0–200 so its three authored values are visible. This changes only the display; native pixels and measurements remain unchanged. Saved display adjustments take precedence when you reopen the study.
 

@@ -1,5 +1,17 @@
 # Product media and image credits
 
+## Model Zoo
+
+[The gallery image](model-zoo.webp) is a crop of the running Loci workbench. The original screenshot was captured at 1336 × 932 pixels from public commit `616615ebb8da`. The WebP preserves the pixels inside the dialog.
+
+| Example in reading order | Specimen and credit |
+| --- | --- |
+| Cellpose-SAM v2 | Allen Institute for Cell Science, BBBC034v1. Three fluorescence channels and predicted cell contours. [CC BY 4.0 and source](../../desktop/src/renderer/model-zoo/examples/cellpose-sam-v2/credit.json) |
+| µSAM | Mariusz Marzec, Adam Piórkowski and Arkadiusz Gertych. A DAPI optical section from the upstream example volume. [CC BY 4.0 and source](../../desktop/src/renderer/model-zoo/examples/micro-sam-vit-b-lm/credit.json) |
+| StarDist | 2018 Data Science Bowl contributors, BBBC038v1. Nuclear fluorescence and predicted instance contours. [CC0 and source](../../desktop/src/renderer/model-zoo/examples/stardist-2d-versatile-fluo/credit.json) |
+| BioImage.IO nuclei boundary model | Constantin Pape's supplier test image from BBBC038, with contours derived from the foreground output. [CC BY 4.0 and source](../../desktop/src/renderer/model-zoo/examples/bioimageio-nuclei-boundary-onnx/credit.json) |
+| PUMA tissue nnU-Net | PUMA authors' melanoma H&E training region 004, with the fold-4 model's epidermis prediction. [CC0 and source](../../desktop/src/renderer/model-zoo/examples/puma-tissue-cpu/credit.json) |
+
 ## October 2026 showcase
 
 The homepage features the [74-second Loci film and its credits](launch-credits.md),
