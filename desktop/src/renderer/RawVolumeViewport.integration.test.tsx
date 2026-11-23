@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { webcrypto } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
@@ -680,6 +680,69 @@ describe("RawVolumeViewport lifecycle", () => {
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledTimes(1));
     expect(request).not.toHaveBeenCalled();
     await waitFor(() => expect(request).toHaveBeenCalledWith({ target_long_axis: 128 }), { timeout: 1_500 });
+  });
+
+  it("anchors the linked crosshair to level zero across noncoincident overview grids", async () => {
+    Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+    const overview = (indices: number[]): RawVolumePayload => {
+      const payload = context();
+      const count = indices.length;
+      const stride = 6 / (count - 1);
+      const bytes = Buffer.from(indices.flatMap(z => indices.map(x => z * 7 + x)));
+      payload.dimensions_xyz = [count, 1, count];
+      payload.native_level_dimensions_xyz = [7, 1, 7];
+      payload.source_dimensions_xyz = [7, 1, 7];
+      payload.source_extent_xyzxyz = [0, 6, 0, 0, 0, 6];
+      payload.spacing_xyz = [0.4 * stride, 0.8, 2.5 * stride];
+      payload.affine_4x4[0][0] = payload.spacing_xyz[0];
+      payload.affine_4x4[2][2] = payload.spacing_xyz[2];
+      payload.sampling.source_indices_xyz = [indices, [0], indices];
+      payload.sampling.level_zero_indices_xyz = [indices, [0], indices];
+      payload.sampling.estimated_aggregate_bytes = Math.ceil(bytes.length * (3 + 4 / 3));
+      payload.byte_length = bytes.length;
+      payload.data_base64 = bytes.toString("base64");
+      payload.data_sha256 = createHash("sha256").update(bytes).digest("hex");
+      return payload;
+    };
+    const coarse = overview([0, 3, 6]);
+    const refined = overview([0, 2, 4, 6]);
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    const exportFigure = vi.fn().mockResolvedValue(null);
+    const viewport = (context: RawVolumePayload) => (
+      <RawVolumeViewport volume={{ schema_version: 1, context, focus: null }}
+        sceneHandleRef={handle} onExportFigure={exportFigure} />
+    );
+    const expectCrosshair = async (source: number[]) => {
+      await waitFor(() => expect(handle.current?.snapshot()).toMatchObject({
+        available: true, state: { crosshair_source_xyz: source },
+      }));
+    };
+
+    const mounted = render(viewport(coarse));
+    await expectCrosshair([3, 0, 3]);
+    mounted.rerender(viewport(refined));
+    await expectCrosshair([3, 0, 3]);
+    expect(screen.getByText(/World 11.200, 20.000, 37.500 um/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
+    await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
+    expect(exportFigure.mock.calls[0][0].manifest.mpr).toEqual({
+      context_display_indices_xyz: [1, 0, 1],
+      active_payload_indices_xyz: [1, 0, 1],
+      source_indices_xyz: [2, 0, 2],
+      world_xyz: [10.8, 20, 35],
+    });
+
+    fireEvent.change(screen.getByRole("slider", { name: "X slice" }), { target: { value: "5" } });
+    mounted.rerender(viewport(coarse));
+    await expectCrosshair([5, 0, 3]);
+
+    const newFingerprint = "b".repeat(64);
+    mounted.rerender(viewport({ ...refined, source_sha256: newFingerprint }));
+    await expectCrosshair([4, 0, 4]);
+    mounted.rerender(viewport({ ...coarse, source_sha256: newFingerprint, t: 1 }));
+    await expectCrosshair([3, 0, 3]);
   });
 
   it("keeps controls and camera state across verified refinement and reports context recovery", async () => {

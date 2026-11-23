@@ -702,7 +702,7 @@ export function RawVolumeViewport({
   const [labelError, setLabelError] = useState<string | null>(null);
   const [meshError, setMeshError] = useState<string | null>(null);
   const [labelStyle, setLabelStyle] = useState<VolumeLabelStyle>({ visible: true, opacity: 0.45, selected_only: false });
-  const [preciseCrosshair, setPreciseCrosshair] = useState<Vec3 | null>(null);
+  const [boundCrosshair, setBoundCrosshair] = useState<{ binding: string; source: Vec3 } | null>(null);
   const liveEpochRef = useRef(0);
   const gestureRef = useRef(false);
   const sceneLockedRef = useRef(false);
@@ -760,7 +760,6 @@ export function RawVolumeViewport({
   const [clipEnabled, setClipEnabled] = useState(false);
   const [clipAxis, setClipAxis] = useState<0 | 1 | 2>(2);
   const [clipPosition, setClipPosition] = useState(50);
-  const [slices, setSlices] = useState<[number, number, number]>([0, 0, 0]);
   const [transfers, setTransfers] = useState<TransferState[]>([]);
   const [detailView, setDetailView] = useState<"context" | "focus">("context");
   const [detailSpan, setDetailSpan] = useState("96");
@@ -773,9 +772,19 @@ export function RawVolumeViewport({
   const cameraViewsRef = useRef<VolumeCameras | null>(null);
   const selectedFocusRef = useRef<string | null>(null);
   const changedRef = useRef(onSceneChange); changedRef.current = onSceneChange;
-  const sourceToDisplayIndex = (point: Vec3): Vec3 => volume
-    ? volume.context.sampling.level_zero_indices_xyz.map((indices, axis) => nearestIndex(indices, point[axis])) as Vec3
-    : [0, 0, 0];
+  const context = volume?.context;
+  const sourceBinding = context ? `${context.source_id}:${context.source_sha256}:${context.t}` : null;
+  const sourcePoint = useMemo(() => {
+    if (!context) return null;
+    if (boundCrosshair?.binding === sourceBinding) return boundCrosshair.source;
+    return context.sampling.level_zero_indices_xyz.map((indices) => indices[Math.floor(indices.length / 2)]) as Vec3;
+  }, [boundCrosshair, context, sourceBinding]);
+  const slices = useMemo<Vec3>(() => context && sourcePoint
+    ? context.sampling.level_zero_indices_xyz.map((indices, axis) => nearestIndex(indices, sourcePoint[axis])) as Vec3
+    : [0, 0, 0], [context, sourcePoint]);
+  const setSourceCrosshair = (source: Vec3) => {
+    if (sourceBinding !== null) setBoundCrosshair({ binding: sourceBinding, source });
+  };
 
   useEffect(() => {
     setVerifiedLabels(null); setLabelError(null);
@@ -788,8 +797,13 @@ export function RawVolumeViewport({
   }, [labelPayload, labelResult?.result_id, labelResult?.revision_hash, volume]);
 
   useEffect(() => {
-    setPreciseCrosshair(null);
-  }, [volume?.context.source_id, volume?.context.source_sha256, volume?.context.t]);
+    // Anchor the initial point to this source and time so a refined overview
+    // cannot move it to the nearest sample of a different display grid.
+    setBoundCrosshair((current) => {
+      if (sourceBinding === null || sourcePoint === null) return null;
+      return current?.binding === sourceBinding ? current : { binding: sourceBinding, source: sourcePoint };
+    });
+  }, [sourceBinding, sourcePoint]);
 
   useEffect(() => {
     if (!volume) return;
@@ -811,15 +825,6 @@ export function RawVolumeViewport({
           : { ...component };
       }),
     );
-    setSlices((current) => {
-      if (!sameBinding || !previous) {
-        return volume.context.dimensions_xyz.map((value) => Math.floor(value / 2)) as [number, number, number];
-      }
-      return current.map((oldIndex, axis) => {
-        const sourceIndex = preciseCrosshair?.[axis] ?? previous.sampling.level_zero_indices_xyz[axis][oldIndex];
-        return nearestIndex(volume.context.sampling.level_zero_indices_xyz[axis], sourceIndex);
-      }) as Vec3;
-    });
     previousContextRef.current = volume.context;
   }, [volume]);
 
@@ -1344,12 +1349,10 @@ export function RawVolumeViewport({
 
   const activePayload = detailView === "focus" && volume?.focus ? volume.focus : volume?.context ?? null;
   const crosshair = useMemo(() => {
-    if (!volume) return null;
-    const source = preciseCrosshair ?? slices.map((index, axis) =>
-      volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
-    const { origin, spacing } = volumeLevelZeroGeometry(volume.context);
-    return { source, world: worldAtVolumeIndex(origin, spacing, volume.context.direction_3x3, source) };
-  }, [slices, volume, preciseCrosshair]);
+    if (!context || !sourcePoint) return null;
+    const { origin, spacing } = volumeLevelZeroGeometry(context);
+    return { source: sourcePoint, world: worldAtVolumeIndex(origin, spacing, context.direction_3x3, sourcePoint) };
+  }, [context, sourcePoint]);
   const focusContainsCrosshair = Boolean(volume?.focus && crosshair && crosshair.source.every(
     (value, axis) => value >= volume.focus!.source_extent_xyzxyz[axis * 2] &&
       value <= volume.focus!.source_extent_xyzxyz[axis * 2 + 1],
@@ -1364,7 +1367,6 @@ export function RawVolumeViewport({
       return;
     }
     // Wait until this exact response has passed schema and byte-digest checks.
-    // By then the context-preserving slice mapping above has also settled.
     if (verifiedPlanes?.volume !== volume) return;
     const binding = `${focus.source_id}:${focus.source_sha256}:${focus.data_sha256}:${focus.source_extent_xyzxyz.join(",")}`;
     if (selectedFocusRef.current !== binding) {
@@ -1394,7 +1396,7 @@ export function RawVolumeViewport({
     if (!volume) return;
     if (sceneRef.current) sceneRef.current.stateEpoch += 1;
     const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Math.max(0, Math.min(volume.context.source_dimensions_xyz[axis] - 1, n + delta)) : n) as Vec3;
-    setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point));
+    setSourceCrosshair(point);
   };
 
   const onStageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1426,10 +1428,10 @@ export function RawVolumeViewport({
   };
 
   const requestFocus = () => {
-    if (!volume || !onRequestRefinement) return;
+    if (!volume || !crosshair || !onRequestRefinement) return;
     if (sceneRef.current) sceneRef.current.stateEpoch += 1;
     const context = volume.context;
-    const centre = crosshair?.source ?? slices.map((value, axis) => context.sampling.level_zero_indices_xyz[axis][value]);
+    const centre = crosshair.source;
     const full = context.source_dimensions_xyz;
     const bounds = full.map((length, axis) => {
       const requested = detailSpan === "wide" ? [256, 256, 64][axis] : Number(detailSpan);
@@ -1656,8 +1658,7 @@ export function RawVolumeViewport({
     const sourceIndex = index.map((value, axis) =>
       Math.max(0, Math.min(context.source_dimensions_xyz[axis] - 1, Math.round(value)))) as Vec3;
     invalidateFigureCapture();
-    setPreciseCrosshair(sourceIndex);
-    setSlices(sourceToDisplayIndex(sourceIndex));
+    setSourceCrosshair(sourceIndex);
   };
 
   const swapWithNext = (paneId: string) => {
@@ -1726,7 +1727,7 @@ export function RawVolumeViewport({
     const center = min.map((n, i) => Math.round((n + max[i]) / 2)) as Vec3;
     const sourcePoint = center.map((n, i) => n + verifiedLabels.payload.source_offset_xyz[i]) as Vec3;
     const world = indexToWorld(labelGeometry(verifiedLabels.payload), center);
-    setPreciseCrosshair(sourcePoint); setSlices(sourceToDisplayIndex(sourcePoint));
+    setSourceCrosshair(sourcePoint);
     if (detailView === "focus" && volume.focus && !sourcePoint.every((n, i) => n >= volume.focus!.source_extent_xyzxyz[i * 2] && n <= volume.focus!.source_extent_xyzxyz[i * 2 + 1])) setDetailView("context");
     const scene = sceneRef.current;
     if (scene && !scene.contextLost) {
@@ -1815,7 +1816,7 @@ export function RawVolumeViewport({
       setMode(state.representation.mode); setRenderMode(state.representation.render_mode); setQuality(state.representation.quality);
       setLayout(state.layout.mode); setExpandedPane(state.layout.expanded_pane); setPaneOrder(state.layout.pane_order); setColSplit(state.layout.col_split); setRowSplit(state.layout.row_split);
       setClipEnabled(state.clipping.enabled); setClipAxis(["x", "y", "z"].indexOf(state.clipping.axis) as 0 | 1 | 2); setClipPosition(state.clipping.position_percent);
-      setLabelStyle(state.labels); setPreciseCrosshair(state.crosshair_source_xyz); setSlices(sourceToDisplayIndex(state.crosshair_source_xyz));
+      setLabelStyle(state.labels); setSourceCrosshair(state.crosshair_source_xyz);
       setDetailView(state.representation.extent); setTargetLongAxis(state.refinement.target_long_axis);
       selectRef.current?.(state.selected_object?.label_id ?? null);
       if (sceneKey(state.refinement.focus_region_xyzxyz) !== sceneKey(volume.focus?.source_extent_xyzxyz ?? null) || state.refinement.target_long_axis !== targetLongAxis) {
@@ -1873,7 +1874,7 @@ export function RawVolumeViewport({
 
   useEffect(() => {
     if (!sceneLockedRef.current) changedRef.current?.();
-  }, [volume, verifiedPlanes, verifiedLabels, labelStyle, selectedLabel, preciseCrosshair, slices, mode, renderMode, quality, layout, expandedPane, paneOrder, colSplit, rowSplit, clipEnabled, clipAxis, clipPosition, detailView, targetLongAxis, contextState]);
+  }, [volume, verifiedPlanes, verifiedLabels, labelStyle, selectedLabel, sourcePoint, slices, mode, renderMode, quality, layout, expandedPane, paneOrder, colSplit, rowSplit, clipEnabled, clipAxis, clipPosition, detailView, targetLongAxis, contextState]);
   useEffect(() => () => {
     if (sceneHandleRef) sceneHandleRef.current = null;
     if (pendingApply.current) { clearTimeout(pendingApply.current.timer); pendingApply.current.reject(new Error("The native volume view closed.")); pendingApply.current = null; }
@@ -2009,7 +2010,7 @@ export function RawVolumeViewport({
         <div className="raw-volume-slices">
           {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>{label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.source_dimensions_xyz[axis] - 1} value={crosshair?.source[axis] ?? 0} onChange={(event) => {
             invalidateFigureCapture(); const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Number(event.target.value) : n) as Vec3;
-            setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point));
+            setSourceCrosshair(point);
           }} /><output aria-label={`${label} source index`}>{crosshair?.source[axis]}</output></label>)}
           {crosshair ? <span className="raw-volume-world">World {crosshair.world.map((value) => value.toFixed(3)).join(", ")} {volume.context.unit}</span> : null}
         </div>
