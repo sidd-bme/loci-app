@@ -78,6 +78,7 @@ if route == 'opening-preview':
     output = dispatch('research_zarr_opening_overview', {'path': source, 'opening_id': 'startup'})
     assert output['context']['level'] == 1
     assert 'source_sha256' not in output['context']
+    assert 'zarr' not in sys.modules
 else:
     snapshot = dispatch('research_create', {'path': project, 'title': 'Lightweight startup'})
     assert snapshot['sources'] == []

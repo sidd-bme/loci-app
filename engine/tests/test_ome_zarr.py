@@ -166,6 +166,7 @@ def test_reads_cross_chunk_tczyx_plane_and_preserves_coordinate_provenance(
     assert plane.values.shape == (6, 7)
     assert not plane.values.flags.writeable
     assert metadata.canonical_axes == "TCZYX"
+    assert metadata.zarr_version == zarr.__version__
     assert metadata.levels[0].canonical_shape_tczyx == (2, 3, 4, 11, 13)
     assert metadata.levels[0].canonical_chunks_tczyx == (1, 1, 2, 5, 6)
     # Dataset transforms are applied first; the shared transform then scales

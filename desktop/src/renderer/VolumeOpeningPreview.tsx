@@ -20,6 +20,7 @@ import {
 import { createRawVolumeTransferFunctions } from "./RawVolumeViewport";
 import { decodeVolumeBytes, volumeByteDigest, VOLUME_SCALAR_ENCODINGS } from "./volume-bytes";
 import { indexToWorld, mprPlanes, planeGrid, renderMpr, type MprScalars } from "./mpr-reslice";
+import { disposeVolumeRenderWindow } from "./dispose-volume-render-window";
 import "./VolumeOpeningPreview.css";
 
 type PreviewContext = VolumeOpeningPreviewPayload["context"];
@@ -137,7 +138,7 @@ function attachOpeningVolume(
   registerDisposer: (disposer: () => void) => void,
 ): PreviewControls {
   const generic = vtkGenericRenderWindow.newInstance({ background: [0.082, 0.082, 0.082], listenWindowResize: false });
-  registerDisposer(() => generic.delete());
+  registerDisposer(() => disposeVolumeRenderWindow(generic));
   generic.setContainer(container);
   const renderer = generic.getRenderer();
   const renderWindow = generic.getRenderWindow();

@@ -1906,8 +1906,9 @@ export default function ResearchWorkbench({
         else if (unavailable) directOpenError = `Opened in 2D. ${unavailable}`;
         else if (displayChannels.filter((channel) => channel.visible).length > 4)
           directOpenError = "Opened in 2D. Show up to four scalar channels, then choose 3D volume.";
-        if (!directOpenError && directOpen.newSource && source.source_kind === "ome_zarr" && !view.state) {
-          // Seed the first direct 3D presentation before the registered scene mounts.
+        const scalarStack = (source.source_kind ?? "native") === "native" && source.metadata.sample_semantics === "scalar";
+        if (!directOpenError && directOpen.newSource && !view.state && (source.source_kind === "ome_zarr" || scalarStack)) {
+          // A thick fluorescence stack can be opaque in Blend even with the author's display range.
           setVolumeDisplay((display) => ({ ...display, renderMode: "mip" }));
         }
         setRawVolumeOpen(!directOpenError);

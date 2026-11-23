@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertInitialMipContrast,
   assertNavigationFocus,
   assertRecoveredMprRaster,
   centralSignal,
   focusExtentXYZ,
   focusSlicePositions,
   observeNavigationRequests,
+  specimenForeground,
   validateVolumeState,
 } from "./volume-entry.qa.mjs";
 
@@ -70,6 +72,39 @@ test("the screenshot check ignores a bright corner and recognizes central tonal 
   assert.equal(signal.central_signal_width_fraction, 0, "A one-pixel line does not count as occupied tissue");
   for (let y = 6; y < 15; y++) for (let x = 4; x < 16; x++) bitmap[(y * width + x) * 4] = 40 + x;
   assert.equal(centralSignal(bitmap, width, height).central_signal_width_fraction, 12 / width);
+});
+
+test("the initial MIP check measures only the specimen interior and rejects washed-out foreground", () => {
+  const width = 40;
+  const height = 20;
+  const bitmap = Buffer.alloc(width * height * 4);
+  const paint = (x, y, tone) => { bitmap[(y * width + x) * 4] = tone; };
+  paint(0, height - 1, 255);
+  const measure = () => specimenForeground(bitmap, width, height);
+  const verify = (mode = "mip") => assertInitialMipContrast({
+    initial_rendering_mode: mode,
+    image: { specimen_foreground: measure() },
+  }, 24);
+  assert.throws(() => verify(), /does not fill the contrast measurement region/);
+  for (let y = 5; y < 15; y++) {
+    for (let x = 15; x < 25; x++) paint(x, y, x < 20 ? 100 : 180);
+  }
+  paint(15, 5, 24);
+  assert.deepEqual(measure(), {
+    bounds_xyxy_end_exclusive: [15, 5, 25, 15],
+    foreground_fraction: 0.99, near_white_fraction: 0, p10: 100, p90: 180, p90_minus_p10: 80,
+  });
+  assert.doesNotThrow(() => verify());
+  assert.throws(() => verify("blend"), /did not initially select maximum intensity/);
+  for (let y = 5; y < 15; y++) {
+    for (let x = 15; x < 25; x++) paint(x, y, x < 20 ? 110 : 120);
+  }
+  assert.throws(() => verify(), /contrast is 10, below 24/);
+  for (let y = 5; y < 15; y++) {
+    for (let x = 19; x < 25; x++) paint(x, y, 248);
+  }
+  assert.ok(measure().p90_minus_p10 >= 24);
+  assert.throws(() => verify(), /mostly near-white/);
 });
 
 test("sustained XY navigation steps by native Z through narrow or edge-clipped focus", () => {

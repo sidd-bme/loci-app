@@ -33,6 +33,7 @@ const usage = `Usage: node desktop/tests/volume-entry.qa.mjs --app /path/Loci.ap
   [--center X,Y,Z] [--span 64|wide] [--route direct|comparison|both]
   Optional exact checks: --overview-dimensions X,Y,Z --overview-level L --bytes-per-voxel N
   Optional specimen checks: --expect-preview --min-focus-width FRACTION --repeat-open N --navigate
+  Optional direct entry check: --min-initial-mip-contrast N (foreground P90 minus P10, in 8-bit display levels)
   or --cases /path/fixtures.json (array of objects using the same option names)
   Optional: --timeout-ms MS --display NAME_OR_ID
   LOCI_PACKAGED_APP and LOCI_QA_OUTPUT_ROOT may supply --app and --out.`;
@@ -126,6 +127,54 @@ export function centralSignal(bitmap, width, height) {
   };
 }
 
+export function specimenForeground(bitmap, width, height) {
+  assert.equal(bitmap.length, width * height * 4, "Unexpected screenshot bitmap layout");
+  // A centered specimen that fills the viewport vertically can use this interior
+  // square, away from the orientation axes and its silhouette against the surround.
+  const halfSide = Math.min(width, height) / 4;
+  const left = Math.ceil(width / 2 - halfSide);
+  const right = Math.floor(width / 2 + halfSide);
+  const top = Math.ceil(height / 2 - halfSide);
+  const bottom = Math.floor(height / 2 + halfSide);
+  const area = (right - left) * (bottom - top);
+  assert.ok(right > left && bottom > top, "Canvas too small to measure specimen foreground");
+  const histogram = new Uint32Array(256);
+  let occupied = 0;
+  let nearWhite = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let x = left; x < right; x += 1) {
+      const offset = (y * width + x) * 4;
+      const peak = Math.max(bitmap[offset], bitmap[offset + 1], bitmap[offset + 2]);
+      if (peak <= 24) continue;
+      histogram[peak] += 1;
+      occupied += 1;
+      if (peak >= 248) nearWhite += 1;
+    }
+  }
+  const percentile = (fraction) => {
+    if (!occupied) return null;
+    const rank = Math.ceil(fraction * occupied);
+    let cumulative = 0;
+    return histogram.findIndex((count) => (cumulative += count) >= rank);
+  };
+  const p10 = percentile(0.10), p90 = percentile(0.90);
+  return {
+    bounds_xyxy_end_exclusive: [left, top, right, bottom],
+    foreground_fraction: occupied / area,
+    near_white_fraction: occupied ? nearWhite / occupied : null,
+    p10, p90, p90_minus_p10: occupied ? p90 - p10 : null,
+  };
+}
+
+export function assertInitialMipContrast(overview, minimumContrast) {
+  assert.equal(overview.initial_rendering_mode, "mip", "Direct 3D did not initially select maximum intensity");
+  const foreground = overview.image.specimen_foreground;
+  assert.ok(foreground.foreground_fraction >= 0.9, "The specimen does not fill the contrast measurement region");
+  assert.ok(foreground.near_white_fraction < 0.5, "The initial specimen foreground is mostly near-white");
+  assert.ok(foreground.p90_minus_p10 >= minimumContrast,
+    `Initial specimen foreground contrast is ${foreground.p90_minus_p10}, below ${minimumContrast}`);
+}
+
 async function sha256(file) {
   const hash = createHash("sha256");
   for await (const bytes of createReadStream(file)) hash.update(bytes);
@@ -172,12 +221,17 @@ async function caseSettings(item) {
   const minFocusWidth = Number(item["min-focus-width"] ?? 0);
   assert.ok(Number.isFinite(minFocusWidth) && minFocusWidth >= 0 && minFocusWidth <= 0.7,
     "Focus width must be a fraction of the stage from 0 to 0.7");
+  const minInitialMipContrast = item["min-initial-mip-contrast"] === undefined ? null
+    : vector([item["min-initial-mip-contrast"]], 1, 1, "minimum initial MIP contrast")[0];
+  assert.ok(minInitialMipContrast === null || (minInitialMipContrast <= 230 && route === "direct" && !expectPreview),
+    "Initial MIP contrast must be 1 to 230 for a direct entry without preview interaction");
   const [repeatOpen] = vector([item["repeat-open"] ?? 0], 1, 0, "repeat open count");
   assert.ok(repeatOpen <= 20 && (!repeatOpen || route === "direct"), "Repeat up to 20 direct opens per session");
   const navigate = item.navigate ?? false;
   assert.equal(typeof navigate, "boolean", "Navigate must be true or false");
   return {
-    source, sha256: item.sha256, dimensions, center, span, expected, expectPreview, minFocusWidth, repeatOpen, navigate,
+    source, sha256: item.sha256, dimensions, center, span, expected, expectPreview, minFocusWidth, minInitialMipContrast,
+    repeatOpen, navigate,
     comparison: status.isDirectory() ? "zarr" : "file",
     routes: route === "both" ? ["direct", "comparison"] : [route],
   };
@@ -306,16 +360,19 @@ async function sourcePosition(page, dimensions, requestedCenter) {
   return center;
 }
 
-async function captureVolume(app, page, directory, name, selector) {
+async function captureVolume(app, page, directory, name, selector, { measureForeground = false } = {}) {
   const filename = `${name}.png`;
   const stage = selector ?? page.getByLabel("Interactive three-dimensional volume", { exact: true }).locator("canvas");
   const png = await stage.screenshot({ path: path.join(directory, filename) });
-  const decoded = await app.evaluate(({ nativeImage }, encoded) => {
+  const decoded = await app.evaluate(({ nativeImage }, { encoded, measureForeground }) => {
     const image = nativeImage.createFromDataURL(`data:image/png;base64,${encoded}`);
     const original = image.getSize();
     const smaller = image.resize({ width: 160 });
-    return { original, sample: smaller.getSize(), bitmap: smaller.toBitmap().toString("base64") };
-  }, png.toString("base64"));
+    return {
+      original, sample: smaller.getSize(), bitmap: smaller.toBitmap().toString("base64"),
+      fullBitmap: measureForeground ? image.toBitmap().toString("base64") : null,
+    };
+  }, { encoded: png.toString("base64"), measureForeground });
   const bitmap = Buffer.from(decoded.bitmap, "base64");
   const values = centralSignal(bitmap, decoded.sample.width, decoded.sample.height);
   return {
@@ -323,6 +380,10 @@ async function captureVolume(app, page, directory, name, selector) {
     sha256: createHash("sha256").update(png).digest("hex"),
     sampled_pixel_sha256: createHash("sha256").update(bitmap).digest("hex"),
     viewport_pixels: decoded.original,
+    ...(decoded.fullBitmap ? {
+      specimen_foreground: specimenForeground(Buffer.from(decoded.fullBitmap, "base64"),
+        decoded.original.width, decoded.original.height),
+    } : {}),
     ...values,
   };
 }
@@ -584,7 +645,9 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     });
     page = await app.firstWindow({ timeout });
     page.setDefaultTimeout(timeout);
-    page.on("pageerror", (error) => report.page_errors.push(error.message));
+    page.on("pageerror", (error) => report.page_errors.push({
+      at: new Date().toISOString(), stack: error.stack ?? error.message,
+    }));
     page.on("request", (request) => {
       if (/^https?:/i.test(request.url())) report.renderer_http_requests.push(request.url());
     });
@@ -623,6 +686,25 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
       report.preview.xy = await captureVolume(app, page, directory, "opening-xy", preview.getByLabel("XY preview slice"));
       assertSignal(report.preview.xy, "Opening XY slice");
       await preview.getByRole("button", { name: "3D", exact: true }).click();
+      if (fixture.navigate) {
+        // The verified view may replace a preview while the researcher is rotating it.
+        const canvas = stage.locator("canvas");
+        const box = await canvas.boundingBox();
+        assert.ok(box && box.width > 60 && box.height > 60);
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
+        await stage.focus();
+        await page.mouse.move(x, y);
+        await page.mouse.down();
+        try {
+          await page.mouse.move(x + 24, y + 16, { steps: 4 });
+          await page.keyboard.press("Escape");
+          await preview.waitFor({ state: "hidden" });
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        } finally {
+          await page.mouse.up();
+        }
+        report.preview.dismissed_during_orbit = true;
+      }
     }
     if (route === "comparison") {
       await waitForPhase(page, "2d", timeout);
@@ -633,8 +715,14 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
       ...validateVolumeState(overview.state, fixture.dimensions, { expected: fixture.expected }),
       renderer: overview,
     };
-    report.overview.image = await captureVolume(app, page, directory, "overview");
+    const measureForeground = fixture.minInitialMipContrast !== null;
+    if (measureForeground) {
+      report.overview.minimum_specimen_contrast = fixture.minInitialMipContrast;
+      report.overview.initial_rendering_mode = await page.getByRole("combobox", { name: "3D rendering mode" }).inputValue();
+    }
+    report.overview.image = await captureVolume(app, page, directory, "overview", undefined, { measureForeground });
     assertSignal(report.overview.image, "Overview");
+    if (measureForeground) assertInitialMipContrast(report.overview, fixture.minInitialMipContrast);
 
     const center = await sourcePosition(page, fixture.dimensions, fixture.center);
     report.focus_center_xyz = center;
@@ -717,7 +805,6 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
         assert.deepEqual(report.pickers.map(({ title }) => title), Array(1 + fixture.repeatOpen).fill(PICKERS[kind]));
         if (fixture.comparison === "zarr")
           assert.ok(report.pickers[0].properties.includes("openDirectory"), "Picker could not select a Zarr directory");
-        assert.deepEqual(report.page_errors, []);
         assert.deepEqual(report.renderer_http_requests, []);
       }
     } catch (error) {
@@ -729,6 +816,7 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     if (app) {
       try { await app.close(); } catch (error) { fail(error); }
     }
+    if (report.page_errors.length) fail(new Error("Uncaught renderer exception during the volume journey"));
     report.completed_at = new Date().toISOString();
     await fs.writeFile(path.join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
     console.log(`${report.status}: ${path.join(directory, "report.json")}`, report.timings_ms ?? report.failures);
@@ -743,6 +831,7 @@ async function main(args) {
     "overview-dimensions": { type: "string" }, "overview-level": { type: "string" },
     "bytes-per-voxel": { type: "string" },
     "expect-preview": { type: "boolean" }, "min-focus-width": { type: "string" }, "repeat-open": { type: "string" },
+    "min-initial-mip-contrast": { type: "string" },
     navigate: { type: "boolean" },
     "timeout-ms": { type: "string" }, display: { type: "string" }, help: { type: "boolean" },
   } });
@@ -750,7 +839,7 @@ async function main(args) {
   if (values.cases) {
     assert.ok(["source", "sha256", "dimensions", "center", "span", "route",
       "overview-dimensions", "overview-level", "bytes-per-voxel", "expect-preview", "min-focus-width", "repeat-open",
-      "navigate"]
+      "min-initial-mip-contrast", "navigate"]
       .every((key) => values[key] === undefined), "Use --cases or single-source options");
   }
   const bundlePath = values.app ?? process.env.LOCI_PACKAGED_APP;

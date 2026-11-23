@@ -77,6 +77,8 @@ const MAX_FOLDER_DEPTH = 64;
 const MAX_FOLDER_PATH_BYTES = 4 * 1024 * 1024;
 const VOLUME_PREVIEW_CHANNEL = "loci-research:volume-opening-preview";
 const VOLUME_PREVIEW_DELAY_MS = 250;
+const VOLUME_PREVIEW_HEAD_START_MS = 1_500;
+const VOLUME_PREVIEW_PRIORITY_MIN_BYTES = 1024 ** 3;
 const VOLUME_PREVIEW_TIMEOUT_MS = 15_000;
 const VOLUME_PREVIEW_RESPONSE_BYTES = 4 * Math.ceil(VOLUME_OPENING_PREVIEW_MAX_BYTES / 3) + 64 * 1024;
 const VOLUME_PREVIEW_SCALAR_BYTES: Record<VolumeOpeningPreviewPayload["context"]["scalar_type"], number> = {
@@ -95,7 +97,8 @@ interface VolumePreviewRequest {
 
 interface VolumePreviewOpening {
   epoch: number | null;
-  start: (path: string) => void;
+  readonly published: boolean;
+  start: (path: string, prioritize: boolean) => Promise<void> | void;
   publish: (preview: VolumeOpeningPreviewPayload | null) => void;
   stop: () => void;
 }
@@ -312,6 +315,7 @@ export class ResearchBridge {
   private directVolumeImport: Promise<unknown> | null = null;
   private directVolumeSource: { project: string; epoch: number; id: string; sha256: string } | null = null;
   private volumePreview: VolumePreviewOpening | null = null;
+  private prioritizedVolumePreviewPath: string | null = null;
   private tissueSetup: TissueSetupOperation | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
@@ -608,8 +612,10 @@ export class ResearchBridge {
     if (!frame || sender.isDestroyed() || frame.isDestroyed() || frame.detached || sender.mainFrame !== frame) return null;
 
     let scheduled: ReturnType<typeof setTimeout> | null = null;
+    let releaseHeadStart: (() => void) | null = null;
     let reader: EngineWorkerClient | null = null;
     let cleared = false;
+    let published = false;
     const closeReader = () => {
       const worker = reader;
       reader = null;
@@ -624,22 +630,38 @@ export class ResearchBridge {
       if (details.isMainFrame) opening.stop();
     };
     const onSenderGone = () => opening.stop();
+    const readPreview = async (path: string) => {
+      if (!current()) { opening.stop(); return; }
+      try {
+        reader = new EngineWorkerClient(VOLUME_PREVIEW_RESPONSE_BYTES);
+        const result = await reader.request<unknown>("research_zarr_opening_overview", { path, opening_id: requestId }, VOLUME_PREVIEW_TIMEOUT_MS);
+        if (current()) opening.publish(previewPayload(result, requestId));
+      } catch { opening.publish(null); }
+      finally {
+        releaseHeadStart?.();
+        closeReader();
+      }
+    };
     const opening: VolumePreviewOpening = {
       epoch: null,
-      start: (path) => {
+      get published() { return published; },
+      start: (path, prioritize) => {
         if (this.volumePreview !== opening || this.closing) return;
         opening.epoch = this.viewDocumentEpoch;
+        if (prioritize) {
+          return new Promise<void>(resolve => {
+            const deadline = setTimeout(() => releaseHeadStart?.(), VOLUME_PREVIEW_HEAD_START_MS);
+            releaseHeadStart = () => {
+              clearTimeout(deadline);
+              releaseHeadStart = null;
+              resolve();
+            };
+            void readPreview(path);
+          });
+        }
         scheduled = setTimeout(() => {
           scheduled = null;
-          if (!current()) { opening.stop(); return; }
-          void (async () => {
-            try {
-              reader = new EngineWorkerClient(VOLUME_PREVIEW_RESPONSE_BYTES);
-              const result = await reader.request<unknown>("research_zarr_opening_overview", { path, opening_id: requestId }, VOLUME_PREVIEW_TIMEOUT_MS);
-              if (current()) opening.publish(previewPayload(result, requestId));
-            } catch { opening.publish(null); }
-            finally { closeReader(); }
-          })();
+          void readPreview(path);
         }, VOLUME_PREVIEW_DELAY_MS);
       },
       publish: (preview) => {
@@ -648,12 +670,14 @@ export class ResearchBridge {
         try {
           frame.send(VOLUME_PREVIEW_CHANNEL, payload);
           cleared = preview === null;
+          published ||= preview !== null;
         } catch { opening.stop(); }
       },
       stop: () => {
         if (this.volumePreview !== opening) return;
         this.volumePreview = null;
         if (scheduled !== null) clearTimeout(scheduled);
+        releaseHeadStart?.();
         closeReader();
         sender.removeListener("did-start-navigation", onNavigation);
         sender.removeListener("render-process-gone", onSenderGone);
@@ -706,10 +730,16 @@ export class ResearchBridge {
     // to the viewer. Keeping it on this worker retains the verified reader.
     const epoch = this.viewDocumentEpoch;
     this.viewerQueue.cancelPending();
-    const pending = this.viewer.request<ResearchImageImportReceipt>(
+    if (kind === "ome_zarr") {
+      const prioritize = this.prioritizedVolumePreviewPath === paths[0];
+      if (prioritize) this.prioritizedVolumePreviewPath = null;
+      // This in-memory hint only schedules a fresh provisional read. Durable
+      // registration always runs with the original picker grant and strict checks.
+      const headStart = preview?.start(paths[0], prioritize);
+      if (headStart) await headStart;
+    }
+    const receipt = await this.viewer.request<ResearchImageImportReceipt>(
       "research_import", { ...params, include_import_receipt: true }, 0);
-    if (kind === "ome_zarr") preview?.start(paths[0]);
-    const receipt = await pending;
     if (this.project !== project || this.viewDocumentEpoch !== epoch)
       throw new Error("The study changed while opening the 3D image.");
     const bindings = receipt?.imported_sources;
@@ -718,6 +748,11 @@ export class ResearchBridge {
     if (!binding || !/^[a-f0-9]{32}$/u.test(binding.id) || !/^[a-f0-9]{64}$/u.test(binding.sha256) ||
         matches?.length !== 1 || matches[0].sha256 !== binding.sha256 || matches[0].locator_state === "relink-required")
       throw new Error("The 3D import did not return an exact source binding.");
+    const [source] = matches;
+    const bytes = source.size_bytes ?? 0;
+    if (kind === "ome_zarr" && source.source_kind === "ome_zarr" && preview?.published &&
+        Number.isSafeInteger(bytes) && bytes >= VOLUME_PREVIEW_PRIORITY_MIN_BYTES)
+      this.prioritizedVolumePreviewPath = paths[0];
     this.directVolumeSource = { project, epoch, id: binding.id, sha256: binding.sha256 };
     return receipt;
   }

@@ -18,10 +18,10 @@ import re
 import stat
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
-from functools import lru_cache, partial
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -38,6 +38,11 @@ MAX_NATIVE_READ_BUDGET_BYTES = 512 * 1024 * 1024
 MAX_DECODED_SEGMENT_BYTES = 64 * 1024 * 1024
 MAX_OME_XML_BYTES = 8 * 1024 * 1024
 MAX_EMBEDDED_ICC_BYTES = 4 * 1024 * 1024
+_IMS_MAX_CHUNK_CACHE_BYTES = 4 * 1024 * 1024
+_IMS_MAX_CACHED_CHUNKS = 64
+_IMS_CHUNK_CACHE_SLOTS = 257
+# Reserve for the fixed-size HDF5 hash table and per-entry cache bookkeeping.
+_IMS_CHUNK_CACHE_OVERHEAD_BYTES = 64 * 1024
 
 # Generated once with Pillow 12.3.0 and LittleCMS 2.19 using
 # ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes(). The
@@ -2024,15 +2029,36 @@ def _ims_region_dataset(root: h5py.File, level: int, t: int, c: int) -> h5py.Dat
     return _ims_dataset(channel)
 
 
-def _read_ims_dataset(
-    dataset: h5py.Dataset, selection: NativeSelection
-) -> tuple[np.ndarray, str, int]:
+def _ims_plane_bytes(dataset: h5py.Dataset, selection: NativeSelection) -> int:
     output_bytes = _decoded_bytes((selection.height, selection.width), dataset.dtype)
     if dataset.chunks is None:
-        estimated_peak = output_bytes * 2
-    else:
-        chunk_bytes = _decoded_bytes(tuple(int(value) for value in dataset.chunks), dataset.dtype)
-        estimated_peak = output_bytes + chunk_bytes
+        return output_bytes * 2
+    return output_bytes + _decoded_bytes(dataset.chunks, dataset.dtype)
+
+
+def _ims_region_cache_bytes(dataset: h5py.Dataset, selection: NativeSelection) -> int:
+    chunks = dataset.chunks
+    if chunks is None or chunks[0] == 1 or dataset.compression is None:
+        return 0
+    _, chunk_y, chunk_x = chunks
+    count_y = (selection.y + selection.height - 1) // chunk_y - selection.y // chunk_y + 1
+    count_x = (selection.x + selection.width - 1) // chunk_x - selection.x // chunk_x + 1
+    count = count_y * count_x
+    cache_bytes = count * _decoded_bytes(chunks, dataset.dtype)
+    # Reuse an entire XY working set across Z. A partial cache would evict
+    # earlier chunks before the next ordered plane read reaches them.
+    if count > _IMS_MAX_CACHED_CHUNKS or cache_bytes > _IMS_MAX_CHUNK_CACHE_BYTES:
+        return 0
+    peak = _ims_plane_bytes(dataset, selection) + cache_bytes + _IMS_CHUNK_CACHE_OVERHEAD_BYTES
+    return cache_bytes if peak <= selection.budget_bytes else 0
+
+
+def _read_ims_dataset(
+    dataset: h5py.Dataset, selection: NativeSelection, cache_bytes: int = 0
+) -> tuple[np.ndarray, str, int]:
+    estimated_peak = _ims_plane_bytes(dataset, selection)
+    if cache_bytes:
+        estimated_peak += cache_bytes + _IMS_CHUNK_CACHE_OVERHEAD_BYTES
     _require_budget(estimated_peak, selection.budget_bytes)
     pixels = np.asarray(
         dataset[
@@ -2047,13 +2073,14 @@ def _read_ims_dataset(
 def _read_ims(
     path: Path,
     selection: NativeSelection,
-    dataset_for: Callable[[int, int, int], h5py.Dataset] | None = None,
+    dataset_for: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
 ) -> tuple[np.ndarray, str, int]:
     try:
-        key = (selection.level, selection.t, selection.c)
         if dataset_for is not None:
-            return _read_ims_dataset(dataset_for(*key), selection)
+            dataset, cache_bytes = dataset_for(selection)
+            return _read_ims_dataset(dataset, selection, cache_bytes)
         with h5py.File(path, "r", rdcc_nbytes=0) as root:
+            key = (selection.level, selection.t, selection.c)
             return _read_ims_dataset(_ims_region_dataset(root, *key), selection)
     except NativeImageError:
         raise
@@ -2099,7 +2126,7 @@ def _read_inspected_region(
     *,
     integrity_mode: Literal["full-sha256", "stat-verified-session"],
     tiff: tifffile.TiffFile | None = None,
-    ims_dataset: Callable[[int, int, int], h5py.Dataset] | None = None,
+    ims_dataset: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
 ) -> NativeRegion:
     metadata = inspected.metadata
     if selection.level >= len(metadata.levels):
@@ -2346,26 +2373,45 @@ class NativeImageSession:
                 raise NativeImageError("Loci could not open this IMS safely.") from exc
             self._validate_identity()
 
-            # Keep only the current level, timepoint and channel dataset. Raw
-            # chunks stay uncached and each region still admits its own decode.
-            @lru_cache(maxsize=1)
-            def dataset_for(level: int, t: int, c: int) -> h5py.Dataset:
+            active_dataset = None
+            active_key = None
+            active_cache_bytes = 0
+
+            def dataset_for(selection: NativeSelection) -> tuple[h5py.Dataset, int]:
+                nonlocal active_dataset, active_key, active_cache_bytes
                 if not root.id.valid:
                     raise NativeImageError("This scoped IMS region reader is closed.")
-                return _ims_region_dataset(root, level, t, c)
+                key = (selection.level, selection.t, selection.c)
+                if active_dataset is None or key != active_key:
+                    if active_dataset is not None:
+                        active_dataset.id.close()
+                    active_dataset = None
+                    active_dataset = _ims_region_dataset(root, *key)
+                    active_key = key
+                    active_cache_bytes = 0
 
-            try:
-                yield partial(self._read_region, ims_dataset=dataset_for)
-                self._validate_identity()
-            finally:
-                dataset_for.cache_clear()
+                cache_bytes = _ims_region_cache_bytes(active_dataset, selection)
+                if cache_bytes != active_cache_bytes:
+                    # HDF5 only applies the access properties when the dataset
+                    # is first opened. Release its previous raw cache first.
+                    name = h5py.h5i.get_name(active_dataset.id)
+                    active_dataset.id.close()
+                    active_dataset = None
+                    with closing(h5py.h5p.create(h5py.h5p.DATASET_ACCESS)) as access:
+                        access.set_chunk_cache(_IMS_CHUNK_CACHE_SLOTS, cache_bytes, 0.75)
+                        active_dataset = h5py.Dataset(h5py.h5d.open(root.id, name, dapl=access))
+                    active_cache_bytes = cache_bytes
+                return active_dataset, active_cache_bytes
+
+            yield partial(self._read_region, ims_dataset=dataset_for)
+            self._validate_identity()
 
     def _read_region(
         self,
         selection: NativeSelection,
         *,
         tiff: tifffile.TiffFile | None = None,
-        ims_dataset: Callable[[int, int, int], h5py.Dataset] | None = None,
+        ims_dataset: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
     ) -> NativeRegion:
         self._ensure_open()
         if tiff is not None and tiff.filehandle.closed:

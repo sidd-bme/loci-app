@@ -362,11 +362,20 @@ describe("Direct image open in 3D", () => {
     { kind: "ome_zarr", known: false, saved: false, expected: "mip" },
     { kind: "ome_zarr", known: true, saved: false, expected: "blend" },
     { kind: "ome_zarr", known: false, saved: true, expected: "blend" },
-    { kind: "native", known: false, saved: false, expected: "blend" },
+    { kind: "native", known: false, saved: false, expected: "mip" },
+    { kind: "native", known: true, saved: false, expected: "blend" },
+    { kind: "native", known: false, saved: true, expected: "blend" },
+    { kind: "medical", known: false, saved: false, expected: "blend" },
   ] as const)("seeds $expected on direct open of $kind (known $known, saved $saved)", async ({ kind, known, saved, expected }) => {
     const f = fixture();
     const snapshot = structuredClone((await f.api.getSnapshot())!);
     snapshot.sources[1].source_kind = kind;
+    if (kind === "medical") {
+      snapshot.sources[1].metadata = {
+        format: "NIfTI", axes: "ZYX", shape: [3, 48, 64],
+        geometry: { frame: "RAS", unit: "mm", affine: [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1.5, 0], [0, 0, 0, 1]] },
+      };
+    }
     if (saved) {
       await f.execute("save_source_view", {
         source_id: second.id, expected_revision: 0, state: {

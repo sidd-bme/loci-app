@@ -221,9 +221,9 @@ function previewFrame() {
   return { frame, sender, event, invoke: (...args: unknown[]) => mocks.handlers.get("loci-research:open-volume-image")!(event, ...args) };
 }
 
-function openingPreview(): VolumeOpeningPreviewPayload {
+function openingPreview(id = openingId): VolumeOpeningPreviewPayload {
   return {
-    schema_version: "loci.volume-opening-preview/v1", opening_id: openingId, source_inventory_sha256: "e".repeat(64),
+    schema_version: "loci.volume-opening-preview/v1", opening_id: id, source_inventory_sha256: "e".repeat(64),
     context: {
       dimensions_xyz: [2, 2, 2], native_level_dimensions_xyz: [2, 2, 2], source_dimensions_xyz: [4, 4, 4],
       origin_xyz: [0, 0, 0], spacing_xyz: [2, 2, 2], direction_3x3: [1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -1713,6 +1713,86 @@ describe("native research bridge", () => {
     expect(f.frame.send).toHaveBeenCalledOnce();
     expect(f.sender.eventNames()).toEqual([]);
     expect(mocks.request.mock.calls.map(([method]) => method)).toEqual(["research_create", "research_zarr_opening_overview"]);
+  });
+
+  it.each(["preview completes", "preview fails", "deadline", "cancel view", "quit"])("starts strict reimport when the preview head start ends by %s", async (boundary) => {
+    const f = await openingFixture();
+    const nextId = "22222222-2222-4222-8222-222222222222";
+    const receipt = f.receipt;
+    receipt.snapshot.sources[0].size_bytes = 3 * 1024 ** 3;
+    let finishImport!: (result: unknown) => void;
+    let previewStarted!: () => void;
+    let finishPreview!: (result: unknown) => void, failPreview!: (error: Error) => void;
+    const started = new Promise<void>(resolve => { previewStarted = resolve; });
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishImport = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      if (method !== "research_zarr_opening_overview") return {};
+      if (params.opening_id === openingId) return openingPreview();
+      return new Promise((resolve, reject) => { finishPreview = resolve; failPreview = reject; previewStarted(); });
+    });
+    const first = f.invoke(openingId);
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: openingPreview() }));
+    finishImport(receipt);
+    await expect(first).resolves.toEqual(receipt);
+
+    f.frame.send.mockClear();
+    f.viewer.request.mockClear().mockResolvedValueOnce(receipt);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [f.selected] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const reopened = f.invoke(nextId);
+      await started;
+      const auxiliary = mocks.clients[5];
+      expect(auxiliary.request).toHaveBeenCalledExactlyOnceWith("research_zarr_opening_overview", { path: f.selected, opening_id: nextId }, 15_000);
+      expect(f.viewer.request).not.toHaveBeenCalled();
+      let closing: Promise<void> | undefined;
+      switch (boundary) {
+        case "preview completes": finishPreview(openingPreview(nextId)); break;
+        case "preview fails": failPreview(new Error("Preview unavailable")); break;
+        case "deadline":
+          await vi.advanceTimersByTimeAsync(1_499);
+          expect(f.viewer.request).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          break;
+        case "cancel view": await call("cancel-view"); break;
+        case "quit": closing = bridge.dispose(); break;
+      }
+      await expect(reopened).resolves.toEqual(receipt);
+      expect(f.viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", {
+        project: bridge.getViewDocumentIdentity(), paths: [f.selected], relative_paths: [path.basename(f.selected)],
+        kind: "ome_zarr", include_import_receipt: true,
+      }, 0);
+      await closing;
+      expect(auxiliary.forceDispose).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(f.sender.eventNames()).toEqual([]);
+      if (boundary === "preview completes") {
+        expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: nextId, preview: openingPreview(nextId) });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["small store", "failed preview"])("keeps strict registration first on reopen after a %s", async (scenario) => {
+    const f = await openingFixture();
+    f.receipt.snapshot.sources[0].size_bytes = scenario === "small store" ? 1024 : 3 * 1024 ** 3;
+    const expectedPreview = scenario === "small store" ? openingPreview() : null;
+    let finishImport!: (result: unknown) => void;
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishImport = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      return method === "research_zarr_opening_overview" ? expectedPreview : {};
+    });
+    const first = f.invoke(openingId);
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: expectedPreview }));
+    finishImport(f.receipt);
+    await expect(first).resolves.toEqual(f.receipt);
+    f.viewer.request.mockResolvedValueOnce(f.receipt);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [f.selected] });
+    await expect(f.invoke("22222222-2222-4222-8222-222222222222")).resolves.toEqual(f.receipt);
+    expect(mocks.clients).toHaveLength(5);
   });
 
   it.each(["legacy invocation", "cancelled picker", "fast import", "TIFF"])("does not start an auxiliary worker for %s", async (scenario) => {

@@ -4,10 +4,13 @@ import { createHash, webcrypto } from "node:crypto";
 import { BlendMode } from "@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { vtkGenericRenderWindow } from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
 import type { VolumeOpeningPreviewPayload } from "../shared/volume-opening-preview";
+import { controlAnimationFrames, headlessVtkWindow } from "./test/vtk-lifecycle";
 import { decodeVolumeOpeningPreview, openingMipTransfer, VolumeOpeningPreview } from "./VolumeOpeningPreview";
 
 const graphics = vi.hoisted(() => ({
+  headlessWindows: null as vtkGenericRenderWindow[] | null,
   canvas: null as HTMLCanvasElement | null,
   addVolume: vi.fn(),
   removeVolume: vi.fn(),
@@ -19,14 +22,21 @@ const graphics = vi.hoisted(() => ({
   paint: vi.fn(),
 }));
 
-vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", () => ({
-  default: { newInstance: () => {
+vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", async (importOriginal) => {
+  const { default: vtk } = await importOriginal<typeof import("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow")>();
+  return { default: { newInstance: (options: Parameters<typeof vtk.newInstance>[0]) => {
+    if (graphics.headlessWindows) {
+      const generic = headlessVtkWindow(vtk, options);
+      graphics.headlessWindows.push(generic);
+      return generic;
+    }
     graphics.canvas = document.createElement("canvas");
     return {
       setContainer: (element: HTMLElement) => element.append(graphics.canvas!),
       resize: vi.fn(),
       getRenderWindow: () => ({
-        getInteractor: () => ({ setDesiredUpdateRate: vi.fn(), setInteractorStyle: vi.fn() }),
+        getInteractor: () => ({ setDesiredUpdateRate: vi.fn(), setInteractorStyle: vi.fn(),
+          switchToXRAnimation: vi.fn(), delete: vi.fn() }),
         render: graphics.render,
       }),
       getRenderer: () => ({
@@ -40,8 +50,8 @@ vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", () => ({
       getApiSpecificRenderWindow: () => ({ getCanvas: () => graphics.canvas }),
       delete: graphics.dispose,
     };
-  } },
-}));
+  } } };
+});
 vi.mock("@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget", () => ({
   default: { newInstance: () => ({
     setEnabled: vi.fn(), updateViewport: vi.fn(), updateMarkerOrientation: vi.fn(), delete: vi.fn(),
@@ -141,7 +151,7 @@ beforeEach(() => {
     putImageData: graphics.paint,
   }) as unknown as CanvasRenderingContext2D);
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); graphics.headlessWindows = null; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("temporary 3D preview", () => {
   it("checks transfer bounds, source geometry and byte hash before opening graphics", async () => {
@@ -217,6 +227,48 @@ describe("temporary 3D preview", () => {
     fireEvent.change(screen.getByRole("slider", { name: "Preview Z" }), { target: { value: "0" } });
     expect([...graphics.paint.mock.lastCall![0].data.slice(0, 4)]).toEqual([64, 64, 64, 255]);
     expect(payload).toEqual(original);
+  });
+
+  it("retires vtk.js wheel and drag frames across repeated opens", async () => {
+    const windows: vtkGenericRenderWindow[] = [];
+    graphics.headlessWindows = windows;
+    const frames = controlAnimationFrames();
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    for (const interaction of ["wheel", "drag"] as const) {
+      const onHide = vi.fn();
+      const payload = preview();
+      const mounted = render(<VolumeOpeningPreview payload={payload} onHide={onHide} />);
+      await screen.findByText("2 × 1 × 2 preview voxels");
+      const generic = windows.at(-1)!;
+      const view = generic.getApiSpecificRenderWindow();
+      const interactor = generic.getInteractor();
+      const stage = screen.getByLabelText("Interactive 3D preview");
+      if (interaction === "wheel") {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          fireEvent.wheel(stage, { deltaY: 10 });
+          vi.advanceTimersByTime(200); // Wheel-end extends the animation for 600 ms.
+        } finally { vi.useRealTimers(); }
+      } else {
+        interactor.handleMouseDown(new PointerEvent("pointerdown", { button: 0, pointerType: "mouse" }));
+        fireEvent(view.getCanvas()!, new Event("webglcontextlost", { cancelable: true }));
+        expect(onHide).toHaveBeenCalledWith(payload.opening_id);
+      }
+      expect(frames.pending()).toBe(1);
+      const onAnimation = vi.fn();
+      interactor.onAnimation(onAnimation);
+      frames.step();
+      expect(onAnimation).toHaveBeenCalledOnce();
+      expect(frames.pending()).toBe(1);
+
+      mounted.unmount();
+      expect(view.isDeleted()).toBe(true);
+      frames.step(); // Before the repair this traverses the deleted OpenGL view.
+      expect(onAnimation).toHaveBeenCalledOnce();
+      expect(frames.pending()).toBe(0);
+      expect(interactor.isDeleted()).toBe(true);
+    }
+    expect(windows).toHaveLength(2);
   });
 
   it("releases a failed graphics stage and dismisses it while verification continues", async () => {

@@ -41,7 +41,9 @@ def _replace_ome_description(path: Path, old: str, new: str) -> None:
     tifffile.tiffcomment(path, xml.replace(old, new, 1))
 
 
-def _write_ims(path: Path) -> dict[tuple[int, int, int], np.ndarray]:
+def _write_ims(
+    path: Path, *, z_chunk_depth: int = 1, compression: str | None = None
+) -> dict[tuple[int, int, int], np.ndarray]:
     stored: dict[tuple[int, int, int], np.ndarray] = {}
     with h5py.File(path, "w") as ims:
         ims.attrs["ImarisDataSet"] = "ImarisDataSet"
@@ -66,7 +68,9 @@ def _write_ims(path: Path) -> dict[tuple[int, int, int], np.ndarray]:
                     channel.attrs["ImageSizeX"] = str(width)
                     channel.attrs["ImageSizeY"] = str(height)
                     channel.attrs["ImageSizeZ"] = str(depth)
-                    channel.create_dataset("Data", data=values, chunks=(1, 4, 5))
+                    channel.create_dataset(
+                        "Data", data=values, chunks=(z_chunk_depth, 4, 5), compression=compression
+                    )
 
         info = ims.create_group("DataSetInfo")
         image = info.create_group("Image")
@@ -1177,6 +1181,77 @@ def test_scoped_ims_reader_reuses_one_handle_and_only_the_active_dataset(tmp_pat
         with pytest.raises(NativeImageError, match="scoped IMS region reader is closed"):
             read_region(selection)
     assert lookups == [keys[0], *keys[2:]]
+
+
+def test_scoped_ims_reader_admits_and_releases_the_chunk_cache(tmp_path, monkeypatch):
+    path = tmp_path / "cached.ims"
+    stored = _write_ims(path, z_chunk_depth=3, compression="gzip")
+    read_dataset = native_module._read_ims_dataset
+    accesses = []
+
+    def observe_cache(dataset, selection, cache_bytes=0):
+        _, actual_cache_bytes, _ = dataset.id.get_access_plist().get_chunk_cache()
+        assert actual_cache_bytes == cache_bytes
+        accesses.append((dataset.id, actual_cache_bytes))
+        return read_dataset(dataset, selection, cache_bytes)
+
+    monkeypatch.setattr(native_module, "_read_ims_dataset", observe_cache)
+    base_peak = (3 * 4 + 3 * 4 * 5) * 2
+    slab_bytes = 4 * (3 * 4 * 5) * 2
+    cached_peak = base_peak + slab_bytes + native_module._IMS_CHUNK_CACHE_OVERHEAD_BYTES
+    selection = NativeSelection(x=4, y=3, width=4, height=3, t=1, c=1, budget_bytes=cached_peak)
+    with NativeImageSession(path) as session, session.region_reader() as read_region:
+        for index in (2, 0, 1):
+            region = read_region(replace(selection, z=index))
+            np.testing.assert_array_equal(region.pixels, stored[0, 1, 1][index, 3:6, 4:8])
+            assert region.estimated_peak_bytes == cached_peak
+            assert region.axes == "YX" and region.sha256 == session.metadata.sha256
+            assert accesses[-1] == accesses[0]
+
+        uncached = read_region(replace(selection, z=2, budget_bytes=cached_peak - 1))
+        assert uncached.estimated_peak_bytes == base_peak
+        assert not accesses[0][0].valid
+        np.testing.assert_array_equal(uncached.pixels, stored[0, 1, 1][2, 3:6, 4:8])
+        with pytest.raises(NativeReadBudgetError):
+            read_region(replace(selection, budget_bytes=base_peak - 1))
+
+        other_channel = read_region(replace(selection, c=0))
+        assert not accesses[-2][0].valid
+        assert other_channel.estimated_peak_bytes == cached_peak
+        np.testing.assert_array_equal(other_channel.pixels, stored[0, 1, 0][0, 3:6, 4:8])
+        assert accesses[-1][1] == slab_bytes
+    assert all(not dataset_id.valid for dataset_id, _ in accesses)
+
+
+@pytest.mark.parametrize(
+    ("shape", "chunks", "width", "height"),
+    [
+        ((2, 8, 8), None, 4, 4),
+        ((2, 8, 8), (1, 4, 4), 4, 4),
+        ((4, 1024, 1024), (4, 1024, 1024), 4, 4),
+        ((2, 16, 16), (2, 1, 1), 16, 16),
+    ],
+)
+def test_scoped_ims_falls_back_when_a_working_set_cannot_be_cached(
+    tmp_path, shape, chunks, width, height
+):
+    path = tmp_path / "uncached.ims"
+    with h5py.File(path, "w") as root:
+        root.attrs["ImarisDataSet"] = "ImarisDataSet"
+        root.create_dataset(
+            "DataSet/ResolutionLevel 0/TimePoint 0/Channel 0/Data",
+            shape=shape,
+            dtype="uint16",
+            chunks=chunks,
+            compression="gzip" if chunks else None,
+            fillvalue=123,
+        )
+    selection = NativeSelection(x=0, y=0, width=width, height=height)
+    with NativeImageSession(path) as session, session.region_reader() as read_region:
+        region = read_region(selection)
+        scratch_samples = np.prod(chunks) if chunks else width * height
+        assert region.estimated_peak_bytes == (width * height + scratch_samples) * 2
+        np.testing.assert_array_equal(region.pixels, np.full((height, width), 123))
 
 
 @pytest.mark.parametrize("failure", ["budget", "changed-source", "changed-before-exit"])

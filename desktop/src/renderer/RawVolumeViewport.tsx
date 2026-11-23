@@ -39,6 +39,7 @@ import { labelBoundaryMesh, labelGeometry, mprCanvasSignature, pickLabelRay, ver
 import type { VolumeSceneAdapter, VolumeViewState, VolumeSceneSnapshot, VolumePane } from "./volume-scene-types";
 import { configureVolumeChannelColorMix, VOLUME_AVERAGE_PROJECTION_ALGORITHM, VOLUME_CHANNEL_COMPOSITING_ALGORITHM } from "./volume-channel-mix";
 import { applyVolumeDisplayChannels, volumeDisplayChannels, type VolumeDisplayControls } from "./raw-volume-display";
+import { disposeVolumeRenderWindow } from "./dispose-volume-render-window";
 import "./RawVolumeViewport.css";
 
 export type RawVolumeScalarType =
@@ -871,6 +872,12 @@ export function RawVolumeViewport({
     let canvas: HTMLCanvasElement | null = null;
     let resize: ResizeObserver | null = null;
     let resizeScheduled = false;
+    const releaseRenderWindow = () => {
+      if (!generic) return;
+      try { disposeVolumeRenderWindow(generic); }
+      catch { /* release is best-effort after a device failure */ }
+      finally { generic = null; }
+    };
     const onLost = (event: Event) => {
       event.preventDefault();
       const scene = sceneRef.current;
@@ -956,7 +963,7 @@ export function RawVolumeViewport({
         axesActor, orientationWidget, interactorStyle, mouseManipulators, resize };
     } catch (caught) {
       setRenderError(caught instanceof Error ? caught.message : "Could not initialize the volume renderer.");
-      try { generic?.delete(); } catch { /* the partially initialized renderer is already unusable */ }
+      releaseRenderWindow();
     }
     return () => {
       resize?.disconnect();
@@ -970,17 +977,18 @@ export function RawVolumeViewport({
         scene?.mouseManipulators.forEach((item: any) => item.delete());
         scene?.interactorStyle.delete();
       } catch { /* release is best-effort after a device failure */ }
-      scene?.clippingPlanes.forEach((item: any) => item.delete());
-      scene?.transferObjects.forEach((item: any) => item.delete());
-      scene?.sliceRecords.forEach((record: any) => {
-        renderer?.removeActor(record.actor); record.actor.delete(); record.mapper.delete();
-      });
-      scene?.imageRecords.forEach((record: any) => {
-        renderer?.removeVolume(record.actor); record.actor.delete(); record.mapper.delete();
-        record.image.getPointData().getScalars()?.delete(); record.image.delete();
-      });
       sceneRef.current = null;
-      try { generic?.delete(); } catch { /* release is best-effort after a device failure */ }
+      try {
+        scene?.clippingPlanes.forEach((item: any) => item.delete());
+        scene?.transferObjects.forEach((item: any) => item.delete());
+        scene?.sliceRecords.forEach((record: any) => {
+          renderer?.removeActor(record.actor); record.actor.delete(); record.mapper.delete();
+        });
+        scene?.imageRecords.forEach((record: any) => {
+          renderer?.removeVolume(record.actor); record.actor.delete(); record.mapper.delete();
+          record.image.getPointData().getScalars()?.delete(); record.image.delete();
+        });
+      } finally { releaseRenderWindow(); }
     };
   }, [rendererGeneration]);
 

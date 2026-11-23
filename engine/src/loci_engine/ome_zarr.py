@@ -20,13 +20,13 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
+from importlib.metadata import version
 from itertools import islice, product
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Self
 
 import numcodecs
 import numpy as np
-import zarr
 from numcodecs import Blosc
 
 DEFAULT_PLANE_BUDGET_BYTES = 64 * 1024 * 1024
@@ -1019,7 +1019,9 @@ class _LocalZarrReader:
             directory_count=directory_count,
             integrity_mode="stat-manifest-session",
             decoder="loci-bounded-zarr-v2",
-            zarr_version=zarr.__version__,
+            # The bounded reader uses its own codec path. Read the package
+            # version without loading the generic Zarr store and codec APIs.
+            zarr_version=version("zarr"),
             numcodecs_version=numcodecs.__version__,
             strict_content_manifest_sha256=None,
         )

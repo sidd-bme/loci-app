@@ -268,8 +268,9 @@ choose **XY slice** to step through its sampled planes. **Hide preview** leaves
 the file opening. The full workspace uses the verified source for measurements,
 annotations and exports.
 
-A newly registered OME-Zarr opened this way starts in **MIP** (maximum intensity)
-when it has no saved view. Use **Mode** to change the rendering. For an image
+For a newly registered scalar microscopy stack without a saved view, Loci starts
+in **MIP** (maximum intensity). This includes IMS, OME-TIFF and OME-Zarr.
+Use **Mode** to change the rendering. For an image
 already open, choose **3D volume** above the canvas. Choose **2D image** to return
 to the source plane. The 3D workspace requires at least two Z planes, up to four
 visible scalar channels and compatible orthogonal geometry. A source that supports

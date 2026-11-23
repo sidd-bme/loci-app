@@ -6,9 +6,12 @@ import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitwa
 import type vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
+import type { vtkGenericRenderWindow } from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
 import type { VolumeSceneAdapter } from "./volume-scene-types";
+import { controlAnimationFrames, headlessVtkWindow } from "./test/vtk-lifecycle";
 
 const vtk = vi.hoisted(() => ({
+  headlessWindows: null as vtkGenericRenderWindow[] | null,
   failInitialization: false,
   canvas: null as HTMLCanvasElement | null,
   render: vi.fn(),
@@ -57,6 +60,8 @@ const vtk = vi.hoisted(() => ({
 vi.mock("@kitware/vtk.js/Interaction/Style/InteractorStyleManipulator", () => ({
   default: {
     newInstance: () => ({
+      getInteractor: () => null,
+      setInteractor: vi.fn(),
       addMouseManipulator: vtk.addMouseManipulator,
       removeAllMouseManipulators: vtk.removeAllMouseManipulators,
       delete: vtk.interactorStyleDelete,
@@ -96,10 +101,16 @@ vi.mock("@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget", () => ({
   },
 }));
 
-vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", () => ({
-  default: {
-    newInstance: () => {
+vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", async (importOriginal) => {
+  const { default: vtkWindow } = await importOriginal<typeof import("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow")>();
+  return { default: {
+    newInstance: (options: Parameters<typeof vtkWindow.newInstance>[0]) => {
       if (vtk.failInitialization) throw new Error("No compatible graphics device");
+      if (vtk.headlessWindows) {
+        const generic = headlessVtkWindow(vtkWindow, options);
+        vtk.headlessWindows.push(generic);
+        return generic;
+      }
       vtk.canvas = document.createElement("canvas");
       vtk.canvas.width = 4;
       vtk.canvas.height = 3;
@@ -132,14 +143,15 @@ vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", () => ({
             setParallelProjection: vtk.setParallelProjection, setViewAngle: vtk.setViewAngle }),
         }),
         getRenderWindow: () => ({ render: vtk.render,
-          getInteractor: () => ({ setInteractorStyle: vtk.interactorSetStyle, setDesiredUpdateRate: vtk.interactorSetDesiredUpdateRate }) }),
+          getInteractor: () => ({ setInteractorStyle: vtk.interactorSetStyle, setDesiredUpdateRate: vtk.interactorSetDesiredUpdateRate,
+            switchToXRAnimation: vi.fn(), delete: vi.fn() }) }),
         getApiSpecificRenderWindow: () => ({ getCanvas: () => vtk.canvas,
           captureNextImage: vtk.captureNextImage }),
         delete: vtk.deleted,
       };
     },
-  },
-}));
+  } };
+});
 
 import {
   RawVolumeViewport,
@@ -787,6 +799,58 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(digest).toHaveBeenCalledTimes(2);
     expect((screen.getByRole("slider", { name: "C1 opacity" }) as HTMLInputElement).value).toBe("0.25");
     expect(screen.queryByText(/Graphics context lost/)).toBeNull();
+  });
+
+  it("retires queued vtk.js frames on context recovery and close", async () => {
+    const windows: vtkGenericRenderWindow[] = [];
+    vtk.headlessWindows = windows;
+    const frames = controlAnimationFrames();
+    const volume: RawVolumeResponse = { schema_version: 1, context: context(), focus: null };
+    const mounted = render(<RawVolumeViewport volume={volume} />);
+    try {
+      await screen.findByText(/source voxels/);
+      frames.step();
+      const original = windows[0];
+      const originalView = original.getApiSpecificRenderWindow();
+      const originalInteractor = original.getInteractor();
+      const originalAnimation = vi.fn();
+      originalInteractor.onAnimation(originalAnimation);
+      originalInteractor.requestAnimation(originalAnimation);
+      frames.step();
+      expect(originalAnimation).toHaveBeenCalledOnce();
+      expect(frames.pending()).toBe(1);
+
+      const canvas = originalView.getCanvas()!;
+      fireEvent(canvas, new Event("webglcontextlost", { cancelable: true }));
+      expect(await screen.findByText(/Graphics context lost/)).toBeTruthy();
+      fireEvent(canvas, new Event("webglcontextrestored"));
+      frames.step();
+      expect(windows).toHaveLength(2);
+      expect(originalView.isDeleted()).toBe(true);
+      const callsAtTeardown = originalAnimation.mock.calls.length;
+      frames.step(); // A successor queued before restoration must be cancelled by teardown.
+      expect(originalAnimation).toHaveBeenCalledTimes(callsAtTeardown);
+      expect(originalInteractor.isDeleted()).toBe(true);
+
+      await screen.findByText(/source voxels/);
+      const recovered = windows[1].getInteractor();
+      const recoveredAnimation = vi.fn();
+      recovered.onAnimation(recoveredAnimation);
+      recovered.requestAnimation(recoveredAnimation);
+      frames.step();
+      expect(recoveredAnimation).toHaveBeenCalledOnce();
+      expect(frames.pending()).toBe(1);
+
+      mounted.unmount();
+      frames.step();
+      expect(recoveredAnimation).toHaveBeenCalledOnce();
+      expect(frames.pending()).toBe(0);
+      expect(recovered.isDeleted()).toBe(true);
+    } finally {
+      cleanup();
+      vtk.headlessWindows = null;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows focus separately and applies one context-world clipping plane to both payloads", async () => {
