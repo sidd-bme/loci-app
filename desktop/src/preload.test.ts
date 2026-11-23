@@ -57,6 +57,39 @@ describe("preload Cellpose bridge", () => {
     } finally { process.argv = argv; }
   });
 
+  it("forwards only an optional opening ID to the native 3D picker", async () => {
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    await researchApi.openVolumeImage?.();
+    await researchApi.openVolumeImage?.(requestId);
+    expect(electronMocks.invoke.mock.calls).toEqual([
+      ["loci-research:open-volume-image"], ["loci-research:open-volume-image", requestId],
+    ]);
+  });
+
+  it("delivers the opening preview event only through the main workspace preload", async () => {
+    expect(researchApi.onVolumeOpeningPreview).toBeUndefined();
+    const argv = process.argv;
+    try {
+      process.argv = [...argv, "--loci-main-workspace"];
+      vi.resetModules();
+      const before = electronMocks.exposeInMainWorld.mock.calls.length;
+      await import("./preload");
+      const exposed = electronMocks.exposeInMainWorld.mock.calls.slice(before);
+      const main = exposed.find(([name]) => name === "lociResearch")![1] as ResearchDesktopApi;
+      const callback = vi.fn();
+      const unsubscribe = main.onVolumeOpeningPreview!(callback);
+      const [channel, listener] = electronMocks.on.mock.calls.at(-1)!;
+      const payload = { request_id: "11111111-1111-4111-8111-111111111111", preview: null };
+      expect(channel).toBe("loci-research:volume-opening-preview");
+      listener({ sender: "native event" }, payload);
+      expect(callback).toHaveBeenCalledExactlyOnceWith(payload);
+      unsubscribe();
+      expect(electronMocks.removeListener).toHaveBeenLastCalledWith(channel, listener);
+      const agent = exposed.find(([name]) => name === "lociAgentWorkspace")![1];
+      expect(agent).not.toHaveProperty("onVolumeOpeningPreview");
+    } finally { process.argv = argv; }
+  });
+
   it.each([
     ["onSettingsRequested", "loci:settings-requested"],
     ["onGuideRequested", "loci:guide-requested"],

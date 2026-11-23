@@ -12,13 +12,14 @@ import base64
 import copy
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any
 
 import numpy as np
 
-from .native_image import NativeImageMetadata, NativeSelection
+from .native_image import NativeImageMetadata, NativeRegion, NativeSelection
 from .quantitative import Geometry
 from .viewer_display import ResolvedChannelDisplay, resolve_display_defaults
 
@@ -265,46 +266,119 @@ def _selected_displays(
     return selected
 
 
-def _select_level(metadata: NativeImageMetadata, target: int) -> int:
-    candidates = [level for level in metadata.levels if level.dimensions.z >= 2]
+def _select_level(metadata: NativeImageMetadata, requested_xyz: tuple[int, int, int]) -> int:
+    # XY-only pyramids can have the same longest (Z) axis at several levels.
+    # Select the smallest source grid that supplies the requested detail on *every* axis.
+    candidates = []
+    for level in metadata.levels:
+        dims = level.dimensions
+        shape = (dims.x, dims.y, dims.z)
+        covers_grid = all(n >= wanted for n, wanted in zip(shape, requested_xyz, strict=True))
+        if dims.z >= 2 and covers_grid:
+            candidates.append((math.prod(shape), level.index))
     if not candidates:
         raise ViewerVolumeError("Raw 3D rendering requires at least two source Z planes.")
-    return min(
-        candidates,
-        key=lambda level: (
-            abs(math.log(max(level.dimensions.x, level.dimensions.y, level.dimensions.z) / target)),
-            -level.index,
-        ),
-    ).index
+    return min(candidates)[1]
+
+
+def _ngff_level_zero_sampling(
+    geometry: Geometry,
+    level_zero_geometry: Geometry,
+    native_shape: tuple[int, int, int],
+    level_zero_shape: tuple[int, int, int],
+    sampled_indices: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[dict[str, list[float]], list[np.ndarray]] | None:
+    """Map NGFF voxel centers through both levels' declared scale and translation."""
+    if geometry.unit != level_zero_geometry.unit or geometry.frame != level_zero_geometry.frame:
+        return None
+    affine = np.asarray(geometry.affine)
+    level_zero = np.asarray(level_zero_geometry.affine)
+    # Supported NGFF transformations have a positive diagonal spatial basis.
+    scale = affine.diagonal()[:3] / level_zero.diagonal()[:3]
+    translation = (affine[:3, 3] - level_zero[:3, 3]) / level_zero.diagonal()[:3]
+    mapped_indices = []
+    for indices, length, full_length, step, offset in zip(
+        sampled_indices, native_shape, level_zero_shape, scale, translation, strict=True
+    ):
+        last = offset + (length - 1) * step
+        # Permit only floating-point noise beyond the level-zero boundary.
+        if (
+            not math.isfinite(last)
+            or step <= 0
+            or offset < -1e-8
+            or last > full_length - 1 + 1e-8
+        ):
+            return None
+        # Round to the nearest level-zero voxel, with ties going to the higher index.
+        # If step is less than one, the rounded endpoint span proves whether any
+        # pair of adjacent native voxel centers would round to the same index.
+        if step < 1 and math.floor(last + 0.5) - math.floor(offset + 0.5) < length - 1:
+            return None
+        mapped = np.floor(indices * step + offset + 0.5).astype(np.int64)
+        if mapped[0] < 0 or mapped[-1] >= full_length or np.any(np.diff(mapped) <= 0):
+            return None
+        mapped_indices.append(mapped)
+    return {"scale_xyz": scale.tolist(), "translation_xyz": translation.tolist()}, mapped_indices
 
 
 def _native_block(
     session: Any,
+    read_region: Callable[[NativeSelection], NativeRegion],
     *,
-    source_id: str,
+    source_binding: tuple[str, str] | None,
     t: int,
     channels: tuple[int, ...],
-    level: int,
-    extent_xyzxyz: tuple[int, int, int, int, int, int],
+    focus_extent: tuple[int, int, int, int, int, int] | None,
     target: int,
     budget: int,
-    role: str,
     explicit_channel_selection: bool,
 ) -> dict[str, Any]:
-    metadata: NativeImageMetadata = session.metadata
-    level_dimensions = metadata.levels[level].dimensions
-    x0, x1, y0, y1, z0, z1 = extent_xyzxyz
-    source_shape_xyz = (x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1)
+    metadata = session.metadata
+    full = metadata.levels[0].dimensions
+    if focus_extent is None:
+        requested_extent_shape = (full.x, full.y, full.z)
+    else:
+        x0, x1, y0, y1, z0, z1 = focus_extent
+        requested_extent_shape = (x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1)
     dtype, scalar_type, encoding_basis = _output_dtype(
         [metadata.channel_dtypes[channel] for channel in channels]
     )
     tile_budget = min(MAX_PLANE_READ_BYTES, max(64 * 1024, budget // 8))
     output_shape_xyz = _fit_shape(
-        source_shape_xyz, target, len(channels), dtype.itemsize, budget - tile_budget
+        requested_extent_shape, target, len(channels), dtype.itemsize, budget - tile_budget
     )
-    x_indices = _indices(source_shape_xyz[0], output_shape_xyz[0]) + x0
-    y_indices = _indices(source_shape_xyz[1], output_shape_xyz[1]) + y0
-    z_indices = _indices(source_shape_xyz[2], output_shape_xyz[2]) + z0
+    level = _select_level(metadata, output_shape_xyz) if focus_extent is None else 0
+    role = "level-zero-focus" if focus_extent is not None else "whole-volume-context"
+    level_zero_shape = (full.x, full.y, full.z)
+    content_sha256 = None if source_binding is None else source_binding[1]
+    while True:
+        if source_binding is None and level == 0:
+            raise ViewerVolumeError("Opening the preview requires a compatible reduced level.")
+        level_dimensions = metadata.levels[level].dimensions
+        native_shape = (level_dimensions.x, level_dimensions.y, level_dimensions.z)
+        extent_xyzxyz = focus_extent or (
+            0, level_dimensions.x - 1, 0, level_dimensions.y - 1, 0, level_dimensions.z - 1
+        )
+        x0, x1, y0, y1, z0, z1 = extent_xyzxyz
+        source_shape_xyz = (x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1)
+        x_indices = _indices(source_shape_xyz[0], output_shape_xyz[0]) + x0
+        y_indices = _indices(source_shape_xyz[1], output_shape_xyz[1]) + y0
+        z_indices = _indices(source_shape_xyz[2], output_shape_xyz[2]) + z0
+        sampled_indices = (x_indices, y_indices, z_indices)
+        geometry = session.geometry({"level": level, "x": x0, "y": y0, "z": z0}, True)
+        transformed_sampling = None
+        if level > 0 and metadata.format == "OME-Zarr":
+            level_zero_geometry = session.geometry({"level": 0, "x": 0, "y": 0, "z": 0}, True)
+            transformed_sampling = _ngff_level_zero_sampling(
+                geometry, level_zero_geometry, native_shape, level_zero_shape, sampled_indices
+            )
+            if transformed_sampling is None:
+                level = 0
+                continue
+        break
+    origin, spacing, direction, affine = _decompose_geometry(
+        geometry, source_shape_xyz, output_shape_xyz
+    )
     values = np.empty(
         (output_shape_xyz[2], output_shape_xyz[1], output_shape_xyz[0], len(channels)),
         dtype=dtype,
@@ -354,7 +428,7 @@ def _native_block(
                     )
                     group_start = group_stop
                 for read_y0, read_y1, output_y_positions in y_groups:
-                    region = session.read_region(
+                    region = read_region(
                         NativeSelection(
                             x=read_x0,
                             y=read_y0,
@@ -366,7 +440,7 @@ def _native_block(
                             level=level,
                             series=metadata.selected_series,
                             budget_bytes=tile_budget,
-                            expected_sha256=metadata.sha256,
+                            expected_sha256=content_sha256,
                         )
                     )
                     source_read_count += 1
@@ -394,11 +468,6 @@ def _native_block(
                     output_plane = values[output_z, :, :, component]
                     output_plane[np.ix_(output_y_positions, output_x_positions)] = converted
 
-    selection = {"level": level, "x": x0, "y": y0, "z": z0}
-    geometry = session.geometry(selection, True)
-    origin, spacing, direction, affine = _decompose_geometry(
-        geometry, source_shape_xyz, output_shape_xyz
-    )
     # Acquisition settings and dtype fallbacks are stable across LOD/focus requests.
     resolved = tuple(
         _bounded_context_display(display, values[..., component])
@@ -413,24 +482,29 @@ def _native_block(
     resolved_by_channel = {display.channel: display for display in resolved}
     encoded_bytes = values.tobytes(order="C")
     digest = hashlib.sha256(encoded_bytes).hexdigest()
-    native_shape = (level_dimensions.x, level_dimensions.y, level_dimensions.z)
-    level_zero = metadata.levels[0].dimensions
-    level_zero_shape = (level_zero.x, level_zero.y, level_zero.z)
-    level_zero_indices = []
-    for sampled, level_length, full_length in zip(
-        (x_indices, y_indices, z_indices), native_shape, level_zero_shape, strict=True
-    ):
-        if level_length <= 1 or full_length <= 1:
-            level_zero_indices.append(np.zeros_like(sampled))
-        else:
-            level_zero_indices.append(
-                np.rint(sampled * (full_length - 1) / (level_length - 1)).astype(np.int64)
+    sampling: dict[str, Any] = {"method": "nearest-whole-extent"}
+    if transformed_sampling is not None:
+        transform, level_zero_indices = transformed_sampling
+        sampling = {
+            "method": "nearest-whole-extent-ngff-transform",
+            "level_zero_index_transform": transform,
+        }
+    else:
+        level_zero_indices = [
+            np.rint(sampled * (full_length - 1) / (length - 1)).astype(np.int64)
+            if length > 1 and full_length > 1 else np.zeros_like(sampled)
+            for sampled, length, full_length in zip(
+                sampled_indices, native_shape, level_zero_shape, strict=True
             )
+        ]
     return {
         "schema_version": 1,
         "role": role,
-        "source_id": source_id,
-        "source_sha256": metadata.sha256,
+        **(
+            {"source_id": source_binding[0], "source_sha256": content_sha256}
+            if source_binding is not None
+            else {}
+        ),
         "t": t,
         "level": level,
         "dimensions_xyz": list(output_shape_xyz),
@@ -460,17 +534,14 @@ def _native_block(
         "data_sha256": digest,
         "byte_length": len(encoded_bytes),
         "sampling": {
-            "method": "nearest-whole-extent",
-            "source_indices_xyz": [
-                x_indices.tolist(),
-                y_indices.tolist(),
-                z_indices.tolist(),
-            ],
+            **sampling,
+            "source_indices_xyz": [indices.tolist() for indices in sampled_indices],
             "level_zero_indices_xyz": [values.tolist() for values in level_zero_indices],
             "aggregate_budget_bytes": budget,
             "estimated_aggregate_bytes": _aggregate_bytes(
                 output_shape_xyz, len(channels), dtype.itemsize
-            ) + peak_source_read_bytes,
+            )
+            + peak_source_read_bytes,
             "peak_source_read_bytes": peak_source_read_bytes,
             "source_read_count": source_read_count,
         },
@@ -495,35 +566,12 @@ def build_volume_payload(
     if metadata.sample_semantics != "none" or metadata.dimensions.s != 1:
         raise ViewerVolumeError("Interleaved RGB samples are not scalar biological channels.")
     target = _integer(target_long_axis, "target_long_axis", 16, MAX_VOLUME_TARGET)
-    budget = _integer(
-        max_decoded_bytes, "max_decoded_bytes", 1024 * 1024, MAX_VOLUME_BUDGET_BYTES
-    )
+    budget = _integer(max_decoded_bytes, "max_decoded_bytes", 1024 * 1024, MAX_VOLUME_BUDGET_BYTES)
     selected_channels = _channels(channel_indices, metadata.dimensions.c)
     selected_t = _integer(t, "t", 0, metadata.dimensions.t - 1)
-    level = _select_level(metadata, target)
-    dimensions = metadata.levels[level].dimensions
-    block_budget = budget // 2 if focus_region_xyzxyz is not None else budget
-    context = _native_block(
-        session,
-        source_id=source_id,
-        t=selected_t,
-        channels=selected_channels,
-        level=level,
-        extent_xyzxyz=(0, dimensions.x - 1, 0, dimensions.y - 1, 0, dimensions.z - 1),
-        target=target,
-        budget=block_budget,
-        role="whole-volume-context",
-        explicit_channel_selection=channel_indices is not None,
-    )
-    context["refinement"] = {
-        "available": level > 0 or context["dimensions_xyz"] != list(
-            (dimensions.x, dimensions.y, dimensions.z)
-        ),
-        "maximum_target_long_axis": MAX_VOLUME_TARGET,
-        "focus_supported": metadata.levels[0].dimensions.z >= 2,
-    }
-
-    focus = None
+    context_budget = budget
+    focus_budget = 0
+    focus_extent = None
     if focus_region_xyzxyz is not None:
         if not isinstance(focus_region_xyzxyz, Sequence) or len(focus_region_xyzxyz) != 6:
             raise ViewerVolumeError("focus_region_xyzxyz must contain six inclusive indices.")
@@ -534,21 +582,51 @@ def build_volume_payload(
         x0, x1, y0, y1, z0, z1 = focus_extent
         if not (0 <= x0 <= x1 < full.x and 0 <= y0 <= y1 < full.y and 0 <= z0 < z1 < full.z):
             raise ViewerVolumeError("The focus region must be a nonempty level-zero 3D extent.")
-        focus = _native_block(
+        # Reserve enough room for native focus samples and the decoder's plane scratch.
+        # Keep at least a quarter of the request for orientation in the whole specimen.
+        focus_shape = _scaled_shape((x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1), target)
+        dtype, _, _ = _output_dtype([metadata.channel_dtypes[c] for c in selected_channels])
+        scalar_budget = _aggregate_bytes(focus_shape, len(selected_channels), dtype.itemsize)
+        scratch = min(MAX_PLANE_READ_BYTES, max(64 * 1024, math.ceil(scalar_budget / 7)))
+        focus_budget = min(budget * 3 // 4, max(budget // 2, scalar_budget + scratch))
+        context_budget = budget - focus_budget
+    region_reader = getattr(session, "region_reader", None)
+    reader = region_reader() if region_reader is not None else nullcontext(session.read_region)
+    with reader as read_region:
+        context = _native_block(
             session,
-            source_id=source_id,
+            read_region,
+            source_binding=(source_id, metadata.sha256),
             t=selected_t,
             channels=selected_channels,
-            level=0,
-            extent_xyzxyz=focus_extent,  # type: ignore[arg-type]
+            focus_extent=None,
             target=target,
-            budget=block_budget,
-            role="level-zero-focus",
+            budget=context_budget,
             explicit_channel_selection=channel_indices is not None,
         )
-        # Focus is a separate spatial payload but belongs to the context's
-        # display session, so it uses the context-derived transfer defaults.
-        focus["components"] = copy.deepcopy(context["components"])
+        context["refinement"] = {
+            "available": context["level"] > 0
+            or context["dimensions_xyz"] != context["source_dimensions_xyz"],
+            "maximum_target_long_axis": MAX_VOLUME_TARGET,
+            "focus_supported": metadata.levels[0].dimensions.z >= 2,
+        }
+
+        focus = None
+        if focus_extent is not None:
+            focus = _native_block(
+                session,
+                read_region,
+                source_binding=(source_id, metadata.sha256),
+                t=selected_t,
+                channels=selected_channels,
+                focus_extent=focus_extent,  # type: ignore[arg-type]
+                target=target,
+                budget=focus_budget,
+                explicit_channel_selection=channel_indices is not None,
+            )
+            # Focus is a separate spatial payload but belongs to the context's
+            # display session, so it uses the context-derived transfer defaults.
+            focus["components"] = copy.deepcopy(context["components"])
     return {"schema_version": 1, "context": context, "focus": focus}
 
 

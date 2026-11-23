@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import { webcrypto } from "node:crypto";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IMouseCameraTrackballRotateManipulatorInitialValues } from "@kitware/vtk.js/Interaction/Manipulators/MouseCameraTrackballRotateManipulator";
+import type vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import type { VolumeSceneAdapter } from "./volume-scene-types";
@@ -11,6 +13,7 @@ const vtk = vi.hoisted(() => ({
   canvas: null as HTMLCanvasElement | null,
   render: vi.fn(),
   resetCamera: vi.fn(),
+  actualCamera: null as vtkCamera | null,
   resetCameraClippingRange: vi.fn(),
   azimuth: vi.fn(),
   elevation: vi.fn(),
@@ -27,6 +30,8 @@ const vtk = vi.hoisted(() => ({
   setFocalPoint: vi.fn(),
   setViewUp: vi.fn(),
   setParallelScale: vi.fn(),
+  setParallelProjection: vi.fn(),
+  setViewAngle: vi.fn(),
   addVolume: vi.fn(),
   addActor: vi.fn(),
   removeVolume: vi.fn(),
@@ -116,14 +121,15 @@ vi.mock("@kitware/vtk.js/Rendering/Misc/GenericRenderWindow", () => ({
           removeActor: vtk.removeActor,
           resetCamera: vtk.resetCamera,
           resetCameraClippingRange: vtk.resetCameraClippingRange,
-          getActiveCamera: () => ({ azimuth: vtk.azimuth, elevation: vtk.elevation,
+          getActiveCamera: () => (vtk.actualCamera ?? { azimuth: vtk.azimuth, elevation: vtk.elevation,
             dolly: vtk.dolly, orthogonalizeViewUp: vtk.orthogonalizeViewUp,
             getPosition: vtk.getPosition, getFocalPoint: vtk.getFocalPoint,
             getViewUp: vtk.getViewUp, getParallelScale: vtk.getParallelScale,
             getClippingRange: vtk.getClippingRange, getViewAngle: vtk.getViewAngle,
             getParallelProjection: vtk.getParallelProjection,
             setPosition: vtk.setPosition, setFocalPoint: vtk.setFocalPoint,
-            setViewUp: vtk.setViewUp, setParallelScale: vtk.setParallelScale }),
+            setViewUp: vtk.setViewUp, setParallelScale: vtk.setParallelScale,
+            setParallelProjection: vtk.setParallelProjection, setViewAngle: vtk.setViewAngle }),
         }),
         getRenderWindow: () => ({ render: vtk.render,
           getInteractor: () => ({ setInteractorStyle: vtk.interactorSetStyle, setDesiredUpdateRate: vtk.interactorSetDesiredUpdateRate }) }),
@@ -306,6 +312,29 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
   });
 
+  it("requests a wide native field with a bounded 64-plane depth", async () => {
+    Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+    const value = context();
+    value.native_level_dimensions_xyz = value.source_dimensions_xyz = [320, 310, 90];
+    value.dimensions_xyz = [2, 2, 2];
+    value.source_extent_xyzxyz = [0, 319, 0, 309, 0, 89];
+    value.sampling.source_indices_xyz = value.sampling.level_zero_indices_xyz = [[0, 319], [0, 309], [0, 89]];
+    value.data_base64 = "AAAAAAAAAAA=";
+    value.data_sha256 = "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc";
+    value.byte_length = 8;
+    value.sampling.estimated_aggregate_bytes = 35;
+    const refine = vi.fn();
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: value, focus: null }} onRequestRefinement={refine} />);
+    await waitFor(() => expect(vtk.addVolume).toHaveBeenCalled());
+    fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
+    fireEvent.change(screen.getByLabelText("Detail span"), { target: { value: "wide" } });
+    fireEvent.click(screen.getByRole("button", { name: "Detail at crosshair" }));
+    const { focus_region_xyzxyz: [x0, x1, y0, y1, z0, z1], target_long_axis } = refine.mock.lastCall![0];
+    expect(target_long_axis).toBe(256);
+    expect([x1 - x0 + 1, y1 - y0 + 1, z1 - z0 + 1]).toEqual([256, 256, 64]);
+    expect(x0 >= 0 && x1 < 320 && y0 >= 0 && y1 < 310 && z0 >= 0 && z1 < 90).toBe(true);
+  });
+
   it("keeps interaction help outside the image canvases and preserves per-plane sampling context", async () => {
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
@@ -313,6 +342,7 @@ describe("RawVolumeViewport lifecycle", () => {
     const summary = screen.getByText("Controls & sampling", { exact: true });
     expect(summary.closest("details")!.open).toBe(false);
     expect(within(screen.getByLabelText("Interactive three-dimensional volume")).queryByText(/Left-drag/)).toBeNull();
+    expect(screen.getByLabelText("3D display sampling").textContent).toContain("Rotating source XYZ axes · image frame");
     for (const plane of ["XY plane", "XZ plane", "YZ plane"]) {
       expect(screen.getByLabelText(`${plane} sampling`).textContent).toBe("Raw: linear · L0");
     }
@@ -440,6 +470,43 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(screen.queryByLabelText("XY plane resliced image")).toBeNull();
   });
 
+  it("picks source coordinates through a translated pyramid and records the rendered MPR sample", async () => {
+    const coarse = context();
+    coarse.level = 1;
+    coarse.source_dimensions_xyz[0] = 5;
+    coarse.origin_xyz[0] = 10.5;
+    coarse.spacing_xyz[0] = 0.8;
+    coarse.affine_4x4[0] = [0.8, 0, 0, 10.5];
+    coarse.sampling.method = "nearest-whole-extent-ngff-transform";
+    coarse.sampling.level_zero_indices_xyz[0] = [1, 3];
+    coarse.sampling.level_zero_index_transform = { scale_xyz: [2, 1, 1], translation_xyz: [1.25, 0, 0] };
+    const exportFigure = vi.fn().mockResolvedValue(null);
+    render(<RawVolumeViewport volume={{ schema_version: 1, context: coarse, focus: null }}
+      onExportFigure={exportFigure} />);
+    const canvas = await screen.findByLabelText("XY plane resliced image");
+    expect(screen.getByLabelText("X source index").textContent).toBe("3");
+    expect(screen.getByText(/World 11.200, 20.000, 32.500 um/)).toBeTruthy();
+
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 100, 100));
+    const pick = new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 50, clientY: 50 });
+    fireEvent(canvas, pick);
+    expect(screen.getByLabelText("X source index").textContent).toBe("2");
+    expect(screen.getByText(/World 10.800, 20.000, 32.500 um/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
+    await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
+    expect(exportFigure.mock.calls[0][0].manifest).toMatchObject({
+      payloads: { context: { sampling: { level_zero_index_transform: coarse.sampling.level_zero_index_transform } } },
+      mpr: {
+        context_display_indices_xyz: [0, 0, 1],
+        active_payload_indices_xyz: [0, 0, 1],
+        source_indices_xyz: [1, 0, 1],
+        world_xyz: [10.5, 20, 32.5],
+      },
+    });
+  });
+
   it("keeps the user in Whole for an excluding delayed focus and returns there when the crosshair leaves", async () => {
     const whole = sparseContext();
     const rendered = render(<RawVolumeViewport volume={{ schema_version: 1, context: whole, focus: null }} />);
@@ -459,6 +526,136 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(screen.getByLabelText("X source index").textContent).toBe("0");
     expect(screen.getByRole("button", { name: "Focus" }).hasAttribute("disabled")).toBe(true);
     expect(rendered.container.querySelector(".raw-volume")?.getAttribute("data-active-view")).toBe("whole-volume-context");
+  });
+
+  it("fits the active focus actor and retains independent orbit, zoom, and display settings", async () => {
+    const { default: VtkRenderer } = await vi.importActual<
+      typeof import("@kitware/vtk.js/Rendering/Core/Renderer")
+    >("@kitware/vtk.js/Rendering/Core/Renderer");
+    const renderer = VtkRenderer.newInstance();
+    const camera = renderer.getActiveCamera();
+    vtk.actualCamera = camera;
+    vtk.resetCamera.mockImplementation(renderer.resetCamera);
+    const pose = () => ({
+      position: [...camera.getPosition()], focal: [...camera.getFocalPoint()],
+      up: [...camera.getViewUp()], scale: camera.getParallelScale(), angle: camera.getViewAngle(),
+    });
+    const distance = () => Math.hypot(...camera.getPosition().map((n, axis) => n - camera.getFocalPoint()[axis]));
+    const whole = sparseContext();
+    const focus = focusAt(2);
+
+    try {
+      const rendered = render(<RawVolumeViewport volume={{ schema_version: 1, context: whole, focus: null }} />);
+      await waitFor(() => expect(vtk.resetCamera).toHaveBeenCalledTimes(1));
+      const wholeActor = vtk.addVolume.mock.calls[0][0];
+      expect(vtk.resetCamera).toHaveBeenLastCalledWith(wholeActor.getBounds());
+      camera.azimuth(24); camera.dolly(1.25);
+      const wholePose = pose(), wholeDistance = distance();
+      const direction = [...camera.getDirectionOfProjection()];
+
+      rendered.rerender(<RawVolumeViewport volume={{ schema_version: 1, context: whole, focus }} />);
+      await waitFor(() => expect(vtk.resetCamera).toHaveBeenCalledTimes(2));
+      const activeActor = vtk.addVolume.mock.calls.at(-1)![0];
+      expect(activeActor.getVisibility()).toBe(true);
+      const bounds = activeActor.getBounds();
+      expect(vtk.resetCamera).toHaveBeenLastCalledWith(bounds);
+      expect(camera.getFocalPoint()).toEqual([
+        (bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2, (bounds[4] + bounds[5]) / 2,
+      ]);
+      camera.getDirectionOfProjection().forEach((value, axis) => expect(value).toBeCloseTo(direction[axis], 9));
+      expect(distance()).toBeLessThan(wholeDistance);
+      const fittedFocus = pose();
+
+      camera.azimuth(-9); camera.dolly(1.3);
+      const focusPose = pose();
+      const scalars = activeActor.getMapper().getInputData().getPointData().getScalars().getData();
+      const original = [...scalars];
+      const activeWindow = rendered.container.querySelector(".raw-volume")?.getAttribute("data-transfer-ranges");
+      fireEvent.change(screen.getByLabelText("3D rendering mode"), { target: { value: "mip" } });
+      expect(pose()).toEqual(focusPose);
+      expect(activeActor.getMapper().getInputData().getPointData().getScalars().getData()).toBe(scalars);
+      expect([...scalars]).toEqual(original);
+      expect(rendered.container.querySelector(".raw-volume")?.getAttribute("data-transfer-ranges")).toBe(activeWindow);
+
+      fireEvent.click(screen.getByRole("button", { name: "Whole" }));
+      expect(pose()).toEqual(wholePose);
+      fireEvent.click(screen.getByRole("button", { name: "Focus" }));
+      expect(pose()).toEqual(focusPose);
+      fireEvent.click(screen.getByRole("button", { name: "Reset camera" }));
+      expect(pose()).toEqual(fittedFocus);
+      expect(vtk.resetCamera).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+      vtk.actualCamera = null;
+      vtk.resetCamera.mockReset();
+      renderer.delete();
+    }
+  });
+
+  it("announces the first rendered context after a browser frame and only then permits automatic refinement", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    const schedule = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const id = ++nextFrameId;
+      frames.set(id, callback);
+      return id;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+    const stepFrame = () => act(() => {
+      const ready = [...frames.values()];
+      frames.clear();
+      ready.forEach((callback) => callback(0));
+    });
+    const coarse = context();
+    coarse.refinement = { available: true, maximum_target_long_axis: 256, focus_supported: true };
+    const volume: RawVolumeResponse = { schema_version: 1, context: coarse, focus: null };
+    const onOpeningVolumeRender = vi.fn();
+    const refine = vi.fn();
+    const mounted = render(<RawVolumeViewport volume={volume} onOpeningVolumeRender={onOpeningVolumeRender}
+      onRequestRefinement={refine} />);
+    try {
+      await screen.findByLabelText("XY plane resliced image");
+      expect(vtk.addVolume).toHaveBeenCalledOnce();
+      await waitFor(() => expect(schedule.mock.calls.length).toBeGreaterThan(1));
+      expect(onOpeningVolumeRender).not.toHaveBeenCalled();
+      stepFrame();
+      expect(onOpeningVolumeRender).not.toHaveBeenCalled();
+      stepFrame();
+      expect(onOpeningVolumeRender).toHaveBeenCalledExactlyOnceWith({ kind: "painted", volume });
+      expect(refine).not.toHaveBeenCalled();
+
+      mounted.rerender(<RawVolumeViewport volume={volume} onRequestRefinement={refine} />);
+      await waitFor(() => expect(refine).toHaveBeenCalledWith({ target_long_axis: 128 }), { timeout: 1_500 });
+    } finally {
+      mounted.unmount();
+      cancel.mockRestore();
+      schedule.mockRestore();
+    }
+  });
+
+  it("reports graphics failure before a pending frame can acknowledge the opening", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    const schedule = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.set(++nextFrameId, callback);
+      return nextFrameId;
+    });
+    const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => { frames.delete(id); });
+    const onOpeningVolumeRender = vi.fn();
+    const volume: RawVolumeResponse = { schema_version: 1, context: context(), focus: null };
+    const mounted = render(<RawVolumeViewport volume={volume} onOpeningVolumeRender={onOpeningVolumeRender} />);
+    try {
+      await screen.findByLabelText("XY plane resliced image");
+      expect(onOpeningVolumeRender).not.toHaveBeenCalled();
+      act(() => { vtk.canvas!.dispatchEvent(new Event("webglcontextlost", { cancelable: true })); });
+      expect(onOpeningVolumeRender).toHaveBeenCalledExactlyOnceWith({ kind: "failed" });
+      act(() => frames.forEach((callback) => callback(0)));
+      expect(onOpeningVolumeRender.mock.calls.every(([status]) => status.kind === "failed")).toBe(true);
+    } finally {
+      mounted.unmount();
+      cancel.mockRestore();
+      schedule.mockRestore();
+    }
   });
 
   it("starts automatic refinement only after the coarse context is bound", async () => {

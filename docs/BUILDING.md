@@ -268,6 +268,42 @@ LOCI_QA_IMAGE=/absolute/path/to/image.tif npm run qa:packaged:mac
 LOCI_QA_FOLDER=/absolute/path/to/image-folder npm run qa:folder-import:mac
 ```
 
+Run the real-fixture 3D entry journey from the repository root against a selected
+macOS package. Supply the independently recorded file SHA-256 or OME-Zarr
+manifest fingerprint and the native XYZ dimensions. The journey uses trusted
+clicks and substitutes only the native file picker. It records whether a 2D
+tile loaded, the time to four rendered panes, process-tree RSS, screenshots,
+and native focus extent and payload size. Use `--route both` to compare direct
+entry with ordinary image import followed by **3D volume**, or `--cases` for a
+JSON array of fixtures. Optional `--center` values are zero-based native XYZ
+indices. Use `--span wide` for a 256 × 256 × 64 focus or `--span 64` for the
+64-voxel setting. Screenshot signal checks exercise the display. Numerical
+voxel fidelity requires separate comparison with the source.
+
+For large multiscale OME-Zarr images, `--expect-preview` exercises the temporary
+volume and XY controls and records time to first preview separately from time to
+the verified workspace. Set `--min-focus-width` for a known tissue-filled crop
+to check its framing and save the native XY and maximum-intensity views.
+`--repeat-open N` measures subsequent File-menu opens in the same study and
+processes. It waits for a newly mounted verified volume after each selection.
+For a diagnostic run, set `LOCI_QA_VOLUME_TIMING=1` to write request handling,
+JSON encoding and stdout transfer times to the worker's local stderr for import,
+display defaults and volume reads. Records contain the operation and timings
+only. Collect ordinary benchmark samples with the variable unset.
+
+Add `--navigate` (or `"navigate": true` per fixture with `--cases`) to
+exercise sustained orbit, pan and native XY slice changes in the four-pane
+focus view. Select a center with visible structure over several adjacent Z
+slices. The report records renderer animation-frame intervals during input,
+pixel changes, 2D request counts, and return to the same source, native
+focus and XY pixels after simulated WebGL context loss. Animation-frame
+intervals describe renderer scheduling. They do not measure presentation rate.
+
+```bash
+node desktop/tests/volume-entry.qa.mjs --app "$APP" --out "$QA_OUTPUT" \
+  --source "$IMAGE" --sha256 "$IMAGE_SHA256" --dimensions "$IMAGE_XYZ" --route both
+```
+
 An optional Cellpose packaged journey can provision one official checkpoint
 through the real UI and assert both profile provenance and a locked expected
 count. Replace the illustrative fixture, checkpoint, and count with authorized

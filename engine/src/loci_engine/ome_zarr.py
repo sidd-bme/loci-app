@@ -16,10 +16,13 @@ import os
 import re
 import stat
 import zlib
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
-from itertools import product
+from itertools import islice, product
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import numcodecs
 import numpy as np
@@ -37,7 +40,13 @@ MAX_STORE_DEPTH = 32
 MAX_PATH_BYTES = 1024
 MAX_LEVELS = 32
 
+_MANIFEST_MIN_PARALLEL_ENTRIES = 128
+_MANIFEST_MIN_PARALLEL_BYTES = 512 * 1024 * 1024
+_MANIFEST_HASH_WORKERS = 4
+_MANIFEST_HASH_BATCH_FILES = 32
+
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_UNSAFE_ENTRY_NAME = re.compile(r"[\x00-\x1f/\\]")
 _AXES = ("t", "c", "z", "y", "x")
 _SPATIAL_UNITS_TO_MICROMETRES = {
     "angstrom": 1e-4,
@@ -183,6 +192,7 @@ class _ArraySpec:
     compressor: dict[str, Any] | None
     codec: OMEZarrCodec
     decoded_chunk_bytes: int
+    blosc_decoder: Blosc | None = None
 
 
 def _safe_relative_path(value: object, name: str, *, allow_empty: bool = False) -> str:
@@ -229,41 +239,62 @@ def _entry_identity(status: os.stat_result, kind: Literal["file", "directory"]) 
     )
 
 
+def _root_dir_identity(root: Path) -> tuple[int, int]:
+    try:
+        status = os.lstat(root)
+    except OSError as exc:
+        raise OMEZarrSourceChangedError(
+            "The OME-Zarr store changed after this session was opened."
+        ) from exc
+    if stat.S_ISLNK(status.st_mode) or not stat.S_ISDIR(status.st_mode):
+        raise OMEZarrSourceChangedError("The OME-Zarr store changed after this session was opened.")
+    return int(status.st_dev), int(status.st_ino)
+
+
+def _entry_os_path(root: Path, relative: str) -> str:
+    root_str = os.fspath(root)
+    if os.sep == "/":
+        return os.path.join(root_str, relative)
+    return os.path.join(root_str, relative.replace("/", os.sep))
+
+
 def _inventory(root: Path) -> dict[str, _EntryIdentity]:
     entries: dict[str, _EntryIdentity] = {}
     total_bytes = 0
 
-    def walk(directory: Path, parts: tuple[str, ...]) -> None:
+    def walk(directory: str, prefix: str, depth: int) -> None:
         nonlocal total_bytes
-        if len(parts) > MAX_STORE_DEPTH:
+        if depth > MAX_STORE_DEPTH:
             raise OMEZarrError("The OME-Zarr store exceeds the supported directory depth.")
         try:
-            children = sorted(os.scandir(directory), key=lambda entry: entry.name)
+            with os.scandir(directory) as scanner:
+                children = sorted(scanner, key=lambda entry: entry.name)
         except OSError as exc:
             raise OMEZarrSourceChangedError(
                 "The OME-Zarr store changed or became unreadable during inventory."
             ) from exc
+        next_depth = depth + 1
         for child in children:
-            child_parts = (*parts, child.name)
-            if len(child_parts) > MAX_STORE_DEPTH:
+            if next_depth > MAX_STORE_DEPTH:
                 raise OMEZarrError("The OME-Zarr store exceeds the supported directory depth.")
-            relative = PurePosixPath(*child_parts).as_posix()
+            name = child.name
+            relative = f"{prefix}/{name}" if prefix else name
             try:
                 encoded_path = relative.encode("utf-8")
             except UnicodeEncodeError as exc:
                 raise OMEZarrError("The OME-Zarr store contains a non-UTF-8 path.") from exc
             if (
-                not relative
+                not name
+                or name in {".", ".."}
                 or len(encoded_path) > MAX_PATH_BYTES
-                or "\\" in relative
-                or any(ord(character) < 32 for character in relative)
+                or _UNSAFE_ENTRY_NAME.search(name) is not None
             ):
                 raise OMEZarrError("The OME-Zarr store contains an unsupported path.")
             try:
                 # DirEntry.stat() reports zero device/inode values on Windows,
-                # while fstat() returns the real file identity. Path.lstat()
+                # while fstat() returns the real file identity. os.lstat()
                 # keeps the no-follow guarantee and produces comparable values.
-                status = Path(child.path).lstat()
+                status = os.lstat(child.path)
             except OSError as exc:
                 raise OMEZarrSourceChangedError(
                     "An OME-Zarr entry changed during inventory."
@@ -274,7 +305,7 @@ def _inventory(root: Path) -> dict[str, _EntryIdentity]:
                 )
             if stat.S_ISDIR(status.st_mode):
                 entries[relative] = _entry_identity(status, "directory")
-                walk(Path(child.path), child_parts)
+                walk(child.path, relative, next_depth)
             elif stat.S_ISREG(status.st_mode):
                 if status.st_nlink != 1:
                     raise OMEZarrUnsupportedError(
@@ -300,7 +331,7 @@ def _inventory(root: Path) -> dict[str, _EntryIdentity]:
                     "The OME-Zarr store exceeds the supported entry count."
                 )
 
-    walk(root, ())
+    walk(os.fspath(root), "", 0)
     return entries
 
 
@@ -335,7 +366,7 @@ def _open_verified_file(
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(root / PurePosixPath(relative), flags)
+        descriptor = os.open(_entry_os_path(root, relative), flags)
         try:
             before = os.fstat(descriptor)
             identity = _entry_identity(before, "file")
@@ -631,6 +662,11 @@ def _array_spec(
             "A declared Zarr chunk exceeds the 256 MiB decoded-chunk limit."
         )
     fill = _fill_value(metadata["fill_value"], dtype)
+    blosc_decoder = (
+        Blosc.from_config({key: value for key, value in compressor.items() if key != "id"})
+        if compressor is not None and compressor["id"] == "blosc"
+        else None
+    )
     return _ArraySpec(
         relative_path=relative_path,
         shape=shape,
@@ -642,6 +678,7 @@ def _array_spec(
         compressor=compressor,
         codec=codec,
         decoded_chunk_bytes=decoded_chunk_bytes,
+        blosc_decoder=blosc_decoder,
     )
 
 
@@ -686,23 +723,55 @@ def _micrometre_xy(
     )
 
 
+def _manifest_file_hashes(
+    root: Path, entries: dict[str, _EntryIdentity]
+) -> Iterator[tuple[str, int, str]]:
+    files = (
+        (relative, identity.size)
+        for relative, identity in sorted(entries.items())
+        if identity.kind == "file"
+    )
+    if (
+        len(entries) < _MANIFEST_MIN_PARALLEL_ENTRIES
+        or sum(identity.size for identity in entries.values()) < _MANIFEST_MIN_PARALLEL_BYTES
+    ):
+        for relative, size in files:
+            yield relative, size, _verified_file_sha256(root, relative, entries)
+        return
+
+    def hash_batch(batch: tuple[tuple[str, int], ...]) -> list[tuple[str, int, str]]:
+        return [
+            (relative, size, _verified_file_sha256(root, relative, entries))
+            for relative, size in batch
+        ]
+
+    # Keep one verified descriptor per worker. Limit queued batches and consume
+    # results in path order, irrespective of the order in which reads finish.
+    batch_size = _MANIFEST_HASH_BATCH_FILES
+    window_size = batch_size * _MANIFEST_HASH_WORKERS * 2
+    with ThreadPoolExecutor(max_workers=_MANIFEST_HASH_WORKERS) as pool:
+        while window := tuple(islice(files, window_size)):
+            batches = (
+                window[offset : offset + batch_size] for offset in range(0, len(window), batch_size)
+            )
+            for batch in pool.map(hash_batch, batches):
+                yield from batch
+
+
 def _content_manifest(root: Path, entries: dict[str, _EntryIdentity]) -> tuple[str, int, int]:
     digest = hashlib.sha256()
     count = 0
     total = 0
-    for relative, identity in sorted(entries.items()):
-        if identity.kind != "file":
-            continue
-        file_digest = _verified_file_sha256(root, relative, entries)
+    for relative, size, file_digest in _manifest_file_hashes(root, entries):
         record = {
-            "bytes": identity.size,
+            "bytes": size,
             "path": relative,
             "sha256": file_digest,
         }
         digest.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
         digest.update(b"\n")
         count += 1
-        total += identity.size
+        total += size
     return digest.hexdigest(), count, total
 
 
@@ -716,7 +785,7 @@ def _verified_file_sha256(root: Path, relative: str, entries: dict[str, _EntryId
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
-        descriptor = os.open(root / PurePosixPath(relative), flags)
+        descriptor = os.open(_entry_os_path(root, relative), flags)
         try:
             before = os.fstat(descriptor)
             if (
@@ -785,25 +854,14 @@ def _bounded_zlib_decode(encoded: bytes, expected_bytes: int, *, gzip: bool) -> 
     return decoded
 
 
-class OMEZarrSession:
-    """Read-only session for one explicitly selected local OME-NGFF image group."""
+class _LocalZarrReader:
+    """Decode metadata and chunks against one captured local inventory."""
 
     def __init__(
-        self,
-        root: str | Path,
-        *,
-        image_group: str = "",
-        multiscale_index: int | None = None,
-        expected_content_manifest_sha256: str | None = None,
+        self, root: str | Path, *, image_group: str = "", multiscale_index: int | None = None
     ) -> None:
-        if expected_content_manifest_sha256 is not None and (
-            not isinstance(expected_content_manifest_sha256, str)
-            or not _SHA256.fullmatch(expected_content_manifest_sha256)
-        ):
-            raise OMEZarrError(
-                "expected_content_manifest_sha256 must be 64 lowercase hexadecimal characters."
-            )
         self._root = _root_path(root)
+        self._root_dir_id = _root_dir_identity(self._root)
         self._image_group = _safe_relative_path(image_group, "image_group", allow_empty=True)
         before = _inventory(self._root)
         _validate_group(self._root, "", before)
@@ -926,18 +984,13 @@ class OMEZarrSession:
                 )
             )
             specs.append(spec)
-        after = _inventory(self._root)
-        if before != after:
-            raise OMEZarrSourceChangedError(
-                "The OME-Zarr store changed while its metadata was opened."
-            )
-        self._entries = after
+        self._entries = before
         self._specs = tuple(specs)
         self._axis_names = axis_names
-        self._inventory_sha256 = _inventory_digest(after)
-        file_count = sum(item.kind == "file" for item in after.values())
-        directory_count = sum(item.kind == "directory" for item in after.values())
-        source_size = sum(item.size for item in after.values() if item.kind == "file")
+        self._inventory_sha256 = _inventory_digest(self._entries)
+        file_count = sum(item.kind == "file" for item in self._entries.values())
+        directory_count = sum(item.kind == "directory" for item in self._entries.values())
+        source_size = sum(item.size for item in self._entries.values() if item.kind == "file")
         # Optional display labels belong to the selected channel axis. Other OMERO
         # fields carry rendering advice, not biological declarations.
         omero = attributes.get("omero")
@@ -970,25 +1023,27 @@ class OMEZarrSession:
             numcodecs_version=numcodecs.__version__,
             strict_content_manifest_sha256=None,
         )
-        if expected_content_manifest_sha256 is not None:
-            receipt = self.verify_strict()
-            if not hmac.compare_digest(
-                receipt.content_manifest_sha256, expected_content_manifest_sha256
-            ):
-                raise OMEZarrSourceChangedError(
-                    "The OME-Zarr store does not match the expected content-manifest SHA-256."
-                )
+        self._opening_receipt: OMEZarrIntegrityReceipt | None = None
+
+    @property
+    def opening_receipt(self) -> OMEZarrIntegrityReceipt | None:
+        """Return the strict content-manifest receipt verified during session open, if any."""
+
+        return self._opening_receipt
 
     def _verify_inventory(self) -> None:
-        if _inventory(self._root) != self._entries:
+        if (
+            _root_dir_identity(self._root) != self._root_dir_id
+            or _inventory(self._root) != self._entries
+            or _root_dir_identity(self._root) != self._root_dir_id
+        ):
             raise OMEZarrSourceChangedError(
                 "The OME-Zarr store changed after this session was opened."
             )
 
-    def verify_strict(self) -> OMEZarrIntegrityReceipt:
-        """Hash every regular file into a deterministic, path-relative manifest."""
-
-        self._verify_inventory()
+    def _verify_strict(self, *, verify_before: bool) -> OMEZarrIntegrityReceipt:
+        if verify_before:
+            self._verify_inventory()
         digest, count, size = _content_manifest(self._root, self._entries)
         self._verify_inventory()
         receipt = OMEZarrIntegrityReceipt(
@@ -999,6 +1054,11 @@ class OMEZarrSession:
         )
         self.metadata = replace(self.metadata, strict_content_manifest_sha256=digest)
         return receipt
+
+    def verify_strict(self) -> OMEZarrIntegrityReceipt:
+        """Hash every regular file into a deterministic, path-relative manifest."""
+
+        return self._verify_strict(verify_before=True)
 
     def _chunk_relative(self, spec: _ArraySpec, coordinate: tuple[int, ...]) -> str:
         key = spec.dimension_separator.join(str(item) for item in coordinate)
@@ -1028,10 +1088,12 @@ class OMEZarrSession:
                     gzip=spec.compressor["id"] == "gzip",
                 )
             else:
-                configuration = {
-                    key: value for key, value in spec.compressor.items() if key != "id"
-                }
-                decoder = Blosc.from_config(configuration)
+                decoder = spec.blosc_decoder
+                if decoder is None:
+                    configuration = {
+                        key: value for key, value in spec.compressor.items() if key != "id"
+                    }
+                    decoder = Blosc.from_config(configuration)
                 output_buffer = bytearray(spec.decoded_chunk_bytes)
                 decoded = decoder.decode(encoded, out=output_buffer)
             buffer = memoryview(decoded)
@@ -1044,16 +1106,50 @@ class OMEZarrSession:
         except (TypeError, ValueError) as exc:
             raise OMEZarrError("A decoded Zarr chunk has an invalid numeric layout.") from exc
 
+    def plane_reader(self) -> AbstractContextManager[Callable[[OMEZarrPlaneRequest], OMEZarrPlane]]:
+        """Bind store inventory at both ends of a batch of per-chunk verified plane reads."""
+        return self._plane_reader(verify_before=True)
+
+    @contextmanager
+    def _plane_reader(
+        self, *, verify_before: bool
+    ) -> Iterator[Callable[[OMEZarrPlaneRequest], OMEZarrPlane]]:
+        if verify_before:
+            self._verify_inventory()
+        active = True
+        source_changed = False
+
+        def read_verified(request: OMEZarrPlaneRequest) -> OMEZarrPlane:
+            nonlocal source_changed
+            if not active:
+                raise OMEZarrError("This OME-Zarr plane reader is closed.")
+            if source_changed:
+                raise OMEZarrSourceChangedError(
+                    "The OME-Zarr store changed during this transaction."
+                )
+            try:
+                return self._read_plane(request, check_inventory=False)
+            except OMEZarrSourceChangedError:
+                source_changed = True
+                raise
+
+        try:
+            yield read_verified
+        finally:
+            active = False
+        if source_changed:
+            raise OMEZarrSourceChangedError("The OME-Zarr store changed during this transaction.")
+        self._verify_inventory()
+
     def iter_verified_planes(self, requests):
         """Read a transaction's tiles, binding the inventory at both ends of iteration.
 
         Each encoded chunk is opened against its captured identity. Only the completed
         iterator has passed the final inventory check; conversion publishes afterwards.
         """
-        self._verify_inventory()
-        for request in requests:
-            yield self._read_plane(request, check_inventory=False)
-        self._verify_inventory()
+        with self.plane_reader() as read_plane:
+            for request in requests:
+                yield read_plane(request)
 
     def read_plane(self, request: OMEZarrPlaneRequest) -> OMEZarrPlane:
         return self._read_plane(request, check_inventory=True)
@@ -1205,8 +1301,54 @@ class OMEZarrSession:
     def close(self) -> None:
         """Retained for symmetry with native reader sessions; no handle remains open."""
 
-    def __enter__(self) -> OMEZarrSession:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_args: object) -> None:
         self.close()
+
+
+class OMEZarrSession(_LocalZarrReader):
+    """Read-only session for one explicitly selected local OME-NGFF image group."""
+
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        image_group: str = "",
+        multiscale_index: int | None = None,
+        expected_content_manifest_sha256: str | None = None,
+        strict: bool = False,
+    ) -> None:
+        if not isinstance(strict, bool):
+            raise OMEZarrError("strict must be a boolean.")
+        if expected_content_manifest_sha256 is not None and (
+            not isinstance(expected_content_manifest_sha256, str)
+            or not _SHA256.fullmatch(expected_content_manifest_sha256)
+        ):
+            raise OMEZarrError(
+                "expected_content_manifest_sha256 must be 64 lowercase hexadecimal characters."
+            )
+        super().__init__(root, image_group=image_group, multiscale_index=multiscale_index)
+        if expected_content_manifest_sha256 is not None or strict:
+            receipt = self._verify_strict(verify_before=False)
+            if expected_content_manifest_sha256 is not None and not hmac.compare_digest(
+                receipt.content_manifest_sha256, expected_content_manifest_sha256
+            ):
+                raise OMEZarrSourceChangedError(
+                    "The OME-Zarr store does not match the expected content-manifest SHA-256."
+                )
+            self._opening_receipt = receipt
+        else:
+            self._verify_inventory()
+
+
+@contextmanager
+def _opening_plane_reader(
+    path: str,
+) -> Iterator[tuple[OMEZarrMetadata, Callable[[OMEZarrPlaneRequest], OMEZarrPlane]]]:
+    """One-shot display reads from a newly inventoried, non-content-verified store."""
+    # The initial inventory binds both metadata and chunks. The transaction
+    # rechecks the whole inventory and root before the caller publishes pixels.
+    with _LocalZarrReader(path) as store, store._plane_reader(verify_before=False) as read_plane:
+        yield store.metadata, read_plane

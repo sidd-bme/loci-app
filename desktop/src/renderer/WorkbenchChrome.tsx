@@ -1,6 +1,7 @@
 import {
   ArchiveRestore,
   ArrowLeftRight,
+  Box,
   Boxes,
   ChevronDown,
   ChevronRight,
@@ -398,9 +399,10 @@ function updatedLabel(value?: string) {
   }).format(date)}`;
 }
 
-export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onConvert, onExample, state, onRecovery, onError,
+export function ImageWelcome({ api, onOpen, onOpenVolumeImage, onStudy, onLegacy, onEmptyStudy, onConvert, onExample, state, onRecovery, onError,
   dragActive = false, busy = false }: {
   api: ResearchDesktopApi; onOpen: (kind?: "files" | "folder" | "dicom" | "ome_zarr") => void;
+  onOpenVolumeImage?: () => void;
   onStudy: () => void; onLegacy: () => void; state: ManagedSessionState;
   onEmptyStudy?: () => void;
   onExample?: () => void;
@@ -434,6 +436,7 @@ export function ImageWelcome({ api, onOpen, onStudy, onLegacy, onEmptyStudy, onC
     <section className="welcome-open-section" aria-label="Open data">
     <div className="welcome-main-actions">
       <button aria-label="Open images" className="welcome-open" disabled={busy} onClick={() => onOpen()}><ImagePlus /><span>Open images</span><kbd aria-hidden="true">{workbenchModifier()}O</kbd></button>
+      {onOpenVolumeImage && <button type="button" disabled={busy} onClick={onOpenVolumeImage}><Box aria-hidden="true" /><span>Open image in 3D…</span></button>}
       <button aria-label="Open folder" disabled={busy} onClick={() => onOpen("folder")}><FolderOpen /><span>Open folder</span><kbd aria-hidden="true">{workbenchModifier()}⇧O</kbd></button>
       <button aria-label="Open study" disabled={busy} onClick={onStudy}><Database /><span>Open study</span><kbd aria-hidden="true">{workbenchModifier()}⇧P</kbd></button>
     </div>

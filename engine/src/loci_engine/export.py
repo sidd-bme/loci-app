@@ -17,14 +17,14 @@ import unicodedata
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import tifffile
 from PIL import Image
 
-from .render import render_overlay_rgb
-from .results import CachedAnalysis
+if TYPE_CHECKING:
+    from .results import CachedAnalysis
 
 MEASUREMENT_FIELDS = (
     "cell_id",
@@ -369,6 +369,8 @@ def _sha256_at(directory_descriptor: int, filename: str) -> str:
 
 
 def _write_overlay_at(filename: str, staging_descriptor: int, result: CachedAnalysis) -> None:
+    from .render import render_overlay_rgb
+
     overlay = render_overlay_rgb(
         result.output.normalized,
         result.output.labels,
@@ -469,6 +471,8 @@ def _reserve_bundle(
 
 
 def _write_overlay(path: Path, result: CachedAnalysis) -> None:
+    from .render import render_overlay_rgb
+
     overlay = render_overlay_rgb(
         result.output.normalized,
         result.output.labels,

@@ -1,5 +1,8 @@
 import type { RawVolumeComponent, RawVolumePayload } from "./RawVolumeViewport";
 
+export type MprPayload = Pick<RawVolumePayload,
+  "dimensions_xyz" | "origin_xyz" | "spacing_xyz" | "direction_3x3" | "frame" | "components">;
+
 export type Vec3 = [number, number, number];
 export type MprPlane = {
   id: "axial" | "coronal" | "sagittal";
@@ -18,7 +21,7 @@ export type MprScalars = Uint8Array | Int8Array | Uint16Array | Int16Array | Uin
 
 export const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
-export function indexToWorld(payload: RawVolumePayload, index: Vec3): Vec3 {
+export function indexToWorld(payload: MprPayload, index: Vec3): Vec3 {
   return [0, 1, 2].map((row) => payload.origin_xyz[row] + [0, 1, 2].reduce(
     (sum, col) => sum + payload.direction_3x3[col * 3 + row] * payload.spacing_xyz[col] * index[col], 0,
   )) as Vec3;
@@ -26,14 +29,14 @@ export function indexToWorld(payload: RawVolumePayload, index: Vec3): Vec3 {
 
 // The payload validator requires an orthonormal direction matrix. Its inverse
 // is the transpose; anisotropic spacing is removed after this rotation.
-export function worldToIndex(payload: RawVolumePayload, world: Vec3): Vec3 {
+export function worldToIndex(payload: MprPayload, world: Vec3): Vec3 {
   const delta = world.map((value, axis) => value - payload.origin_xyz[axis]);
   return [0, 1, 2].map((col) => [0, 1, 2].reduce(
     (sum, row) => sum + payload.direction_3x3[col * 3 + row] * delta[row], 0,
   ) / payload.spacing_xyz[col]) as Vec3;
 }
 
-export function mprPlanes(payload: RawVolumePayload): MprPlane[] {
+export function mprPlanes(payload: MprPayload): MprPlane[] {
   if (payload.frame === "image") {
     const basis = [0, 1, 2].map((axis) => payload.direction_3x3.slice(axis * 3, axis * 3 + 3) as Vec3);
     return [
@@ -52,7 +55,7 @@ export function mprPlanes(payload: RawVolumePayload): MprPlane[] {
   ];
 }
 
-export function planeGrid(payload: RawVolumePayload, plane: MprPlane, crosshair: Vec3): MprGrid {
+export function planeGrid(payload: MprPayload, plane: MprPlane, crosshair: Vec3): MprGrid {
   const corners: Vec3[] = [];
   for (const x of [0, payload.dimensions_xyz[0] - 1])
     for (const y of [0, payload.dimensions_xyz[1] - 1])
@@ -72,7 +75,7 @@ export function planePoint(plane: MprPlane, grid: MprGrid, x: number, y: number)
   return [0, 1, 2].map((axis) => plane.u[axis] * u + plane.v[axis] * v + plane.normal[axis] * grid.normalPosition) as Vec3;
 }
 
-export function sampleTrilinear(payload: RawVolumePayload, values: MprScalars, index: Vec3, component: number): number | null {
+export function sampleTrilinear(payload: MprPayload, values: MprScalars, index: Vec3, component: number): number | null {
   const dims = payload.dimensions_xyz;
   if (index.some((value, axis) => !Number.isFinite(value) || value < -1e-6 || value > dims[axis] - 1 + 1e-6)) return null;
   const p = index.map((value, axis) => Math.max(0, Math.min(dims[axis] - 1, value)));
@@ -86,7 +89,7 @@ export function sampleTrilinear(payload: RawVolumePayload, values: MprScalars, i
   return sum;
 }
 
-export function renderMpr(payload: RawVolumePayload, values: MprScalars, plane: MprPlane, grid: MprGrid, transfers: RawVolumeComponent[]): Uint8ClampedArray {
+export function renderMpr(payload: MprPayload, values: MprScalars, plane: MprPlane, grid: MprGrid, transfers: RawVolumeComponent[]): Uint8ClampedArray {
   const output = new Uint8ClampedArray(grid.width * grid.height * 4);
   // The world-to-index mapping is affine. Transform three points once instead
   // of allocating and multiplying matrices for every rendered pixel.

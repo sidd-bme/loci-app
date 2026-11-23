@@ -144,6 +144,24 @@ def test_focus_brick_is_level_zero_and_context_remains_present():
     assert result["focus"]["origin_xyz"] == [12.0, 24.8, 37.5]
 
 
+def test_wide_two_channel_focus_keeps_native_voxels_inside_total_budget():
+    session = _FakeSession(_metadata(shape=(289, 285, 86)))
+    extent = [12, 267, 8, 263, 9, 72]
+    reply = build_volume_payload(
+        session, source_id="wide", focus_region_xyzxyz=extent, target_long_axis=256
+    )
+    focus = reply["focus"]
+    assert focus["dimensions_xyz"] == [256, 256, 64]
+    for axis, lo, hi in zip(
+        focus["sampling"]["source_indices_xyz"], extent[::2], extent[1::2], strict=True
+    ):
+        assert axis == list(range(lo, hi + 1))
+    assert reply["context"]["source_extent_xyzxyz"] == [0, 288, 0, 284, 0, 85]
+    budgets = [reply[key]["sampling"] for key in ("context", "focus")]
+    assert sum(s["aggregate_budget_bytes"] for s in budgets) == 128 * 1024**2
+    assert all(s["estimated_aggregate_bytes"] <= s["aggregate_budget_bytes"] for s in budgets)
+
+
 def test_refuses_non_volume_rgb_and_sheared_geometry():
     metadata = _metadata(shape=(10, 10, 1))
     with pytest.raises(ViewerVolumeError, match="two source Z"):
@@ -233,3 +251,21 @@ def test_focus_uses_its_whole_context_transfer_defaults():
         "bounded-context-"
     )
     assert finer["focus"]["components"] == finer["context"]["components"]
+
+
+def test_xy_pyramid_preserves_requested_detail_when_z_is_unchanged():
+    from dataclasses import replace
+
+    # Published IDR 6001240 pyramid sizes in XYZ. All three levels retain the 236 Z planes.
+    full = _metadata(shape=(271, 275, 236), channels=1, times=1)
+    levels = tuple(
+        NativeLevel(i, replace(full.dimensions, x=x, y=y), None)
+        for i, (x, y) in enumerate(((271, 275), (135, 137), (67, 68)))
+    )
+    session = _FakeSession(replace(full, levels=levels))
+    volume = build_volume_payload(session, source_id="anisotropic", target_long_axis=128)
+    context = volume["context"]
+    assert context["level"] == 1
+    assert context["dimensions_xyz"] == [126, 128, 110]
+    assert context["source_extent_xyzxyz"] == [0, 134, 0, 136, 0, 235]
+    assert all(read.level == 1 for read in session.reads)

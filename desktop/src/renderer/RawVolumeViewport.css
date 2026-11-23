@@ -22,7 +22,6 @@
 .raw-volume-stage { position: relative; flex: 1 1 0; min-height: 0; overflow: hidden; outline: none; }
 .raw-volume-stage canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 .raw-volume-stage canvas:active { cursor: grabbing; }
-.raw-volume-frame-label { position: absolute; z-index: 2; top: 8px; left: 8px; padding: 4px 6px; border-radius: 4px; background: rgb(0 0 0 / 48%); color: rgb(255 255 255 / 64%); font-size: var(--type-3xs); pointer-events: none; }
 .raw-volume-slices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; }
 .raw-volume-slices label { min-width: 0; }
 .raw-volume-slices input { flex: 1; width: 100%; min-width: 0; }

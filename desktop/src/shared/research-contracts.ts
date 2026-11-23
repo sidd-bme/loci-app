@@ -1,6 +1,7 @@
 import type { ResearchPerinuclearRecord } from "./perinuclear-contracts";
 import type { ScientificExportRequest, ScientificExportPreview, ScientificExportReceipt } from "./scientific-export-contracts";
 import type { StatisticsFigureExportRequest, StatisticsFigureExportReceipt } from "./statistics-figure-contracts";
+import type { VolumeOpeningPreviewEvent } from "./volume-opening-preview";
 /** Renderer-safe records for the native research workbench bridge. */
 export interface ResearchDimensions {
   t: number;
@@ -678,6 +679,10 @@ export interface ResearchSnapshot {
   operations: Record<string, { mutates: boolean; summary: string; agent_execution?: "read" | "task" }>;
   agent_sessions?: ResearchAgentSessionsSnapshot;
 }
+export interface ResearchImageImportReceipt {
+  snapshot: ResearchSnapshot;
+  imported_sources: Array<Pick<ResearchSource, "id" | "sha256">>;
+}
 export interface ResearchSelection {
   x: number;
   y: number;
@@ -689,6 +694,12 @@ export interface ResearchSelection {
   z_stop?: number;
   level: number;
 }
+
+/** Continuous level-zero XYZ is the native level XYZ times scale plus translation. */
+export type VolumeLevelZeroIndexTransform = {
+  scale_xyz: [number, number, number];
+  translation_xyz: [number, number, number];
+};
 
 export type VolumeFigurePayloadRecord = {
   role: "whole-volume-context" | "level-zero-focus" | "native-detail-focus";
@@ -714,6 +725,7 @@ export type VolumeFigurePayloadRecord = {
     method: string;
     source_indices_xyz: [number[], number[], number[]];
     level_zero_indices_xyz: [number[], number[], number[]];
+    level_zero_index_transform?: VolumeLevelZeroIndexTransform;
   };
 };
 
@@ -1017,6 +1029,8 @@ export interface ResearchDesktopApi {
   importSourceAnnotations?(binding: { source_id: string; source_sha256: string; expected_revision: number }): Promise<unknown | null>;
   importLegacyProject?(): Promise<{ snapshot: ResearchSnapshot; receipt: Record<string, unknown> } | null>;
   openImages?(kind?: "files" | "folder" | "dicom" | "ome_zarr"): Promise<ResearchSnapshot | null>;
+  openVolumeImage?(previewRequestId?: string): Promise<ResearchImageImportReceipt | null>;
+  onVolumeOpeningPreview?(listener: (event: VolumeOpeningPreviewEvent) => void): () => void;
   openDropped?(files: File[]): Promise<ResearchSnapshot | null>;
   sessionState?(): Promise<ManagedSessionState>;
   newSession?(): Promise<ManagedSessionState>;

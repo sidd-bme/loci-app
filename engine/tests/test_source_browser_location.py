@@ -110,6 +110,61 @@ def test_changed_registered_file_keeps_existing_import_failure_and_grouping(tmp_
     assert project.list_sources() == [source]
 
 
+def test_import_receipt_binds_exact_selected_source_even_with_a_shared_basename(tmp_path):
+    project = ResearchProject.create(tmp_path / "study.loci-study", "Import bindings")
+    first = _source(tmp_path / "private-first", "stack.tif")
+    second = _source(tmp_path / "private-second", "stack.tif", offset=10)
+    params = {"project": str(project.root), "kind": "files"}
+
+    ordinary = dispatch_research("research_import", {**params, "paths": [str(first)]})
+    assert "imported_sources" not in ordinary
+    original = ordinary["sources"][0]
+    receipt = dispatch_research(
+        "research_import", {**params, "paths": [str(second)], "include_import_receipt": True}
+    )
+    new = next(
+        source for source in receipt["snapshot"]["sources"] if source["id"] != original["id"]
+    )
+    assert new["name"] == original["name"] == "stack.tif"
+    assert receipt["imported_sources"] == [{"id": new["id"], "sha256": new["sha256"]}]
+    assert new["sha256"] == hashlib.sha256(second.read_bytes()).hexdigest()
+    assert "private-first" not in json.dumps(receipt)
+    assert "private-second" not in json.dumps(receipt)
+    assert str(tmp_path) not in json.dumps(receipt)
+
+    original_binding = {"id": original["id"], "sha256": original["sha256"]}
+    reopen_params = {**params, "paths": [str(first)], "include_import_receipt": True}
+    duplicate = dispatch_research("research_import", reopen_params)
+    assert duplicate["imported_sources"] == [original_binding]
+    closed = dispatch_research(
+        "research_workspace_visibility",
+        {
+            "project": str(project.root),
+            "request": {
+                "expected_revision": receipt["snapshot"]["workspace"]["revision"],
+                "sources": [{**original_binding, "visible": False}],
+                "results": [],
+            },
+        },
+    )
+    assert [source["id"] for source in closed["sources"]] == [new["id"]]
+    reopened = dispatch_research("research_import", reopen_params)
+    assert reopened["imported_sources"] == [original_binding]
+    reopened_ids = {source["id"] for source in reopened["snapshot"]["sources"]}
+    assert reopened_ids == {original["id"], new["id"]}
+
+    for invalid in (1, "true", None):
+        with pytest.raises(ValueError, match="must be a boolean"):
+            dispatch_research(
+                "research_import", {**reopen_params, "include_import_receipt": invalid}
+            )
+    with pytest.raises(ValueError, match="invalid fields"):
+        dispatch_research("research_import", {**reopen_params, "extra": True})
+    _source(first.parent, "stack.tif", offset=20)
+    with pytest.raises(ValueError, match="changed"):
+        dispatch_research("research_import", reopen_params)
+
+
 def test_relinked_historical_path_collision_does_not_fail_new_import(tmp_path):
     project = ResearchProject.create(tmp_path / "history.loci-study", "History")
     folder = tmp_path / "collection"

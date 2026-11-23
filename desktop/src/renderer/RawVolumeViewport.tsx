@@ -1,3 +1,4 @@
+import { decodeVolumeBytes, volumeByteDigest, VOLUME_SCALAR_ENCODINGS as TYPE_INFO } from "./volume-bytes";
 import "@kitware/vtk.js/Rendering/Profiles/Volume";
 import "@kitware/vtk.js/Rendering/Profiles/Geometry";
 import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
@@ -15,6 +16,7 @@ import vtkInteractorStyleManipulator from "@kitware/vtk.js/Interaction/Style/Int
 import vtkOrientationMarkerWidget from "@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget";
 import { Corners } from "@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget/Constants";
 import vtkAxesActor from "@kitware/vtk.js/Rendering/Core/AxesActor";
+import type vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 import vtkColorTransferFunction from "@kitware/vtk.js/Rendering/Core/ColorTransferFunction";
 import vtkImageMapper from "@kitware/vtk.js/Rendering/Core/ImageMapper";
 import { SlicingMode } from "@kitware/vtk.js/Rendering/Core/ImageMapper/Constants";
@@ -24,7 +26,9 @@ import vtkVolumeMapper from "@kitware/vtk.js/Rendering/Core/VolumeMapper";
 import { BlendMode } from "@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants";
 import vtkGenericRenderWindow from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
 import { type KeyboardEvent as ReactKeyboardEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { VolumeFigureExportReceipt, VolumeFigureExportRequest, VolumeFigurePayloadRecord } from "../shared/research-contracts";
+import type { VolumeFigureExportReceipt, VolumeFigureExportRequest, VolumeFigurePayloadRecord, VolumeLevelZeroIndexTransform } from "../shared/research-contracts";
+import { validateVolumeFocusGeometry, validateVolumeLevelZeroSampling, volumeLevelZeroGeometry,
+  worldAtVolumeIndex } from "../shared/volume-coordinate-mapping";
 import { HistogramPlot, type HistogramRecord } from "./DisplayHistogram";
 import { buildRawVolumeHistograms, type RawVolumeHistogramRecord } from "./raw-volume-histogram";
 import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, SlidersHorizontal } from "lucide-react";
@@ -87,6 +91,7 @@ export type RawVolumePayload = {
     method: string;
     source_indices_xyz: [number[], number[], number[]];
     level_zero_indices_xyz: [number[], number[], number[]];
+    level_zero_index_transform?: VolumeLevelZeroIndexTransform;
     aggregate_budget_bytes: number;
     estimated_aggregate_bytes: number;
   };
@@ -103,18 +108,61 @@ export type RawVolumeResponse = {
   focus: RawVolumePayload | null;
 };
 
+export type RawVolumeOpeningRenderStatus =
+  | { kind: "painted"; volume: RawVolumeResponse }
+  | { kind: "failed" };
+
 export type RawVolumeRefinementRequest = {
   target_long_axis: number;
   focus_region_xyzxyz?: [number, number, number, number, number, number];
 };
 
 type CameraSnapshot = {
-  binding: string;
-  position: number[];
-  focalPoint: number[];
-  viewUp: number[];
-  parallelScale?: number;
+  position: Vec3;
+  focalPoint: Vec3;
+  viewUp: Vec3;
+  parallelProjection: boolean;
+  parallelScale: number;
+  viewAngle: number;
 };
+
+type ExtentCamera = {
+  key: string;
+  fitted: CameraSnapshot;
+  pose: CameraSnapshot;
+};
+
+type VolumeCameras = {
+  binding: string;
+  context: ExtentCamera | null;
+  focus: ExtentCamera | null;
+};
+
+function readVolumeCamera(camera: vtkCamera): CameraSnapshot {
+  return {
+    position: [...camera.getPosition()] as Vec3,
+    focalPoint: [...camera.getFocalPoint()] as Vec3,
+    viewUp: [...camera.getViewUp()] as Vec3,
+    parallelProjection: camera.getParallelProjection(),
+    parallelScale: camera.getParallelScale(),
+    viewAngle: camera.getViewAngle(),
+  };
+}
+
+function restoreVolumeCamera(camera: vtkCamera, pose: CameraSnapshot) {
+  camera.setPosition(...pose.position);
+  camera.setFocalPoint(...pose.focalPoint);
+  camera.setViewUp(...pose.viewUp);
+  camera.setParallelProjection(pose.parallelProjection);
+  camera.setParallelScale(pose.parallelScale);
+  camera.setViewAngle(pose.viewAngle);
+}
+
+function focusCameraKey(payload: RawVolumePayload): string {
+  return JSON.stringify([
+    payload.source_extent_xyzxyz, payload.dimensions_xyz, payload.affine_4x4,
+  ]);
+}
 
 const sceneKey = (value: unknown): string => JSON.stringify(value, (_key, v) =>
   v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v);
@@ -137,18 +185,11 @@ type Props = {
   onCorrectLabel?: (label: number, localZ: number) => void;
   sceneHandleRef?: RefObject<VolumeSceneAdapter | null>;
   onSceneChange?: () => void;
+  onOpeningVolumeRender?: (status: RawVolumeOpeningRenderStatus) => void;
   locateRequest?: number;
 };
 
 type TransferState = RawVolumeComponent & { opacity: number; visible: boolean };
-type TypedScalars =
-  | Uint8Array
-  | Int8Array
-  | Uint16Array
-  | Int16Array
-  | Uint32Array
-  | Int32Array
-  | Float32Array;
 
 export type VolumeRenderMode = "blend" | "normal_shading" | "mip" | "average" | "minip";
 
@@ -205,15 +246,6 @@ const MAX_SCALAR_BYTES = 64 * 1024 * 1024;
 const MAX_AGGREGATE_BYTES = 128 * 1024 * 1024;
 const MAX_FIGURE_EDGE = 8192;
 const MAX_FIGURE_PIXELS = 16 * 1024 * 1024;
-const TYPE_INFO: Record<RawVolumeScalarType, [number, (buffer: ArrayBuffer) => TypedScalars]> = {
-  uint8: [1, (buffer) => new Uint8Array(buffer)],
-  int8: [1, (buffer) => new Int8Array(buffer)],
-  uint16: [2, (buffer) => new Uint16Array(buffer)],
-  int16: [2, (buffer) => new Int16Array(buffer)],
-  uint32: [4, (buffer) => new Uint32Array(buffer)],
-  int32: [4, (buffer) => new Int32Array(buffer)],
-  float32: [4, (buffer) => new Float32Array(buffer)],
-};
 
 function finiteVector(value: unknown, count: number, positive = false): value is number[] {
   return (
@@ -228,11 +260,6 @@ function finiteVector(value: unknown, count: number, positive = false): value is
 const VOLUME_ROLES = ["whole-volume-context", "level-zero-focus", "native-detail-focus"] as const;
 const VOLUME_FRAMES = ["image", "RAS", "LPS"] as const;
 const VOLUME_UNITS = ["pixel", "nm", "um", "mm", "m"] as const;
-
-function nativeToLevelZero(index: number, nativeLength: number, sourceLength: number): number {
-  if (nativeLength <= 1 || sourceLength <= 1) return 0;
-  return Math.round(index * (sourceLength - 1) / (nativeLength - 1));
-}
 
 export function validateRawVolumePayload(payload: RawVolumePayload): void {
   if (payload.schema_version !== 1 || payload.interleave !== "voxel-major") {
@@ -334,23 +361,18 @@ export function validateRawVolumePayload(payload: RawVolumePayload): void {
       const maximum = (coordinateLevel === 0
         ? payload.native_level_dimensions_xyz
         : payload.source_dimensions_xyz)[axis] - 1;
-      const expectedLow = coordinateLevel === 0 ? nativeLow : nativeToLevelZero(
-        nativeLow, payload.native_level_dimensions_xyz[axis], payload.source_dimensions_xyz[axis],
-      );
-      const expectedHigh = coordinateLevel === 0 ? nativeHigh : nativeToLevelZero(
-        nativeHigh, payload.native_level_dimensions_xyz[axis], payload.source_dimensions_xyz[axis],
-      );
       if (
         !Array.isArray(indices) ||
         indices.length !== payload.dimensions_xyz[axis] ||
-        indices.some((value) => !Number.isInteger(value) || value < expectedLow || value > expectedHigh || value > maximum) ||
+        indices.some((value) => !Number.isSafeInteger(value) || value < 0 || value > maximum) ||
         indices.some((value, index) => index > 0 && value <= indices[index - 1]) ||
-        indices[0] !== expectedLow || indices.at(-1) !== expectedHigh
+        (coordinateLevel === 0 && (indices[0] !== nativeLow || indices.at(-1) !== nativeHigh))
       ) {
         throw new Error("Raw-volume sampling coordinates are invalid.");
       }
     });
   });
+  validateVolumeLevelZeroSampling(payload);
   const [itemSize] = TYPE_INFO[payload.scalar_type];
   const expected = payload.dimensions_xyz.reduce((total, value) => total * value, 1) * payload.components.length * itemSize;
   if (payload.byte_length !== expected || expected > MAX_SCALAR_BYTES) {
@@ -426,40 +448,12 @@ export function validateRawVolumeResponse(response: RawVolumeResponse): void {
   ) {
     throw new Error("Raw-volume focus is not bound to its whole-volume context.");
   }
-  const contextFirst = response.context.sampling.level_zero_indices_xyz.map((indices) => indices[0]);
-  const contextLast = response.context.sampling.level_zero_indices_xyz.map((indices) => indices.at(-1)!);
-  const levelZeroSpacing = response.context.spacing_xyz.map((spacing, axis) => {
-    const sourceSpan = contextLast[axis] - contextFirst[axis];
-    return sourceSpan > 0
-      ? spacing * (response.context.dimensions_xyz[axis] - 1) / sourceSpan
-      : spacing;
-  });
-  const samplingTolerance = Math.max(1e-6, Math.hypot(...levelZeroSpacing) * 0.500001);
-  const expectedWorld = (sourceIndex: number[]) => [0, 1, 2].map((row) =>
-    response.context.origin_xyz[row] + [0, 1, 2].reduce((sum, axis) =>
-      sum + response.context.direction_3x3[axis * 3 + row] * levelZeroSpacing[axis] *
-        (sourceIndex[axis] - contextFirst[axis]), 0,
-    )) as [number, number, number];
-  for (let corner = 0; corner < 8; corner += 1) {
-    const focusDisplayIndex = [0, 1, 2].map((axis) =>
-      corner & (1 << axis) ? response.focus!.dimensions_xyz[axis] - 1 : 0,
-    ) as [number, number, number];
-    const focusSourceIndex = [0, 1, 2].map((axis) =>
-      response.focus!.sampling.level_zero_indices_xyz[axis][focusDisplayIndex[axis]],
-    );
-    const actual = worldAtDisplayIndex(response.focus, focusDisplayIndex);
-    const expected = expectedWorld(focusSourceIndex);
-    if (Math.hypot(...actual.map((value, axis) => value - expected[axis])) > samplingTolerance) {
-      throw new Error("Raw-volume focus geometry disagrees with its context source coordinates.");
-    }
-  }
+  validateVolumeFocusGeometry(response.context, response.focus);
 }
 
-function decodeScalars(payload: RawVolumePayload): { bytes: Uint8Array; values: TypedScalars } {
-  validateRawVolumePayload(payload);
-  const binary = atob(payload.data_base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+function decodeScalars(payload: RawVolumePayload) {
+  // validateRawVolumeResponse checked dimensions, budget and encoding before decoding.
+  const bytes = decodeVolumeBytes(payload.data_base64, payload.byte_length);
   const [, construct] = TYPE_INFO[payload.scalar_type];
   return { bytes, values: construct(bytes.buffer) };
 }
@@ -491,12 +485,8 @@ function asHistogramRecord(record: RawVolumeHistogramRecord): HistogramRecord {
   };
 }
 
-async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
-}
 
-function transferFunctions(component: TransferState, colorMode: "constant" | "intensity" | "volume") {
+export function createRawVolumeTransferFunctions(component: TransferState, colorMode: "constant" | "intensity" | "volume") {
   const color = vtkColorTransferFunction.newInstance();
   const opacity = vtkPiecewiseFunction.newInstance();
   const { low, high, gamma } = component.window;
@@ -570,10 +560,7 @@ function nearestIndex(values: number[], target: number): number {
 }
 
 export function worldAtDisplayIndex(payload: RawVolumePayload, index: [number, number, number]): [number, number, number] {
-  return [0, 1, 2].map((row) => payload.origin_xyz[row] + [0, 1, 2].reduce(
-    (value, column) => value + payload.direction_3x3[column * 3 + row] * payload.spacing_xyz[column] * index[column],
-    0,
-  )) as [number, number, number];
+  return worldAtVolumeIndex(payload.origin_xyz, payload.spacing_xyz, payload.direction_3x3, index);
 }
 
 export function contextClippingPlane(payload: RawVolumePayload, axis: 0 | 1 | 2, percentage: number) {
@@ -616,6 +603,12 @@ function figurePayload(payload: RawVolumePayload): VolumeFigurePayloadRecord {
       method: payload.sampling.method,
       source_indices_xyz: payload.sampling.source_indices_xyz.map((axis) => [...axis]) as [number[], number[], number[]],
       level_zero_indices_xyz: payload.sampling.level_zero_indices_xyz.map((axis) => [...axis]) as [number[], number[], number[]],
+      ...(payload.sampling.level_zero_index_transform ? {
+        level_zero_index_transform: {
+          scale_xyz: [...payload.sampling.level_zero_index_transform.scale_xyz],
+          translation_xyz: [...payload.sampling.level_zero_index_transform.translation_xyz],
+        },
+      } : {}),
     },
   };
 }
@@ -698,7 +691,7 @@ export function RawVolumeViewport({
   onRequestRefinement,
   onExportFigure,
   labelPayload = null, labelResult = null, labelsLoading = false, labelsError = null,
-  selectedLabel = null, onSelectLabel, onCorrectLabel, sceneHandleRef, onSceneChange,
+  selectedLabel = null, onSelectLabel, onCorrectLabel, sceneHandleRef, onSceneChange, onOpeningVolumeRender,
   locateRequest = 0,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -742,6 +735,8 @@ export function RawVolumeViewport({
   }, []);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [contextState, setContextState] = useState<"ready" | "lost" | "restoring">("ready");
+  const [openingRenderCandidate, setOpeningRenderCandidate] = useState<RawVolumeResponse | null>(null);
+  const reportedOpeningContext = useRef<RawVolumeResponse | null>(null);
   const [mode, setMode] = useState<"volume" | "mpr">("volume");
   const [renderMode, setRenderMode] = useState<VolumeRenderMode>("blend");
   const [quality, setQuality] = useState(50);
@@ -767,19 +762,19 @@ export function RawVolumeViewport({
   const [slices, setSlices] = useState<[number, number, number]>([0, 0, 0]);
   const [transfers, setTransfers] = useState<TransferState[]>([]);
   const [detailView, setDetailView] = useState<"context" | "focus">("context");
-  const [detailSpan, setDetailSpan] = useState<32 | 64 | 96>(96);
+  const [detailSpan, setDetailSpan] = useState("96");
   const [sceneRevision, setSceneRevision] = useState(0);
   const [rendererGeneration, setRendererGeneration] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [exportStatus, setExportStatus] = useState("");
   const [exportError, setExportError] = useState("");
   const previousContextRef = useRef<RawVolumePayload | null>(null);
-  const initialCameraRef = useRef<CameraSnapshot | null>(null);
-  const lostCameraRef = useRef<CameraSnapshot | null>(null);
+  const cameraViewsRef = useRef<VolumeCameras | null>(null);
   const selectedFocusRef = useRef<string | null>(null);
   const changedRef = useRef(onSceneChange); changedRef.current = onSceneChange;
-  const sourceToDisplayIndex = (point: Vec3): Vec3 => point.map((n, i) => !volume || volume.context.source_dimensions_xyz[i] < 2 ? 0 :
-    n * (volume.context.dimensions_xyz[i] - 1) / (volume.context.source_dimensions_xyz[i] - 1)) as Vec3;
+  const sourceToDisplayIndex = (point: Vec3): Vec3 => volume
+    ? volume.context.sampling.level_zero_indices_xyz.map((indices, axis) => nearestIndex(indices, point[axis])) as Vec3
+    : [0, 0, 0];
 
   useEffect(() => {
     setVerifiedLabels(null); setLabelError(null);
@@ -820,14 +815,9 @@ export function RawVolumeViewport({
         return volume.context.dimensions_xyz.map((value) => Math.floor(value / 2)) as [number, number, number];
       }
       return current.map((oldIndex, axis) => {
-        const sourceIndex = previous.sampling.level_zero_indices_xyz[axis][oldIndex];
-        const candidates = volume.context.sampling.level_zero_indices_xyz[axis];
-        let nearest = 0;
-        for (let index = 1; index < candidates.length; index += 1) {
-          if (Math.abs(candidates[index] - sourceIndex) < Math.abs(candidates[nearest] - sourceIndex)) nearest = index;
-        }
-        return nearest;
-      }) as [number, number, number];
+        const sourceIndex = preciseCrosshair?.[axis] ?? previous.sampling.level_zero_indices_xyz[axis][oldIndex];
+        return nearestIndex(volume.context.sampling.level_zero_indices_xyz[axis], sourceIndex);
+      }) as Vec3;
     });
     previousContextRef.current = volume.context;
   }, [volume]);
@@ -857,7 +847,7 @@ export function RawVolumeViewport({
   }, [transfers, verifiedPlanes, volume, externalDisplayKey]);
 
   useEffect(() => {
-    if (!volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
+    if (onOpeningVolumeRender || !volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
     // Do not replace the coarse context until its verified bytes have been
     // bound to VTK. This preserves a genuinely visible progressive first pass
     // instead of starting refinement while the renderer is still decoding it.
@@ -871,7 +861,7 @@ export function RawVolumeViewport({
       onRequestRefinement({ target_long_axis: target });
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [onRequestRefinement, sceneRevision, volume]);
+  }, [onOpeningVolumeRender, onRequestRefinement, sceneRevision, volume]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -892,15 +882,7 @@ export function RawVolumeViewport({
         scene.stateEpoch += 1;
       }
       const camera = scene?.renderer.getActiveCamera?.();
-      if (camera && scene.binding) {
-        lostCameraRef.current = {
-          binding: scene.binding,
-          position: [...camera.getPosition()],
-          focalPoint: [...camera.getFocalPoint()],
-          viewUp: [...camera.getViewUp()],
-          parallelScale: camera.getParallelScale?.(),
-        };
-      }
+      if (camera && scene.activeCamera) scene.activeCamera.pose = readVolumeCamera(camera);
       setContextState("lost");
     };
     const onRestored = () => {
@@ -969,7 +951,7 @@ export function RawVolumeViewport({
       // when the canvas does not resize after widget creation.
       orientationWidget.updateViewport();
       sceneRef.current = { generic, renderer, renderWindow, apiWindow, canvas, imageRecords: [], sliceRecords: [],
-        transferObjects: [], clippingPlanes: [], binding: null, initialCamera: null,
+        transferObjects: [], clippingPlanes: [], binding: null, activeCamera: null,
         contextHistogram: null, stateEpoch: 0, renderStateSignature: null, contextLost: false,
         axesActor, orientationWidget, interactorStyle, mouseManipulators, resize };
     } catch (caught) {
@@ -1012,7 +994,7 @@ export function RawVolumeViewport({
         validateRawVolumeResponse(volume);
         const payloads = [volume.context, ...(volume.focus ? [volume.focus] : [])];
         const decoded = payloads.map(decodeScalars);
-        const digests = await Promise.all(decoded.map((item) => sha256(item.bytes)));
+        const digests = await Promise.all(decoded.map((item) => volumeByteDigest(item.bytes)));
         if (digests.some((digest, index) => digest !== payloads[index].data_sha256)) {
           throw new Error("Raw-volume bytes failed their SHA-256 integrity check.");
         }
@@ -1065,11 +1047,10 @@ export function RawVolumeViewport({
           }),
         );
         const nextBinding = `${volume.context.source_id}:${volume.context.source_sha256}:${volume.context.t}`;
-        const resetCamera = scene.binding !== nextBinding;
-        // VTK computes camera bounds from visible props. Make the whole-volume
-        // context visible before the first fit; the render-state effect below
-        // then applies the selected Volume/MPR and Whole/Focus representation.
-        if (resetCamera) nextImageRecords[0].actor.setVisibility(true);
+        if (cameraViewsRef.current?.binding !== nextBinding) {
+          cameraViewsRef.current = { binding: nextBinding, context: null, focus: null };
+          scene.activeCamera = null;
+        }
         scene.axesActor.setUserMatrix([
           volume.context.direction_3x3[0], volume.context.direction_3x3[1], volume.context.direction_3x3[2], 0,
           volume.context.direction_3x3[3], volume.context.direction_3x3[4], volume.context.direction_3x3[5], 0,
@@ -1097,31 +1078,6 @@ export function RawVolumeViewport({
           record.image.getPointData().getScalars()?.delete();
           record.image.delete();
         });
-        if (resetCamera) {
-          scene.renderer.resetCamera();
-          const camera = scene.renderer.getActiveCamera();
-          const fittedCamera: CameraSnapshot = {
-            binding: nextBinding,
-            position: [...camera.getPosition()],
-            focalPoint: [...camera.getFocalPoint()],
-            viewUp: [...camera.getViewUp()],
-            parallelScale: camera.getParallelScale?.(),
-          };
-          if (initialCameraRef.current?.binding !== nextBinding) initialCameraRef.current = fittedCamera;
-          scene.initialCamera = initialCameraRef.current;
-          const lostCamera = lostCameraRef.current;
-          if (lostCamera?.binding === nextBinding) {
-            camera.setPosition(...lostCamera.position);
-            camera.setFocalPoint(...lostCamera.focalPoint);
-            camera.setViewUp(...lostCamera.viewUp);
-            if (Number.isFinite(lostCamera.parallelScale)) camera.setParallelScale?.(lostCamera.parallelScale);
-            camera.orthogonalizeViewUp?.();
-          }
-          // A snapshot belongs to exactly one recovery attempt. Keeping an
-          // unmatched pose could apply stale camera state if that source is
-          // selected again later in the same mounted workbench.
-          lostCameraRef.current = null;
-        }
         setSceneRevision((value) => value + 1);
       } catch (caught) {
         if (!cancelled) setRenderError(caught instanceof Error ? caught.message : String(caught));
@@ -1183,7 +1139,7 @@ export function RawVolumeViewport({
       transfers.forEach((component, index) => {
         // Composite volume color carries channel identity. Scalar intensity is
         // encoded by opacity, with optional explicitly recorded Phong lighting.
-        const { color, opacity } = transferFunctions(component, "constant");
+        const { color, opacity } = createRawVolumeTransferFunctions(component, "constant");
         scene.transferObjects.push(color, opacity);
         property.setRGBTransferFunction(index, color);
         property.setScalarOpacity(index, opacity);
@@ -1206,7 +1162,7 @@ export function RawVolumeViewport({
       record.mapper.setSlice(nearestIndex(payload.sampling.level_zero_indices_xyz[record.axis], sourceCrosshair[record.axis]));
       const property = record.actor.getProperty();
       transfers.forEach((component, index) => {
-        const { color, opacity } = transferFunctions(component, "intensity");
+        const { color, opacity } = createRawVolumeTransferFunctions(component, "intensity");
         scene.transferObjects.push(color, opacity);
         property.setRGBTransferFunction(index, color);
         property.setPiecewiseFunction(index, opacity);
@@ -1229,6 +1185,28 @@ export function RawVolumeViewport({
         }
         scene.generic.resize();
       }
+      const views = cameraViewsRef.current;
+      if (views && views.binding === scene.binding) {
+        const extent = activePayloadIndex === 1 ? "focus" : "context";
+        const active = scene.imageRecords[activePayloadIndex];
+        const key = extent === "focus" ? focusCameraKey(active.payload) : "context";
+        if (scene.activeCamera !== views[extent] || views[extent]?.key !== key) {
+          const camera = scene.renderer.getActiveCamera();
+          if (scene.activeCamera) scene.activeCamera.pose = readVolumeCamera(camera);
+          const previous = views[extent];
+          if (previous?.key === key) {
+            restoreVolumeCamera(camera, previous.pose);
+          } else {
+            // Explicit actor bounds exclude the whole volume and label props.
+            // vtk.js retains the incoming world-facing direction on the fit.
+            scene.renderer.resetCamera(active.actor.getBounds());
+            const fitted = readVolumeCamera(camera);
+            views[extent] = { key, fitted, pose: fitted };
+          }
+          scene.activeCamera = views[extent];
+          scene.orientationWidget.updateMarkerOrientation();
+        }
+      }
       scene.renderer.resetCameraClippingRange?.();
       scene.renderWindow.render();
       scene.stateEpoch += 1;
@@ -1237,9 +1215,41 @@ export function RawVolumeViewport({
         activeModeDetails.shade, renderMode, quality,
       );
       setContextState("ready");
+      if (onOpeningVolumeRender && activePayloadIndex === 0) setOpeningRenderCandidate(volume);
     }
     catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Could not render the volume."); }
-  }, [clipAxis, clipEnabled, clipPosition, detailView, mode, quality, renderMode, sceneRevision, slices, transfers, volume]);
+  }, [clipAxis, clipEnabled, clipPosition, detailView, mode, quality, renderMode, sceneRevision, slices, transfers, volume, onOpeningVolumeRender]);
+
+  useEffect(() => {
+    if (!onOpeningVolumeRender) {
+      reportedOpeningContext.current = null;
+      if (openingRenderCandidate) setOpeningRenderCandidate(null);
+      return;
+    }
+    if (error || renderError || contextState === "lost") {
+      onOpeningVolumeRender({ kind: "failed" });
+      return;
+    }
+    if (!volume || openingRenderCandidate !== volume || reportedOpeningContext.current === volume) return;
+    const scene = sceneRef.current;
+    // VTK has submitted the checked context. Wait through a browser frame
+    // before handing off the preview, and reject a replaced or lost canvas.
+    let frame = 0;
+    frame = window.requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
+        if (sceneRef.current !== scene || !scene || scene.contextLost ||
+            scene.imageRecords[0]?.payload !== volume.context) return;
+        if (!scene.canvas?.isConnected || scene.canvas.closest("[hidden]") ||
+            scene.canvas.width < 1 || scene.canvas.height < 1) {
+          onOpeningVolumeRender({ kind: "failed" });
+          return;
+        }
+        reportedOpeningContext.current = volume;
+        onOpeningVolumeRender({ kind: "painted", volume });
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [contextState, error, onOpeningVolumeRender, openingRenderCandidate, renderError, volume]);
 
   useEffect(() => {
     const scene = sceneRef.current;
@@ -1329,8 +1339,8 @@ export function RawVolumeViewport({
     if (!volume) return null;
     const source = preciseCrosshair ?? slices.map((index, axis) =>
       volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
-    const continuous = source.map((n, i) => volume.context.source_dimensions_xyz[i] < 2 ? 0 : n * (volume.context.dimensions_xyz[i] - 1) / (volume.context.source_dimensions_xyz[i] - 1)) as Vec3;
-    return { source, world: worldAtDisplayIndex(volume.context, continuous) };
+    const { origin, spacing } = volumeLevelZeroGeometry(volume.context);
+    return { source, world: worldAtVolumeIndex(origin, spacing, volume.context.direction_3x3, source) };
   }, [slices, volume, preciseCrosshair]);
   const focusContainsCrosshair = Boolean(volume?.focus && crosshair && crosshair.source.every(
     (value, axis) => value >= volume.focus!.source_extent_xyzxyz[axis * 2] &&
@@ -1362,16 +1372,9 @@ export function RawVolumeViewport({
     const scene = sceneRef.current;
     if (!scene || scene.contextLost) return;
     try {
-      const camera = scene.renderer.getActiveCamera();
-      const initial = scene.initialCamera;
-      if (initial && initial.binding === scene.binding) {
-        camera.setPosition(...initial.position); camera.setFocalPoint(...initial.focalPoint);
-        camera.setViewUp(...initial.viewUp);
-        if (Number.isFinite(initial.parallelScale)) camera.setParallelScale?.(initial.parallelScale);
-      }
-      // The stored pose was captured immediately after the initial bounds fit.
-      // Re-fitting here changes the restored focal distance/scale slightly and
-      // makes R drift from the source-bound initial view.
+      const initial = scene.activeCamera?.fitted;
+      if (!initial) return;
+      restoreVolumeCamera(scene.renderer.getActiveCamera(), initial);
       scene.renderer.resetCameraClippingRange?.();
       scene.orientationWidget.updateMarkerOrientation(); scene.renderWindow.render();
       scene.stateEpoch += 1;
@@ -1383,7 +1386,7 @@ export function RawVolumeViewport({
     if (!volume) return;
     if (sceneRef.current) sceneRef.current.stateEpoch += 1;
     const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Math.max(0, Math.min(volume.context.source_dimensions_xyz[axis] - 1, n + delta)) : n) as Vec3;
-    setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point).map(Math.round) as Vec3);
+    setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point));
   };
 
   const onStageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1418,11 +1421,11 @@ export function RawVolumeViewport({
     if (!volume || !onRequestRefinement) return;
     if (sceneRef.current) sceneRef.current.stateEpoch += 1;
     const context = volume.context;
-    const source = context.sampling.level_zero_indices_xyz;
-    const centre = slices.map((value, axis) => source[axis][value]) as [number, number, number];
+    const centre = crosshair?.source ?? slices.map((value, axis) => context.sampling.level_zero_indices_xyz[axis][value]);
     const full = context.source_dimensions_xyz;
     const bounds = full.map((length, axis) => {
-      const span = Math.min(detailSpan, length);
+      const requested = detailSpan === "wide" ? [256, 256, 64][axis] : Number(detailSpan);
+      const span = Math.min(requested, length);
       const start = Math.max(0, Math.min(length - span, centre[axis] - Math.floor(span / 2)));
       return [start, start + span - 1] as const;
     });
@@ -1498,8 +1501,9 @@ export function RawVolumeViewport({
       const clipping = clipEnabled ? contextClippingPlane(volume.context, clipAxis, clipPosition) : null;
       const sourceIndices = slices.map((index, axis) =>
         volume.context.sampling.level_zero_indices_xyz[axis][index]) as [number, number, number];
-      const activePayloadIndices = activePayload?.sampling.level_zero_indices_xyz.map((indices, axis) =>
-        nearestIndex(indices, sourceIndices[axis])) as [number, number, number];
+      const renderedPayload = activePayload ?? volume.context;
+      const activePayloadIndices = renderedPayload.sampling.level_zero_indices_xyz.map((indices, axis) =>
+        nearestIndex(indices, sourceIndices[axis])) as Vec3;
       const request: VolumeFigureExportRequest = {
         schema_version: "loci.volume-figure-request/v1",
         source_id: volume.context.source_id,
@@ -1580,7 +1584,7 @@ export function RawVolumeViewport({
             context_display_indices_xyz: [...slices],
             active_payload_indices_xyz: activePayloadIndices,
             source_indices_xyz: sourceIndices,
-            world_xyz: [...crosshair.world],
+            world_xyz: worldAtDisplayIndex(renderedPayload, activePayloadIndices),
           } : null,
           background: { rgb: [0.082, 0.082, 0.082] },
           software: {
@@ -1638,11 +1642,14 @@ export function RawVolumeViewport({
   const togglePane = (id: string) => { invalidateFigureCapture(); setExpandedPane((current) => current === id ? null : id); };
   const moveCrosshair = (world: Vec3) => {
     if (!volume) return;
-    const index = worldToIndex(volume.context, world);
+    const context = volume.context;
+    const { origin, spacing } = volumeLevelZeroGeometry(context);
+    const index = worldToIndex({ ...context, origin_xyz: origin, spacing_xyz: spacing }, world);
+    const sourceIndex = index.map((value, axis) =>
+      Math.max(0, Math.min(context.source_dimensions_xyz[axis] - 1, Math.round(value)))) as Vec3;
     invalidateFigureCapture();
-    setPreciseCrosshair(index.map((n, axis) => Math.max(0, Math.min(volume.context.source_dimensions_xyz[axis] - 1,
-      Math.round(n * (volume.context.source_dimensions_xyz[axis] - 1) / Math.max(1, volume.context.dimensions_xyz[axis] - 1))))) as Vec3);
-    setSlices(index.map((value, axis) => Math.max(0, Math.min(volume.context.dimensions_xyz[axis] - 1, Math.round(value)))) as Vec3);
+    setPreciseCrosshair(sourceIndex);
+    setSlices(sourceToDisplayIndex(sourceIndex));
   };
 
   const swapWithNext = (paneId: string) => {
@@ -1711,7 +1718,7 @@ export function RawVolumeViewport({
     const center = min.map((n, i) => Math.round((n + max[i]) / 2)) as Vec3;
     const sourcePoint = center.map((n, i) => n + verifiedLabels.payload.source_offset_xyz[i]) as Vec3;
     const world = indexToWorld(labelGeometry(verifiedLabels.payload), center);
-    setPreciseCrosshair(sourcePoint); setSlices(sourceToDisplayIndex(sourcePoint).map(Math.round) as Vec3);
+    setPreciseCrosshair(sourcePoint); setSlices(sourceToDisplayIndex(sourcePoint));
     if (detailView === "focus" && volume.focus && !sourcePoint.every((n, i) => n >= volume.focus!.source_extent_xyzxyz[i * 2] && n <= volume.focus!.source_extent_xyzxyz[i * 2 + 1])) setDetailView("context");
     const scene = sceneRef.current;
     if (scene && !scene.contextLost) {
@@ -1800,7 +1807,7 @@ export function RawVolumeViewport({
       setMode(state.representation.mode); setRenderMode(state.representation.render_mode); setQuality(state.representation.quality);
       setLayout(state.layout.mode); setExpandedPane(state.layout.expanded_pane); setPaneOrder(state.layout.pane_order); setColSplit(state.layout.col_split); setRowSplit(state.layout.row_split);
       setClipEnabled(state.clipping.enabled); setClipAxis(["x", "y", "z"].indexOf(state.clipping.axis) as 0 | 1 | 2); setClipPosition(state.clipping.position_percent);
-      setLabelStyle(state.labels); setPreciseCrosshair(state.crosshair_source_xyz); setSlices(sourceToDisplayIndex(state.crosshair_source_xyz).map(Math.round) as Vec3);
+      setLabelStyle(state.labels); setPreciseCrosshair(state.crosshair_source_xyz); setSlices(sourceToDisplayIndex(state.crosshair_source_xyz));
       setDetailView(state.representation.extent); setTargetLongAxis(state.refinement.target_long_axis);
       selectRef.current?.(state.selected_object?.label_id ?? null);
       if (sceneKey(state.refinement.focus_region_xyzxyz) !== sceneKey(volume.focus?.source_extent_xyzxyz ?? null) || state.refinement.target_long_axis !== targetLongAxis) {
@@ -1950,8 +1957,9 @@ export function RawVolumeViewport({
             ) : null}
             {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
               <label>Detail span<select aria-label="Detail span" value={detailSpan}
-                onChange={(event) => setDetailSpan(Number(event.target.value) as 32 | 64 | 96)}>
+                onChange={(event) => setDetailSpan(event.target.value)}>
                 <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
+                <option value="wide">256 × 256 × 64 voxels (XYZ)</option>
               </select></label>
               <button type="button" onClick={requestFocus}>Detail at crosshair</button>
             </> : null}
@@ -1965,6 +1973,7 @@ export function RawVolumeViewport({
             <p><strong>3D view.</strong> {mode === "volume"
               ? "Left-drag or Alt-drag to orbit; right-drag or Shift-drag to pan; scroll, pinch or Ctrl-drag to zoom. Press R to reset."
               : "Arrow keys move X/Y; Page Up/Down moves Z. Left-drag to orient; right-drag to pan; scroll to zoom. Press R to reset."}</p>
+            {volume?.focus && mode === "volume" ? <p>For dense detail, choose MIP in 3D rendering mode to show the brightest sample along each ray.</p> : null}
             <p><strong>Sampling.</strong> Raw slices use linear interpolation{verifiedLabels ? "; labels use nearest native sampling. The 3D label surface is a bounded voxel approximation for display" : ""}.</p>
             {activePayload && <p>{activePayload.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements.</p>}
             {onExportFigure && <p><strong>Figure export.</strong> Export PNG includes the 3D pane, with its exact display provenance. Separate slice panes are excluded. Hide labels to export a raw-volume figure.</p>}
@@ -1992,7 +2001,7 @@ export function RawVolumeViewport({
         <div className="raw-volume-slices">
           {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>{label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.source_dimensions_xyz[axis] - 1} value={crosshair?.source[axis] ?? 0} onChange={(event) => {
             invalidateFigureCapture(); const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Number(event.target.value) : n) as Vec3;
-            setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point).map(Math.round) as Vec3);
+            setPreciseCrosshair(point); setSlices(sourceToDisplayIndex(point));
           }} /><output aria-label={`${label} source index`}>{crosshair?.source[axis]}</output></label>)}
           {crosshair ? <span className="raw-volume-world">World {crosshair.world.map((value) => value.toFixed(3)).join(", ")} {volume.context.unit}</span> : null}
         </div>
@@ -2067,11 +2076,10 @@ export function RawVolumeViewport({
           </header>
           <div className="raw-volume-stage" ref={syncContainer} aria-label="Interactive three-dimensional volume"
             tabIndex={0} onKeyDown={onStageKeyDown} onPointerDown={invalidateFigureCapture}
-            onWheel={invalidateFigureCapture} onContextMenu={(event) => event.preventDefault()}>
-            <div className="raw-volume-frame-label">Rotating source XYZ axes · {activePayload?.frame ?? "image"} frame</div>
-          </div>
+            onWheel={invalidateFigureCapture} onContextMenu={(event) => event.preventDefault()} />
           <footer className="mpr-pane-footer" aria-label="3D display sampling">
             <span>{activePayload ? `3D display · L${activePayload.level}` : "3D display unavailable"}</span>
+            <span>Rotating source XYZ axes · {activePayload?.frame ?? "image"} frame</span>
             {verifiedLabels && labelStyle.visible && <span title="Bounded voxel surface for display, not native measurement geometry">Labels: bounded surface</span>}
           </footer>
         </section>
@@ -2142,7 +2150,7 @@ export function RawVolumeViewport({
       })}</div> : null}
       <footer className="raw-volume-status" aria-live="polite">
         <span>{error ?? renderError ?? (loading ? "Loading bounded whole-volume detail…" : (contextState === "ready" ? caption : contextState === "lost" ? "Graphics context lost. Waiting for restoration…" : "Restoring volume renderer…") ?? "Choose a 3D scalar source.")}</span>
-        {volume ? <small>Whole context · {volume.context.sampling.method.replaceAll("-", " ")} · level {volume.context.level} · {volume.context.byte_length.toLocaleString()} bytes
+        {volume ? <small>Whole context · nearest whole extent · level {volume.context.level} · {volume.context.byte_length.toLocaleString()} bytes
           {volume.focus ? ` · Focus ${volume.focus.source_extent_xyzxyz.join(", ")} shown separately (${volume.focus.byte_length.toLocaleString()} bytes; ${focusUsesNativeSteps ? "native source steps" : "sampled source steps"})` : ""}</small> : null}
       </footer>
     </section>

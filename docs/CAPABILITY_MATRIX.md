@@ -153,6 +153,15 @@ channel dtypes and non-finite samples are refused. [CLI conversion](CLI.md#conve
   planes and orthogonal, unsheared voxel geometry. Interleaved RGB(A) and
   unsupported graphics fail visibly. Each request is capped at a 256-voxel
   target edge and 128 MiB aggregate memory estimate including rendering copies.
+  **Open image in 3D…** opens a scalar file directly. The macOS picker also accepts
+  an OME-Zarr store. During direct opening, supported multiscale stores can
+  supply a temporary first-channel volume and XY slices while full content
+  verification proceeds. This preview supports display interaction only.
+  The viewer chooses a source level that supplies the
+  requested detail in X, Y and Z. For OME-Zarr pyramids, crosshairs and label
+  lookups follow the declared level scales and translations. **Detail at
+  crosshair** can request a 256 × 256 × 64 voxel field on the native grid.
+  The status line identifies the sampling actually delivered.
   Context/focus allocations share that budget. These are algorithmic bounds;
   measured process/GPU memory is recorded separately in qualification evidence.
 - Surface is a separate display-only isosurface from an explicit source Z range

@@ -12,11 +12,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from scipy import ndimage as ndi
-from scipy.spatial import cKDTree
-from skimage.filters import threshold_otsu
-from skimage.morphology import h_maxima
-from skimage.segmentation import watershed
 
 DEFAULT_WORKING_BYTES = 512 * 1024 * 1024
 MAX_WORKING_BYTES = 8 * 1024**3
@@ -250,6 +245,8 @@ def process_scalar(
     working_bytes: int = DEFAULT_WORKING_BYTES,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     """Execute an explicit float64 recipe, preserving raw array and value scale."""
+    from scipy import ndimage as ndi
+
     raw = validate_array(image, geometry=geometry, working_bytes=working_bytes)
     validate_processing_steps(steps, geometry=geometry)
     spacing = geometry.orthogonal_spacing()
@@ -312,6 +309,8 @@ def segment_scalar(
     working_bytes: int = DEFAULT_WORKING_BYTES,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Threshold/components or distance watershed, in true 2D or true 3D."""
+    from scipy import ndimage as ndi
+
     raw = validate_array(image, geometry=geometry, working_bytes=working_bytes, bytes_per_voxel=96)
     exact_keys(
         settings,
@@ -326,6 +325,8 @@ def segment_scalar(
         raise ValueError("Polarity must be explicitly bright or dark")
     threshold = settings.get("threshold", "otsu")
     if threshold == "otsu":
+        from skimage.filters import threshold_otsu
+
         threshold = float(threshold_otsu(raw))
         threshold_method = "otsu-on-selected-scalar-array"
     else:
@@ -352,6 +353,9 @@ def segment_scalar(
         else None
     )
     if method == "watershed" and mask.any():
+        from skimage.morphology import h_maxima
+        from skimage.segmentation import watershed
+
         # Padding gives an actual exterior background even when foreground fills
         # the crop, avoiding EDT's implicit asymmetric off-array convention.
         padded = np.pad(mask, 1, mode="constant")
@@ -420,6 +424,9 @@ def measure_objects(
     *,
     working_bytes: int = DEFAULT_WORKING_BYTES,
 ) -> list[dict[str, Any]]:
+    from scipy import ndimage as ndi
+    from scipy.spatial import cKDTree
+
     labels = validate_array(labels, geometry=geometry, labels=True, working_bytes=working_bytes)
     channels = channels or {}
     if len(channels) > 32 or any(not isinstance(name, str) or not name for name in channels):

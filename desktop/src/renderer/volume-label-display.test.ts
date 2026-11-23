@@ -16,7 +16,11 @@ async function fixture() {
     dimensions_xyz: dimensions, source_offset_xyz: [0, 0, 0], origin_xyz: [12, -3, 8], spacing_xyz: [2, 3, 5],
     direction_3x3: [0, 1, 0, -1, 0, 0, 0, 0, 1], affine_4x4: [[0, -3, 0, 12], [2, 0, 0, -3], [0, 0, 5, 8], [0, 0, 0, 1]],
     unit: "um", frame: "image", scalar_type: "uint32", interpolation: "nearest", sampling: "exact-native-grid", data_base64: Buffer.from(bytes).toString("base64"), data_sha256: await hash(bytes), byte_length: bytes.length };
-  const source = { ...payload, source_dimensions_xyz: dimensions, dimensions_xyz: dimensions } as unknown as RawVolumePayload;
+  const source = {
+    ...payload, source_dimensions_xyz: dimensions, dimensions_xyz: dimensions,
+    source_extent_xyzxyz: [0, 3, 0, 2, 0, 1],
+    sampling: { level_zero_indices_xyz: [[0, 1, 2, 3], [0, 1, 2], [0, 1]] },
+  } as unknown as RawVolumePayload;
   return { payload, source, labels: { payload, values } satisfies VerifiedVolumeLabels };
 }
 
@@ -27,6 +31,19 @@ describe("exact label geometry and categorical display", () => {
     expect(checked.values[23]).toBe(4294967295);
     expect(labelAtWorld(checked, [6, 3, 13])).toBe(4294967295);
     expect(labelAtWorld(checked, [100, 100, 100])).toBe(0);
+  });
+  it("binds labels in the full native frame of a translated NGFF level", async () => {
+    const { payload, source } = await fixture();
+    payload.direction_3x3 = source.direction_3x3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    payload.affine_4x4 = [[2, 0, 0, 12], [0, 3, 0, -3], [0, 0, 5, 8], [0, 0, 0, 1]];
+    source.origin_xyz = [13, -3, 8];
+    source.spacing_xyz = [4, 3, 5];
+    source.dimensions_xyz = [2, 3, 2];
+    source.source_extent_xyzxyz = [0, 1, 0, 2, 0, 1];
+    source.sampling.level_zero_indices_xyz[0] = [1, 3];
+    source.sampling.level_zero_index_transform = { scale_xyz: [2, 1, 1], translation_xyz: [0.5, 0, 0] };
+    const checked = await verifyVolumeLabels(payload, source, payload.result);
+    expect(labelAtWorld(checked, [18, 3, 13])).toBe(4294967295);
   });
   it("refuses changed source, time, revision, geometry, bytes and numerical identity", async () => {
     const { payload, source } = await fixture();

@@ -296,6 +296,17 @@ const researchApi: ResearchDesktopApi = {
   importSourceAnnotations: (binding) => ipcRenderer.invoke("loci-research:import-source-annotations", binding),
   importLegacyProject: () => ipcRenderer.invoke("loci-research:import-legacy-project"),
   openImages: (kind = "files") => ipcRenderer.invoke("loci-research:open-images", kind),
+  openVolumeImage: (previewRequestId) => previewRequestId === undefined
+    ? ipcRenderer.invoke("loci-research:open-volume-image")
+    : ipcRenderer.invoke("loci-research:open-volume-image", previewRequestId),
+  ...(process.argv.includes("--loci-main-workspace") ? {
+    onVolumeOpeningPreview: (listener: Parameters<NonNullable<ResearchDesktopApi["onVolumeOpeningPreview"]>>[0]) => {
+      const channel = "loci-research:volume-opening-preview";
+      const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof listener>[0]) => listener(value);
+      ipcRenderer.on(channel, handler);
+      return () => { ipcRenderer.removeListener(channel, handler); };
+    },
+  } : {}),
   openDropped: (files) => ipcRenderer.invoke("loci-research:open-dropped",
     files.map((file) => webUtils.getPathForFile(file)), "files"),
   sessionState: () => ipcRenderer.invoke("loci-research:session-state"),

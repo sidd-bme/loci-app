@@ -18,8 +18,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import scipy
-import skimage
 from PIL import Image
 
 from .models import ENGINE_VERSION
@@ -137,6 +135,9 @@ def geometry_from_dict(value: dict[str, Any]) -> Geometry:
 
 
 def runtime_record() -> dict[str, Any]:
+    import scipy
+    import skimage
+
     return {
         "engine": ENGINE_VERSION,
         "numpy": np.__version__,
@@ -432,7 +433,9 @@ class Workbench:
         if Path(path).is_dir():
             if series != 0:
                 raise ValueError("Use an explicit image group for OME-Zarr selection")
-            return self.project.register_zarr_source(path, name=name)
+            source, session = self.project._register_zarr_source(path, name=name)
+            self._remember(source["id"], session)
+            return source
         if Path(path).suffix.lower() in {".svs", ".ndpi"}:
             from .slide_adapter import SlideAdapter
 
@@ -475,27 +478,32 @@ class Workbench:
             raise ValueError(
                 "Source locator is unavailable after interchange; relink an exact local copy"
             )
-        if source.get("source_kind") not in {"native", "whole_slide", "ome_zarr", "medical"}:
+        kind = source.get("source_kind")
+        if kind not in {"native", "whole_slide", "ome_zarr", "medical"}:
             raise ValueError("This source has no supported viewer reader")
         session = self.sessions.get(source_id)
-        if session is None:
-            if source.get("source_kind") == "medical":
+        if kind == "ome_zarr":
+            from .zarr_adapter import ZarrAdapter
+
+            if session is not None and not (
+                isinstance(session, ZarrAdapter) and session._matches_registered_source(source)
+            ):
+                self.sessions.pop(source_id).close()
+                session = None
+        cold = session is None
+        if cold:
+            if kind == "medical":
                 from .viewer_medical import MedicalViewerSession
 
                 session = MedicalViewerSession(
                     source["private_medical_selection"],
                     expected_source_identity="sha256:" + source["sha256"],
                 )
-            elif source.get("source_kind") == "ome_zarr":
-                from .zarr_adapter import ZarrAdapter
-
+            elif kind == "ome_zarr":
                 session = ZarrAdapter(
-                    **source["private_zarr_selection"],
-                    expected_sha256=source["sha256"],
-                    # Preserve names bound by studies created before OMERO label support.
-                    registered_channel_names=tuple(source["metadata"].get("channel_names", ())),
+                    **source["private_zarr_selection"], expected_sha256=source["sha256"]
                 )
-            elif source.get("source_kind") == "whole_slide":
+            elif kind == "whole_slide":
                 from .slide_adapter import SlideAdapter
 
                 session = SlideAdapter(source["private_path"], expected_sha256=source["sha256"])
@@ -507,8 +515,10 @@ class Workbench:
                     **({"check": check} if check is not None else {}),
                 )
         try:
-            if source.get("source_kind") == "native":
+            if kind == "native":
                 validate_source_calibration(source, asdict(session.metadata))
+            elif kind == "ome_zarr" and cold:
+                session._bind_registered_source(source)
         except BaseException:
             session.close()
             self.sessions.pop(source_id, None)
@@ -1134,6 +1144,7 @@ class Workbench:
         )
         input_record = None
         if rgb_intensity:
+            import skimage
             from skimage.color import rgb2gray
 
             if array.dtype not in (np.dtype("uint8"), np.dtype("uint16")):

@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .export import sanitize_basename
 from .quantitative import exact_keys
 from .research_jobs import TASK_OPERATIONS, cancel_job, reconcile_jobs, run_job, submit_job
 from .research_project import ResearchProject, parse_json
@@ -16,6 +15,8 @@ _ACTIVE: Workbench | None = None
 
 def _research_export_basename(filename: str) -> str:
     """Return the exact portable directory name used for one result bundle."""
+    from .export import sanitize_basename
+
     name = Path(filename).name
     stem = name[:-7] if name.casefold().endswith(".nii.gz") else Path(name).stem
     normalized = sanitize_basename(stem, fallback="source")
@@ -422,12 +423,15 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         reconcile_jobs(workbench.project)
         return workbench.snapshot()
     if method == "research_import":
-        if set(params) not in (
+        if set(params) - {"include_import_receipt"} not in (
             {"project", "paths", "kind"},
             {"project", "paths", "kind", "relative_paths"},
             {"project", "paths", "kind", "relative_paths", "import_root"},
         ):
             raise ValueError("research_import contains invalid fields")
+        include_receipt = params.get("include_import_receipt", False)
+        if not isinstance(include_receipt, bool):
+            raise ValueError("include_import_receipt must be a boolean")
         workbench = _open(params["project"])
         paths = params["paths"]
         relative_paths = params.get("relative_paths")
@@ -485,7 +489,15 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
                     "results": [],
                 },
             )
-        return workbench.snapshot()
+        snapshot = workbench.snapshot()
+        if include_receipt:
+            return {
+                "snapshot": snapshot,
+                "imported_sources": [
+                    {"id": source["id"], "sha256": source["sha256"]} for source in imported
+                ],
+            }
+        return snapshot
     if method == "research_batch_export_plan":
         exact_keys(params, {"project", "bindings"}, method)
         workbench = _open(params["project"])

@@ -1,3 +1,5 @@
+import { volumeLevelZeroGeometry, worldAtVolumeIndex } from "../shared/volume-coordinate-mapping";
+import { decodeVolumeBytes, volumeByteDigest } from "./volume-bytes";
 import type { RawVolumePayload } from "./RawVolumeViewport";
 import { indexToWorld, planePoint, worldToIndex, type MprGrid, type MprPlane, type Vec3 } from "./mpr-reslice";
 
@@ -16,8 +18,6 @@ export function mprCanvasSignature(payload: RawVolumePayload, plane: MprPlane, c
   labels: VerifiedVolumeLabels | null | undefined, style: VolumeLabelStyle | undefined, selected: number | null) {
   return JSON.stringify([payload.data_sha256, plane.id, crosshair, transfers, labels?.payload.data_sha256 ?? null, style ?? null, selected]);
 }
-const sha = async (data: Uint8Array) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(data).buffer)))
-  .map((n) => n.toString(16).padStart(2, "0")).join("");
 const finite = (v: unknown, size: number): v is number[] => Array.isArray(v) && v.length === size && v.every(Number.isFinite);
 const hash = (v: unknown) => typeof v === "string" && /^[a-f0-9]{64}$/.test(v);
 // Coordinate helpers only read these geometry fields.
@@ -33,22 +33,22 @@ export async function verifyVolumeLabels(payload: VolumeLabelPayload, source: Ra
       payload.unit !== source.unit || payload.frame !== source.frame) throw new Error("The label grid does not match the exact source, time, geometry and result.");
   const bytes = payload.dimensions_xyz.reduce((a, b) => a * b, 4);
   if (bytes !== payload.byte_length || bytes > 32 * 1024 ** 2 || payload.data_base64.length !== 4 * Math.ceil(bytes / 3)) throw new Error("The label grid exceeds its exact bounded byte size.");
-  // Native source geometry reconstructed from the whole-extent raw payload.
-  const spacing = source.spacing_xyz.map((n, i) => source.source_dimensions_xyz[i] <= 1 ? n : n * (source.dimensions_xyz[i] - 1) / (source.source_dimensions_xyz[i] - 1));
-  const origin = [0, 1, 2].map(row => source.origin_xyz[row] + payload.source_offset_xyz.reduce((sum, n, col) => sum + n * spacing[col] * source.direction_3x3[col * 3 + row], 0));
+  const levelZero = volumeLevelZeroGeometry(source);
+  const spacing = levelZero.spacing;
+  const origin = worldAtVolumeIndex(levelZero.origin, spacing, source.direction_3x3, payload.source_offset_xyz);
   if (payload.direction_3x3.some((n, i) => Math.abs(n - source.direction_3x3[i]) > 1e-7) ||
       payload.spacing_xyz.some((n, i) => Math.abs(n - spacing[i]) > 1e-6 * Math.max(1, n)) ||
       payload.origin_xyz.some((n, i) => Math.abs(n - origin[i]) > 1e-6 * Math.max(1, Math.abs(n)))) throw new Error("The label calibration is inconsistent with the raw volume.");
   if (!Array.isArray(payload.affine_4x4) || payload.affine_4x4.length !== 4 || payload.affine_4x4.some(row => !finite(row, 4)) ||
       payload.affine_4x4.some((row, r) => row.some((n, c) => Math.abs(n - (r === 3 ? (c === 3 ? 1 : 0) : c === 3 ? payload.origin_xyz[r] : payload.direction_3x3[c * 3 + r] * payload.spacing_xyz[c])) > 1e-7)))
     throw new Error("The label affine disagrees with its calibrated grid.");
-  const data = Uint8Array.from(atob(payload.data_base64), c => c.charCodeAt(0));
-  if (data.length !== bytes || await sha(data) !== payload.data_sha256) throw new Error("Label bytes failed their SHA-256 check.");
+  const data = decodeVolumeBytes(payload.data_base64, bytes);
+  if (await volumeByteDigest(data) !== payload.data_sha256) throw new Error("Label bytes failed their SHA-256 check.");
   // Validate the canonical numerical label hash, independently of file bytes.
   const prefix = new TextEncoder().encode(`loci-label-array-v1\0${JSON.stringify({ dtype: "<u4", shape: [...payload.dimensions_xyz].reverse() })}\0`);
   // canonical_json uses sorted compact keys, which are dtype then shape.
   const canonical = new Uint8Array(prefix.length + data.length); canonical.set(prefix); canonical.set(data, prefix.length);
-  if (await sha(canonical) !== payload.result.label_sha256) throw new Error("The numerical label identity is inconsistent.");
+  if (await volumeByteDigest(canonical) !== payload.result.label_sha256) throw new Error("The numerical label identity is inconsistent.");
   return { payload, values: new Uint32Array(data.buffer) };
 }
 

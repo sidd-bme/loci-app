@@ -4,7 +4,10 @@ import { webcrypto } from "node:crypto";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RefObject } from "react";
+import { isVolumeOpeningPreviewRequestId, type VolumeOpeningPreviewEvent, type VolumeOpeningPreviewPayload } from "../shared/volume-opening-preview";
+import type { VolumeOpeningDesktopApi } from "./useVolumeOpeningPreview";
 import type { ResearchAgentSessionsSnapshot, ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
+import type { RawVolumeOpeningRenderStatus, RawVolumeResponse } from "./RawVolumeViewport";
 import type { SavedSourceView } from "./source-view-store";
 import type { VolumeSceneAdapter, VolumeSceneSnapshot, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import ResearchWorkbench from "./ResearchWorkbench";
@@ -14,18 +17,30 @@ const renderers = vi.hoisted(() => new Map<string, {
   snapshot: VolumeSceneSnapshot; locked: boolean; changed: (() => void) | null; appliedStates: VolumeViewState[];
 }>());
 
+const openingRenderer = vi.hoisted(() => ({
+  current: null as { volume: RawVolumeResponse | null; notify: (status: RawVolumeOpeningRenderStatus) => void } | null,
+}));
+
 // Keep the Workbench, SourceViewStore and VolumeSceneBridge real. The test boundary
 // replaces GPU rendering with an explicit adapter, never the lifecycle under test.
 vi.mock("./RawVolumeViewport", async () => {
   const React = await import("react");
-  return { RawVolumeViewport: ({ volume, loading, sceneHandleRef, onSceneChange, labelResult, labelPayload }: {
-    volume: { context: { source_id: string; t: number; components: Array<{ channel_index: number }> } } | null; loading?: boolean;
+  return { RawVolumeViewport: ({ volume, loading, error, sceneHandleRef, onSceneChange, labelResult, labelPayload, onOpeningVolumeRender, externalDisplay }: {
+    externalDisplay?: { renderMode: string };
+    volume: RawVolumeResponse | null; loading?: boolean;
+    onOpeningVolumeRender?: (status: RawVolumeOpeningRenderStatus) => void;
+    error?: string | null;
     sceneHandleRef?: RefObject<VolumeSceneAdapter | null>; onSceneChange?: () => void;
     labelResult?: { result_id: string; revision_hash: string } | null;
     labelPayload?: { result: { result_id: string; revision_hash: string; label_sha256: string } } | null;
   }) => {
     const sourceId = !loading ? volume?.context.source_id : undefined;
     const entry = sourceId ? renderers.get(sourceId) : undefined;
+    React.useEffect(() => {
+      if (!onOpeningVolumeRender) return;
+      openingRenderer.current = { volume, notify: onOpeningVolumeRender };
+      return () => { openingRenderer.current = null; };
+    }, [onOpeningVolumeRender, volume]);
     React.useEffect(() => {
       if (!entry || !sceneHandleRef) return;
       entry.snapshot.state.t = volume!.context.t;
@@ -47,7 +62,7 @@ vi.mock("./RawVolumeViewport", async () => {
       onSceneChange?.();
       return () => { if (sceneHandleRef.current === adapter) sceneHandleRef.current = null; entry.changed = null; };
     }, [entry, volume, sceneHandleRef, onSceneChange, labelResult?.result_id, labelResult?.revision_hash, labelPayload]);
-    return entry ? <div aria-label="Mock volume renderer ready">
+    return error ? <p role="status">{error}</p> : entry ? <div aria-label="Mock volume renderer ready" data-render-mode={externalDisplay?.renderMode}>
       <button type="button" onClick={() => {
         if (entry.locked) throw new Error("A human edit reached the locked mock renderer.");
         entry.snapshot.liveEpoch++;
@@ -57,6 +72,32 @@ vi.mock("./RawVolumeViewport", async () => {
     </div> : <div aria-label="Mock volume renderer loading" />;
   } };
 });
+
+vi.mock("./VolumeOpeningPreview", () => ({
+  VolumeOpeningPreview: ({ payload, onHide, preparingVerifiedVolume }: {
+    payload: VolumeOpeningPreviewPayload; onHide: (id: string) => void; preparingVerifiedVolume?: boolean;
+  }) => <section aria-label="Opening 3D preview">
+    <h2>{preparingVerifiedVolume ? "Source verified" : "Verifying source"}</h2>
+    <button type="button" onClick={() => onHide(payload.opening_id)}>Hide preview</button>
+  </section>,
+}));
+
+function provisionalEvents(api: VolumeOpeningDesktopApi, reply: () => ReturnType<NonNullable<ResearchDesktopApi["openVolumeImage"]>>) {
+  let listener: ((event: VolumeOpeningPreviewEvent) => void) | undefined;
+  const unsubscribe = vi.fn(() => { listener = undefined; });
+  api.onVolumeOpeningPreview = (callback) => { listener = callback; return unsubscribe; };
+  const open = vi.fn((_previewRequestId?: string) => reply());
+  api.openVolumeImage = open;
+  return { open, unsubscribe, emit: (requestId: string, openingId = requestId, inventory = "2".repeat(64)) =>
+    act(() => listener?.({ request_id: requestId, preview: {
+      schema_version: "loci.volume-opening-preview/v1",
+      opening_id: openingId,
+      source_inventory_sha256: inventory,
+      context: {} as VolumeOpeningPreviewPayload["context"],
+    } })),
+    clear: (requestId: string) => act(() => listener?.({ request_id: requestId, preview: null })),
+  };
+}
 
 const first: ResearchSource = {
   id: "a".repeat(32), sha256: "b".repeat(64), name: "First volume", source_kind: "native",
@@ -200,7 +241,7 @@ function fixture() {
     return {};
   });
   const openImages = vi.fn(async () => { events.push("native-open-images"); return null; });
-  const openStudy = vi.fn(async () => { events.push("native-open-study"); return null; });
+  const openStudy = vi.fn(async (): Promise<ResearchSnapshot | null> => { events.push("native-open-study"); return null; });
   const updateWorkspace = vi.fn(async (change: ResearchWorkspaceChange) => {
     events.push("native-close-source");
     const hidden = new Set(change.sources.filter((item) => !item.visible).map((item) => item.id));
@@ -268,6 +309,358 @@ function pointerClick(element: Element) {
   }
   fireEvent.click(element);
 }
+
+function openVolumeFromFileMenu() {
+  fireEvent.click(screen.getByText("File", { selector: "summary" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open image in 3D…" }));
+}
+
+describe("Direct image open in 3D", () => {
+  it.each(["native", "ome_zarr"] as const)("opens the exact imported %s source from welcome without 2D tiling", async (kind) => {
+    const f = fixture();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    snapshot.sources[1].source_kind = kind;
+    const defaults = gate();
+    const execute = f.execute.getMockImplementation()!;
+    f.api.getSnapshot = vi.fn().mockResolvedValue(null);
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }],
+    });
+    f.execute.mockImplementation(async (operation, request) => {
+      if (operation === "viewer_defaults" && request.source_id === second.id) await defaults.wait();
+      return execute(operation, request);
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open image in 3D…" }));
+    await screen.findByRole("heading", { name: "Preparing image…" });
+    expect(defaults.entered()).toBe(true);
+    expect(f.execute.mock.calls.some(([operation]) => operation === "viewer_volume")).toBe(false);
+    await act(async () => { defaults.release(); });
+    await screen.findByLabelText("Mock volume renderer ready");
+    expect(f.execute).toHaveBeenCalledWith("viewer_volume", expect.objectContaining({ source_id: second.id }));
+    expect(f.execute.mock.calls.some(([operation, request]) => operation === "viewer_tile" && request.source_id === second.id)).toBe(false);
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(second.name);
+    fireEvent.click(screen.getByRole("button", { name: "2D image" }));
+    await screen.findByLabelText(`Image viewer: ${second.name}`);
+  });
+
+  it("reopens the current source through File and prepares its display again", async () => {
+    const f = fixture();
+    const snapshot = (await f.api.getSnapshot())!;
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: first.id, sha256: first.sha256 }],
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    await screen.findByLabelText("Mock volume renderer ready");
+    expect(f.events.filter(event => event === `source-defaults:${first.id}`)).toHaveLength(2);
+    expect(f.execute).toHaveBeenCalledWith("viewer_volume", expect.objectContaining({ source_id: first.id }));
+  });
+
+  it.each([
+    { kind: "ome_zarr", known: false, saved: false, expected: "mip" },
+    { kind: "ome_zarr", known: true, saved: false, expected: "blend" },
+    { kind: "ome_zarr", known: false, saved: true, expected: "blend" },
+    { kind: "native", known: false, saved: false, expected: "blend" },
+  ] as const)("seeds $expected on direct open of $kind (known $known, saved $saved)", async ({ kind, known, saved, expected }) => {
+    const f = fixture();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    snapshot.sources[1].source_kind = kind;
+    if (saved) {
+      await f.execute("save_source_view", {
+        source_id: second.id, expected_revision: 0, state: {
+          interpretation: "auto", projection: "plane", camera: null, rgb_mapping: null,
+          selection: { x: 0, y: 0, width: 64, height: 48, t: 0, c: 0, z: 1, level: 0 },
+          channels: [{ channel: 0, low: 10, high: 70, gamma: 1, color: "#ffffff", opacity: 1, visible: true }],
+        },
+      });
+    }
+    f.api.getSnapshot = vi.fn().mockResolvedValue({ ...snapshot, sources: known ? snapshot.sources : [snapshot.sources[0]] });
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }],
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    expect(await screen.findByLabelText("Mock volume renderer ready")).toHaveAttribute("data-render-mode", expected);
+  });
+
+  it("keeps the normal 2D to 3D mode for an OME-Zarr source", async () => {
+    const f = fixture();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    snapshot.sources[0].source_kind = "ome_zarr";
+    f.api.getSnapshot = vi.fn().mockResolvedValue(snapshot);
+    await openVolume(f);
+    expect(screen.getByLabelText("Mock volume renderer ready")).toHaveAttribute("data-render-mode", "blend");
+  });
+
+  it.each(["source change", "study reopen"])("ignores delayed 3D preparation after a %s", async (boundary) => {
+    const f = fixture();
+    const snapshot = (await f.api.getSnapshot())!;
+    const defaults = gate();
+    const execute = f.execute.getMockImplementation()!;
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }],
+    });
+    f.openStudy.mockResolvedValueOnce(snapshot);
+    f.execute.mockImplementation(async (operation, request) => {
+      if (!defaults.entered() && operation === "viewer_defaults" && request.source_id === second.id) await defaults.wait();
+      return execute(operation, request);
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    await waitFor(() => expect(defaults.entered()).toBe(true));
+
+    if (boundary === "source change") {
+      fireEvent.click(screen.getByRole("button", { name: first.name }));
+      await screen.findByLabelText(`Image viewer: ${first.name}`);
+      fireEvent.click(screen.getByRole("button", { name: second.name }));
+    } else {
+      fireEvent.click(screen.getByText("File", { selector: "summary" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open study" }));
+    }
+    await screen.findByLabelText(`Image viewer: ${second.name}`);
+    await act(async () => { defaults.release(); });
+    expect(f.execute.mock.calls.some(([operation]) => operation === "viewer_volume")).toBe(false);
+    expect(screen.getByRole("button", { name: "3D volume" })).toBeEnabled();
+  });
+
+  it("opens a single plane in 2D and explains the volume requirement", async () => {
+    const f = fixture();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    const plane = snapshot.sources[1];
+    plane.metadata.dimensions!.z = 1;
+    plane.metadata.levels![0].dimensions.z = 1;
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: plane.id, sha256: plane.sha256 }],
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    await screen.findByLabelText(`Image viewer: ${plane.name}`);
+    expect(screen.getByRole("alert")).toHaveTextContent("Opened in 2D. Raw 3D rendering requires at least two source Z planes.");
+    expect(f.execute.mock.calls.some(([operation]) => operation === "viewer_volume")).toBe(false);
+  });
+
+  it("ignores an import binding that disagrees with the source fingerprint", async () => {
+    const f = fixture();
+    const snapshot = (await f.api.getSnapshot())!;
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: second.id, sha256: first.sha256 }],
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    expect(await screen.findByRole("alert")).toHaveTextContent("The import did not identify one image for 3D.");
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    expect(f.execute.mock.calls.some(([operation]) => operation === "viewer_volume")).toBe(false);
+  });
+
+  it("keeps picker cancellation quiet and reports import failure on welcome", async () => {
+    const f = fixture();
+    const open = vi.fn().mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("Could not decode the selected TIFF."));
+    f.api.getSnapshot = vi.fn().mockResolvedValue(null);
+    f.api.openVolumeImage = open;
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    const button = screen.getByRole("button", { name: "Open image in 3D…" });
+    fireEvent.click(button);
+    await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith());
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not decode the selected TIFF.");
+    expect(screen.getByRole("button", { name: "Open images" })).toBeEnabled();
+  });
+
+  it("lets a researcher hide an authorized provisional canvas without affecting the verified Welcome open", async () => {
+    const f = fixture();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    snapshot.sources[1].source_kind = "ome_zarr";
+    Object.assign(snapshot.sources[1].metadata, { ome_zarr: { session_inventory_sha256: "2".repeat(64) } });
+    const pending = gate();
+    f.api.getSnapshot = vi.fn().mockResolvedValue(null);
+    const preview = provisionalEvents(f.api, async () => {
+      await pending.wait();
+      return { snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }] };
+    });
+    const mounted = render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    const unrelated = "00000000-0000-4000-8000-000000000000";
+    preview.emit(unrelated);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open image in 3D…" }));
+    await waitFor(() => expect(preview.open).toHaveBeenCalledOnce());
+    const requestId = preview.open.mock.calls[0][0]!;
+    expect(isVolumeOpeningPreviewRequestId(requestId)).toBe(true);
+    preview.emit(unrelated);
+    preview.emit(requestId, unrelated);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    preview.emit(requestId);
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toHaveTextContent("Verifying source");
+    expect(mounted.container.querySelector("main")).toHaveAttribute("inert");
+    expect(f.execute.mock.calls.some(([operation]) => operation === "viewer_volume")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Hide preview" }));
+    preview.emit(requestId);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+
+    await act(async () => pending.release());
+    await screen.findByLabelText("Mock volume renderer ready");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(second.name);
+    expect(f.execute).toHaveBeenCalledWith("viewer_volume", expect.objectContaining({ source_id: second.id }));
+    mounted.unmount();
+    expect(preview.unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("clears a cancelled File preview and ignores its events during a later direct open", async () => {
+    const f = fixture();
+    const firstRequest = gate();
+    const secondRequest = gate();
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    snapshot.sources[1].source_kind = "ome_zarr";
+    Object.assign(snapshot.sources[1].metadata, { ome_zarr: { session_inventory_sha256: "4".repeat(64) } });
+    const preview = provisionalEvents(f.api, async () => {
+      if (!firstRequest.entered()) { await firstRequest.wait(); return null; }
+      await secondRequest.wait();
+      return { snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }] };
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    await waitFor(() => expect(firstRequest.entered()).toBe(true));
+    const oldRequest = preview.open.mock.calls[0][0]!;
+    preview.emit(oldRequest);
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toBeVisible();
+    preview.clear(oldRequest);
+    preview.emit(oldRequest);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    await act(async () => firstRequest.release());
+    await waitFor(() => expect(screen.getByRole("main")).not.toHaveAttribute("inert"));
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+    expect(f.execute.mock.calls.some(([op]) => op === "viewer_volume")).toBe(false);
+
+    openVolumeFromFileMenu();
+    await waitFor(() => expect(secondRequest.entered()).toBe(true));
+    const requestId = preview.open.mock.calls[1][0]!;
+    expect(requestId).not.toBe(oldRequest);
+    preview.emit(oldRequest);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    preview.emit(requestId);
+    preview.clear(oldRequest);
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toBeVisible();
+    await act(async () => secondRequest.release());
+    expect(await screen.findByRole("alert")).toHaveTextContent("The source changed during verification.");
+    await screen.findByLabelText("Mock volume renderer ready");
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+  });
+
+  async function openMatchedPreview(
+    f: ReturnType<typeof fixture>,
+    { welcome = false, singlePlane = false }: { welcome?: boolean; singlePlane?: boolean } = {},
+  ) {
+    const snapshot = structuredClone((await f.api.getSnapshot())!);
+    const source = snapshot.sources[1];
+    source.source_kind = "ome_zarr";
+    Object.assign(source.metadata, { ome_zarr: { session_inventory_sha256: "2".repeat(64) } });
+    if (singlePlane) {
+      source.metadata.dimensions!.z = 1;
+      source.metadata.levels![0].dimensions.z = 1;
+    }
+    if (welcome) f.api.getSnapshot = vi.fn().mockResolvedValue(null);
+    const pending = gate();
+    const preview = provisionalEvents(f.api, async () => {
+      await pending.wait();
+      return { snapshot, imported_sources: [{ id: source.id, sha256: source.sha256 }] };
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    if (welcome) fireEvent.click(screen.getByRole("button", { name: "Open image in 3D…" }));
+    else {
+      await screen.findByLabelText(`Image viewer: ${first.name}`);
+      openVolumeFromFileMenu();
+    }
+    await waitFor(() => expect(pending.entered()).toBe(true));
+    const openingId = preview.open.mock.calls[0][0]!;
+    preview.emit(openingId);
+    const panel = screen.getByRole("region", { name: "Opening 3D preview" });
+    expect(panel).toHaveTextContent("Verifying source");
+    await act(async () => pending.release());
+    return { panel, preview, openingId };
+  }
+
+  it("keeps the same Welcome preview through verification until the exact context paints", async () => {
+    const f = fixture();
+    const blockedVolume = f.holdRawVolume();
+    const { panel, preview, openingId } = await openMatchedPreview(f, { welcome: true });
+    await waitFor(() => expect(blockedVolume.entered()).toBe(true));
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toBe(panel);
+    expect(panel).toHaveTextContent("Source verified");
+    expect(screen.getByRole("main")).not.toHaveAttribute("inert");
+    preview.clear(openingId);
+    preview.emit(openingId);
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toBe(panel);
+
+    await act(async () => blockedVolume.release());
+    await screen.findByLabelText("Mock volume renderer ready");
+    await waitFor(() => expect(openingRenderer.current?.volume).toBeTruthy());
+    const draw = openingRenderer.current!;
+    act(() => draw.notify({ kind: "painted", volume: structuredClone(draw.volume!) }));
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toBe(panel);
+    act(() => draw.notify({ kind: "painted", volume: draw.volume! }));
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(second.name);
+  });
+
+  it("removes a verified preview when the selected document navigates before the draw", async () => {
+    const f = fixture();
+    const blockedVolume = f.holdRawVolume();
+    await openMatchedPreview(f);
+    await waitFor(() => expect(blockedVolume.entered()).toBe(true));
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toHaveTextContent("Source verified");
+    fireEvent.click(screen.getByRole("button", { name: first.name }));
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+    await act(async () => blockedVolume.release());
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
+  });
+
+  it("keeps the 2D fallback error visible after a matching preview", async () => {
+    const f = fixture();
+    await openMatchedPreview(f, { singlePlane: true });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Opened in 2D.");
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+  });
+
+  it("removes the matching preview as soon as verified graphics fail", async () => {
+    const f = fixture();
+    await openMatchedPreview(f);
+    await screen.findByLabelText("Mock volume renderer ready");
+    await waitFor(() => expect(openingRenderer.current?.volume).toBeTruthy());
+    expect(screen.getByRole("region", { name: "Opening 3D preview" })).toHaveTextContent("Source verified");
+    const draw = openingRenderer.current!;
+    act(() => draw.notify({ kind: "failed" }));
+    expect(screen.queryByRole("region", { name: "Opening 3D preview" })).toBeNull();
+  });
+
+  it("reports a volume load failure and lets the researcher return to the selected 2D image", async () => {
+    const f = fixture();
+    const snapshot = (await f.api.getSnapshot())!;
+    const execute = f.execute.getMockImplementation()!;
+    f.api.openVolumeImage = vi.fn().mockResolvedValue({
+      snapshot, imported_sources: [{ id: second.id, sha256: second.sha256 }],
+    });
+    f.execute.mockImplementation(async (operation, request) => {
+      if (operation === "viewer_volume") throw new Error("Could not read the volume data.");
+      return execute(operation, request);
+    });
+    render(<ResearchWorkbench api={f.api} onBack={vi.fn()} />);
+    await screen.findByLabelText(`Image viewer: ${first.name}`);
+    openVolumeFromFileMenu();
+    expect(await screen.findByText("Could not read the volume data.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "2D image" }));
+    await screen.findByLabelText(`Image viewer: ${second.name}`);
+  });
+});
 
 async function holdOlderAutosave(f: ReturnType<typeof fixture>) {
   const renderer = renderers.get(first.id)!, pending = f.holdSave();
