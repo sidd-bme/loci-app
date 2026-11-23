@@ -163,6 +163,34 @@ def _run_cli(executable: Path, arguments: list[str]) -> dict[str, object]:
     return value
 
 
+def _require_isolated_resource_tracker(executable: Path) -> None:
+    reader, writer = os.pipe()
+    os.close(writer)
+    try:
+        completed = subprocess.run(
+            [
+                os.fspath(executable),
+                "-B",
+                "-S",
+                "-I",
+                "-c",
+                f"from multiprocessing.resource_tracker import main;main({reader})",
+            ],
+            input='{"id":"tracker-must-ignore-this","method":"health","params":{}}\n',
+            text=True,
+            capture_output=True,
+            pass_fds=(reader,),
+            timeout=10,
+            check=False,
+        )
+    finally:
+        os.close(reader)
+    _require(
+        completed.returncode == 0 and completed.stdout == "",
+        "Frozen multiprocessing resource tracker did not stay off the worker RPC stream",
+    )
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print(
@@ -176,6 +204,8 @@ def main() -> int:
     ims_fixture = Path(sys.argv[2]).resolve()
     _require(executable.is_file(), f"Frozen engine does not exist: {executable}")
     _require(ims_fixture.is_file(), f"Frozen IMS fixture does not exist: {ims_fixture}")
+    if sys.platform == "darwin":
+        _require_isolated_resource_tracker(executable)
     h5py_metadata = list(
         (executable.parent / "_internal").glob("h5py-*.dist-info")
     )
@@ -414,6 +444,7 @@ def main() -> int:
                     "onnx_reference_inference": "exact-cpu",
                     "lzw_tiff": "decoded",
                     "modern_ims": "overview-decoded",
+                    "resource_tracker_stdio": "isolated" if sys.platform == "darwin" else None,
                 },
                 sort_keys=True,
             )
