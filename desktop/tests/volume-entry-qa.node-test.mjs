@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   assertNavigationFocus,
+  assertRecoveredMprRaster,
   centralSignal,
   focusExtentXYZ,
   focusSlicePositions,
@@ -146,4 +147,21 @@ test("navigation request counting retains the original wrapped IPC handler and a
   }
   assert.deepEqual(counts, { view: 1, result_view: 0, viewer_tile: 1, viewer_volume: 1 });
   assert.equal(handlers.get(channel), original);
+});
+
+test("MPR recovery compares exact backing pixels and render settings across CSS sizes", () => {
+  const raster = {
+    render_binding: ["a".repeat(64), "axial", [3, 4, 5], [{ channel_index: 0 }], null, null, null],
+    dimensions_xy: [256, 256],
+    rgba_sha256: "b".repeat(64),
+  };
+  const before = { viewport_pixels: { width: 240, height: 240 }, raster };
+  const recovered = { viewport_pixels: { width: 234, height: 234 }, raster: structuredClone(raster) };
+  assert.doesNotThrow(() => assertRecoveredMprRaster(recovered.raster, before.raster));
+  recovered.raster.render_binding[2][2] += 1;
+  assert.throws(() => assertRecoveredMprRaster(recovered.raster, before.raster), /world position/);
+  recovered.raster = { ...raster, dimensions_xy: [234, 234] };
+  assert.throws(() => assertRecoveredMprRaster(recovered.raster, before.raster), /raster dimensions/);
+  recovered.raster = { ...raster, rgba_sha256: "c".repeat(64) };
+  assert.throws(() => assertRecoveredMprRaster(recovered.raster, before.raster), /RGBA pixels/);
 });

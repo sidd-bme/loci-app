@@ -296,8 +296,9 @@ exercise sustained orbit, pan and native XY slice changes in the four-pane
 focus view. Select a center with visible structure over several adjacent Z
 slices. The report records renderer animation-frame intervals during input,
 pixel changes, 2D request counts, and return to the same source, native
-focus and XY pixels after simulated WebGL context loss. Animation-frame
-intervals describe renderer scheduling. They do not measure presentation rate.
+focus, XY backing pixels and slice settings after induced WebGL context loss.
+Animation-frame intervals describe renderer scheduling. They do not measure
+presentation rate.
 
 ```bash
 node desktop/tests/volume-entry.qa.mjs --app "$APP" --out "$QA_OUTPUT" \

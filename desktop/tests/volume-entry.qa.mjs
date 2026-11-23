@@ -355,6 +355,32 @@ export function assertNavigationFocus(state, expectedState, sourceSha256, crossh
   assert.deepEqual(crosshair, expectedCrosshair, "Navigation moved to a different source coordinate");
 }
 
+async function captureMprRaster(locator) {
+  return locator.evaluate(async (canvas) => {
+    const { width, height, dataset: { renderBinding } } = canvas;
+    const ctx = canvas.getContext("2d");
+    if (!ctx || width < 1 || height < 1 || !renderBinding) {
+      throw new Error("The MPR canvas has no source-bound raster");
+    }
+    const { data } = ctx.getImageData(0, 0, width, height);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+    return {
+      dimensions_xy: [width, height],
+      rgba_sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+      render_binding: JSON.parse(renderBinding),
+    };
+  });
+}
+
+export function assertRecoveredMprRaster(actual, baseline) {
+  assert.deepEqual(actual.render_binding, baseline.render_binding,
+    "The restored XY plane changed its payload, world position or display settings");
+  assert.deepEqual(actual.dimensions_xy, baseline.dimensions_xy,
+    "The restored XY plane changed its underlying raster dimensions");
+  assert.equal(actual.rgba_sha256, baseline.rgba_sha256,
+    "The restored XY plane changed its underlying RGBA pixels");
+}
+
 export async function observeNavigationRequests(app) {
   await app.evaluate(({ ipcMain }, operations) => {
     const channel = "loci-research:execute";
@@ -392,6 +418,7 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
   const captures = report.captures;
   captures.before_3d = detail.mip ?? detail.image;
   captures.before_xy = await captureVolume(app, page, directory, "navigation-before-xy", xy);
+  captures.before_xy.raster = await captureMprRaster(xy);
   assertSignal(captures.before_xy, "Initial navigation XY");
   const box = await stage.boundingBox();
   assert.ok(box && box.width >= 120 && box.height >= 100, "Navigation requires a visible 3D stage");
@@ -441,9 +468,12 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
   });
   report.phases.xy_slices.native_z_positions = positions;
   captures.resliced_xy = await captureVolume(app, page, directory, "navigation-resliced-xy", xy);
+  captures.resliced_xy.raster = await captureMprRaster(xy);
   assertSignal(captures.resliced_xy, "Resliced navigation XY");
-  assert.notEqual(captures.resliced_xy.sampled_pixel_sha256, captures.before_xy.sampled_pixel_sha256,
-    "Native Z navigation did not change the XY slice pixels");
+  assert.notDeepEqual(captures.resliced_xy.raster.render_binding, captures.before_xy.raster.render_binding,
+    "Native Z navigation did not redraw the bound XY plane");
+  assert.notEqual(captures.resliced_xy.raster.rgba_sha256, captures.before_xy.raster.rgba_sha256,
+    "Native Z navigation did not change the underlying XY slice pixels");
   await assertFocus([center[0], center[1], current]);
   while (current !== center[2]) await moveTo(current + Math.sign(center[2] - current));
   await assertFocus(center);
@@ -477,13 +507,13 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
   await assertFocus(center);
   captures.recovered_3d = await captureVolume(app, page, directory, "navigation-recovered-3d");
   captures.recovered_xy = await captureVolume(app, page, directory, "navigation-recovered-xy", xy);
+  captures.recovered_xy.raster = await captureMprRaster(xy);
   assertSignal(captures.recovered_3d, "Recovered focus 3D");
   assertSignal(captures.recovered_xy, "Recovered focus XY");
-  assert.equal(captures.recovered_xy.sampled_pixel_sha256, captures.before_xy.sampled_pixel_sha256,
-    "The restored MPR did not return to the original focused XY pixels");
   report.final_state = await dataset();
   report.final_crosshair_xyz = await sourcePosition(page, fixture.dimensions, null);
   assertNavigationFocus(report.final_state, expected, fixture.sha256, report.final_crosshair_xyz, center);
+  assertRecoveredMprRaster(captures.recovered_xy.raster, captures.before_xy.raster);
 }
 
 async function runBoundedNavigation(app, page, directory, fixture, center, detail, report) {
