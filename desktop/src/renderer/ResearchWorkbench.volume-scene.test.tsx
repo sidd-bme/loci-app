@@ -101,7 +101,7 @@ function provisionalEvents(api: VolumeOpeningDesktopApi, reply: () => ReturnType
 
 const first: ResearchSource = {
   id: "a".repeat(32), sha256: "b".repeat(64), name: "First volume", source_kind: "native",
-  metadata: { format: "OME-TIFF", axes: "TCZYX", sample_semantics: "scalar", channel_names: ["Signal", "Reference"], channel_dtypes: ["uint8", "uint8"],
+  metadata: { format: "OME-TIFF", axes: "TCZYX", sample_semantics: "none", channel_names: ["Signal", "Reference"], channel_dtypes: ["uint8", "uint8"],
     dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 }, levels: [{ index: 0, dimensions: { x: 64, y: 48, z: 3, t: 2, c: 2 } }] },
 };
 const second: ResearchSource = { ...structuredClone(first), id: "c".repeat(32), sha256: "d".repeat(64), name: "Second volume" };
