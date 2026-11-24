@@ -30,7 +30,11 @@ jobs:
           uv run ruff check .
       - name: Tests
         working-directory: engine
-        run: uv run pytest --cov=loci_engine --cov-report=term-missing
+        run: |
+          uv pip install --no-deps --require-hashes --only-binary :all: -r ../.github/engine-ci-requirements.txt
+          # Keep tests from the same file together and leave a core for runner overhead.
+          uv run --frozen --no-sync pytest -n 2 --dist=loadfile --durations=20 \
+            --cov=loci_engine --cov-report=term-missing
       - name: Developer harness tests
         run: |
           PYTHONPATH=. uv run --project engine pytest scripts/tests
