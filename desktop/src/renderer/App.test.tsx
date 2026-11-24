@@ -1035,8 +1035,12 @@ describe("Loci renderer", () => {
       revision_hash: "d".repeat(64), created_at: "2026-11-23", object_count: 1 };
     snapshot.results.push(result);
     act(() => { emit({ ...active, views: [second] }); emit({ ...active, target: null, views: [] }); });
-    expect(await screen.findByLabelText("Active image")).toHaveTextContent(b.name);
-    expect(document.querySelector(`[data-result-id="${result.id}"]`)).toBeVisible();
+    await waitFor(() => {
+      const activeImage = screen.getByLabelText("Active image");
+      expect(activeImage).toBeVisible();
+      expect(activeImage).toHaveTextContent(b.name);
+      expect(document.querySelector(`[data-result-id="${result.id}"]`)).toBeVisible();
+    });
     fireEvent.click(screen.getByRole("button", { name: /^Specimen A\.ome\.tif/ }));
     expect(await screen.findByText("Committed while detached")).toBeVisible();
     expect(screen.getByLabelText("Annotation label")).toHaveValue("Unfinished distance on A");
