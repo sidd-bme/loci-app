@@ -154,7 +154,10 @@ async function selectResult(id) {
   const resultSource = current.sources.find((item) => item.id === result.source_id);
   assert.ok(resultSource, "The result's source is not open");
   const browser = page.locator('.research-sources .source-browser');
-  await browser.getByRole('searchbox', { name: 'Search images and folders', exact: true }).fill('');
+  await browser.waitFor();
+  const search = browser.getByRole('searchbox', { name: 'Search images and folders', exact: true });
+  // A single flat source intentionally has no search control.
+  if (current.sources.length > 1 || await search.count()) await search.fill('');
   const tree = browser.getByRole('tree', { name: 'Study images', exact: true });
   if (await tree.count()) {
     // Reveal folder leaves through the ordinary keyboard disclosures; hidden
