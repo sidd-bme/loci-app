@@ -216,24 +216,39 @@ export class VolumeSceneBridge {
       if (this.initialized) return;
       const before = this.snapshot();
       await this.synchronize(before);
-      const unresolvedCamera = this.view!.state !== null && this.view!.state.camera === null;
-      const resultChanged = preserveCurrentResult && this.view!.state !== null && !equal(before.state.result, this.view!.state.result);
+      const saved = this.view!.state;
+      const unresolvedCamera = saved?.camera === null;
+      const resultChanged = preserveCurrentResult && saved !== null && !equal(before.state.result, saved.result);
       const restoreSaved = restore && !unresolvedCamera && !resultChanged;
-      this.options.adapter.lock(true);
-      try {
-        this.unchanged(before);
-        if (restoreSaved && this.view!.state && !equal(before.state, this.view!.state)) {
-          await this.options.adapter.apply(clone(this.view!.state));
-          const after = this.unchanged(before, false);
-          if (!equal(after.state, this.view!.state)) fail("stale", "The restored volume scene was not rendered exactly.");
+      let rendered = before;
+      if (restoreSaved && saved && !equal(before.state, saved)) {
+        this.options.adapter.lock(true);
+        try {
+          this.unchanged(before);
+          await this.options.adapter.apply(clone(saved));
+          rendered = this.unchanged(before, false);
+          if (!equal(rendered.state, saved)) fail("stale", "The restored volume scene was not rendered exactly.");
+        } finally {
+          this.options.adapter.lock(false);
         }
-        this.explicitSaveRequired = !restoreSaved;
-        this.initialized = true;
+      }
+      this.explicitSaveRequired = !restoreSaved;
+      this.initialized = true;
+      const available = restoreSaved && saved !== null;
+      const token = this.token(rendered);
+      try {
         this.options.onChanged?.(clone(this.view!));
-        await this.presence(this.snapshot(), restoreSaved && this.view!.state !== null);
+        await this.presence(rendered, available, rendered.busy, token, () => {
+          const current = this.unchanged(rendered, true, false);
+          if (!current.available || current.busy) throw new VolumeSceneSupersededError();
+        });
+      } catch (error) {
+        if (!(error instanceof VolumeSceneSupersededError)) throw error;
+        // The owner takes a fresh snapshot after start. Withdraw a ready token
+        // accepted in flight before handing back control to that save or update.
+        if (available && equal(this.publishedToken, token)) await this.withdrawPresence();
       } finally {
-        this.options.adapter.lock(false);
-        if (this.initialized && !this.disposed && !this.timer) this.timer = setInterval(() => { void this.heartbeat(); }, 3000);
+        if (!this.disposed && !this.timer) this.timer = setInterval(() => { void this.heartbeat(); }, 3000);
       }
     });
   }
@@ -382,18 +397,20 @@ export class VolumeSceneBridge {
     } catch (error) { if (!(error instanceof SupersededHeartbeat)) this.report(error); }
     finally { this.heartbeatPending = false; }
   }
+  private withdrawPresence(allowDisposed = false): Promise<unknown> {
+    return this.execute("volume_view_presence", () => {
+      // Withdraw only the accepted token, after in-flight publication completes.
+      if (!this.publishedToken) return null;
+      return { ...this.publishedToken, source_id: this.options.binding.sourceId,
+        source_sha256: this.options.binding.sourceSha256, busy: false, available: false };
+    }, allowDisposed);
+  }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.options.adapter.lock(false);
-    await this.execute("volume_view_presence", () => {
-      // A detached renderer has no snapshot. Withdraw only the presence we
-      // actually published, after any in-flight native publication completes.
-      if (!this.publishedToken) return null;
-      return { ...this.publishedToken, source_id: this.options.binding.sourceId,
-        source_sha256: this.options.binding.sourceSha256, busy: false, available: false };
-    }, true);
+    await this.withdrawPresence(true);
   }
 }
