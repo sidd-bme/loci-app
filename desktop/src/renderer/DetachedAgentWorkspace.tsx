@@ -36,6 +36,7 @@ export function DetachedAgentWorkspace({ api }: { api: AgentWorkspaceApi }): Rea
   const preferences = loadPreferences();
 
   useEffect(() => {
+    document.title = "Loci · Agent workspace";
     const applyAppearance = () => applyAppearancePreferences(loadPreferences());
     applyAppearance();
     document.documentElement.classList.add("agent-workspace-detached-root");

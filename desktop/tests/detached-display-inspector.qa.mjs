@@ -562,7 +562,16 @@ async function checkImagesWithDisplay(kidney, secondary) {
   await assertKidneyPanel(displayPanel, "0.42");
   const returnedCanvas = await mainCanvas(kidney.id).elementHandle();
   assert.ok(returnedCanvas);
-  await button(images, "Dock Images").press("Enter");
+  const dockImages = button(images, "Dock Images");
+  await images.bringToFront();
+  await dockImages.focus();
+  await dockImages.and(images.locator(":focus")).waitFor();
+  try {
+    await images.keyboard.press("Enter");
+  } catch (error) {
+    // macOS can destroy this child before Playwright acknowledges keyup.
+    if (!images.isClosed() || !error.message.includes("Target page, context or browser has been closed")) throw error;
+  }
   await poll(() => images.isClosed() && app.windows().length === 2, "keyboard Dock Images closes only Images");
   evidence.lifecycle.dock = await expectFocusOnDetach(main, "Dock Images command", "Detach Images");
   await sourceRow(main.locator(".research-sources"), kidney.id).waitFor();
@@ -620,6 +629,7 @@ async function checkAdditionalDragRoutes(kidney, secondary) {
     await selectWorkbenchTool(main, "Display");
     const image = await dragPanel("Detach image", `Loci · A · ${kidney.name}`, "right");
     const initial = await sampleCanvas(image, kidney.id);
+    assert.equal(await image.title(), `Loci · A · ${kidney.name}`);
     await button(image, "Zoom in").click();
     await poll(async () => (await sampleCanvas(image, kidney.id)).camera.scale > initial.camera.scale * 1.05, "zoom in detached kidney image");
     await capture(image, "14-drag-image", "Kidney image opened by its own toolbar drag, retaining live viewport controls");
@@ -636,6 +646,7 @@ async function checkAdditionalDragRoutes(kidney, secondary) {
     const drawer = main.getByRole("region", { name: "Agent session and approvals", exact: true });
     const agent = await pointer(button(drawer, "Pop out"), "Agent Pop out", { title: "Loci · Agent workspace" });
     await agent.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
+    assert.equal(await agent.title(), "Loci · Agent workspace");
     await capture(agent, "15-drag-agent", "Agent workspace was opened with an outside drag, without configuring a connection");
     await closeToDock(agent, "Return to workspace");
     report.passed.push("outside drag opened and returned the Agent workspace without an external connection");

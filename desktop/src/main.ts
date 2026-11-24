@@ -4386,6 +4386,7 @@ function createImageWindow(): { window: BrowserWindow; load: () => Promise<void>
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
   const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
     ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
     : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
@@ -4401,6 +4402,7 @@ function createAgentWorkspaceWindow(): { window: BrowserWindow; load: () => Prom
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
   const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
     ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
     : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
