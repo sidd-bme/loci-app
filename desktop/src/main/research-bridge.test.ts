@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { promises as fs } from "node:fs";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { crc32, deflateSync } from "node:zlib";
@@ -52,6 +53,7 @@ import type {
   ResearchSnapshot,
   VolumeFigureExportRequest,
 } from "../shared/research-contracts";
+import type { VolumeOpeningPreviewPayload } from "../shared/volume-opening-preview";
 
 const call = (name: string, ...args: unknown[]) =>
   mocks.handlers.get(`loci-research:${name}`)!({}, ...args);
@@ -198,6 +200,50 @@ function nativeSnapshot(
     jobs,
     operations: {},
   };
+}
+
+function volumeImportReceipt(name: string) {
+  const binding = { id: "b".repeat(32), sha256: sha };
+  const source_kind = name.endsWith(".zarr") ? "ome_zarr" : "native";
+  return {
+    snapshot: nativeSnapshot([{ ...binding, source_kind, name, metadata: {} }]),
+    imported_sources: [binding],
+  };
+}
+
+const openingId = "11111111-1111-4111-8111-111111111111";
+const previewChannel = "loci-research:volume-opening-preview";
+
+function previewFrame() {
+  const frame = { detached: false, isDestroyed: vi.fn(() => false), send: vi.fn() };
+  const sender = Object.assign(new EventEmitter(), { mainFrame: frame, isDestroyed: vi.fn(() => false), send: vi.fn() });
+  const event = { sender, senderFrame: frame };
+  return { frame, sender, event, invoke: (...args: unknown[]) => mocks.handlers.get("loci-research:open-volume-image")!(event, ...args) };
+}
+
+function openingPreview(id = openingId): VolumeOpeningPreviewPayload {
+  return {
+    schema_version: "loci.volume-opening-preview/v1", opening_id: id, source_inventory_sha256: "e".repeat(64),
+    context: {
+      dimensions_xyz: [2, 2, 2], native_level_dimensions_xyz: [2, 2, 2], source_dimensions_xyz: [4, 4, 4],
+      origin_xyz: [0, 0, 0], spacing_xyz: [2, 2, 2], direction_3x3: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      affine_4x4: [[2, 0, 0, 0], [0, 2, 0, 0], [0, 0, 2, 0], [0, 0, 0, 1]],
+      unit: "pixel", frame: "image", t: 0, level: 1, scalar_type: "uint8", source_dtypes: ["|u1"],
+      encoding_basis: "native-common-dtype", interleave: "voxel-major", data_base64: Buffer.alloc(8).toString("base64"),
+      data_sha256: "f".repeat(64), byte_length: 8,
+      components: [{ channel_index: 0, name: "Channel 1", color_rgb: [1, 1, 1], window: { low: 0, high: 255, gamma: 1 },
+        opacity: 1, visible: true, opacity_points: [[0, 0], [255, 1]],
+        provenance: { color: "default", gamma: "default", opacity: "default", range: "native-dtype-range", visibility: "default" } }],
+    },
+  };
+}
+
+async function openingFixture(name = "stack.ome.zarr") {
+  const selected = path.join(root, name);
+  if (name.endsWith(".zarr")) await fs.mkdir(selected);
+  else await fs.writeFile(selected, "image fixture");
+  mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+  return { ...previewFrame(), selected, receipt: volumeImportReceipt(name), viewer: mocks.clients[2] };
 }
 
 function durableJob({
@@ -1351,6 +1397,504 @@ describe("native research bridge", () => {
     expect(mocks.request).not.toHaveBeenCalled();
     await expect(fs.lstat(path.join(root, "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(call("session-state")).resolves.toEqual({ status: "empty" });
+  });
+
+  it("uses the normal file import with an exact receipt for a single native 3D selection", async () => {
+    const receipt = volumeImportReceipt("stack.tif");
+    const selected = path.join(root, "stack.tif");
+    await fs.writeFile(selected, "image fixture");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    const [job, control, viewer, compute] = mocks.clients;
+    viewer.request.mockResolvedValueOnce(receipt);
+
+    await expect(call("open-volume-image")).resolves.toEqual(receipt);
+    expect(mocks.open).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      properties: process.platform === "darwin" ? ["openFile", "openDirectory"] : ["openFile"],
+    }));
+    expect(viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", expect.objectContaining({
+      paths: [selected], relative_paths: ["stack.tif"], kind: "files", include_import_receipt: true,
+    }), 0);
+    expect(control.request).toHaveBeenCalledExactlyOnceWith("research_create", expect.anything());
+    expect(job.request).not.toHaveBeenCalled();
+    expect(compute.request).not.toHaveBeenCalled();
+  });
+
+  it.each(["stack.zarr", "stack.ome.zarr"])("routes a picked %s directory through verified OME-Zarr import", async (name) => {
+    const selected = path.join(root, name);
+    await fs.mkdir(selected);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    const receipt = volumeImportReceipt(name);
+    const viewer = mocks.clients[2];
+    viewer.request.mockResolvedValueOnce(receipt);
+    await expect(call("open-volume-image")).resolves.toEqual(receipt);
+    expect(viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", expect.objectContaining({
+      paths: [selected], relative_paths: [name], kind: "ome_zarr", include_import_receipt: true,
+    }), 0);
+  });
+
+  it("keeps the exact direct source on one reader process for defaults, volume and focus", async () => {
+    const name = "stack.ome.zarr";
+    const selected = path.join(root, name);
+    await fs.mkdir(selected);
+    const receipt = volumeImportReceipt(name);
+    const { id, sha256 } = receipt.imported_sources[0];
+    const project = path.join(root, "Study.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const [job, control, viewer, compute] = mocks.clients;
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    viewer.request.mockResolvedValueOnce(receipt);
+    await call("open-volume-image");
+
+    const defaults = { source_id: id, source_sha256: sha256, channels: [] };
+    const initial = { source_id: id, t: 0, z: 0, auto: false };
+    const auto = { ...initial, z: 9, auto: true };
+    for (const request of [initial, auto]) {
+      viewer.request.mockResolvedValueOnce(defaults);
+      await expect(call("execute", "viewer_defaults", request)).resolves.toEqual(defaults);
+      expect(viewer.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "viewer_defaults", request });
+    }
+    viewer.request.mockResolvedValueOnce({ ...defaults, source_sha256: "c".repeat(64) });
+    await expect(call("execute", "viewer_defaults", initial)).rejects.toThrow("do not match the imported image");
+    const annotationRequest = { source_id: id };
+    const annotations = { source_id: id, source_sha256: sha256, revision: 0, annotations: [] };
+    viewer.request.mockResolvedValueOnce(annotations);
+    await expect(call("execute", "source_annotations", annotationRequest)).resolves.toEqual(annotations);
+    expect(viewer.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "source_annotations", request: annotationRequest });
+    const whole = { source_id: id, t: 0, channel_indices: [0, 1], target_long_axis: 128 };
+    const focus = { ...whole, focus_region_xyzxyz: [0, 0, 0, 16, 16, 16] };
+    for (const request of [whole, focus]) {
+      await call("execute", "viewer_volume", request);
+      expect(viewer.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "viewer_volume", request }, 0);
+    }
+    expect(control.request).not.toHaveBeenCalledWith("research_execute", expect.anything());
+
+    const unrelated = { source_id: "c".repeat(32) };
+    await call("execute", "viewer_defaults", unrelated);
+    await call("execute", "source_annotations", unrelated);
+    const annotationWrite = { source_id: id, source_sha256: sha256, expected_revision: 1, action: "undo" };
+    await call("execute", "annotate_source", annotationWrite);
+    await call("execute", "save_source_view", { source_id: id });
+    expect(control.request).toHaveBeenCalledWith("research_execute", { project, operation: "viewer_defaults", request: unrelated });
+    expect(control.request).toHaveBeenCalledWith("research_execute", { project, operation: "source_annotations", request: unrelated });
+    expect(control.request).toHaveBeenCalledWith("research_execute", { project, operation: "annotate_source", request: annotationWrite });
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "save_source_view", request: { source_id: id } });
+    expect(job.request).not.toHaveBeenCalled();
+    expect(compute.request).not.toHaveBeenCalled();
+  });
+
+  it("rejects a late annotation read after the bound direct source closes", async () => {
+    const selected = path.join(root, "stack.tiff");
+    const receipt = volumeImportReceipt("stack.tiff");
+    const [, control, viewer] = mocks.clients;
+    await fs.writeFile(selected, "image fixture");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    viewer.request.mockResolvedValueOnce(receipt);
+    await call("open-volume-image");
+    const binding = receipt.imported_sources[0];
+    const request = { source_id: binding.id };
+    let finish!: (value: unknown) => void;
+    viewer.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const response = expect(call("execute", "source_annotations", request)).rejects.toThrow("no longer current");
+    expect(finish).toBeTypeOf("function");
+    control.request.mockResolvedValueOnce(nativeSnapshot([]));
+    await call("workspace-visibility", { expected_revision: 0, sources: [{ ...binding, visible: false }], results: [] });
+    finish({ ...request, source_sha256: binding.sha256, annotations: [] });
+    await response;
+    await call("execute", "source_annotations", request);
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", {
+      project: bridge.getViewDocumentIdentity(), operation: "source_annotations", request,
+    });
+  });
+
+  it("keeps ordinary import and its defaults on control", async () => {
+    const selected = path.join(root, "stack.tif");
+    const snapshot = volumeImportReceipt("stack.tif").snapshot;
+    const control = mocks.clients[1], viewer = mocks.clients[2];
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      return method === "research_import" ? snapshot : {};
+    });
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    await expect(call("open-images", "files")).resolves.toEqual(snapshot);
+    const project = bridge.getViewDocumentIdentity();
+    expect(control.request).toHaveBeenLastCalledWith("research_import", {
+      project, paths: [selected], relative_paths: ["stack.tif"], kind: "files",
+    }, 0);
+    const request = { source_id: snapshot.sources[0].id };
+    await call("execute", "viewer_defaults", request);
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "viewer_defaults", request });
+    expect(viewer.request).not.toHaveBeenCalled();
+  });
+
+  it.each(["reopen", "another study", "close source", "cancel view"])("revokes direct source routing on %s", async (boundary) => {
+    const name = "stack.zarr";
+    const receipt = volumeImportReceipt(name);
+    const selected = path.join(root, name);
+    const project = path.join(root, "Study.loci-study");
+    await fs.mkdir(selected);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const [, control, viewer] = mocks.clients;
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    viewer.request.mockResolvedValueOnce(receipt);
+    await call("open-volume-image");
+    const binding = receipt.imported_sources[0];
+    const request = { source_id: binding.id };
+    let finish!: (value: unknown) => void;
+    viewer.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const late = expect(call("execute", "viewer_defaults", request)).rejects.toThrow("no longer current");
+    expect(finish).toBeTypeOf("function");
+
+    let currentProject = project;
+    if (boundary === "reopen" || boundary === "another study") {
+      if (boundary === "another study") {
+        currentProject = path.join(root, "Other.loci-study");
+        await createEngineStudy(currentProject);
+      }
+      mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [currentProject] });
+      control.request.mockResolvedValueOnce(receipt.snapshot);
+      await call("open");
+    } else if (boundary === "close source") {
+      control.request.mockResolvedValueOnce(nativeSnapshot([]));
+      await call("workspace-visibility", { expected_revision: 0, sources: [{ ...binding, visible: false }], results: [] });
+    } else {
+      await call("cancel-view");
+    }
+    finish({ ...request, source_sha256: binding.sha256 });
+    await late;
+    await call("execute", "viewer_defaults", request);
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", { project: currentProject, operation: "viewer_defaults", request });
+    expect(viewer.request).toHaveBeenCalledTimes(2);
+    if (boundary === "cancel view") expect(mocks.clients.at(-1)!.request).not.toHaveBeenCalled();
+  });
+
+  it("falls back to control when a direct import returns the wrong source identity", async () => {
+    const selected = path.join(root, "stack.zarr");
+    await fs.mkdir(selected);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    const [, control, viewer] = mocks.clients;
+    const receipt = volumeImportReceipt("stack.zarr");
+    const source_id = receipt.imported_sources[0].id;
+    receipt.imported_sources[0].sha256 = "c".repeat(64);
+    viewer.request.mockResolvedValueOnce(receipt);
+    await expect(call("open-volume-image")).rejects.toThrow("exact source binding");
+    await call("execute", "viewer_defaults", { source_id });
+    expect(control.request).toHaveBeenLastCalledWith("research_execute", expect.objectContaining({ operation: "viewer_defaults" }));
+    expect(viewer.request).toHaveBeenCalledOnce();
+  });
+
+  it("cancels queued and active reads without aborting a durable direct import or letting jobs start", async () => {
+    const selected = path.join(root, "stack.zarr");
+    const receipt = volumeImportReceipt("stack.zarr");
+    await fs.mkdir(selected);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Study.loci-study") });
+    await call("create");
+    const [job, control, viewer] = mocks.clients;
+    let finishRead!: (value: unknown) => void;
+    let finishImport!: (value: unknown) => void;
+    viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishImport = resolve; }));
+    const read = { source_id: receipt.imported_sources[0].id };
+    const active = expect(call("execute", "viewer_tile", read)).rejects.toThrow("View cancelled");
+    await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+    const queued = expect(call("execute", "viewer_volume", read)).rejects.toThrow("View cancelled");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [selected] });
+    const opening = call("open-volume-image");
+    await vi.waitFor(() => expect(finishImport).toBeTypeOf("function"));
+    expect(viewer.request.mock.calls.map(([method]) => method)).toEqual(["research_execute", "research_import"]);
+    await Promise.all([queued, expect(call("new-session")).rejects.toThrow("active study operation"),
+      expect(call("recovery-undo", "any")).rejects.toThrow("active study operation"),
+      expect(call("execute", "run_recipe", read)).rejects.toThrow("study to finish opening")]);
+    await expect(call("cancel-view")).resolves.toEqual({ cancelled: true });
+    await active;
+    expect(viewer.forceDispose).not.toHaveBeenCalled();
+    expect(job.request).not.toHaveBeenCalled();
+    expect(control.request).not.toHaveBeenCalledWith("research_submit", expect.anything());
+
+    const closing = bridge.dispose();
+    await Promise.resolve();
+    expect(viewer.dispose).not.toHaveBeenCalled();
+    finishRead({});
+    finishImport(receipt);
+    await expect(opening).resolves.toEqual(receipt);
+    await closing;
+    expect(viewer.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a direct picker result returned after shutdown starts", async () => {
+    let finish!: (choice: object) => void;
+    const selected = path.join(root, "stack.zarr");
+    await fs.mkdir(selected);
+    mocks.open.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const opening = expect(call("open-volume-image")).rejects.toThrow("no longer belongs to the active opening request");
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    await bridge.dispose();
+    finish({ canceled: false, filePaths: [selected] });
+    await opening;
+    expect(mocks.request).not.toHaveBeenCalled();
+    expect(mocks.clients[2].request).not.toHaveBeenCalled();
+  });
+
+  it("never lets an older viewer lane reopen a replaced study", async () => {
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Study.loci-study") });
+    await call("create");
+    const viewer = mocks.clients[2];
+    let finish!: (value: unknown) => void;
+    viewer.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const request = { source_id: "b".repeat(32) };
+    const active = expect(call("execute", "viewer_volume", request)).rejects.toThrow("no longer current");
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    const queued = expect(call("execute", "viewer_tile", request)).rejects.toThrow("study changed");
+
+    await call("new-session");
+    const project = path.join(root, "Other.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    finish({ oldVolume: true });
+    await Promise.all([active, queued]);
+    expect(viewer.request).toHaveBeenCalledOnce();
+    await call("execute", "viewer_volume", request);
+    expect(viewer.request).toHaveBeenLastCalledWith("research_execute", { project, operation: "viewer_volume", request }, 0);
+  });
+
+  it("leaves the current study intact when 3D selection is cancelled or ambiguous", async () => {
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await expect(call("open-volume-image")).resolves.toBeNull();
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: ["/one.tif", "/two.tif"] });
+    await expect(call("open-volume-image")).rejects.toThrow("Choose one image file");
+    await expect(call("open-volume-image", "/direct.tif")).rejects.toThrow("Use the image picker");
+    const unrelated = path.join(root, "image-folder");
+    await fs.mkdir(unrelated);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [unrelated] });
+    await expect(call("open-volume-image")).rejects.toThrow("OME-Zarr directory ending in .zarr");
+    expect(mocks.request).not.toHaveBeenCalled();
+    await expect(call("session-state")).resolves.toEqual({ status: "empty" });
+  });
+
+  it("allows only a UUID v4 from the trusted picker frame", async () => {
+    const main = previewFrame(), other = previewFrame();
+    bridge.register(event => { if (event.sender !== main.event.sender as unknown) throw new Error("Untrusted frame."); });
+    await expect(other.invoke(openingId)).rejects.toThrow("Untrusted frame");
+    for (const args of [["/private/stack.zarr"], [{ path: "/private/stack.zarr" }],
+      ["11111111-1111-1111-8111-111111111111"], [openingId, "/private/stack.zarr"]]) {
+      await expect(main.invoke(...args)).rejects.toThrow("Use the image picker");
+    }
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.clients).toHaveLength(4);
+  });
+
+  it("sends the preview only to the invoking frame while strict import stays separate", async () => {
+    const f = await openingFixture(), other = previewFrame();
+    const payload = openingPreview();
+    let finish!: (result: unknown) => void;
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      return method === "research_zarr_opening_overview" ? payload : {};
+    });
+
+    const opening = f.invoke(openingId);
+    await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+    expect(f.frame.send).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: payload }));
+    expect(f.sender.send).not.toHaveBeenCalled();
+    expect(other.frame.send).not.toHaveBeenCalled();
+    const auxiliary = mocks.clients[4];
+    expect(auxiliary.request).toHaveBeenCalledExactlyOnceWith("research_zarr_opening_overview", { path: f.selected, opening_id: openingId }, 15_000);
+    expect(auxiliary.forceDispose).toHaveBeenCalledOnce();
+    expect(f.viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", {
+      project: bridge.getViewDocumentIdentity(), paths: [f.selected], relative_paths: [path.basename(f.selected)],
+      kind: "ome_zarr", include_import_receipt: true,
+    }, 0);
+
+    finish(f.receipt);
+    await expect(opening).resolves.toEqual(f.receipt);
+    expect(f.frame.send).toHaveBeenCalledOnce();
+    expect(f.sender.eventNames()).toEqual([]);
+    expect(mocks.request.mock.calls.map(([method]) => method)).toEqual(["research_create", "research_zarr_opening_overview"]);
+  });
+
+  it.each(["preview completes", "preview fails", "deadline", "cancel view", "quit"])("starts strict reimport when the preview head start ends by %s", async (boundary) => {
+    const f = await openingFixture();
+    const nextId = "22222222-2222-4222-8222-222222222222";
+    const receipt = f.receipt;
+    receipt.snapshot.sources[0].size_bytes = 3 * 1024 ** 3;
+    let finishImport!: (result: unknown) => void;
+    let previewStarted!: () => void;
+    let finishPreview!: (result: unknown) => void, failPreview!: (error: Error) => void;
+    const started = new Promise<void>(resolve => { previewStarted = resolve; });
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishImport = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      if (method !== "research_zarr_opening_overview") return {};
+      if (params.opening_id === openingId) return openingPreview();
+      return new Promise((resolve, reject) => { finishPreview = resolve; failPreview = reject; previewStarted(); });
+    });
+    const first = f.invoke(openingId);
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: openingPreview() }));
+    finishImport(receipt);
+    await expect(first).resolves.toEqual(receipt);
+
+    f.frame.send.mockClear();
+    f.viewer.request.mockClear().mockResolvedValueOnce(receipt);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [f.selected] });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const reopened = f.invoke(nextId);
+      await started;
+      const auxiliary = mocks.clients[5];
+      expect(auxiliary.request).toHaveBeenCalledExactlyOnceWith("research_zarr_opening_overview", { path: f.selected, opening_id: nextId }, 15_000);
+      expect(f.viewer.request).not.toHaveBeenCalled();
+      let closing: Promise<void> | undefined;
+      switch (boundary) {
+        case "preview completes": finishPreview(openingPreview(nextId)); break;
+        case "preview fails": failPreview(new Error("Preview unavailable")); break;
+        case "deadline":
+          await vi.advanceTimersByTimeAsync(1_499);
+          expect(f.viewer.request).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          break;
+        case "cancel view": await call("cancel-view"); break;
+        case "quit": closing = bridge.dispose(); break;
+      }
+      await expect(reopened).resolves.toEqual(receipt);
+      expect(f.viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", {
+        project: bridge.getViewDocumentIdentity(), paths: [f.selected], relative_paths: [path.basename(f.selected)],
+        kind: "ome_zarr", include_import_receipt: true,
+      }, 0);
+      await closing;
+      expect(auxiliary.forceDispose).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(f.sender.eventNames()).toEqual([]);
+      if (boundary === "preview completes") {
+        expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: nextId, preview: openingPreview(nextId) });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["small store", "failed preview"])("keeps strict registration first on reopen after a %s", async (scenario) => {
+    const f = await openingFixture();
+    f.receipt.snapshot.sources[0].size_bytes = scenario === "small store" ? 1024 : 3 * 1024 ** 3;
+    const expectedPreview = scenario === "small store" ? openingPreview() : null;
+    let finishImport!: (result: unknown) => void;
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finishImport = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      return method === "research_zarr_opening_overview" ? expectedPreview : {};
+    });
+    const first = f.invoke(openingId);
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: expectedPreview }));
+    finishImport(f.receipt);
+    await expect(first).resolves.toEqual(f.receipt);
+    f.viewer.request.mockResolvedValueOnce(f.receipt);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [f.selected] });
+    await expect(f.invoke("22222222-2222-4222-8222-222222222222")).resolves.toEqual(f.receipt);
+    expect(mocks.clients).toHaveLength(5);
+  });
+
+  it.each(["legacy invocation", "cancelled picker", "fast import", "TIFF"])("does not start an auxiliary worker for %s", async (scenario) => {
+    const f = await openingFixture(scenario === "TIFF" ? "stack.tiff" : "stack.zarr");
+    if (scenario === "cancelled picker") {
+      mocks.open.mockReset().mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      await expect(f.invoke(openingId)).resolves.toBeNull();
+    } else if (scenario === "legacy invocation") {
+      f.viewer.request.mockResolvedValueOnce(f.receipt);
+      await expect(f.invoke()).resolves.toEqual(f.receipt);
+    } else {
+      f.viewer.request.mockResolvedValueOnce(f.receipt);
+      await expect(f.invoke(openingId)).resolves.toEqual(f.receipt);
+    }
+    expect(f.sender.eventNames()).toEqual([]);
+    expect(f.frame.send).not.toHaveBeenCalled();
+    expect(mocks.clients).toHaveLength(4);
+  });
+
+  it.each(["unavailable", "timeout", "wrong ID", "wrong inventory", "extra private field", "oversize"])("clears %s preview while strict import continues", async (scenario) => {
+    const f = await openingFixture();
+    const payload = openingPreview();
+    let finish!: (result: unknown) => void;
+    f.viewer.request.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      if (method !== "research_zarr_opening_overview") return {};
+      if (scenario === "unavailable") throw new Error("Unavailable.");
+      if (scenario === "timeout") throw new Error("The research_zarr_opening_overview operation timed out.");
+      if (scenario === "wrong ID") return { ...payload, opening_id: "22222222-2222-4222-8222-222222222222" };
+      if (scenario === "wrong inventory") return { ...payload, source_inventory_sha256: "unverified" };
+      if (scenario === "extra private field") return { ...payload, context: { ...payload.context, source_id: "x", path: f.selected } };
+      return { ...payload, context: { ...payload.context, dimensions_xyz: [97, 1, 1] } };
+    });
+    const opening = f.invoke(openingId);
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: null }));
+    expect(mocks.clients[4].forceDispose).toHaveBeenCalledOnce();
+    expect(f.viewer.forceDispose).not.toHaveBeenCalled();
+    finish(f.receipt);
+    await expect(opening).resolves.toEqual(f.receipt);
+  });
+
+  it.each(["import succeeds", "import fails", "navigation", "crash", "destroy", "cancel view", "quit", "force quit"])("reclaims the preview worker when %s", async (boundary) => {
+    const f = await openingFixture();
+    let finishImport!: (result: unknown) => void, rejectImport!: (error: Error) => void;
+    let finishPreview!: (result: unknown) => void;
+    f.viewer.request.mockImplementationOnce(() => new Promise((resolve, reject) => { finishImport = resolve; rejectImport = reject; }));
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      if (method === "research_zarr_opening_overview") return new Promise(resolve => { finishPreview = resolve; });
+      return {};
+    });
+    const opening = f.invoke(openingId);
+    const result = boundary === "import fails" ? expect(opening).rejects.toThrow("Strict import failed") : expect(opening).resolves.toEqual(f.receipt);
+    await vi.waitFor(() => expect(finishPreview).toBeTypeOf("function"));
+    const auxiliary = mocks.clients[4];
+    let closing: Promise<void> | undefined;
+    switch (boundary) {
+      case "import succeeds": finishImport(f.receipt); await result; break;
+      case "import fails": rejectImport(new Error("Strict import failed")); await result; break;
+      case "navigation": f.sender.emit("did-start-navigation", { isMainFrame: true }); break;
+      case "crash": f.sender.emit("render-process-gone"); break;
+      case "destroy": f.sender.emit("destroyed"); break;
+      case "cancel view": await call("cancel-view"); break;
+      case "quit": closing = bridge.dispose(); break;
+      case "force quit": bridge.forceDispose(); break;
+    }
+    expect(auxiliary.forceDispose).toHaveBeenCalledOnce();
+    if (boundary !== "force quit") expect(f.viewer.forceDispose).not.toHaveBeenCalled();
+    finishPreview(openingPreview());
+    if (boundary !== "import fails" && boundary !== "import succeeds") finishImport(f.receipt);
+    await result;
+    await closing;
+    if (boundary === "import fails" || boundary === "cancel view") {
+      expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: openingId, preview: null });
+    } else expect(f.frame.send).not.toHaveBeenCalled();
+    expect(f.sender.eventNames()).toEqual([]);
+  });
+
+  it("ignores the previous preview after a new request begins on the same frame", async () => {
+    const f = await openingFixture();
+    const nextId = "22222222-2222-4222-8222-222222222222";
+    const nextPreview = { ...openingPreview(), opening_id: nextId };
+    let finishImport!: (result: unknown) => void, finishFirstPreview!: (result: unknown) => void;
+    const holdImport = () => new Promise(resolve => { finishImport = resolve; });
+    f.viewer.request.mockImplementationOnce(holdImport).mockImplementationOnce(holdImport);
+    mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === "research_create") await createEngineStudy(params.path as string);
+      if (method !== "research_zarr_opening_overview") return {};
+      return params.opening_id === nextId ? nextPreview : new Promise(resolve => { finishFirstPreview = resolve; });
+    });
+    const first = f.invoke(openingId);
+    await vi.waitFor(() => expect(finishFirstPreview).toBeTypeOf("function"));
+    finishImport(f.receipt);
+    await first;
+
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [f.selected] });
+    const second = f.invoke(nextId);
+    finishFirstPreview(openingPreview());
+    await vi.waitFor(() => expect(f.frame.send).toHaveBeenCalledExactlyOnceWith(previewChannel, { request_id: nextId, preview: nextPreview }));
+    finishImport(f.receipt);
+    await expect(second).resolves.toEqual(f.receipt);
   });
 
   it("recursively enumerates a bounded image folder before importing files", async () => {

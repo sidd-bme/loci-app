@@ -17,7 +17,6 @@ import h5py
 import numpy as np
 
 from .models import SourceVolumeMetadata
-from .render import _display_bounds, _display_float
 
 IMS_OVERVIEW_MAX_EDGE = 2200
 IMS_MAX_DECODED_CHUNK_BYTES = 64 * 1024 * 1024
@@ -359,6 +358,8 @@ def _read_plane(
 
 
 def _normalise_plane(plane: np.ndarray, channel: h5py.Group) -> tuple[np.ndarray, str]:
+    from .render import _display_bounds, _display_float
+
     lower = _attribute_float(channel, "HistogramMin")
     upper = _attribute_float(channel, "HistogramMax")
     if lower is None or upper is None or upper <= lower:

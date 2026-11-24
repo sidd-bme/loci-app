@@ -9,6 +9,8 @@ import type {
   VolumeFigurePayloadRecord,
 } from "../shared/research-contracts";
 
+import { validateVolumeFocusGeometry, validateVolumeLevelZeroSampling } from "../shared/volume-coordinate-mapping";
+
 export const MAX_VOLUME_FIGURE_PNG_BYTES = 32 * 1024 * 1024;
 export const MAX_VOLUME_FIGURE_METADATA_BYTES = 1024 * 1024;
 export const MAX_VOLUME_FIGURE_EDGE = 8192;
@@ -174,11 +176,28 @@ function validatePayload(value: unknown, expectedRole: "context" | "focus", sour
   boundedString(payload.encoding_basis, `${expectedRole} encoding basis`, 128);
   integer(payload.byte_length, `${expectedRole} byte length`, 1, 64 * 1024 * 1024);
   const sampling = record(payload.sampling, `${expectedRole} sampling`);
-  exactKeys(sampling, ["method", "source_indices_xyz", "level_zero_indices_xyz"], `${expectedRole} sampling`);
+  exactKeys(sampling, ["method", "source_indices_xyz", "level_zero_indices_xyz",
+    ...(Object.hasOwn(sampling, "level_zero_index_transform") ? ["level_zero_index_transform"] : []),
+  ], `${expectedRole} sampling`);
   boundedString(sampling.method, `${expectedRole} sampling method`, 128);
   validateIndexAxes(sampling.source_indices_xyz, dimensions, nativeDimensions, `${expectedRole} source indices`);
   validateIndexAxes(sampling.level_zero_indices_xyz, dimensions, sourceDimensions, `${expectedRole} level-zero indices`);
-  return value as VolumeFigurePayloadRecord;
+  const verified = value as VolumeFigurePayloadRecord;
+  validateVolumeLevelZeroSampling(verified);
+  if (expectedRole === "focus" && (verified.level !== 0 ||
+      verified.sampling.source_indices_xyz.some((indices, axis) =>
+        nativeDimensions[axis] !== sourceDimensions[axis] ||
+        indices[0] !== sourceExtent[axis * 2] || indices.at(-1) !== sourceExtent[axis * 2 + 1]))) {
+    throw new Error("The volume figure focus does not cover its declared level-zero extent.");
+  }
+  if (verified.sampling.level_zero_index_transform &&
+      verified.sampling.source_indices_xyz.some((indices, axis) =>
+        indices[0] !== 0 || indices.at(-1) !== nativeDimensions[axis] - 1 ||
+        sourceExtent[axis * 2] !== 0 || sourceExtent[axis * 2 + 1] !== nativeDimensions[axis] - 1 ||
+        nativeDimensions[axis] > sourceDimensions[axis])) {
+    throw new Error("The volume figure does not cover its complete NGFF pyramid level.");
+  }
+  return verified;
 }
 
 function approximatelyEqual(actual: number, expected: number): boolean {
@@ -338,6 +357,9 @@ export function checkedVolumeFigureRequest(
     focusPayload.unit !== contextPayload.unit || focusPayload.frame !== contextPayload.frame
   )) throw new Error("The volume focus payload is not bound to the context geometry and components.");
 
+  if (focusPayload && contextPayload.sampling.level_zero_index_transform)
+    validateVolumeFocusGeometry(contextPayload, focusPayload);
+
   const representation = record(manifest.representation, "Volume representation");
   if (!isV2) {
     exactKeys(representation, ["mode", "extent", "interpolation", "shading", "orientation_axes",
@@ -473,8 +495,9 @@ export function checkedVolumeFigureRequest(
             activePayload.sampling.level_zero_indices_xyz[axis], sourceIndices[axis],
           )) throw new Error("Volume MPR indices disagree with the displayed payloads.");
     }
-    if (!sameNumberArray(world, worldAtIndex(contextPayload, contextIndices)))
-      throw new Error("Volume MPR world position disagrees with the context geometry.");
+    const renderedWorld = isV2 ? worldAtIndex(activePayload, activeIndices) : worldAtIndex(contextPayload, contextIndices);
+    if (!sameNumberArray(world, renderedWorld))
+      throw new Error("Volume MPR world position disagrees with the displayed geometry.");
     if (representation.mode !== "mpr") throw new Error("A volume rendering must not claim MPR slices.");
   }
 

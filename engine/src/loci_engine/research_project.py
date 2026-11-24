@@ -20,13 +20,16 @@ from contextlib import closing, contextmanager, suppress
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from .export import _fsync_directory, _rename_noreplace
+from .file_fingerprint import _sha256_file_stable
 from .models import ENGINE_VERSION
-from .working_result import _sha256_file_stable
+
+if TYPE_CHECKING:
+    from .zarr_adapter import ZarrAdapter
 
 SCHEMA = 1
 SUPPORTED_SCHEMAS = {1, 2}
@@ -122,18 +125,19 @@ class ResearchProject:
         # Ordinary native opens still validate scientific snapshots. A policy
         # heartbeat only needs the separately checked directory/schema/project
         # identity; actual scientific readers enforce their own full contracts.
-        from .research_intensity_reports import load as load_intensity_report
-
         for document in self.documents("intensity_report"):
+            from .research_intensity_reports import load as load_intensity_report
+
             load_intensity_report(self, document["id"])
-        from .research_spatial_density import load as load_spatial_density
 
         for document in self.documents("spatial_density_report"):
+            from .research_spatial_density import load as load_spatial_density
+
             load_spatial_density(self, document["id"], verify_arrays=False)
 
-        from .research_wound_closure import load as load_wound_closure
-
         for document in self.documents("wound_closure_report"):
+            from .research_wound_closure import load as load_wound_closure
+
             load_wound_closure(self, document["id"], verify_arrays=False)
 
     @classmethod
@@ -379,6 +383,21 @@ class ResearchProject:
         image_group: str = "",
         multiscale_index: int | None = None,
     ) -> dict[str, Any]:
+        record, adapter = self._register_zarr_source(
+            path, name=name, image_group=image_group, multiscale_index=multiscale_index
+        )
+        adapter.close()
+        return record
+
+    def _register_zarr_source(
+        self,
+        path: str,
+        *,
+        name: str | None = None,
+        image_group: str = "",
+        multiscale_index: int | None = None,
+    ) -> tuple[dict[str, Any], ZarrAdapter]:
+        """Register a strictly opened store and transfer its reader after commit."""
         from .zarr_adapter import ZarrAdapter
 
         source = Path(path)
@@ -391,38 +410,46 @@ class ResearchProject:
             str(source), image_group=image_group, multiscale_index=multiscale_index
         )
         try:
-            receipt = adapter.verify_strict()
-            metadata = adapter.public_metadata()
-        finally:
-            adapter.close()
-        locator = {
-            "path": str(source),
-            "image_group": image_group,
-            "multiscale_index": multiscale_index,
-        }
-        with self.connection() as connection:
-            for row in connection.execute("SELECT record FROM sources"):
-                existing = parse_json(row[0])
-                if existing.get("private_zarr_selection") == locator:
-                    if existing["sha256"] != receipt.content_manifest_sha256:
-                        raise ValueError("This registered OME-Zarr source changed")
-                    return self.public_source(existing)
-            record = {
-                "id": uuid.uuid4().hex,
-                "name": checked_text(name or source.name, "Source name"),
-                "sha256": receipt.content_manifest_sha256,
-                "size_bytes": receipt.source_size_bytes,
-                "private_zarr_selection": locator,
-                "metadata": metadata,
-                "created_at": timestamp(),
-                "annotations": {},
-                "source_kind": "ome_zarr",
-                "identity_kind": "tree-content-manifest-sha256",
+            receipt = adapter.opening_receipt
+            if (
+                receipt.content_manifest_sha256 != adapter.metadata.sha256
+                or not SHA_PATTERN.fullmatch(receipt.content_manifest_sha256)
+            ):
+                raise ValueError("OME-Zarr reader did not provide a verified SHA-256 receipt")
+            locator = {
+                "path": str(source),
+                "image_group": image_group,
+                "multiscale_index": multiscale_index,
             }
-            connection.execute(
-                "INSERT INTO sources VALUES(?,?)", (record["id"], canonical_json(record))
-            )
-        return self.public_source(record)
+            with self.connection() as connection:
+                for row in connection.execute("SELECT record FROM sources"):
+                    existing = parse_json(row[0])
+                    if existing.get("private_zarr_selection") == locator:
+                        if existing["sha256"] != receipt.content_manifest_sha256:
+                            raise ValueError("This registered OME-Zarr source changed")
+                        record = existing
+                        break
+                else:
+                    record = {
+                        "id": uuid.uuid4().hex,
+                        "name": checked_text(name or source.name, "Source name"),
+                        "sha256": receipt.content_manifest_sha256,
+                        "size_bytes": receipt.source_size_bytes,
+                        "private_zarr_selection": locator,
+                        "metadata": adapter.public_metadata(),
+                        "created_at": timestamp(),
+                        "annotations": {},
+                        "source_kind": "ome_zarr",
+                        "identity_kind": "tree-content-manifest-sha256",
+                    }
+                    connection.execute(
+                        "INSERT INTO sources VALUES(?,?)", (record["id"], canonical_json(record))
+                    )
+                adapter._bind_registered_source(record, recheck_inventory=True)
+            return self.public_source(record), adapter
+        except BaseException:
+            adapter.close()
+            raise
 
     def register_medical_source(
         self,
@@ -512,8 +539,11 @@ class ResearchProject:
                     locator["path"],
                     image_group=locator["image_group"],
                     multiscale_index=locator["multiscale_index"],
+                    strict=True,
                 ) as session:
-                    receipt = session.verify_strict()
+                    receipt = session.opening_receipt
+                    if receipt is None:
+                        raise ValueError("OME-Zarr verification did not return a strict receipt")
                 actual, size = receipt.content_manifest_sha256, receipt.source_size_bytes
             else:
                 actual, size = _sha256_file_stable(
@@ -559,8 +589,11 @@ class ResearchProject:
                 path,
                 image_group=locator["image_group"],
                 multiscale_index=locator["multiscale_index"],
+                strict=True,
             ) as session:
-                receipt = session.verify_strict()
+                receipt = session.opening_receipt
+                if receipt is None:
+                    raise ValueError("OME-Zarr verification did not return a strict receipt")
             actual, size = receipt.content_manifest_sha256, receipt.source_size_bytes
             updated = {
                 "private_zarr_selection": {**locator, "path": str(path.resolve(strict=True))}

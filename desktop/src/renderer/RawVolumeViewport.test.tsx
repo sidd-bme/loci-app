@@ -151,6 +151,59 @@ describe("validateRawVolumePayload", () => {
     expect(() => validateRawVolumeResponse(wrongSourceDimensions)).toThrow(/not bound/);
   });
 
+  it("keeps legacy native and medical sampling constrained to the source arrays", () => {
+    const medical = responseWithFocus();
+    medical.context.frame = medical.focus!.frame = "LPS";
+    medical.context.unit = medical.focus!.unit = "mm";
+    medical.focus!.role = "native-detail-focus";
+    medical.focus!.sampling.method = "nearest-focus";
+    expect(() => validateRawVolumeResponse(medical)).not.toThrow();
+
+    const native = payload();
+    native.native_level_dimensions_xyz[0] = native.source_dimensions_xyz[0] = 5;
+    native.dimensions_xyz[0] = 3;
+    native.source_extent_xyzxyz[1] = 4;
+    native.sampling.source_indices_xyz[0] = [0, 2, 4];
+    native.sampling.level_zero_indices_xyz[0] = [0, 3, 4];
+    native.byte_length = 6;
+    native.data_base64 = "AAAAAAAA";
+    native.sampling.estimated_aggregate_bytes = 26;
+    expect(() => validateRawVolumePayload(native)).toThrow(/sampling/);
+  });
+
+  it("validates translated, fractional NGFF sampling and the exact level-zero focus frame", () => {
+    const response = responseWithFocus();
+    const context = response.context;
+    context.level = 1;
+    context.native_level_dimensions_xyz = [2, 1, 4];
+    context.source_extent_xyzxyz[1] = 1;
+    context.origin_xyz[0] = 10.2;
+    context.spacing_xyz[0] = 0.8;
+    context.affine_4x4[0] = [0.8, 0, 0, 10.2];
+    context.sampling.source_indices_xyz[0] = [0, 1];
+    context.sampling.level_zero_indices_xyz[0] = [1, 3];
+    context.sampling.method = "nearest-whole-extent-ngff-transform";
+    context.sampling.level_zero_index_transform = { scale_xyz: [2, 1, 1], translation_xyz: [0.5, 0, 0] };
+    expect(() => validateRawVolumeResponse(response)).not.toThrow();
+
+    const wrongIndex = structuredClone(response);
+    wrongIndex.context.sampling.level_zero_indices_xyz[0] = [0, 3];
+    expect(() => validateRawVolumeResponse(wrongIndex)).toThrow(/sampling/);
+
+    const outOfBounds = structuredClone(response);
+    outOfBounds.context.sampling.level_zero_index_transform!.translation_xyz[0] = 1.25;
+    expect(() => validateRawVolumeResponse(outOfBounds)).toThrow(/sampling/);
+
+    const missingTransform = structuredClone(response);
+    delete missingTransform.context.sampling.level_zero_index_transform;
+    expect(() => validateRawVolumeResponse(missingTransform)).toThrow(/sampling/);
+
+    const wrongFocus = structuredClone(response);
+    wrongFocus.focus!.origin_xyz[0] += 0.05;
+    wrongFocus.focus!.affine_4x4[0][3] += 0.05;
+    expect(() => validateRawVolumeResponse(wrongFocus)).toThrow(/geometry/);
+  });
+
   it("uses vtk column-major direction so oblique reflected index-to-world matches the affine", () => {
     const image = vtkImageData.newInstance();
     image.setDimensions(10, 8, 6);

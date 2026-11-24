@@ -12,6 +12,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from stat import S_IMODE
 from types import SimpleNamespace
 
 import pytest
@@ -292,7 +293,11 @@ def test_managed_symlinks_and_partial_pairs_are_not_approved(case, which):
         path.symlink_to(getattr(case, which))
     elif which == "entry":
         moved = namespace(case) / "retained-entry"
+        mode = S_IMODE(current.stat().st_mode)
+        # Allow fixture setup on hosts that require write permission to rename a directory.
+        current.chmod(0o700)
         current.rename(moved)
+        moved.chmod(mode)
         current.symlink_to(moved, target_is_directory=True)
     else:
         marker(case).unlink()

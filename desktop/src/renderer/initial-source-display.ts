@@ -42,5 +42,5 @@ export async function initialSourceDisplay(
       throw new Error("Initial display range is invalid for this channel.");
     return { ...channel, low: sampled.low, high: sampled.high };
   });
-  return { ...defaults, channels, basis: "Initial contrast from whole-image percentiles" };
+  return { ...defaults, channels, basis: "Initial contrast from a whole-image sample" };
 }

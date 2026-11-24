@@ -21,10 +21,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from .export import _NATIVE_RENAME, _rename_noreplace
+from .file_fingerprint import _sha256_file_stable
 from .models import ENGINE_VERSION
 from .research_project import SHA_PATTERN, canonical_json, checked_id, parse_json, timestamp
 from .research_result_context import _PROCESSING, _RUNTIME, _SEGMENTATION, _SETTINGS
-from .working_result import _sha256_file_stable
 
 PLAN_SCHEMA = "loci.data-export-plan/v1"
 PACKAGE_SCHEMA = "loci.scientific-data-package/v1"

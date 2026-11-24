@@ -23,12 +23,6 @@ import numpy as np
 
 from .quantitative import Geometry
 
-try:
-    import SimpleITK as sitk
-except ImportError:  # pragma: no cover - exercised only by an incorrectly provisioned runtime
-    sitk = None
-
-
 DEFAULT_MAX_DECODED_BYTES = 512 * 1024 * 1024
 MAX_DECODED_BYTES = 8 * 1024**3
 DEFAULT_MAX_DICOM_FILES = 4096
@@ -137,10 +131,12 @@ class _DicomPlan:
 
 
 def _require_sitk() -> Any:
-    if sitk is None:
+    try:
+        import SimpleITK as sitk
+    except ImportError:  # pragma: no cover - incorrectly provisioned runtime
         raise MedicalImageError(
             "Medical image support is not provisioned; install the locked SimpleITK capability"
-        )
+        ) from None
     return sitk
 
 

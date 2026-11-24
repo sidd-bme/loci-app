@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+import hmac
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import asdict, replace
 
 import numpy as np
 
@@ -16,10 +19,66 @@ from .native_image import (
     NativeSelection,
     PhysicalCalibration,
 )
-from .ome_zarr import OMEZarrPlaneRequest, OMEZarrSession
+from .ome_zarr import (
+    OMEZarrError,
+    OMEZarrIntegrityReceipt,
+    OMEZarrMetadata,
+    OMEZarrPlane,
+    OMEZarrPlaneRequest,
+    OMEZarrSession,
+    OMEZarrSourceChangedError,
+)
 from .quantitative import Geometry
 
 _TO_UM = {"nanometer": 0.001, "micrometer": 1.0, "millimeter": 1000.0, "meter": 1e6}
+
+
+def _zarr_native_levels(metadata: OMEZarrMetadata) -> tuple[NativeLevel, ...]:
+    levels = []
+    for level in metadata.levels:
+        dimensions = NativeDimensions(*level.canonical_shape_tczyx)
+        calibration = None
+        units = level.units_tczyx[-3:]
+        if all(unit in _TO_UM for unit in units):
+            spacing = tuple(
+                s * _TO_UM[u] for s, u in zip(level.scale_tczyx[-3:], units, strict=True)
+            )
+            calibration = PhysicalCalibration("ZYX", spacing, "um")
+        elif all(unit in _TO_UM for unit in units[-2:]):
+            spacing = tuple(
+                s * _TO_UM[u] for s, u in zip(level.scale_tczyx[-2:], units[-2:], strict=True)
+            )
+            calibration = PhysicalCalibration("YX", spacing, "um")
+        levels.append(NativeLevel(level.index, dimensions, calibration))
+    return tuple(levels)
+
+
+def _zarr_geometry(metadata: OMEZarrMetadata, selection: dict, volume: bool) -> Geometry:
+    level = metadata.levels[selection["level"]]
+    ndim = 3 if volume else 2
+    units = level.units_tczyx[-ndim:]
+    if all(unit in _TO_UM for unit in units):
+        factors, unit = [_TO_UM[u] for u in units], "um"
+    elif all(unit is None for unit in units):
+        factors, unit = [1.0] * ndim, "pixel"
+    else:
+        raise ValueError("Analysis requires complete supported spatial units on the selected axes")
+    scale = level.scale_tczyx[-ndim:]
+    translation = level.translation_tczyx[-ndim:]
+    indices = [selection[key] for key in ("z", "y", "x")[-ndim:]]
+    affine = np.eye(4)
+    for index, (spacing, origin, factor, offset) in enumerate(
+        zip(scale, translation, factors, indices, strict=True)
+    ):
+        xyz = ndim - index - 1
+        affine[xyz, xyz] = spacing * factor
+        affine[xyz, 3] = (origin + spacing * offset) * factor
+    # A selected XY plane retains its declared physical Z location.
+    if not volume and unit == "um" and level.units_tczyx[2] in _TO_UM:
+        affine[2, 3] = (
+            level.translation_tczyx[2] + level.scale_tczyx[2] * selection["z"]
+        ) * _TO_UM[level.units_tczyx[2]]
+    return Geometry("ZYX" if volume else "YX", tuple(tuple(row) for row in affine), unit)
 
 
 class ZarrAdapter:
@@ -37,24 +96,27 @@ class ZarrAdapter:
             image_group=image_group,
             multiscale_index=multiscale_index,
             expected_content_manifest_sha256=expected_sha256,
+            strict=True,
         )
-        receipt = self.store.verify_strict()
-        levels = []
-        for level in self.store.metadata.levels:
-            dimensions = NativeDimensions(*level.canonical_shape_tczyx)
-            calibration = None
-            units = level.units_tczyx[-3:]
-            if all(unit in _TO_UM for unit in units):
-                spacing = tuple(
-                    s * _TO_UM[u] for s, u in zip(level.scale_tczyx[-3:], units, strict=True)
-                )
-                calibration = PhysicalCalibration("ZYX", spacing, "um")
-            elif all(unit in _TO_UM for unit in units[-2:]):
-                spacing = tuple(
-                    s * _TO_UM[u] for s, u in zip(level.scale_tczyx[-2:], units[-2:], strict=True)
-                )
-                calibration = PhysicalCalibration("YX", spacing, "um")
-            levels.append(NativeLevel(level.index, dimensions, calibration))
+        receipt = self.store.opening_receipt
+        if receipt is None:
+            raise OMEZarrError("OME-Zarr session did not return an opening integrity receipt.")
+        if expected_sha256 is not None and not hmac.compare_digest(
+            receipt.content_manifest_sha256, expected_sha256
+        ):
+            raise OMEZarrSourceChangedError(
+                "The OME-Zarr store does not match the expected content-manifest SHA-256."
+            )
+        self._opening_receipt = receipt
+        self._locator = {
+            "path": path,
+            "image_group": image_group,
+            "multiscale_index": multiscale_index,
+        }
+        self._registered_names = registered_channel_names
+        self._relinked_at: str | None = None
+        self._recheck_inventory = False
+        levels = _zarr_native_levels(self.store.metadata)
         dimensions = levels[0].dimensions
         self.metadata = NativeImageMetadata(
             format="OME-Zarr",
@@ -63,7 +125,7 @@ class ZarrAdapter:
             source_axes="".join(axis.name.upper() for axis in self.store.metadata.source_axes),
             source_shape=self.store.metadata.levels[0].source_shape,
             dimensions=dimensions,
-            levels=tuple(levels),
+            levels=levels,
             channel_names=registered_channel_names
             or self.store.metadata.channel_labels
             or tuple(f"Channel {c + 1}" for c in range(dimensions.c)),
@@ -87,71 +149,107 @@ class ZarrAdapter:
             ),
         )
 
+    @property
+    def opening_receipt(self) -> OMEZarrIntegrityReceipt:
+        return self._opening_receipt
+
     def public_metadata(self) -> dict:
         return {**asdict(self.metadata), "ome_zarr": asdict(self.store.metadata)}
 
-    def read_region(self, selection: NativeSelection) -> NativeRegion:
+    def _has_registered_identity(self, source: dict) -> bool:
+        return (
+            source.get("source_kind") == "ome_zarr"
+            and source.get("private_zarr_selection") == self._locator
+            and source["sha256"] == self._opening_receipt.content_manifest_sha256
+            and source["size_bytes"] == self._opening_receipt.source_size_bytes
+        )
+
+    def _bind_registered_source(self, source: dict, *, recheck_inventory: bool = False) -> None:
+        if not self._has_registered_identity(source):
+            raise ValueError("The opened OME-Zarr reader differs from the registered source")
+        # Older studies retain the channel names they originally registered.
+        self._registered_names = tuple(source["metadata"].get("channel_names", ()))
+        if self._registered_names and self._registered_names != self.metadata.channel_names:
+            self.metadata = replace(self.metadata, channel_names=self._registered_names)
+        self._relinked_at = source.get("relinked_at")
+        self._recheck_inventory = recheck_inventory
+
+    def _matches_registered_source(self, source: dict) -> bool:
+        if (
+            not self._has_registered_identity(source)
+            or self._relinked_at != source.get("relinked_at")
+            or self._registered_names != tuple(source["metadata"].get("channel_names", ()))
+        ):
+            return False
+        if self._recheck_inventory:
+            # Check the handoff to the first viewer request, even if it only reads metadata.
+            try:
+                self.store._verify_inventory()
+            except (OMEZarrError, OMEZarrSourceChangedError):
+                return False
+            self._recheck_inventory = False
+        return True
+
+    def _plane_request(self, selection: NativeSelection) -> OMEZarrPlaneRequest:
         if selection.series != 0:
             raise ValueError("Choose the OME-Zarr image group during source import")
-        if selection.expected_sha256 not in {None, self.metadata.sha256}:
+        if selection.expected_sha256 is not None and (
+            not isinstance(selection.expected_sha256, str)
+            or not hmac.compare_digest(selection.expected_sha256, self.metadata.sha256)
+        ):
             raise ValueError("OME-Zarr selection fingerprint differs from its source")
-        region = self.store.read_plane(
-            OMEZarrPlaneRequest(
-                level=selection.level,
-                t=selection.t,
-                c=selection.c,
-                z=selection.z,
-                x=selection.x,
-                y=selection.y,
-                width=selection.width,
-                height=selection.height,
-                budget_bytes=selection.budget_bytes,
-            )
+        return OMEZarrPlaneRequest(
+            level=selection.level,
+            t=selection.t,
+            c=selection.c,
+            z=selection.z,
+            x=selection.x,
+            y=selection.y,
+            width=selection.width,
+            height=selection.height,
+            budget_bytes=selection.budget_bytes,
         )
+
+    def _native_region(self, selection: NativeSelection, plane: OMEZarrPlane) -> NativeRegion:
         return NativeRegion(
-            pixels=region.values,
+            pixels=plane.values,
             axes="YX",
             selection=selection,
             sha256=self.metadata.sha256,
             format="OME-Zarr",
-            native_dtype=str(region.values.dtype),
+            native_dtype=str(plane.values.dtype),
             read_mode="bounded-zarr-chunks",
-            estimated_peak_bytes=region.estimated_peak_bytes,
+            estimated_peak_bytes=plane.estimated_peak_bytes,
             integrity_mode="stat-verified-session",
         )
 
-    def geometry(self, selection: dict, volume: bool) -> Geometry:
-        level = self.store.metadata.levels[selection["level"]]
-        ndim = 3 if volume else 2
-        units = level.units_tczyx[-ndim:]
-        if all(unit in _TO_UM for unit in units):
-            factors, unit = [_TO_UM[u] for u in units], "um"
-        elif all(unit is None for unit in units):
-            factors, unit = [1.0] * ndim, "pixel"
-        else:
-            raise ValueError(
-                "Analysis requires complete supported spatial units on the selected axes"
-            )
-        scale = level.scale_tczyx[-ndim:]
-        translation = level.translation_tczyx[-ndim:]
-        indices = [selection[key] for key in ("z", "y", "x")[-ndim:]]
-        affine = np.eye(4)
-        for index, (spacing, origin, factor, offset) in enumerate(
-            zip(scale, translation, factors, indices, strict=True)
-        ):
-            xyz = ndim - index - 1
-            affine[xyz, xyz] = spacing * factor
-            affine[xyz, 3] = (origin + spacing * offset) * factor
-        # A selected XY plane retains its declared physical Z location.
-        if not volume and unit == "um" and level.units_tczyx[2] in _TO_UM:
-            affine[2, 3] = (
-                level.translation_tczyx[2] + level.scale_tczyx[2] * selection["z"]
-            ) * _TO_UM[level.units_tczyx[2]]
-        return Geometry("ZYX" if volume else "YX", tuple(tuple(row) for row in affine), unit)
+    def read_region(self, selection: NativeSelection) -> NativeRegion:
+        plane = self.store.read_plane(self._plane_request(selection))
+        return self._native_region(selection, plane)
 
-    def verify_strict(self):
+    @contextmanager
+    def region_reader(self) -> Iterator[Callable[[NativeSelection], NativeRegion]]:
+        """Bind store inventory across a batch of independently chunk-verified region reads."""
+        with self.store.plane_reader() as read_plane:
+            active = True
+
+            def read_verified(selection: NativeSelection) -> NativeRegion:
+                if not active:
+                    raise OMEZarrError("This OME-Zarr region reader is closed.")
+                plane = read_plane(self._plane_request(selection))
+                return self._native_region(selection, plane)
+
+            try:
+                yield read_verified
+            finally:
+                active = False
+
+    def geometry(self, selection: dict, volume: bool) -> Geometry:
+        return _zarr_geometry(self.store.metadata, selection, volume)
+
+    def verify_strict(self) -> OMEZarrIntegrityReceipt:
         receipt = self.store.verify_strict()
-        if receipt.content_manifest_sha256 != self.metadata.sha256:
+        if not hmac.compare_digest(receipt.content_manifest_sha256, self.metadata.sha256):
             raise ValueError("OME-Zarr source content changed")
         return receipt
 

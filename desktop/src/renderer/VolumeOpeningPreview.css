@@ -1,0 +1,129 @@
+.volume-opening-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: clamp(12px, 4vw, 44px);
+  background: color-mix(in srgb, var(--graphite-950), transparent 28%);
+}
+
+.volume-opening-backdrop[data-phase="preparing"] {
+  background: transparent;
+  pointer-events: none;
+}
+
+.volume-opening-backdrop[data-ready="true"] .volume-opening-preview {
+  pointer-events: auto;
+}
+
+.volume-opening-backdrop[data-ready="false"] {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.volume-opening-preview {
+  width: min(100%, 920px);
+  height: min(78vh, 680px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--graphite-900);
+}
+
+.volume-opening-header,
+.volume-opening-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 14px;
+}
+
+.volume-opening-header {
+  border-bottom: 1px solid var(--line);
+}
+
+.volume-opening-header h2 {
+  margin: 0 0 3px;
+  font-size: var(--type-md);
+  font-weight: 650;
+}
+
+.volume-opening-header p {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: var(--type-sm);
+}
+
+.volume-opening-viewer {
+  position: relative;
+  min-height: 0;
+  background: #151515;
+}
+
+.volume-opening-stage,
+.volume-opening-slice {
+  position: absolute;
+  inset: 0;
+}
+
+.volume-opening-stage:focus-visible {
+  outline: 2px solid var(--processing);
+  outline-offset: -2px;
+}
+
+.volume-opening-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.volume-opening-stage canvas:active {
+  cursor: grabbing;
+}
+
+.volume-opening-slice {
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  color: #eee;
+}
+
+.volume-opening-slice canvas {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.volume-opening-footer {
+  min-height: 42px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-size: var(--type-sm);
+}
+
+.volume-opening-modes,
+.volume-opening-z {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.volume-opening-modes button[aria-pressed="true"] {
+  border-color: var(--processing);
+}
+
+.volume-opening-dimensions,
+.volume-opening-z output {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

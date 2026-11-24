@@ -48,8 +48,16 @@ import {
   type ImageViewAccess,
 } from "./research-view-access";
 import type { ImageViewTargetSnapshot } from "../shared/image-view-contracts";
+import {
+  isVolumeOpeningPreviewRequestId,
+  VOLUME_OPENING_PREVIEW_MAX_BYTES,
+  VOLUME_OPENING_PREVIEW_MAX_EDGE,
+  type VolumeOpeningPreviewEvent,
+  type VolumeOpeningPreviewPayload,
+} from "../shared/volume-opening-preview";
 import type {
   ResearchBatchReceipt,
+  ResearchImageImportReceipt,
   ResearchJob,
   ResearchResult,
   ResearchSnapshot,
@@ -67,10 +75,79 @@ const MAX_FOLDER_SOURCES = 10_000;
 const MAX_FOLDER_ENTRIES = 50_000;
 const MAX_FOLDER_DEPTH = 64;
 const MAX_FOLDER_PATH_BYTES = 4 * 1024 * 1024;
+const VOLUME_PREVIEW_CHANNEL = "loci-research:volume-opening-preview";
+const VOLUME_PREVIEW_DELAY_MS = 250;
+const VOLUME_PREVIEW_HEAD_START_MS = 1_500;
+const VOLUME_PREVIEW_PRIORITY_MIN_BYTES = 1024 ** 3;
+const VOLUME_PREVIEW_TIMEOUT_MS = 15_000;
+const VOLUME_PREVIEW_RESPONSE_BYTES = 4 * Math.ceil(VOLUME_OPENING_PREVIEW_MAX_BYTES / 3) + 64 * 1024;
+const VOLUME_PREVIEW_SCALAR_BYTES: Record<VolumeOpeningPreviewPayload["context"]["scalar_type"], number> = {
+  uint8: 1, int8: 1, uint16: 2, int16: 2, uint32: 4, int32: 4, float32: 4,
+};
 const FOLDER_IMAGE_EXTENSIONS = new Set([
   ".tif", ".tiff", ".ims", ".png", ".jpg", ".jpeg", ".nii", ".nrrd",
   ".nhdr", ".svs", ".ndpi",
 ]);
+
+interface VolumePreviewRequest {
+  event: IpcMainInvokeEvent;
+  requestId: string;
+  trusted: (event: IpcMainInvokeEvent) => void;
+}
+
+interface VolumePreviewOpening {
+  epoch: number | null;
+  readonly published: boolean;
+  start: (path: string, prioritize: boolean) => Promise<void> | void;
+  publish: (preview: VolumeOpeningPreviewPayload | null) => void;
+  stop: () => void;
+}
+
+function exactRecordKeys(value: unknown, expected: string): boolean {
+  return Boolean(value && typeof value === "object" && Object.keys(value).sort().join(",") === expected);
+}
+
+function numbers(value: unknown, length: number): value is number[] {
+  return Array.isArray(value) && value.length === length && value.every(Number.isFinite);
+}
+
+function previewPayload(value: unknown, requestId: string): VolumeOpeningPreviewPayload | null {
+  if (!exactRecordKeys(value, "context,opening_id,schema_version,source_inventory_sha256")) return null;
+  const preview = value as VolumeOpeningPreviewPayload;
+  const { context } = preview;
+  if (preview.schema_version !== "loci.volume-opening-preview/v1" || preview.opening_id !== requestId ||
+      typeof preview.source_inventory_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(preview.source_inventory_sha256) ||
+      !exactRecordKeys(context, "affine_4x4,byte_length,components,data_base64,data_sha256,dimensions_xyz,direction_3x3,encoding_basis,frame,interleave,level,native_level_dimensions_xyz,origin_xyz,scalar_type,source_dimensions_xyz,source_dtypes,spacing_xyz,t,unit")) return null;
+
+  const { dimensions_xyz: dimensions, byte_length: bytes, data_base64: data } = context;
+  const isGrid = (grid: unknown) => numbers(grid, 3) && grid.every(v => Number.isSafeInteger(v) && v > 0);
+  if (!isGrid(dimensions) || dimensions.some(v => v > VOLUME_OPENING_PREVIEW_MAX_EDGE) ||
+      !isGrid(context.native_level_dimensions_xyz) || !isGrid(context.source_dimensions_xyz) ||
+      !Object.hasOwn(VOLUME_PREVIEW_SCALAR_BYTES, context.scalar_type) ||
+      bytes !== dimensions.reduce((total, v) => total * v, VOLUME_PREVIEW_SCALAR_BYTES[context.scalar_type]) ||
+      typeof data !== "string" || data.length !== 4 * Math.ceil(bytes / 3) || !/^[A-Za-z0-9+/]+={0,2}$/u.test(data) ||
+      typeof context.data_sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(context.data_sha256) ||
+      !numbers(context.origin_xyz, 3) || !numbers(context.spacing_xyz, 3) || context.spacing_xyz.some(v => v <= 0) ||
+      !numbers(context.direction_3x3, 9) || !Array.isArray(context.affine_4x4) ||
+      context.affine_4x4.length !== 4 || !context.affine_4x4.every(row => numbers(row, 4)) ||
+      !Number.isSafeInteger(context.level) || context.level < 0 || context.t !== 0 || context.frame !== "image" ||
+      (context.unit !== "pixel" && context.unit !== "um") || context.interleave !== "voxel-major" ||
+      !Array.isArray(context.source_dtypes) || context.source_dtypes.length !== 1 ||
+      typeof context.source_dtypes[0] !== "string" || !/^[A-Za-z0-9<>|=._-]{1,24}$/u.test(context.source_dtypes[0]) ||
+      typeof context.encoding_basis !== "string" || !/^[a-z0-9-]{1,64}$/u.test(context.encoding_basis) ||
+      !Array.isArray(context.components) || context.components.length !== 1) return null;
+
+  const [channel] = context.components;
+  if (!exactRecordKeys(channel, "channel_index,color_rgb,name,opacity,opacity_points,provenance,visible,window") ||
+      channel.channel_index !== 0 || channel.name !== "Channel 1" || !numbers(channel.color_rgb, 3) ||
+      !Number.isFinite(channel.opacity) || typeof channel.visible !== "boolean" ||
+      !Array.isArray(channel.opacity_points) || channel.opacity_points.length !== 2 ||
+      !channel.opacity_points.every(point => numbers(point, 2)) ||
+      !exactRecordKeys(channel.window, "gamma,high,low") || !Object.values(channel.window).every(Number.isFinite) ||
+      !exactRecordKeys(channel.provenance, "color,gamma,opacity,range,visibility") ||
+      !Object.values(channel.provenance).every(basis => typeof basis === "string" && /^[a-z0-9-]{1,64}$/u.test(basis))) return null;
+  return preview;
+}
 
 interface SourceAnnotationBinding {
   source_id: string;
@@ -234,6 +311,11 @@ export class ResearchBridge {
   private sessionId: string | null = null;
   private running: { id: string; project: string; graphRunId?: string } | null = null;
   private switching = false;
+  private closing = false;
+  private directVolumeImport: Promise<unknown> | null = null;
+  private directVolumeSource: { project: string; epoch: number; id: string; sha256: string } | null = null;
+  private volumePreview: VolumePreviewOpening | null = null;
+  private prioritizedVolumePreviewPath: string | null = null;
   private tissueSetup: TissueSetupOperation | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
@@ -246,13 +328,13 @@ export class ResearchBridge {
     documentState: () => ({
       project: this.project,
       epoch: this.viewDocumentEpoch,
-      switching: this.switching,
+      switching: this.switching || this.closing,
     }),
     snapshot: (project) => this.engineSnapshot(project),
     executeControl: (project, operation, request) =>
       this.control.request("research_execute", { project, operation, request }),
     executeViewer: (project, operation, request, lane, scope) =>
-      this.viewerQueue.request(operation, { project, operation, request }, lane, scope),
+      this.queueViewerRead(project, operation, request, lane, scope),
     cancelViewerScope: (scope, error) => this.viewerQueue.cancelScope(scope, error),
   });
 
@@ -262,14 +344,52 @@ export class ResearchBridge {
   }
 
   private createViewerQueue(): ViewerRequestQueue {
-    return new ViewerRequestQueue((_operation, params) =>
-      this.viewer.request("research_execute", params as Record<string, unknown>, 0));
+    const viewer = this.viewer;
+    return new ViewerRequestQueue(async (operation, params) => {
+      const { project, epoch, request } = params as { project: string; epoch: number; request: object };
+      const assertCurrent = () => {
+        if (this.closing || this.viewer !== viewer || this.project !== project || this.viewDocumentEpoch !== epoch)
+          throw new Error("The image view is no longer current.");
+      };
+      assertCurrent();
+      const output = await viewer.request("research_execute", { project, operation, request }, 0);
+      assertCurrent();
+      return output;
+    });
+  }
+
+  private queueViewerRead(project: string, operation: string, request: object, lane: string, scope?: string): Promise<unknown> {
+    return this.viewerQueue.request(operation, { project, epoch: this.viewDocumentEpoch, request }, lane, scope);
+  }
+
+  private async directSourceRead(project: string, operation: "viewer_defaults" | "source_annotations", request: object): Promise<unknown> {
+    const params = { project, operation, request };
+    const source = this.directVolumeSource;
+    if (!source || source.project !== project || source.epoch !== this.viewDocumentEpoch ||
+        source.id !== (request as { source_id?: unknown }).source_id)
+      return this.control.request("research_execute", params);
+
+    // The engine serializes this read with queued decoding and rechecks source
+    // identity itself. The import receipt only selects the worker.
+    const output = await this.viewer.request<{ source_id: string; source_sha256: string }>("research_execute", params);
+    if (this.closing || this.switching || this.directVolumeSource !== source)
+      throw new Error("The 3D image is no longer current.");
+    if (output?.source_id !== source.id || output.source_sha256 !== source.sha256) {
+      const label = operation === "viewer_defaults" ? "Display defaults" : "Source annotations";
+      throw new Error(`${label} do not match the imported image.`);
+    }
+    return output;
   }
 
   private replaceViewDocument(project: string | null, sessionId: string | null): void {
+    // Creating the initial managed study precedes preview launch. A later
+    // document replacement revokes the bound opening immediately.
+    if (this.volumePreview && this.volumePreview.epoch !== null) this.volumePreview.stop();
     this.project = project;
     this.sessionId = sessionId;
     this.vendorGrants.clear();
+    this.directVolumeSource = null;
+    this.viewerQueue.cancelPending(new Error("The image study changed."));
     this.viewDocumentEpoch += 1;
     this.computeStudyBinding = project ? randomUUID() : null;
     for (const listener of [...this.viewDocumentListeners]) listener();
@@ -285,6 +405,7 @@ export class ResearchBridge {
 
   private async snapshot(): Promise<unknown> {
     if (!this.project) {
+      const epoch = this.viewDocumentEpoch;
       const resolved = await this.sessions.resolveActive();
       if (!resolved.projectPath || resolved.state.status !== "ready") return null;
       const candidate = await this.control.request("research_snapshot", {
@@ -293,7 +414,7 @@ export class ResearchBridge {
       const hasQueuedJobs = Boolean(
         candidate?.jobs?.some((j) => j.state === "queued" || j.state === "running"),
       );
-      if (!hasQueuedJobs) {
+      if (!hasQueuedJobs || this.switching || this.project || this.viewDocumentEpoch !== epoch) {
         return null;
       }
       this.replaceViewDocument(resolved.projectPath, resolved.state.sessionId);
@@ -382,9 +503,21 @@ export class ResearchBridge {
     };
   }
 
-  private async pickedSources(kind: unknown): Promise<PickedResearchSources | null> {
-    const picked = await dialog.showOpenDialog(this.pickerOptions(kind));
+  private async pickedSources(kind: unknown, singleVolume = false): Promise<PickedResearchSources | null> {
+    const options = this.pickerOptions(kind);
+    if (singleVolume) {
+      const acceptsDirectories = process.platform === "darwin";
+      options.title = acceptsDirectories
+        ? "Choose one image file or OME-Zarr store to open in 3D"
+        : "Choose one image file to open in 3D";
+      // Only macOS can select both files and directories in one native dialog.
+      options.properties = acceptsDirectories ? ["openFile", "openDirectory"] : ["openFile"];
+      if (acceptsDirectories) options.filters?.[0]?.extensions.push("zarr");
+    }
+    const picked = await dialog.showOpenDialog(options);
     if (picked.canceled || picked.filePaths.length === 0) return null;
+    if (singleVolume && picked.filePaths.length !== 1)
+      throw new Error("Choose one image file or OME-Zarr store to open in 3D.");
     if (kind === "folder") {
       const paths = await collectImageFolder(picked.filePaths[0]);
       return { paths, importRoot: picked.filePaths[0], relativePaths: paths.map((item) =>
@@ -431,39 +564,144 @@ export class ResearchBridge {
   }
 
   private async addSources(kind: unknown = "files"): Promise<unknown> {
-    const project = this.requireProject();
+    if (this.closing) throw new Error("Loci is closing.");
+    this.requireProject();
     if (this.switching)
       throw new Error("Wait for the study to finish opening.");
-    const picked = await this.pickedSources(kind);
-    if (!picked) return this.snapshot();
-    return this.control.request(
-      "research_import",
-      {
-        project,
-        paths: picked.paths,
-        relative_paths: picked.relativePaths,
-        ...(picked.importRoot ? { import_root: picked.importRoot } : {}),
-        kind: kind === "dicom" ? "dicom" : kind === "ome_zarr" ? "ome_zarr" : "files",
-      },
-      0,
-    );
-  }
-
-  private async openImages(kind: unknown = "files"): Promise<unknown> {
-    if (this.running || this.switching)
-      throw new Error("Finish or cancel the active study operation first.");
     this.switching = true;
     try {
       const picked = await this.pickedSources(kind);
-      if (!picked) return null;
+      if (!picked) return await this.snapshot();
       return await this.importSelectedPaths(picked, kind);
     } finally {
       this.switching = false;
     }
   }
 
-  private async importSelectedPaths(picked: PickedResearchSources, kind: unknown): Promise<unknown> {
+  private async openImages(kind: unknown = "files", singleVolume = false, previewRequest?: VolumePreviewRequest): Promise<unknown> {
+    if (this.closing) throw new Error("Loci is closing.");
+    if (this.running || this.switching)
+      throw new Error("Finish or cancel the active study operation first.");
+    this.switching = true;
+    const epoch = this.viewDocumentEpoch;
+    let preview: VolumePreviewOpening | null = null;
+    try {
+      if (previewRequest) preview = this.watchVolumePreview(previewRequest);
+      const picked = await this.pickedSources(kind, singleVolume);
+      if (!picked) return null;
+      const route = singleVolume ? await this.volumeImportKind(picked.paths[0]) : kind;
+      if (this.closing || this.viewDocumentEpoch !== epoch)
+        throw new Error("The selected image no longer belongs to the active opening request.");
+      if (!singleVolume) return await this.importSelectedPaths(picked, route);
+      // Keep the durable import protected even while its worker finishes earlier reads.
+      const pending = this.importSelectedPaths(picked, route, true, preview);
+      this.directVolumeImport = pending;
+      return await pending;
+    } catch (error) {
+      preview?.publish(null);
+      throw error;
+    } finally {
+      preview?.stop();
+      this.directVolumeImport = null;
+      this.switching = false;
+    }
+  }
+
+  private watchVolumePreview({ event, requestId, trusted }: VolumePreviewRequest): VolumePreviewOpening | null {
+    const { sender, senderFrame: frame } = event;
+    if (!frame || sender.isDestroyed() || frame.isDestroyed() || frame.detached || sender.mainFrame !== frame) return null;
+
+    let scheduled: ReturnType<typeof setTimeout> | null = null;
+    let releaseHeadStart: (() => void) | null = null;
+    let reader: EngineWorkerClient | null = null;
+    let cleared = false;
+    let published = false;
+    const closeReader = () => {
+      const worker = reader;
+      reader = null;
+      worker?.forceDispose(new Error("The provisional volume reader has finished."));
+    };
+    const current = () => {
+      if (this.volumePreview !== opening || this.closing || opening.epoch !== this.viewDocumentEpoch ||
+          sender.isDestroyed() || frame.isDestroyed() || frame.detached || sender.mainFrame !== frame) return false;
+      try { trusted(event); return true; } catch { return false; }
+    };
+    const onNavigation = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+      if (details.isMainFrame) opening.stop();
+    };
+    const onSenderGone = () => opening.stop();
+    const readPreview = async (path: string) => {
+      if (!current()) { opening.stop(); return; }
+      try {
+        reader = new EngineWorkerClient(VOLUME_PREVIEW_RESPONSE_BYTES);
+        const result = await reader.request<unknown>("research_zarr_opening_overview", { path, opening_id: requestId }, VOLUME_PREVIEW_TIMEOUT_MS);
+        if (current()) opening.publish(previewPayload(result, requestId));
+      } catch { opening.publish(null); }
+      finally {
+        releaseHeadStart?.();
+        closeReader();
+      }
+    };
+    const opening: VolumePreviewOpening = {
+      epoch: null,
+      get published() { return published; },
+      start: (path, prioritize) => {
+        if (this.volumePreview !== opening || this.closing) return;
+        opening.epoch = this.viewDocumentEpoch;
+        if (prioritize) {
+          return new Promise<void>(resolve => {
+            const deadline = setTimeout(() => releaseHeadStart?.(), VOLUME_PREVIEW_HEAD_START_MS);
+            releaseHeadStart = () => {
+              clearTimeout(deadline);
+              releaseHeadStart = null;
+              resolve();
+            };
+            void readPreview(path);
+          });
+        }
+        scheduled = setTimeout(() => {
+          scheduled = null;
+          void readPreview(path);
+        }, VOLUME_PREVIEW_DELAY_MS);
+      },
+      publish: (preview) => {
+        if ((preview === null && cleared) || !current()) return;
+        const payload: VolumeOpeningPreviewEvent = { request_id: requestId, preview };
+        try {
+          frame.send(VOLUME_PREVIEW_CHANNEL, payload);
+          cleared = preview === null;
+          published ||= preview !== null;
+        } catch { opening.stop(); }
+      },
+      stop: () => {
+        if (this.volumePreview !== opening) return;
+        this.volumePreview = null;
+        if (scheduled !== null) clearTimeout(scheduled);
+        releaseHeadStart?.();
+        closeReader();
+        sender.removeListener("did-start-navigation", onNavigation);
+        sender.removeListener("render-process-gone", onSenderGone);
+        sender.removeListener("destroyed", onSenderGone);
+      },
+    };
+    this.volumePreview = opening;
+    sender.on("did-start-navigation", onNavigation);
+    sender.once("render-process-gone", onSenderGone);
+    sender.once("destroyed", onSenderGone);
+    return opening;
+  }
+
+  private async volumeImportKind(selected: string): Promise<"files" | "ome_zarr"> {
+    const stat = await fs.lstat(selected).catch(() => null);
+    if (stat?.isFile()) return "files";
+    if (stat?.isDirectory() && path.extname(selected).toLowerCase() === ".zarr") return "ome_zarr";
+    throw new Error("Choose an image file or an OME-Zarr directory ending in .zarr.");
+  }
+
+  private async importSelectedPaths(picked: PickedResearchSources, kind: unknown, directVolume = false, preview?: VolumePreviewOpening | null): Promise<unknown> {
     const { paths, relativePaths } = picked;
+    if (directVolume && (!this.switching || paths.length !== 1 || picked.importRoot || (kind !== "files" && kind !== "ome_zarr")))
+      throw new Error("A direct 3D import requires one source from the native picker.");
     let project = this.project;
     if (!project) {
       const title = path.basename(paths[0]).replace(/\.[^.]+$/u, "") || "Untitled study";
@@ -481,17 +719,42 @@ export class ResearchBridge {
       project = reservation.projectPath;
       this.replaceViewDocument(project, state.sessionId);
     }
-    return await this.control.request(
-      "research_import",
-      {
-        project,
-        paths,
-        relative_paths: relativePaths,
-        ...(picked.importRoot ? { import_root: picked.importRoot } : {}),
-        kind: kind === "dicom" ? "dicom" : kind === "ome_zarr" ? "ome_zarr" : "files",
-      },
-      0,
-    );
+    const params = {
+      project, paths, relative_paths: relativePaths,
+      ...(picked.importRoot ? { import_root: picked.importRoot } : {}),
+      kind: kind === "dicom" ? "dicom" : kind === "ome_zarr" ? "ome_zarr" : "files",
+    };
+    if (!directVolume) return this.control.request("research_import", params, 0);
+
+    // Only the locked, single-source native picker may send a durable import
+    // to the viewer. Keeping it on this worker retains the verified reader.
+    const epoch = this.viewDocumentEpoch;
+    this.viewerQueue.cancelPending();
+    if (kind === "ome_zarr") {
+      const prioritize = this.prioritizedVolumePreviewPath === paths[0];
+      if (prioritize) this.prioritizedVolumePreviewPath = null;
+      // This in-memory hint only schedules a fresh provisional read. Durable
+      // registration always runs with the original picker grant and strict checks.
+      const headStart = preview?.start(paths[0], prioritize);
+      if (headStart) await headStart;
+    }
+    const receipt = await this.viewer.request<ResearchImageImportReceipt>(
+      "research_import", { ...params, include_import_receipt: true }, 0);
+    if (this.project !== project || this.viewDocumentEpoch !== epoch)
+      throw new Error("The study changed while opening the 3D image.");
+    const bindings = receipt?.imported_sources;
+    const binding = Array.isArray(bindings) && bindings.length === 1 ? bindings[0] : null;
+    const matches = receipt?.snapshot?.sources?.filter(source => source.id === binding?.id);
+    if (!binding || !/^[a-f0-9]{32}$/u.test(binding.id) || !/^[a-f0-9]{64}$/u.test(binding.sha256) ||
+        matches?.length !== 1 || matches[0].sha256 !== binding.sha256 || matches[0].locator_state === "relink-required")
+      throw new Error("The 3D import did not return an exact source binding.");
+    const [source] = matches;
+    const bytes = source.size_bytes ?? 0;
+    if (kind === "ome_zarr" && source.source_kind === "ome_zarr" && preview?.published &&
+        Number.isSafeInteger(bytes) && bytes >= VOLUME_PREVIEW_PRIORITY_MIN_BYTES)
+      this.prioritizedVolumePreviewPath = paths[0];
+    this.directVolumeSource = { project, epoch, id: binding.id, sha256: binding.sha256 };
+    return receipt;
   }
 
   private async checkedDroppedPaths(value: unknown): Promise<DroppedResearchSelection> {
@@ -644,6 +907,7 @@ export class ResearchBridge {
     request: unknown,
     options?: unknown,
   ): Promise<unknown> {
+    if (this.closing) throw new Error("Loci is closing.");
     const project = this.requireProject();
     // The export picker pins this same study; display-only autosaves retain their
     // normal source fingerprint/revision checks and do not change scientific data.
@@ -743,8 +1007,8 @@ export class ResearchBridge {
         throw new Error("The result-description study changed during inspection.");
       return output;
     }
-    if (operation === "viewer_defaults") {
-      return this.control.request("research_execute", { project, operation, request });
+    if (operation === "viewer_defaults" || operation === "source_annotations") {
+      return this.directSourceRead(project, operation, request);
     }
     if (operation === "save_volume_view" || operation.startsWith("volume_view_")) {
       const epoch = this.viewDocumentEpoch;
@@ -754,7 +1018,7 @@ export class ResearchBridge {
       return output;
     }
     if (QUEUED_VIEW_OPERATIONS.has(operation)) {
-      return this.viewerQueue.request(operation, { project, operation, request }, viewerLane);
+      return this.queueViewerRead(project, operation, request, viewerLane);
     }
     const taskOperations = new Set([
       "workflow_run",
@@ -1419,16 +1683,16 @@ export class ResearchBridge {
   }
 
   register(trusted: (event: IpcMainInvokeEvent) => void): void {
-    const handle = (
+    const handleFromFrame = (
       name: string,
-      operation: (...args: unknown[]) => Promise<unknown>,
+      operation: (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>,
     ) => {
       ipcMain.handle(
         "loci-research:" + name,
         async (event, ...args: unknown[]) => {
           trusted(event);
           try {
-            return await operation(...args);
+            return await operation(event, ...args);
           } catch (error) {
             throw new Error(
               sanitizedWorkerErrorMessage(
@@ -1439,6 +1703,8 @@ export class ResearchBridge {
         },
       );
     };
+    const handle = (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
+      handleFromFrame(name, (_event, ...args) => operation(...args));
     handle("recipe-resources", async () => recipeResources(totalmem()));
     handle("model-library-link", async (...args) => {
       if (args.length !== 1) throw new Error("Choose a registered official model-library source.");
@@ -1457,7 +1723,11 @@ export class ResearchBridge {
         throw new Error("Finish or cancel the active study operation first.");
       this.switching = true;
       try {
-        return await this.control.request("research_workspace_visibility", { project, request });
+        const snapshot = await this.control.request<ResearchSnapshot>("research_workspace_visibility", { project, request });
+        const source = this.directVolumeSource;
+        if (source && !snapshot.sources.some(item => item.id === source.id && item.sha256 === source.sha256))
+          this.directVolumeSource = null;
+        return snapshot;
       } finally { this.switching = false; }
     });
     handle("source-order", async (request) => {
@@ -1502,6 +1772,12 @@ export class ResearchBridge {
       } finally { this.switching = false; }
     });
     handle("open-images", (kind) => this.openImages(kind));
+    handleFromFrame("open-volume-image", (event, ...args) => {
+      if (!args.length) return this.openImages("files", true);
+      if (args.length !== 1 || !isVolumeOpeningPreviewRequestId(args[0]))
+        throw new Error("Use the image picker to choose a source for 3D.");
+      return this.openImages("files", true, { event, requestId: args[0], trusted });
+    });
     handle("open-dropped", async (paths, legacyKind = "files") => {
       if (this.running || this.switching)
         throw new Error("Finish or cancel the active study operation first.");
@@ -1588,23 +1864,36 @@ export class ResearchBridge {
       if (this.running || this.switching)
         throw new Error("Finish or cancel the active study operation first.");
       if (typeof sessionId !== "string") throw new Error("Select a valid recovery session.");
-      const receipt = await this.sessions.discard(sessionId);
-      if (this.sessionId === sessionId) {
-        this.replaceViewDocument(null, null);
-      }
-      return { discarded: true, undoToken: receipt.undoToken };
+      this.switching = true;
+      try {
+        const receipt = await this.sessions.discard(sessionId);
+        if (this.sessionId === sessionId) this.replaceViewDocument(null, null);
+        return { discarded: true, undoToken: receipt.undoToken };
+      } finally { this.switching = false; }
     });
     handle("recovery-undo", async (token) => {
-      const state = await this.sessions.undoDiscard(token);
-      const resolved = await this.sessions.resolveActive();
-      this.replaceViewDocument(resolved.projectPath, state.sessionId);
-      return state;
+      if (this.running || this.switching)
+        throw new Error("Finish or cancel the active study operation first.");
+      this.switching = true;
+      try {
+        const state = await this.sessions.undoDiscard(token);
+        const resolved = await this.sessions.resolveActive();
+        this.replaceViewDocument(resolved.projectPath, state.sessionId);
+        return state;
+      } finally { this.switching = false; }
     });
     handle("cancel-view", async () => {
+      this.volumePreview?.publish(null);
+      this.volumePreview?.stop();
       this.viewerQueue.cancelPending();
-      this.viewer.forceDispose(new Error("View cancelled."));
-      this.viewer = new EngineWorkerClient();
-      this.viewerQueue = this.createViewerQueue();
+      if (this.directVolumeImport || this.closing) {
+        this.viewerQueue.cancelScope("main");
+      } else {
+        this.directVolumeSource = null;
+        this.viewer.forceDispose(new Error("View cancelled."));
+        this.viewer = new EngineWorkerClient();
+        this.viewerQueue = this.createViewerQueue();
+      }
       return { cancelled: true };
     });
     handle("vendor-inspect", async () => {
@@ -1724,6 +2013,7 @@ export class ResearchBridge {
         await this.control.request("research_relink", {
           project, source_id, candidate: kind === "dicom" ? picked.filePaths : picked.filePaths[0],
         }, 0);
+        if (this.directVolumeSource?.id === source_id) this.directVolumeSource = null;
         return this.control.request("research_snapshot", { project });
       } finally { this.switching = false; }
     });
@@ -2299,7 +2589,12 @@ export class ResearchBridge {
   }
 
   async dispose(): Promise<void> {
+    this.closing = true;
+    this.volumePreview?.stop();
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
+    // The import may have been posted behind a read. Drain it explicitly rather
+    // than relying on the worker's protection for its head-of-queue write.
+    await this.directVolumeImport?.catch(() => undefined);
     const setup = this.tissueSetup;
     if (setup) {
       if (setup.phase !== "importing") setup.cancelled = true;
@@ -2318,6 +2613,8 @@ export class ResearchBridge {
   }
 
   forceDispose(): void {
+    this.closing = true;
+    this.volumePreview?.stop();
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
     this.worker.forceDispose();
     this.control.forceDispose();

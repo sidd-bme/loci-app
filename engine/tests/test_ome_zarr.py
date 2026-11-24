@@ -166,6 +166,7 @@ def test_reads_cross_chunk_tczyx_plane_and_preserves_coordinate_provenance(
     assert plane.values.shape == (6, 7)
     assert not plane.values.flags.writeable
     assert metadata.canonical_axes == "TCZYX"
+    assert metadata.zarr_version == zarr.__version__
     assert metadata.levels[0].canonical_shape_tczyx == (2, 3, 4, 11, 13)
     assert metadata.levels[0].canonical_chunks_tczyx == (1, 1, 2, 5, 6)
     # Dataset transforms are applied first; the shared transform then scales
@@ -583,3 +584,327 @@ def test_independent_ome_zarr_py_v04_writer_fixture() -> None:
     assert hashlib.sha256(plane.values.tobytes()).hexdigest() == (
         "b9d67b7752bc2271d8bca9e0b66f499f22fc0c109e8c18b17cbdba4cd6747409"
     )
+
+
+def test_plane_reader_and_iter_verified_planes_bind_inventory_at_boundaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, arrays = _store(
+        tmp_path,
+        compressor=Blosc(cname="lz4", clevel=1),
+        shapes=((2, 3, 4, 11, 13), (2, 3, 4, 6, 7)),
+        separator="/",
+    )
+    requests = [
+        OMEZarrPlaneRequest(level=0, t=t, c=c, z=z, x=2, y=1, width=9, height=8)
+        for t in range(2)
+        for c in range(3)
+        for z in range(4)
+    ]
+    inventory_calls = 0
+    open_calls = 0
+    original_inventory = ome_zarr_module._inventory
+    original_open = ome_zarr_module._open_verified_file
+
+    def counted_inventory(*args: Any, **kwargs: Any):
+        nonlocal inventory_calls
+        inventory_calls += 1
+        return original_inventory(*args, **kwargs)
+
+    def counted_open(*args: Any, **kwargs: Any):
+        nonlocal open_calls
+        open_calls += 1
+        return original_open(*args, **kwargs)
+
+    with OMEZarrSession(root) as session:
+        monkeypatch.setattr(ome_zarr_module, "_inventory", counted_inventory)
+        monkeypatch.setattr(ome_zarr_module, "_open_verified_file", counted_open)
+
+        with session.plane_reader() as read_plane:
+            batch_planes = [read_plane(req) for req in requests]
+        assert inventory_calls == 2
+        assert open_calls > 0
+        expected_open_calls = open_calls
+
+        inventory_calls = 0
+        open_calls = 0
+        iter_planes = list(session.iter_verified_planes(requests))
+        assert inventory_calls == 2
+        assert open_calls == expected_open_calls
+
+        # Individual read_plane retains before-and-after inventory checks on every call.
+        inventory_calls = 0
+        single_plane = session.read_plane(requests[0])
+        assert inventory_calls == 2
+        np.testing.assert_array_equal(single_plane.values, batch_planes[0].values)
+        assert single_plane.estimated_peak_bytes == batch_planes[0].estimated_peak_bytes
+        assert single_plane.pixel_extent_xyxy == batch_planes[0].pixel_extent_xyxy
+        assert single_plane.physical_extent_xyxy == batch_planes[0].physical_extent_xyxy
+        assert single_plane.integrity_mode == batch_planes[0].integrity_mode
+
+    for req, batch, streamed in zip(requests, batch_planes, iter_planes, strict=True):
+        expected = arrays[0][req.t, req.c, req.z, 1:9, 2:11]
+        np.testing.assert_array_equal(batch.values, expected)
+        np.testing.assert_array_equal(streamed.values, expected)
+        assert not batch.values.flags.writeable
+        assert not streamed.values.flags.writeable
+
+
+def test_plane_reader_rejects_stale_closed_handles_budget_and_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, arrays = _store(tmp_path, chunks=(1, 1, 4, 11, 13), dtype="<f8")
+    req = OMEZarrPlaneRequest(t=1, c=2, z=3, width=5, height=4)
+    with OMEZarrSession(root) as session:
+        with session.plane_reader() as read_plane:
+            plane = read_plane(req)
+            np.testing.assert_array_equal(plane.values, arrays[0][1, 2, 3, :4, :5])
+        with pytest.raises(OMEZarrError, match="closed"):
+            read_plane(req)
+
+        decoded = 0
+        original_decode = session._decode_chunk
+
+        def counted_decode(*args: Any, **kwargs: Any) -> np.ndarray:
+            nonlocal decoded
+            decoded += 1
+            return original_decode(*args, **kwargs)
+
+        monkeypatch.setattr(session, "_decode_chunk", counted_decode)
+        with (
+            pytest.raises(OMEZarrBudgetError, match="No chunks were decoded"),
+            session.plane_reader() as aborted_reader,
+        ):
+            aborted_reader(
+                OMEZarrPlaneRequest(t=1, c=2, z=3, width=13, height=11, budget_bytes=1024)
+            )
+        assert decoded == 0
+        with pytest.raises(OMEZarrError, match="closed"):
+            aborted_reader(req)
+
+        with pytest.raises(OMEZarrError, match="outside"), session.plane_reader() as bad_bounds:
+            bad_bounds(OMEZarrPlaneRequest(x=12, y=0, width=2, height=1))
+        assert decoded == 0
+
+
+def test_plane_reader_detects_pre_mid_post_mutations_links_and_root_swap(tmp_path: Path) -> None:
+    # 1. Mutation before entering fails before yielding or decoding.
+    root_pre, _ = _store(tmp_path / "pre")
+    with OMEZarrSession(root_pre) as session:
+        (root_pre / "added").write_bytes(b"new")
+        with pytest.raises(OMEZarrSourceChangedError, match="changed"), session.plane_reader():
+            pytest.fail("plane_reader must fail before yielding when store changed")
+
+    # 2. Mid-transaction mutation of an unread chunk fails immediately on verified open,
+    # and even if caught and reverted, the transaction refuses to succeed.
+    root_mid, _ = _store(tmp_path / "mid")
+    with OMEZarrSession(root_mid) as session:
+        target_chunk = root_mid / "0" / "1.2.1.0.0"
+        original_bytes = target_chunk.read_bytes()
+        original_stat = target_chunk.stat()
+        with pytest.raises(OMEZarrSourceChangedError), session.plane_reader() as read_plane:
+            read_plane(OMEZarrPlaneRequest(t=0, c=0, z=0, width=4, height=4))
+            target_chunk.write_bytes(bytes([original_bytes[0] ^ 1]) + original_bytes[1:])
+            with pytest.raises(OMEZarrSourceChangedError):
+                read_plane(OMEZarrPlaneRequest(t=1, c=2, z=2, width=4, height=4))
+            # Even restoring original bytes and mtime must not allow clean completion.
+            target_chunk.write_bytes(original_bytes)
+            os.utime(target_chunk, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    # 3. Extra file, symlink, or hardlink introduced mid-transaction fails on exit.
+    root_post, _ = _store(tmp_path / "post")
+    with (
+        OMEZarrSession(root_post) as session,
+        pytest.raises(OMEZarrSourceChangedError, match="changed"),
+        session.plane_reader() as read_plane,
+    ):
+        read_plane(OMEZarrPlaneRequest(t=0, c=0, z=0, width=4, height=4))
+        (root_post / "stray").write_bytes(b"extra")
+
+    root_link, _ = _store(tmp_path / "link")
+    external = tmp_path / "outside.bin"
+    external.write_bytes(b"secret")
+    with (
+        OMEZarrSession(root_link) as session,
+        pytest.raises(OMEZarrUnsupportedError, match="symlinks|linked files"),
+        session.plane_reader() as read_plane,
+    ):
+        read_plane(OMEZarrPlaneRequest(t=0, c=0, z=0, width=4, height=4))
+        _file_link(root_link / "injected-link", external)
+
+    root_hardlink, _ = _store(tmp_path / "hardlink")
+    chunk = root_hardlink / "0" / "0.0.0.0.0"
+    with (
+        OMEZarrSession(root_hardlink) as session,
+        pytest.raises(OMEZarrSourceChangedError),
+        session.plane_reader() as read_plane,
+    ):
+        os.link(chunk, tmp_path / "external-hardlink")
+        read_plane(OMEZarrPlaneRequest(t=0, c=0, z=0, width=4, height=4))
+
+    # 4. Uninitialized chunk materialized mid-transaction fails on exit.
+    root_sparse, _ = _store(
+        tmp_path / "sparse", names="yx", shapes=((8, 9),), chunks=(4, 5), fill_value=3, write=False
+    )
+    with (
+        OMEZarrSession(root_sparse) as session,
+        pytest.raises(OMEZarrSourceChangedError, match="changed"),
+        session.plane_reader() as read_plane,
+    ):
+        plane = read_plane(OMEZarrPlaneRequest(width=4, height=4))
+        assert int(plane.values[0, 0]) == 3
+        (root_sparse / "0" / "0.0").write_bytes(b"\x00" * 40)
+
+    # 5. iter_verified_planes fails before completion if store mutates mid-stream.
+    root_iter, _ = _store(tmp_path / "iter")
+    with OMEZarrSession(root_iter) as session:
+        stream = session.iter_verified_planes(
+            [
+                OMEZarrPlaneRequest(t=0, c=0, z=0, width=4, height=4),
+                OMEZarrPlaneRequest(t=0, c=0, z=1, width=4, height=4),
+            ]
+        )
+        next(stream)
+        (root_iter / "stray").write_bytes(b"x")
+        next(stream)
+        with pytest.raises(OMEZarrSourceChangedError, match="changed"):
+            next(stream)
+
+    # 6. Replacing the store root with a symlink to a moved copy (same child inodes) fails.
+    if os.name != "nt":
+        root_swap, _ = _store(tmp_path / "swap")
+        moved = tmp_path / "swap-moved.ome.zarr"
+        with OMEZarrSession(root_swap) as session:
+            root_swap.rename(moved)
+            root_swap.symlink_to(moved, target_is_directory=True)
+            with pytest.raises(OMEZarrSourceChangedError, match="changed"):
+                session.read_plane(OMEZarrPlaneRequest(width=2, height=2))
+            with (
+                pytest.raises(OMEZarrSourceChangedError, match="changed"),
+                session.plane_reader(),
+            ):
+                pytest.fail("root symlink swap must be rejected")
+            with pytest.raises(OMEZarrSourceChangedError, match="changed"):
+                session.verify_strict()
+
+
+def test_strict_open_hashes_once_and_explicit_verify_strict_always_rehashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _ = _store(tmp_path, compressor=Zlib(level=1))
+    manifest_calls = 0
+    inventory_calls = 0
+    original_manifest = ome_zarr_module._content_manifest
+    original_inventory = ome_zarr_module._inventory
+
+    def counted_manifest(*args: Any, **kwargs: Any):
+        nonlocal manifest_calls
+        manifest_calls += 1
+        return original_manifest(*args, **kwargs)
+
+    def counted_inventory(*args: Any, **kwargs: Any):
+        nonlocal inventory_calls
+        inventory_calls += 1
+        return original_inventory(*args, **kwargs)
+
+    monkeypatch.setattr(ome_zarr_module, "_content_manifest", counted_manifest)
+    monkeypatch.setattr(ome_zarr_module, "_inventory", counted_inventory)
+
+    with OMEZarrSession(root, strict=True) as first:
+        receipt = first.opening_receipt
+        assert receipt is not None
+        assert first.metadata.strict_content_manifest_sha256 == receipt.content_manifest_sha256
+    assert manifest_calls == 1
+    assert inventory_calls == 2
+
+    manifest_calls = 0
+    inventory_calls = 0
+    with OMEZarrSession(
+        root, expected_content_manifest_sha256=receipt.content_manifest_sha256
+    ) as verified:
+        assert verified.opening_receipt == receipt
+        assert verified.metadata.strict_content_manifest_sha256 == receipt.content_manifest_sha256
+        assert manifest_calls == 1
+        assert inventory_calls == 2
+
+        # Explicit verify_strict always performs a fresh full manifest hash from disk.
+        fresh = verified.verify_strict()
+        assert fresh == receipt
+        assert manifest_calls == 2
+        assert inventory_calls == 4
+
+    # Tampering bytes with preserved mtime is still detected on explicit verify_strict and reopen.
+    chunk = root / "0" / "0.0.0.0.0"
+    st = chunk.stat()
+    raw = chunk.read_bytes()
+    chunk.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+    os.utime(chunk, ns=(st.st_atime_ns, st.st_mtime_ns))
+    with pytest.raises(OMEZarrSourceChangedError, match="expected"):
+        OMEZarrSession(root, expected_content_manifest_sha256=receipt.content_manifest_sha256)
+    with pytest.raises(OMEZarrError, match="boolean"):
+        OMEZarrSession(root, strict="yes")  # type: ignore[arg-type]
+
+
+def test_parallel_content_manifest_preserves_order_after_out_of_order_reads(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from threading import Event
+
+    root, _ = _store(tmp_path)
+    with OMEZarrSession(root, strict=True) as sequential:
+        expected = sequential.opening_receipt
+    assert expected is not None
+
+    group_hashed = Event()
+    hash_file = ome_zarr_module._verified_file_sha256
+
+    def out_of_order(root, relative, entries):
+        if relative == ".zattrs" and not group_hashed.wait(timeout=5):
+            pytest.fail("the next file in the manifest did not run independently")
+        digest = hash_file(root, relative, entries)
+        if relative == ".zgroup":
+            group_hashed.set()
+        return digest
+
+    monkeypatch.setattr(ome_zarr_module, "_MANIFEST_MIN_PARALLEL_ENTRIES", 0)
+    monkeypatch.setattr(ome_zarr_module, "_MANIFEST_MIN_PARALLEL_BYTES", 0)
+    monkeypatch.setattr(ome_zarr_module, "_MANIFEST_HASH_BATCH_FILES", 1)
+    monkeypatch.setattr(ome_zarr_module, "_verified_file_sha256", out_of_order)
+    with OMEZarrSession(root, strict=True) as parallel:
+        assert parallel.opening_receipt == expected
+
+
+def test_parallel_content_manifest_still_verifies_inventory_after_hashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, _ = _store(tmp_path)
+    hash_file = ome_zarr_module._verified_file_sha256
+
+    def add_file_during_hash(root, relative, entries):
+        digest = hash_file(root, relative, entries)
+        if relative == ".zgroup":
+            (root / "added").write_bytes(b"unexpected entry")
+        return digest
+
+    monkeypatch.setattr(ome_zarr_module, "_MANIFEST_MIN_PARALLEL_ENTRIES", 0)
+    monkeypatch.setattr(ome_zarr_module, "_MANIFEST_MIN_PARALLEL_BYTES", 0)
+    monkeypatch.setattr(ome_zarr_module, "_verified_file_sha256", add_file_during_hash)
+    with pytest.raises(OMEZarrSourceChangedError, match="changed after"):
+        OMEZarrSession(root, strict=True)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_open_rejects_mutation_after_metadata_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, strict: bool
+) -> None:
+    root, _ = _store(tmp_path)
+    metadata_digest = ome_zarr_module._inventory_digest
+
+    def mutate_after_metadata(entries):
+        result = metadata_digest(entries)
+        (root / "added-after-metadata").touch()
+        return result
+
+    monkeypatch.setattr(ome_zarr_module, "_inventory_digest", mutate_after_metadata)
+    with pytest.raises(OMEZarrSourceChangedError, match="changed"):
+        OMEZarrSession(root, strict=strict)

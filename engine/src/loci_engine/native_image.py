@@ -13,12 +13,15 @@ import hashlib
 import hmac
 import io
 import math
+import os
 import re
 import stat
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -26,8 +29,6 @@ import h5py
 import numpy as np
 import tifffile
 from PIL import Image, ImageCms, UnidentifiedImageError
-
-from .ims import _color_from_table, _fluorophore_color_from_name
 
 if TYPE_CHECKING:
     from .quantitative import Geometry
@@ -37,6 +38,11 @@ MAX_NATIVE_READ_BUDGET_BYTES = 512 * 1024 * 1024
 MAX_DECODED_SEGMENT_BYTES = 64 * 1024 * 1024
 MAX_OME_XML_BYTES = 8 * 1024 * 1024
 MAX_EMBEDDED_ICC_BYTES = 4 * 1024 * 1024
+_IMS_MAX_CHUNK_CACHE_BYTES = 4 * 1024 * 1024
+_IMS_MAX_CACHED_CHUNKS = 64
+_IMS_CHUNK_CACHE_SLOTS = 257
+# Reserve for the fixed-size HDF5 hash table and per-entry cache bookkeeping.
+_IMS_CHUNK_CACHE_OVERHEAD_BYTES = 64 * 1024
 
 # Generated once with Pillow 12.3.0 and LittleCMS 2.19 using
 # ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes(). The
@@ -410,6 +416,10 @@ def _file_identity(path: Path) -> _FileIdentity:
         status = path.stat()
     except OSError as exc:
         raise NativeSourceChangedError("The native source is no longer accessible.") from exc
+    return _identity_from_stat(status)
+
+
+def _identity_from_stat(status: os.stat_result) -> _FileIdentity:
     if not stat.S_ISREG(status.st_mode):
         raise NativeSourceChangedError("The native source is no longer a regular file.")
     return _FileIdentity(
@@ -607,6 +617,8 @@ def _native_dtype_bounds(dtype: np.dtype[Any]) -> tuple[float, float] | None:
 def _ims_acquisition_display(
     root: h5py.File, channel_dtypes: tuple[str, ...]
 ) -> tuple[NativeChannelDisplay, ...]:
+    from .ims import _color_from_table, _fluorophore_color_from_name
+
     info = _local_hdf5_child(root, "DataSetInfo")
     records: list[NativeChannelDisplay] = []
     for index, dtype_name in enumerate(channel_dtypes):
@@ -1840,7 +1852,8 @@ def _canonical_region(array: np.ndarray, remaining_axes: str) -> tuple[np.ndarra
 
 
 def _read_tiff_memmap(
-    path: Path,
+    tif: tifffile.TiffFile,
+    series: tifffile.TiffPageSeries,
     metadata: NativeImageMetadata,
     selection: NativeSelection,
 ) -> tuple[np.ndarray, str, int]:
@@ -1850,7 +1863,12 @@ def _read_tiff_memmap(
         output_shape = (*output_shape, metadata.dimensions.s)
     output_bytes = _decoded_bytes(output_shape, dtype)
     _require_budget(output_bytes, selection.budget_bytes)
-    array = tifffile.memmap(path, series=selection.series, level=selection.level, mode="r")
+    # A mappable page can belong to a non-contiguous series. In that case
+    # the caller uses the bounded segment decoder for the selected plane.
+    if series.dataoffset is None:
+        raise ValueError("TIFF series has no contiguous pixel storage.")
+    file_dtype = np.dtype(tif.byteorder + series.dtype.char)
+    array = tif.filehandle.memmap_array(file_dtype, series.shape, series.dataoffset)
     selected = np.asarray(array[_tiff_indexer(metadata.source_axes, selection)])
     remaining = "".join(axis for axis in metadata.source_axes if axis not in "TCZ")
     selected, axes = _canonical_region(selected, remaining)
@@ -1977,16 +1995,20 @@ def _read_tiff_segments(
 
 
 def _read_tiff(
-    path: Path, metadata: NativeImageMetadata, selection: NativeSelection
+    path: Path,
+    metadata: NativeImageMetadata,
+    selection: NativeSelection,
+    opened: tifffile.TiffFile | None = None,
 ) -> tuple[np.ndarray, str, int]:
     try:
-        with tifffile.TiffFile(path) as tif:
+        handle = nullcontext(opened) if opened is not None else tifffile.TiffFile(path)
+        with handle as tif:
             series = tif.series[selection.series].levels[selection.level]
             page_index = _series_plane_index(metadata.source_axes, tuple(series.shape), selection)
             page = series.pages[page_index]
             if metadata.palette is None and page is not None and page.is_memmappable:
                 try:
-                    return _read_tiff_memmap(path, metadata, selection)
+                    return _read_tiff_memmap(tif, series, metadata, selection)
                 except NativeImageError:
                     raise
                 except (OSError, ValueError):
@@ -1998,34 +2020,68 @@ def _read_tiff(
         raise NativeImageError("Loci could not read this TIFF region safely.") from exc
 
 
+def _ims_region_dataset(root: h5py.File, level: int, t: int, c: int) -> h5py.Dataset:
+    dataset_root = _local_hdf5_child(root, "DataSet")
+    assert isinstance(dataset_root, h5py.Group)
+    resolution = _numbered_hdf5_groups(dataset_root, "ResolutionLevel")[level]
+    timepoint = _numbered_hdf5_groups(resolution, "TimePoint")[t]
+    channel = _numbered_hdf5_groups(timepoint, "Channel")[c]
+    return _ims_dataset(channel)
+
+
+def _ims_plane_bytes(dataset: h5py.Dataset, selection: NativeSelection) -> int:
+    output_bytes = _decoded_bytes((selection.height, selection.width), dataset.dtype)
+    if dataset.chunks is None:
+        return output_bytes * 2
+    return output_bytes + _decoded_bytes(dataset.chunks, dataset.dtype)
+
+
+def _ims_region_cache_bytes(dataset: h5py.Dataset, selection: NativeSelection) -> int:
+    chunks = dataset.chunks
+    if chunks is None or chunks[0] == 1 or dataset.compression is None:
+        return 0
+    _, chunk_y, chunk_x = chunks
+    count_y = (selection.y + selection.height - 1) // chunk_y - selection.y // chunk_y + 1
+    count_x = (selection.x + selection.width - 1) // chunk_x - selection.x // chunk_x + 1
+    count = count_y * count_x
+    cache_bytes = count * _decoded_bytes(chunks, dataset.dtype)
+    # Reuse an entire XY working set across Z. A partial cache would evict
+    # earlier chunks before the next ordered plane read reaches them.
+    if count > _IMS_MAX_CACHED_CHUNKS or cache_bytes > _IMS_MAX_CHUNK_CACHE_BYTES:
+        return 0
+    peak = _ims_plane_bytes(dataset, selection) + cache_bytes + _IMS_CHUNK_CACHE_OVERHEAD_BYTES
+    return cache_bytes if peak <= selection.budget_bytes else 0
+
+
+def _read_ims_dataset(
+    dataset: h5py.Dataset, selection: NativeSelection, cache_bytes: int = 0
+) -> tuple[np.ndarray, str, int]:
+    estimated_peak = _ims_plane_bytes(dataset, selection)
+    if cache_bytes:
+        estimated_peak += cache_bytes + _IMS_CHUNK_CACHE_OVERHEAD_BYTES
+    _require_budget(estimated_peak, selection.budget_bytes)
+    pixels = np.asarray(
+        dataset[
+            selection.z,
+            selection.y : selection.y + selection.height,
+            selection.x : selection.x + selection.width,
+        ]
+    )
+    return pixels, "ims-hyperslab:YX", estimated_peak
+
+
 def _read_ims(
-    path: Path, metadata: NativeImageMetadata, selection: NativeSelection
+    path: Path,
+    selection: NativeSelection,
+    dataset_for: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
 ) -> tuple[np.ndarray, str, int]:
     try:
+        if dataset_for is not None:
+            dataset, cache_bytes = dataset_for(selection)
+            return _read_ims_dataset(dataset, selection, cache_bytes)
         with h5py.File(path, "r", rdcc_nbytes=0) as root:
-            dataset_root = _local_hdf5_child(root, "DataSet")
-            assert isinstance(dataset_root, h5py.Group)
-            level = _numbered_hdf5_groups(dataset_root, "ResolutionLevel")[selection.level]
-            timepoint = _numbered_hdf5_groups(level, "TimePoint")[selection.t]
-            channel = _numbered_hdf5_groups(timepoint, "Channel")[selection.c]
-            dataset = _ims_dataset(channel)
-            output_bytes = _decoded_bytes((selection.height, selection.width), dataset.dtype)
-            if dataset.chunks is None:
-                estimated_peak = output_bytes * 2
-            else:
-                chunk_bytes = _decoded_bytes(
-                    tuple(int(value) for value in dataset.chunks), dataset.dtype
-                )
-                estimated_peak = output_bytes + chunk_bytes
-            _require_budget(estimated_peak, selection.budget_bytes)
-            pixels = np.asarray(
-                dataset[
-                    selection.z,
-                    selection.y : selection.y + selection.height,
-                    selection.x : selection.x + selection.width,
-                ]
-            )
-            return pixels, "ims-hyperslab:YX", estimated_peak
+            key = (selection.level, selection.t, selection.c)
+            return _read_ims_dataset(_ims_region_dataset(root, *key), selection)
     except NativeImageError:
         raise
     except (OSError, IndexError, KeyError, RuntimeError, TypeError, ValueError) as exc:
@@ -2069,6 +2125,8 @@ def _read_inspected_region(
     selection: NativeSelection,
     *,
     integrity_mode: Literal["full-sha256", "stat-verified-session"],
+    tiff: tifffile.TiffFile | None = None,
+    ims_dataset: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
 ) -> NativeRegion:
     metadata = inspected.metadata
     if selection.level >= len(metadata.levels):
@@ -2078,9 +2136,9 @@ def _read_inspected_region(
     level_dimensions = metadata.levels[selection.level].dimensions
     _validate_selection(selection, level_dimensions)
     if inspected.kind == "tiff":
-        pixels, mode, peak = _read_tiff(source, metadata, selection)
+        pixels, mode, peak = _read_tiff(source, metadata, selection, tiff)
     elif inspected.kind == "ims":
-        pixels, mode, peak = _read_ims(source, metadata, selection)
+        pixels, mode, peak = _read_ims(source, selection, ims_dataset)
     else:
         pixels, mode, peak = _read_ordinary(source, metadata, selection)
     pixels = _freeze_pixels(pixels)
@@ -2272,7 +2330,92 @@ class NativeImageSession:
     def read_region(self, selection: NativeSelection) -> NativeRegion:
         """Read with stat identity checks while reusing the opening fingerprint."""
 
+        return self._read_region(selection)
+
+    @contextmanager
+    def region_reader(self) -> Iterator[Callable[[NativeSelection], NativeRegion]]:
+        """Reuse an opened TIFF or IMS for a batch of independently checked regions."""
+
+        self._validate_identity()
+        if self._inspection.kind == "ims":
+            with self._ims_region_reader() as read_region:
+                yield read_region
+            return
+        if self._inspection.kind != "tiff":
+            yield self.read_region
+            return
+        try:
+            tif = tifffile.TiffFile(self._path)
+        except (OSError, ValueError, tifffile.TiffFileError) as exc:
+            self._validate_identity()
+            raise NativeImageError("Loci could not open this TIFF safely.") from exc
+        with tif:
+            if _identity_from_stat(os.fstat(tif.filehandle.fileno())) != self._identity:
+                raise NativeSourceChangedError("The opened TIFF differs from the inspected source.")
+            yield partial(self._read_region, tiff=tif)
+            self._validate_identity()
+
+    @contextmanager
+    def _ims_region_reader(self) -> Iterator[Callable[[NativeSelection], NativeRegion]]:
+        with ExitStack() as stack:
+            try:
+                # Bind HDF5 to the checked descriptor and close it before its stream.
+                stream = stack.enter_context(self._path.open("rb"))
+                if _identity_from_stat(os.fstat(stream.fileno())) != self._identity:
+                    raise NativeSourceChangedError(
+                        "The opened IMS differs from the inspected source."
+                    )
+                root = stack.enter_context(h5py.File(stream, "r", rdcc_nbytes=0))
+            except NativeSourceChangedError:
+                raise
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                self._validate_identity()
+                raise NativeImageError("Loci could not open this IMS safely.") from exc
+            self._validate_identity()
+
+            active_dataset = None
+            active_key = None
+            active_cache_bytes = 0
+
+            def dataset_for(selection: NativeSelection) -> tuple[h5py.Dataset, int]:
+                nonlocal active_dataset, active_key, active_cache_bytes
+                if not root.id.valid:
+                    raise NativeImageError("This scoped IMS region reader is closed.")
+                key = (selection.level, selection.t, selection.c)
+                if active_dataset is None or key != active_key:
+                    if active_dataset is not None:
+                        active_dataset.id.close()
+                    active_dataset = None
+                    active_dataset = _ims_region_dataset(root, *key)
+                    active_key = key
+                    active_cache_bytes = 0
+
+                cache_bytes = _ims_region_cache_bytes(active_dataset, selection)
+                if cache_bytes != active_cache_bytes:
+                    # HDF5 only applies the access properties when the dataset
+                    # is first opened. Release its previous raw cache first.
+                    name = h5py.h5i.get_name(active_dataset.id)
+                    active_dataset.id.close()
+                    active_dataset = None
+                    with closing(h5py.h5p.create(h5py.h5p.DATASET_ACCESS)) as access:
+                        access.set_chunk_cache(_IMS_CHUNK_CACHE_SLOTS, cache_bytes, 0.75)
+                        active_dataset = h5py.Dataset(h5py.h5d.open(root.id, name, dapl=access))
+                    active_cache_bytes = cache_bytes
+                return active_dataset, active_cache_bytes
+
+            yield partial(self._read_region, ims_dataset=dataset_for)
+            self._validate_identity()
+
+    def _read_region(
+        self,
+        selection: NativeSelection,
+        *,
+        tiff: tifffile.TiffFile | None = None,
+        ims_dataset: Callable[[NativeSelection], tuple[h5py.Dataset, int]] | None = None,
+    ) -> NativeRegion:
         self._ensure_open()
+        if tiff is not None and tiff.filehandle.closed:
+            raise NativeImageError("This scoped TIFF region reader is closed.")
         metadata = self._inspection.metadata
         if selection.series != metadata.selected_series:
             raise NativeImageError(
@@ -2291,6 +2434,8 @@ class NativeImageSession:
                 self._inspection,
                 selection,
                 integrity_mode="stat-verified-session",
+                tiff=tiff,
+                ims_dataset=ims_dataset,
             )
         except Exception:
             self._validate_identity()

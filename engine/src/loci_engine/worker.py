@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 import traceback
 from dataclasses import fields
 from typing import Any
@@ -77,6 +79,10 @@ def dispatch(method: str, params: dict[str, Any]) -> dict[str, Any]:
         from .research_tissue_integration import native_import
 
         return native_import(params)
+    if method == "research_zarr_opening_overview":
+        from .zarr_opening_preview import opening_overview
+
+        return opening_overview(params)
     if method.startswith("research_"):
         from .research_rpc import dispatch_research
 
@@ -395,20 +401,48 @@ def main() -> None:
         from .research_cli import main as research_main
 
         raise SystemExit(research_main(sys.argv[2:]))
+    trace_volume = os.environ.get("LOCI_QA_VOLUME_TIMING") == "1"
     for line in sys.stdin:
         if not line.strip():
             continue
+        timing = None
         try:
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise TypeError("request must be an object")
+            if trace_volume:
+                method = request.get("method")
+                params = request.get("params")
+                if method == "research_execute" and isinstance(params, dict):
+                    method = params.get("operation")
+                if method in (
+                    "research_import",
+                    "research_zarr_opening_overview",
+                    "viewer_defaults",
+                    "viewer_volume",
+                ):
+                    timing = {"operation": method, "received_unix_ns": time.time_ns()}
+                    started_ns = time.perf_counter_ns()
             response = handle_request(request)
         except Exception as exc:
             response = {
                 "id": None,
                 "error": {"type": type(exc).__name__, "message": str(exc)},
             }
-        print(json.dumps(response, separators=(",", ":")), flush=True)
+        if timing is not None:
+            handled_ns = time.perf_counter_ns()
+        message = json.dumps(response, separators=(",", ":"))
+        if timing is not None:
+            encoded_ns = time.perf_counter_ns()
+        print(message, flush=True)
+        if timing is not None:
+            timing.update(
+                handle_ns=handled_ns - started_ns,
+                encode_ns=encoded_ns - handled_ns,
+                write_ns=time.perf_counter_ns() - encoded_ns,
+            )
+            print("LOCI_VOLUME_TIMING " + json.dumps(timing), file=sys.stderr, flush=True)
+        del response, message
 
 
 if __name__ == "__main__":

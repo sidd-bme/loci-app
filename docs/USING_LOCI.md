@@ -260,13 +260,27 @@ Open **Histogram & levels** inside **Image tone** or any expanded scalar channel
 
 ## Inspect scalar volumes and MPR
 
-For a supported scalar source with depth (`Z > 1`), choose **Open as → Volume** or **Medical research** in **Image info**, then select **Explore in 3D**. Loci accepts up to four visible scalar channels with compatible orthogonal geometry and refuses unsupported RGB/RGBA, single-plane, or incompatible grids rather than fabricating a volume.
+Choose **Open image in 3D…** on the welcome screen or in the workbench’s **File**
+menu. Select one image file, such as a scalar OME-TIFF Z-stack, or on macOS one
+OME-Zarr store ending in `.zarr`. For a local multiscale store, a first-channel
+maximum-intensity preview can appear during verification. Drag to rotate it or
+choose **XY slice** to step through its sampled planes. **Hide preview** leaves
+the file opening. The full workspace uses the verified source for measurements,
+annotations and exports.
+
+For a newly registered scalar microscopy stack without a saved view, Loci starts
+in **MIP** (maximum intensity). This includes IMS, OME-TIFF and OME-Zarr.
+Use **Mode** to change the rendering. For an image
+already open, choose **3D volume** above the canvas. Choose **2D image** to return
+to the source plane. The 3D workspace requires at least two Z planes, up to four
+visible scalar channels and compatible orthogonal geometry. A source that supports
+only 2D opens with a reason.
 
 ### Layout, rendering modes, and focus detail
 
 - **Four panes** (default) shows three linked orthogonal slice views beside the 3D pane. Patient-frame sources display **axial**, **coronal**, and **sagittal** views in radiological orientation (including reslicing oblique acquisitions); generic microscopy sources display **XY**, **XZ**, and **YZ**. Drag the crosshair to synchronize all panes, scroll or press `↑`/`↓` in a slice pane to step through slices, and use each pane's **Expand** / **Restore** button. Choose **3D view** for a single large 3D canvas.
-- **Volume vs. MPR inside the 3D pane:** **Volume** renders the scalar volume using the selected **Mode** (**Composite blend**, **Shaded volume**, **Maximum intensity**, **Average intensity**, or **Minimum intensity**). **MPR** renders intersecting source-grid planes. X/Y/Z controls always refer to acquisition axes—they are not silently renamed to anatomical axes for oblique data.
-- **Rendering & detail:** Expand **Rendering & detail** to adjust 3D **Quality**, toggle a display-only **Clip** plane (**Axis** X/Y/Z and **Position**), or request higher local resolution with **Detail span** (`32`, `64`, or `96` voxels) and **Detail at crosshair**. Once loaded, switch between **Whole** and **Focus**. A late focus response preserves your crosshair; moving outside the focus box returns to **Whole**. Focus refines display only and never modifies source data.
+- **Volume and MPR.** In **Volume**, choose **Blend** for opacity compositing or **Normal Shading** to light the volume. **MIP**, **Average** and **MinIP** project the brightest, mean and darkest sampled intensities along each ray, respectively. **MPR** shows intersecting source-grid planes. X, Y and Z follow the acquisition axes, including for oblique data.
+- **Rendering & detail:** Expand **Rendering & detail** to adjust 3D **Quality**, toggle a display-only **Clip** plane (**Axis** X/Y/Z and **Position**), or request higher local resolution with **Detail span** (a cube of 32, 64 or 96 voxels, or a 256 × 256 × 64 XYZ field) and **Detail at crosshair**. Once loaded, switch between **Whole** and **Focus**. The status line reports whether every native step fits the active channel and memory budget. A late focus response preserves your crosshair; moving outside the focus box returns to **Whole**. Focus refines display only and never modifies source data.
 - **Controls & sampling:** Expand **Controls & sampling** for inline navigation hints. In Volume mode, left-drag (or `Alt`-drag) orbits, right-drag or `Shift`-drag pans, scroll/pinch zooms, arrow keys orbit, `+`/`-` zoom, and `R` resets the camera. Raw slice views use bounded linear resampling; verified label overlays use nearest-pixel native sampling, and 3D label surfaces are bounded voxel display approximations. Always use source-space tools for quantitative measurements.
 
 ### Volume channels, histograms, and PNG figures

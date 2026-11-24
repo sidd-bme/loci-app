@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
+from dataclasses import replace
 from pathlib import Path
 
 import h5py
@@ -39,7 +41,9 @@ def _replace_ome_description(path: Path, old: str, new: str) -> None:
     tifffile.tiffcomment(path, xml.replace(old, new, 1))
 
 
-def _write_ims(path: Path) -> dict[tuple[int, int, int], np.ndarray]:
+def _write_ims(
+    path: Path, *, z_chunk_depth: int = 1, compression: str | None = None
+) -> dict[tuple[int, int, int], np.ndarray]:
     stored: dict[tuple[int, int, int], np.ndarray] = {}
     with h5py.File(path, "w") as ims:
         ims.attrs["ImarisDataSet"] = "ImarisDataSet"
@@ -64,7 +68,9 @@ def _write_ims(path: Path) -> dict[tuple[int, int, int], np.ndarray]:
                     channel.attrs["ImageSizeX"] = str(width)
                     channel.attrs["ImageSizeY"] = str(height)
                     channel.attrs["ImageSizeZ"] = str(depth)
-                    channel.create_dataset("Data", data=values, chunks=(1, 4, 5))
+                    channel.create_dataset(
+                        "Data", data=values, chunks=(z_chunk_depth, 4, 5), compression=compression
+                    )
 
         info = ims.create_group("DataSetInfo")
         image = info.create_group("Image")
@@ -1053,3 +1059,249 @@ def test_session_strict_verification_detects_bytes_even_if_stat_identity_is_reba
 
     with pytest.raises(NativeSourceChangedError, match="bytes differ"):
         session.verify_strict()
+
+
+@pytest.mark.parametrize("compression", [None, "deflate"])
+def test_volume_reuses_one_tiff_for_context_and_focus(tmp_path, monkeypatch, compression):
+    import base64
+
+    from loci_engine.viewer_volume import build_volume_payload
+
+    path = tmp_path / "stack.ome.tif"
+    stack = _values((2, 4, 17, 19))
+    tifffile.imwrite(
+        path,
+        stack,
+        metadata={"axes": "CZYX"},
+        photometric="minisblack",
+        compression=compression,
+        byteorder=">",
+    )
+    handles = []
+    open_tiff = tifffile.TiffFile
+
+    def counted_open(*args, **kwargs):
+        tif = open_tiff(*args, **kwargs)
+        handles.append(tif)
+        return tif
+
+    with NativeImageSession(path) as session:
+        monkeypatch.setattr(tifffile, "TiffFile", counted_open)
+        payload = build_volume_payload(
+            session,
+            source_id="stack",
+            channel_indices=[1, 0],
+            focus_region_xyzxyz=[2, 7, 3, 9, 1, 2],
+        )
+    assert len(handles) == 1 and handles[0].filehandle.closed
+    for block in (payload["context"], payload["focus"]):
+        x, y, z = block["sampling"]["source_indices_xyz"]
+        expected = stack[np.ix_([1, 0], z, y, x)].transpose(1, 2, 3, 0)
+        assert base64.b64decode(block["data_base64"]) == expected.astype("<u2").tobytes()
+
+
+def test_scoped_tiff_reader_refuses_replacement_and_closes_on_error(tmp_path, monkeypatch):
+    path = tmp_path / "stack.tif"
+    replacement = tmp_path / "different.tif"
+    for target, offset in ((path, 0), (replacement, 1)):
+        tifffile.imwrite(target, _values((16, 18)) + offset)
+    selection = NativeSelection(x=1, y=1, width=2, height=2)
+    with NativeImageSession(path) as session:
+        opened = tifffile.TiffFile(path)
+        monkeypatch.setattr(tifffile, "TiffFile", lambda *args: opened)
+        with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
+            assert read_region(selection).pixels[0, 0] == 19
+            replacement.replace(path)
+            read_region(selection)
+        assert opened.filehandle.closed
+
+
+def test_scoped_tiff_reader_expires_and_detects_late_replacement(tmp_path):
+    path, replacement = tmp_path / "image.tif", tmp_path / "replacement.tif"
+    tifffile.imwrite(path, _values((16, 18)))
+    tifffile.imwrite(replacement, _values((16, 18)) + 1)
+    selection = NativeSelection(x=1, y=1, width=2, height=2)
+    with NativeImageSession(path) as session:
+        with session.region_reader() as read_region:
+            assert read_region(selection).pixels[0, 0] == 19
+        with pytest.raises(NativeImageError, match="scoped TIFF region reader is closed"):
+            read_region(selection)
+        with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
+            assert read_region(selection).pixels[0, 0] == 19
+            replacement.replace(path)
+
+
+def test_scoped_tiff_reader_checks_open_descriptor(tmp_path, monkeypatch):
+    source, other = tmp_path / "source.tif", tmp_path / "other.tif"
+    for target, offset in ((source, 0), (other, 1)):
+        tifffile.imwrite(target, _values((16, 18)) + offset)
+    with NativeImageSession(source) as session:
+        wrong = tifffile.TiffFile(other)
+        monkeypatch.setattr(tifffile, "TiffFile", lambda *args: wrong)
+        with pytest.raises(NativeSourceChangedError, match="opened TIFF"), session.region_reader():
+            pytest.fail("A descriptor for a different source was accepted.")
+        assert wrong.filehandle.closed
+
+
+def test_scoped_ims_reader_reuses_one_handle_and_only_the_active_dataset(tmp_path, monkeypatch):
+    path = tmp_path / "stack.ims"
+    stored = _write_ims(path)
+    opened = []
+    lookups = []
+    real_open = h5py.File
+    real_lookup = native_module._ims_region_dataset
+
+    def counted_open(stream, *args, **kwargs):
+        root = real_open(stream, *args, **kwargs)
+        assert kwargs["rdcc_nbytes"] == 0
+        opened.append((root, stream))
+        return root
+
+    def counted_lookup(root, level, t, c):
+        lookups.append((level, t, c))
+        return real_lookup(root, level, t, c)
+
+    keys = [(1, 2, 1), (1, 2, 1), (1, 2, 0), (1, 0, 0), (0, 0, 0), (1, 2, 1)]
+    with NativeImageSession(path) as session:
+        monkeypatch.setattr(h5py, "File", counted_open)
+        monkeypatch.setattr(native_module, "_ims_region_dataset", counted_lookup)
+        with session.region_reader() as read_region:
+            for index, (level, t, c) in enumerate(keys):
+                z = index % 3
+                selection = NativeSelection(x=1, y=1, width=3, height=2, level=level, t=t, c=c, z=z)
+                region = read_region(selection)
+                np.testing.assert_array_equal(region.pixels, stored[level, t, c][z, 1:3, 1:4])
+                assert region.integrity_mode == "stat-verified-session"
+                assert region.read_mode == "ims-hyperslab"
+                assert region.estimated_peak_bytes == 52
+            assert len(opened) == 1
+            root, stream = opened[0]
+            assert root.id.valid and not stream.closed
+        assert not root.id.valid and stream.closed
+        with pytest.raises(NativeImageError, match="scoped IMS region reader is closed"):
+            read_region(selection)
+    assert lookups == [keys[0], *keys[2:]]
+
+
+def test_scoped_ims_reader_admits_and_releases_the_chunk_cache(tmp_path, monkeypatch):
+    path = tmp_path / "cached.ims"
+    stored = _write_ims(path, z_chunk_depth=3, compression="gzip")
+    read_dataset = native_module._read_ims_dataset
+    accesses = []
+
+    def observe_cache(dataset, selection, cache_bytes=0):
+        _, actual_cache_bytes, _ = dataset.id.get_access_plist().get_chunk_cache()
+        assert actual_cache_bytes == cache_bytes
+        accesses.append((dataset.id, actual_cache_bytes))
+        return read_dataset(dataset, selection, cache_bytes)
+
+    monkeypatch.setattr(native_module, "_read_ims_dataset", observe_cache)
+    base_peak = (3 * 4 + 3 * 4 * 5) * 2
+    slab_bytes = 4 * (3 * 4 * 5) * 2
+    cached_peak = base_peak + slab_bytes + native_module._IMS_CHUNK_CACHE_OVERHEAD_BYTES
+    selection = NativeSelection(x=4, y=3, width=4, height=3, t=1, c=1, budget_bytes=cached_peak)
+    with NativeImageSession(path) as session, session.region_reader() as read_region:
+        for index in (2, 0, 1):
+            region = read_region(replace(selection, z=index))
+            np.testing.assert_array_equal(region.pixels, stored[0, 1, 1][index, 3:6, 4:8])
+            assert region.estimated_peak_bytes == cached_peak
+            assert region.axes == "YX" and region.sha256 == session.metadata.sha256
+            assert accesses[-1] == accesses[0]
+
+        uncached = read_region(replace(selection, z=2, budget_bytes=cached_peak - 1))
+        assert uncached.estimated_peak_bytes == base_peak
+        assert not accesses[0][0].valid
+        np.testing.assert_array_equal(uncached.pixels, stored[0, 1, 1][2, 3:6, 4:8])
+        with pytest.raises(NativeReadBudgetError):
+            read_region(replace(selection, budget_bytes=base_peak - 1))
+
+        other_channel = read_region(replace(selection, c=0))
+        assert not accesses[-2][0].valid
+        assert other_channel.estimated_peak_bytes == cached_peak
+        np.testing.assert_array_equal(other_channel.pixels, stored[0, 1, 0][0, 3:6, 4:8])
+        assert accesses[-1][1] == slab_bytes
+    assert all(not dataset_id.valid for dataset_id, _ in accesses)
+
+
+@pytest.mark.parametrize(
+    ("shape", "chunks", "width", "height"),
+    [
+        ((2, 8, 8), None, 4, 4),
+        ((2, 8, 8), (1, 4, 4), 4, 4),
+        ((4, 1024, 1024), (4, 1024, 1024), 4, 4),
+        ((2, 16, 16), (2, 1, 1), 16, 16),
+    ],
+)
+def test_scoped_ims_falls_back_when_a_working_set_cannot_be_cached(
+    tmp_path, shape, chunks, width, height
+):
+    path = tmp_path / "uncached.ims"
+    with h5py.File(path, "w") as root:
+        root.attrs["ImarisDataSet"] = "ImarisDataSet"
+        root.create_dataset(
+            "DataSet/ResolutionLevel 0/TimePoint 0/Channel 0/Data",
+            shape=shape,
+            dtype="uint16",
+            chunks=chunks,
+            compression="gzip" if chunks else None,
+            fillvalue=123,
+        )
+    selection = NativeSelection(x=0, y=0, width=width, height=height)
+    with NativeImageSession(path) as session, session.region_reader() as read_region:
+        region = read_region(selection)
+        scratch_samples = np.prod(chunks) if chunks else width * height
+        assert region.estimated_peak_bytes == (width * height + scratch_samples) * 2
+        np.testing.assert_array_equal(region.pixels, np.full((height, width), 123))
+
+
+@pytest.mark.parametrize("failure", ["budget", "changed-source", "changed-before-exit"])
+def test_scoped_ims_reader_closes_handle_and_stream_on_failure(tmp_path, monkeypatch, failure):
+    path = tmp_path / "stack.ims"
+    _write_ims(path)
+    opened = []
+    real_open = h5py.File
+
+    def capture_open(stream, *args, **kwargs):
+        root = real_open(stream, *args, **kwargs)
+        opened.append((root, stream))
+        return root
+
+    selection = NativeSelection(x=1, y=1, width=3, height=2)
+    with NativeImageSession(path) as session:
+        monkeypatch.setattr(h5py, "File", capture_open)
+        expected_error = NativeReadBudgetError if failure == "budget" else NativeSourceChangedError
+        with pytest.raises(expected_error), session.region_reader() as read_region:
+            region = read_region(selection)
+            if failure == "budget":
+                read_region(replace(selection, budget_bytes=region.estimated_peak_bytes - 1))
+            else:
+                status = path.stat()
+                os.utime(path, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
+                if failure == "changed-source":
+                    read_region(selection)
+        ((root, stream),) = opened
+        assert not root.id.valid and stream.closed
+
+
+def test_scoped_ims_reader_rejects_wrong_descriptor_before_hdf5_open(tmp_path, monkeypatch):
+    path = tmp_path / "source.ims"
+    replacement = tmp_path / "other.ims"
+    _write_ims(path)
+    _write_ims(replacement)
+    with NativeImageSession(path) as session:
+        wrong = replacement.open("rb")
+        original_open = Path.open
+
+        def replaced_open(selected, *args, **kwargs):
+            if selected == path:
+                return wrong
+            return original_open(selected, *args, **kwargs)
+
+        def unexpected_hdf5_open(*args, **kwargs):
+            pytest.fail("An unverified descriptor reached HDF5.")
+
+        monkeypatch.setattr(Path, "open", replaced_open)
+        monkeypatch.setattr(h5py, "File", unexpected_hdf5_open)
+        with pytest.raises(NativeSourceChangedError, match="opened IMS"), session.region_reader():
+            pytest.fail("A descriptor for a different source was accepted.")
+        assert wrong.closed

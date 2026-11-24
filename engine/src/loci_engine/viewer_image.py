@@ -18,7 +18,7 @@ import os
 import stat
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -26,7 +26,12 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from .native_image import DEFAULT_NATIVE_READ_BUDGET_BYTES, NativeImageMetadata, NativeSelection
+from .native_image import (
+    DEFAULT_NATIVE_READ_BUDGET_BYTES,
+    NativeImageMetadata,
+    NativeRegion,
+    NativeSelection,
+)
 from .viewer_display import (
     MAX_DISPLAY_CHANNELS,
     MAX_DISPLAY_PIXELS,
@@ -215,6 +220,7 @@ def _read_plane_or_projection(
     z_stop: int,
     projection: str | None,
     cancellation_check: Callable[[], None] | None,
+    read_region: Callable[[NativeSelection], NativeRegion] | None = None,
 ) -> np.ndarray:
     depth = z_stop - z_start
     if not 1 <= depth <= MAX_PROJECTION_PLANES:
@@ -284,10 +290,11 @@ def _read_plane_or_projection(
             cancellation_check()
         session.verify_strict()
     else:
+        read = session.read_region if read_region is None else read_region
         for z in range(z_start, z_stop):
             if cancellation_check is not None:
                 cancellation_check()
-            region = session.read_region(
+            region = read(
                 NativeSelection(
                     x=x,
                     y=y,
@@ -334,6 +341,7 @@ def _sample_scalar_plane(
     output_width: int,
     output_height: int,
     cancellation_check: Callable[[], None] | None,
+    read_region: Callable[[NativeSelection], NativeRegion] | None = None,
 ) -> np.ndarray:
     source = metadata.levels[0].dimensions
     x_indices = _indices(source.x, output_width)
@@ -363,6 +371,7 @@ def _sample_scalar_plane(
                 z_stop=z_stop or z + 1,
                 projection=projection,
                 cancellation_check=cancellation_check,
+                read_region=read_region,
             )
             if result is None:
                 result = np.empty((output_height, output_width), dtype=tile.dtype)
@@ -526,6 +535,7 @@ def _native_overview_scalar(
     z_stop: int | None,
     projection: str | None,
     cancellation_check: Callable[[], None] | None,
+    read_region: Callable[[NativeSelection], NativeRegion] | None = None,
 ) -> np.ndarray:
     dimensions = metadata.levels[level].dimensions
     start, stop = _mapped_z_range(z, z_stop, metadata.dimensions.z, dimensions.z)
@@ -543,6 +553,7 @@ def _native_overview_scalar(
         z_stop=stop,
         projection=projection,
         cancellation_check=cancellation_check,
+        read_region=read_region,
     )
 
 
@@ -685,55 +696,64 @@ def viewer_defaults(
                 else None,
             }
         level = _select_native_overview_level(metadata, MAX_OVERVIEW_EDGE)
-        if level is None:
-            source = metadata.levels[0].dimensions
-            width, height = _scaled_shape(source.x, source.y, MAX_OVERVIEW_EDGE)
-            samples = {
-                channel: _sample_scalar_plane(
-                    session,
-                    metadata,
-                    channel=channel,
-                    t=t,
-                    z=z,
-                    z_stop=None,
-                    projection=None,
-                    output_width=width,
-                    output_height=height,
-                    cancellation_check=cancellation_check,
-                )
-                for channel in range(metadata.dimensions.c)
-            }
-            basis = {
-                "mode": "auto",
-                "sample": "deterministic-nearest-whole-source",
-                "level": 0,
-                "t": t,
-                "z": z,
-                "viewport_dependent": False,
-            }
-        else:
-            samples = {
-                channel: _native_overview_scalar(
-                    session,
-                    metadata,
-                    channel=channel,
-                    level=level,
-                    t=t,
-                    z=z,
-                    z_stop=None,
-                    projection=None,
-                    cancellation_check=cancellation_check,
-                )
-                for channel in range(metadata.dimensions.c)
-            }
-            basis = {
-                "mode": "auto",
-                "sample": "deterministic-native-pyramid-level",
-                "level": level,
-                "t": t,
-                "z": z,
-                "viewport_dependent": False,
-            }
+        # Match the source inventory around the complete multichannel sample.
+        # The transaction still checks each individual region during its read.
+        reader = getattr(session, "region_reader", None)
+        if reader is not None and cancellation_check is not None:
+            cancellation_check()
+        transaction = reader() if reader is not None else nullcontext(session.read_region)
+        with transaction as read_region:
+            if level is None:
+                source = metadata.levels[0].dimensions
+                width, height = _scaled_shape(source.x, source.y, MAX_OVERVIEW_EDGE)
+                samples = {
+                    channel: _sample_scalar_plane(
+                        session,
+                        metadata,
+                        channel=channel,
+                        t=t,
+                        z=z,
+                        z_stop=None,
+                        projection=None,
+                        output_width=width,
+                        output_height=height,
+                        cancellation_check=cancellation_check,
+                        read_region=read_region,
+                    )
+                    for channel in range(metadata.dimensions.c)
+                }
+                basis = {
+                    "mode": "auto",
+                    "sample": "deterministic-nearest-whole-source",
+                    "level": 0,
+                    "t": t,
+                    "z": z,
+                    "viewport_dependent": False,
+                }
+            else:
+                samples = {
+                    channel: _native_overview_scalar(
+                        session,
+                        metadata,
+                        channel=channel,
+                        level=level,
+                        t=t,
+                        z=z,
+                        z_stop=None,
+                        projection=None,
+                        cancellation_check=cancellation_check,
+                        read_region=read_region,
+                    )
+                    for channel in range(metadata.dimensions.c)
+                }
+                basis = {
+                    "mode": "auto",
+                    "sample": "deterministic-native-pyramid-level",
+                    "level": level,
+                    "t": t,
+                    "z": z,
+                    "viewport_dependent": False,
+                }
     try:
         resolved = resolve_display_defaults(
             metadata,

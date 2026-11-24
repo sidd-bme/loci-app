@@ -64,6 +64,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { flushSync } from "react-dom";
 import { InspectorResizeHandle, loadInspectorWidth } from "./InspectorResizeHandle";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
+import { VolumeOpeningPreview } from "./VolumeOpeningPreview";
+import { useVolumeOpeningPreview, type VolumeOpeningDesktopApi, type VolumeOpeningTarget } from "./useVolumeOpeningPreview";
 import type {
   ResearchDesktopApi,
   BatchChannelColorsResponse,
@@ -135,7 +137,7 @@ import { WorkbenchFilename } from "./WorkbenchFilename";
 import { ImageWelcome, WorkbenchTools, workbenchModifier, workbenchShortcutAvailable, type WorkbenchTab } from "./WorkbenchChrome";
 import { FirstStudyGuide } from "./FirstStudyGuide";
 import { sourceRelinkKind } from "../shared/source-relink";
-import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest } from "./RawVolumeViewport";
+import { RawVolumeViewport, type RawVolumeResponse, type RawVolumeRefinementRequest, type RawVolumeOpeningRenderStatus } from "./RawVolumeViewport";
 import type { VolumeLabelPayload } from "./volume-label-display";
 import { VolumeSceneBridge, VolumeSceneSupersededError } from "./volume-scene-bridge";
 import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
@@ -861,6 +863,8 @@ export default function ResearchWorkbench({
   preferences = DEFAULT_PREFERENCES,
 }: Props): React.JSX.Element {
   const [snapshot, setSnapshot] = useState<ResearchSnapshot | null>(null);
+  const latestSnapshot = useRef(snapshot);
+  latestSnapshot.current = snapshot;
   const initialSource = useRef(initialSourceId);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("Display");
@@ -1108,6 +1112,7 @@ export default function ResearchWorkbench({
   const projectionSourceLocatorState = useRef<string | null>(null);
   const [documentEpoch, setDocumentEpoch] = useState(0);
   const [studyEpoch, setStudyEpoch] = useState(0);
+  const pendingVolumeOpen = useRef<(VolumeOpeningTarget & { newSource: boolean }) | null>(null);
   const [scientificExportDraft, setScientificExportDraft] = useState<{ study: string; draft: ScientificDataExportDraft } | null>(null);
   const exportDraftStudy = JSON.stringify([snapshot?.project.project_id ?? null, studyEpoch]);
   const currentStudyScope = useRef(exportDraftStudy);
@@ -1121,12 +1126,21 @@ export default function ResearchWorkbench({
   };
   useEffect(() => { setCorrectionEffectSeed(null); setStudySection("samples"); setStudyFocused(false); }, [studyEpoch]);
   const [documentSwitching, setDocumentSwitching] = useState(false);
+  const openingDesktopApi: VolumeOpeningDesktopApi = desktopApi;
+  const openingPreview = useVolumeOpeningPreview(openingDesktopApi);
+  const clearOpeningHandoff = openingPreview.clearVerifiedHandoff;
+  const hideOpeningPreview = openingPreview.hide;
+  const openingSelection = useRef<{ id: string; key: string } | null>(null);
+  const directOpenPending = useRef<symbol | null>(null);
+  useEffect(() => () => { directOpenPending.current = null; }, []);
   const initialStudyRestore = useRef<Promise<unknown>>(Promise.resolve());
   const nativeCommandPending = useRef(false);
   const documentSwitch = useRef(false);
   const switchDocument = useCallback(async <T,>(action: () => Promise<T>, resetDisplay = true,
     { preserveNavigationIntent = false }: { preserveNavigationIntent?: boolean } = {}): Promise<T> => {
     if (documentSwitch.current) throw new Error("Wait for the study to finish opening.");
+    pendingVolumeOpen.current = null;
+    clearOpeningHandoff();
     if (!preserveNavigationIntent) {
       largeNavigationIntent.current++;
       largeSelectionIntent.current++;
@@ -1178,7 +1192,7 @@ export default function ResearchWorkbench({
       volumeDraining.current = false;
       setDocumentSwitching(false);
     }
-  }, []);
+  }, [clearOpeningHandoff]);
   // Native document pickers change the active engine project. Drain the previous
   // source's view writes before that boundary and force restoration even when a
   // cloned study retains the same source IDs.
@@ -1695,6 +1709,72 @@ export default function ResearchWorkbench({
     }
     setBusy(null);
   }, [api, report, snapshot?.sources, adopt, resetEmptyDrop]);
+  const openVolumeImage = async () => {
+    const open = openingDesktopApi.openVolumeImage;
+    if (!open || busy || documentSwitch.current || directOpenPending.current) return;
+    const inFlight = Symbol();
+    directOpenPending.current = inFlight;
+    resetEmptyDrop();
+    setBusy("opening 3D image");
+    let previewRequestId: string | undefined;
+    try {
+      await initialStudyRestore.current;
+      if (directOpenPending.current !== inFlight) return;
+      const previousSnapshot = latestSnapshot.current;
+      await report(() => switchDocument(async () => {
+        previewRequestId = openingPreview.begin();
+        const receipt = await (previewRequestId
+          ? open.call(openingDesktopApi, previewRequestId)
+          : open.call(openingDesktopApi));
+        if (!receipt || directOpenPending.current !== inFlight) return null;
+        const { snapshot: next, imported_sources: bindings } = receipt;
+        const binding = Array.isArray(bindings) && bindings.length === 1 ? bindings[0] : undefined;
+        const target = binding ? next.sources.find((item) =>
+          item.id === binding.id && item.sha256 === binding.sha256) : undefined;
+        if (!target) {
+          adopt(next, sourceId);
+          setError("The import did not identify one image for 3D. Select an image in the study to continue.");
+          return receipt;
+        }
+        const zarrMetadata = target.metadata as ResearchSource["metadata"] & {
+          ome_zarr?: { session_inventory_sha256?: string };
+        };
+        const inventory = zarrMetadata.ome_zarr?.session_inventory_sha256;
+        const verifiedInventory = typeof inventory === "string" && /^[0-9a-f]{64}$/.test(inventory) ? inventory : undefined;
+        // The successful switch forces fresh display preparation, even for the
+        // same source ID. Only that preparation can consume this opening intent.
+        const openingTarget: VolumeOpeningTarget = {
+          documentEpoch: documentEpoch + 1, projectId: next.project.project_id,
+          sourceId: target.id, sourceSha256: target.sha256, navigation: largeNavigationIntent.current,
+        };
+        const keepPreview = target.source_kind === "ome_zarr" && target.locator_state !== "relink-required" &&
+          !rawVolumeUnavailableReason(target);
+        const previewInventory = openingPreview.finish(previewRequestId, verifiedInventory, keepPreview ? openingTarget : undefined);
+        const previewChanged = previewInventory && verifiedInventory && previewInventory !== verifiedInventory;
+        const previouslyRegistered = (item: Pick<ResearchSource, "id" | "sha256">) =>
+          item.id === target.id && item.sha256 === target.sha256;
+        const newSource = !previousSnapshot?.sources.some(previouslyRegistered) &&
+          !previousSnapshot?.workspace?.closed_sources.some(previouslyRegistered);
+        pendingVolumeOpen.current = { ...openingTarget, newSource };
+        setError(previewChanged ? "The source changed during verification. Opened the verified source." : null);
+        setRawVolumeOpen(false);
+        setRawVolume(null);
+        setRawVolumeError(null);
+        rawVolumeToken.current++;
+        setAbCompareMode(false);
+        setTab("Display");
+        setFocusedPanel(null);
+        adopt(next, target.id);
+        return receipt;
+      }), "Could not open the selected image for 3D.");
+    } finally {
+      openingPreview.finish(previewRequestId);
+      if (directOpenPending.current === inFlight) {
+        directOpenPending.current = null;
+        setBusy(null);
+      }
+    }
+  };
   const openLegacy = useCallback(async () => {
     resetEmptyDrop();
     if (!api.importLegacyProject) { onBack(); return; }
@@ -1724,7 +1804,10 @@ export default function ResearchWorkbench({
     return () => { active = false; unsubscribe(); };
   }, []);
   useEffect(() => {
+    const directOpen = pendingVolumeOpen.current?.documentEpoch === documentEpoch ? pendingVolumeOpen.current : null;
+    if (directOpen) pendingVolumeOpen.current = null;
     if (!source) {
+      displayToken.current++;
       setRawVolumeOpen(false);
       setSurfaceOpen(false);
       setRawVolume(null);
@@ -1812,8 +1895,25 @@ export default function ResearchWorkbench({
       }, view.state ?? null);
       viewStore.current = store;
       setViewSettingsReady(true);
-      setSourcePreparation({ key: sourcePreparationKey, phase: "ready", error: null });
       setDisplayBasis(exampleChannels ? "Authored example display" : typeof defaults.basis === "string" ? defaults.basis : "Source defaults");
+      let directOpenError: string | null = null;
+      if (directOpen && directOpen.projectId === snapshot?.project.project_id &&
+          directOpen.sourceId === source.id && directOpen.sourceSha256 === source.sha256 &&
+          directOpen.navigation === largeNavigationIntent.current && !documentSwitch.current) {
+        const displayChannels = view.state?.channels ?? initialChannels;
+        const unavailable = rawVolumeUnavailable ?? (dimensions.z < 2 ? "Raw 3D rendering requires at least two source Z planes." : null);
+        if (!displayChannels.length) directOpenError = "3D could not open because this image has no display channels.";
+        else if (unavailable) directOpenError = `Opened in 2D. ${unavailable}`;
+        else if (displayChannels.filter((channel) => channel.visible).length > 4)
+          directOpenError = "Opened in 2D. Show up to four scalar channels, then choose 3D volume.";
+        const scalarStack = (source.source_kind ?? "native") === "native" && source.metadata.sample_semantics === "none";
+        if (!directOpenError && directOpen.newSource && !view.state && (source.source_kind === "ome_zarr" || scalarStack)) {
+          // A thick fluorescence stack can be opaque in Blend even with the author's display range.
+          setVolumeDisplay((display) => ({ ...display, renderMode: "mip" }));
+        }
+        setRawVolumeOpen(!directOpenError);
+      }
+      setSourcePreparation({ key: sourcePreparationKey, phase: "ready", error: directOpenError });
     }).catch((caught) => {
       if (displayToken.current === token) setSourcePreparation({ key: sourcePreparationKey, phase: "failed",
         error: message(caught, "Could not prepare source display settings.") });
@@ -1925,7 +2025,8 @@ export default function ResearchWorkbench({
     if (!rawVolumeOpen || !canOpenRawVolume) return;
     setRawVolume(null);
     void requestRawVolume();
-  }, [rawVolumeOpen, canOpenRawVolume, source?.id, source?.sha256, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
+    return () => { rawVolumeToken.current++; };
+  }, [rawVolumeOpen, canOpenRawVolume, documentEpoch, source?.id, source?.sha256, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
   useEffect(() => {
     const key = JSON.stringify([
       source?.id,
@@ -3431,8 +3532,55 @@ export default function ResearchWorkbench({
     navigate: navigateAgentWorkspace,
     follow: (value, current) => { if (!current()) throw new Error("The Follow command is stale."); flushSync(() => setFollowAgent(value)); },
   }, setError);
+  const opening = openingPreview.visible;
+  const handoff = opening?.target;
+  const openingId = opening?.preview.opening_id;
+  const adoptingOpening = Boolean(handoff && documentSwitching && documentEpoch + 1 === handoff.documentEpoch);
+  const exactOpeningSource = Boolean(handoff && handoff.documentEpoch === documentEpoch &&
+    handoff.projectId === snapshot?.project.project_id && handoff.sourceId === source?.id &&
+    handoff.sourceSha256 === source?.sha256 && handoff.navigation === largeNavigationIntent.current);
+  const openingVolumeReady = exactOpeningSource && currentSourcePreparation?.phase === "ready" &&
+    rawVolumeOpen && canOpenRawVolume;
+  const openingChannels = handoff
+    ? volumeTarget?.channels ?? channels.filter((channel) => channel.visible).map((channel) => channel.channel)
+    : [];
+  const openingSelectionKey = handoff ? JSON.stringify([
+    volumeTarget?.t ?? shownSelection.t, openingChannels.length ? openingChannels : [shownSelection.c],
+  ]) : null;
+  const currentOpeningSelection = openingSelection.current?.id === openingId ? openingSelection.current?.key : undefined;
+  const suppliedOpeningSelection = handoff && Array.isArray(rawVolume?.context.components) && JSON.stringify([
+    rawVolume.context.t, rawVolume.context.components.map((channel) => channel.channel_index),
+  ]);
+  const keepOpeningPreview = Boolean(opening && (!handoff || adoptingOpening || (
+    exactOpeningSource && tab === "Display" && dimensions && source?.locator_state !== "relink-required" &&
+    !displayedError && !rawVolumeError && currentSourcePreparation?.phase !== "failed" &&
+    (currentSourcePreparation?.phase !== "ready" || (openingVolumeReady && !resultId && !surfaceOpen)) &&
+    (!currentOpeningSelection || currentOpeningSelection === openingSelectionKey) &&
+    (!suppliedOpeningSelection || suppliedOpeningSelection === openingSelectionKey)
+  )));
+  useLayoutEffect(() => {
+    if (!handoff || !openingId) {
+      openingSelection.current = null;
+    } else if (!keepOpeningPreview) {
+      hideOpeningPreview(openingId);
+    } else if (openingVolumeReady && openingSelectionKey && openingSelection.current?.id !== openingId) {
+      openingSelection.current = { id: openingId, key: openingSelectionKey };
+    }
+  }, [handoff, hideOpeningPreview, keepOpeningPreview, openingId, openingSelectionKey, openingVolumeReady]);
+  const handleOpeningVolumeRender = useCallback((status: RawVolumeOpeningRenderStatus) => {
+    if (!openingId || !handoff) return;
+    if (status.kind === "failed" || (status.volume === rawVolume &&
+        status.volume.context.source_id === handoff.sourceId &&
+        status.volume.context.source_sha256 === handoff.sourceSha256)) {
+      hideOpeningPreview(openingId);
+    }
+  }, [handoff, hideOpeningPreview, openingId, rawVolume]);
+  const provisionalVolume = keepOpeningPreview && opening && <VolumeOpeningPreview
+    key={openingId} payload={opening.preview} preparingVerifiedVolume={Boolean(handoff)}
+    onHide={hideOpeningPreview} />;
   if (!snapshot)
     return (
+      <>
       <main className={`image-first-empty${emptyDropActive ? " is-drag-active" : ""}`} aria-label="Loci workspace"
         inert={documentSwitching} aria-busy={documentSwitching || undefined}
         onDragEnter={(event) => {
@@ -3467,6 +3615,7 @@ export default function ResearchWorkbench({
         <header className="image-first-header"><div className="brand-lockup"><BrandMark /><span className="brand-name">Loci</span></div>
           <span /><button type="button" className="model-library-header-btn" onClick={() => setModelLibraryState({})}>Model Zoo</button>{onOpenSettings && <button title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}><Settings2 /></button>}</header>
         <ImageWelcome api={api} onOpen={(kind) => void openImages(kind)}
+          onOpenVolumeImage={desktopApi.openVolumeImage ? () => void openVolumeImage() : undefined}
           onConvert={() => openWorkbenchTab("Vendor import")}
           onExample={api.tryExample ? () => { resetEmptyDrop(); void report(() => api.tryExample!().then(adopt), "Could not create the offline example."); } : undefined}
           onStudy={() => { resetEmptyDrop(); void report(() => api.openStudy().then(adopt), "Could not open this study."); }}
@@ -3491,6 +3640,8 @@ export default function ResearchWorkbench({
           />
         )}
       </main>
+        {provisionalVolume}
+      </>
     );
   const changeSegmentationChannel = (channel: number) => {
     if (!source || !dimensions || busy || documentSwitching || documentSwitch.current || sourceIsChanging || !viewSettingsReady || source.locator_state === "relink-required" ||
@@ -3509,6 +3660,7 @@ export default function ResearchWorkbench({
   const sourceStem = source?.name.replace(/\.[^.]+$/, "");
   const showStudyTitle = source && ![source.name, sourceStem, sourceStem?.replace(/\.ome$/i, "")].includes(snapshot.project.title);
   return (
+    <>
     <main data-sources-hidden={sourcesHidden} data-tools-hidden={toolsHidden}
       className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
       inert={documentSwitching} aria-busy={documentSwitching || undefined}
@@ -3555,6 +3707,7 @@ export default function ResearchWorkbench({
           onKeyDown={(event) => { if (event.key === "Escape") { event.currentTarget.open = false; event.currentTarget.querySelector("summary")?.focus(); } }}
           onBlur={(event) => { if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}
           onClick={(event) => { if (event.target instanceof Element && event.target.closest("button")) event.currentTarget.open = false; }}><summary title="Open folders, series and studies; save a study copy">File<ChevronDown aria-hidden="true" /></summary><div>
+          {desktopApi.openVolumeImage && <button type="button" disabled={busy !== null} onClick={() => void openVolumeImage()}>Open image in 3D…</button>}
           <button onClick={() => void openImages("folder")}>Open folder</button>
           <button onClick={() => void openImages("dicom")}>Open DICOM series</button>
           <button onClick={() => void openImages("ome_zarr")}>Open OME-Zarr store</button>
@@ -3786,8 +3939,9 @@ export default function ResearchWorkbench({
           <LargeResultViewport key={selectedResult.revision_hash} api={api} result={selectedResult} focus={largeFocus} groupCentroids={exactGroupHighlight?.centroids.map((row) => ({ u: row.centroid_index[1], v: row.centroid_index[0] }))}
             onPickStart={() => ++largeSelectionIntent.current}
             onPick={(row, intent) => { if (intent === largeSelectionIntent.current) { setLargeObject(row); if (tab !== "Population") setTab("Info"); } }} />
-        ) : source && rawVolumeOpen ? (
+        ) : source && rawVolumeOpen && canOpenRawVolume ? (
           <><RawVolumeViewport volume={rawVolume} loading={rawVolumeLoading} error={rawVolumeError}
+            onOpeningVolumeRender={keepOpeningPreview && openingVolumeReady ? handleOpeningVolumeRender : undefined}
             onRequestRefinement={requestRawVolume} onExportFigure={api.exportVolumeFigure}
             labelPayload={volumeLabels} labelResult={volumeLabelResult} labelsLoading={volumeLabelsLoading} labelsError={volumeLabelsError}
             selectedLabel={volumeSelectedLabel} onSelectLabel={chooseVolumeLabel} sceneHandleRef={volumeHandle} onSceneChange={queueVolumeSceneChange}
@@ -5095,6 +5249,8 @@ export default function ResearchWorkbench({
         />
       )}
     </main>
+      {provisionalVolume}
+    </>
   );
 }
 

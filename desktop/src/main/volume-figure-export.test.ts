@@ -335,6 +335,65 @@ describe("loci.volume-figure/v2 export validation", () => {
     };
   }
 
+  it("validates a translated NGFF figure against its native samples and displayed geometry", async () => {
+    const translated = requestV2("mpr", "blend", 60);
+    const context = translated.manifest.payloads.context;
+    context.native_level_dimensions_xyz = [2, 1, 2];
+    context.source_dimensions_xyz = [5, 1, 2];
+    context.source_extent_xyzxyz = [0, 1, 0, 0, 0, 1];
+    context.origin_xyz[0] = 10.5;
+    context.spacing_xyz[0] = 0.8;
+    context.affine_4x4[0] = [0.8, 0, 0, 10.5];
+    context.sampling = {
+      method: "nearest-whole-extent-ngff-transform",
+      source_indices_xyz: [[0, 1], [0], [0, 1]],
+      level_zero_indices_xyz: [[1, 3], [0], [0, 1]],
+      level_zero_index_transform: { scale_xyz: [2, 1, 1], translation_xyz: [1.25, 0, 0] },
+    };
+    translated.manifest.mpr!.source_indices_xyz = [1, 0, 0];
+    translated.manifest.mpr!.world_xyz = [10.5, 0, 0];
+
+    const wrongIndex = structuredClone(translated);
+    wrongIndex.manifest.payloads.context.sampling.level_zero_indices_xyz[0] = [0, 4];
+    await expect(publish(wrongIndex)).rejects.toThrow(/sampling/);
+
+    const wrongWorld = structuredClone(translated);
+    wrongWorld.manifest.mpr!.world_xyz[0] = 10.4;
+    await expect(publish(wrongWorld)).rejects.toThrow(/world position/);
+
+    const receipt = await publish(translated);
+    const saved = JSON.parse(await fs.readFile(path.join(root, receipt.basename, "manifest.json"), "utf8"));
+    expect(saved.payloads.context.sampling).toEqual(context.sampling);
+
+    const focus = structuredClone(translated);
+    focus.manifest.representation.extent = "focus";
+    focus.manifest.payloads.focus = {
+      ...context,
+      role: "level-zero-focus",
+      level: 0,
+      native_level_dimensions_xyz: [5, 1, 2],
+      source_extent_xyzxyz: [1, 2, 0, 0, 0, 1],
+      origin_xyz: [10.4, 0, 0],
+      spacing_xyz: [0.4, 0.5, 2],
+      affine_4x4: [[0.4, 0, 0, 10.4], [0, 0.5, 0, 0], [0, 0, 2, 0], [0, 0, 0, 1]],
+      sampling: {
+        method: "nearest-whole-extent",
+        source_indices_xyz: [[1, 2], [0], [0, 1]],
+        level_zero_indices_xyz: [[1, 2], [0], [0, 1]],
+      },
+    };
+    const wrongFocusLevel = structuredClone(focus);
+    wrongFocusLevel.manifest.payloads.focus!.level = 1;
+    await expect(publish(wrongFocusLevel)).rejects.toThrow(/declared level-zero extent/);
+
+    const focusDestination = path.join(root, "Translated-focus.loci-figure");
+    await expect(publish(focus, focusDestination)).rejects.toThrow(/world position/);
+    focus.manifest.mpr!.world_xyz = [10.4, 0, 0];
+    const focusReceipt = await publish(focus, focusDestination);
+    const savedFocus = JSON.parse(await fs.readFile(path.join(root, focusReceipt.basename, "manifest.json"), "utf8"));
+    expect(savedFocus.mpr.world_xyz).toEqual([10.4, 0, 0]);
+  });
+
   it("publishes valid v2 figures across all 5 volume modes", async () => {
     const modes: Array<"blend" | "normal_shading" | "mip" | "average" | "minip"> = [
       "blend", "normal_shading", "mip", "average", "minip",
