@@ -506,6 +506,17 @@ def density_40x1000(tmp_path):
     )
     results = []
     ys, xs = np.mgrid[1:33, 1:33]
+    # Keep the exact measured labels, calibrated centroids and intensities for density.
+    # The fixture does not need to duplicate morphology in parent and spatial records.
+    measurement_fields = (
+        "label",
+        "centroid_index",
+        "index_axes",
+        "centroid_world_xyz",
+        "world_frame",
+        "distance_unit",
+        "intensity",
+    )
     for donor in range(1, 6):
         for condition in ("A", "B"):
             index = (donor - 1) * 2 + (condition == "B")
@@ -556,7 +567,10 @@ def density_40x1000(tmp_path):
                                 "selection": selection,
                                 "runtime": runtime_record(),
                                 "measurement_channels": [0],
-                                "measurements": measure_objects(mask, geometry, {"raw": raw}),
+                                "measurements": [
+                                    {key: row[key] for key in measurement_fields}
+                                    for row in measure_objects(mask, geometry, {"raw": raw})
+                                ],
                             },
                         )
                     )
@@ -611,7 +625,7 @@ def test_40_images_1000_cells_have_small_receipts_same_donor_math_and_exact_page
         for row in a["condition_rows"]
     )
     assert len(a["paired_rows"]) == 5 and all(row["difference"] == 0 for row in a["paired_rows"])
-    # Actual source-authorized disposable agent task: the LLM sends only131B.
+    # The source-authorized agent submits only the compact preview token.
     agent = scoped_agent(wb.project.root.parent, wb, results, memory_bytes=512 * 1024**2)
     submitted = agent.submit_action("spatial_density_save", token, "density40-agent-save")["job"]
     deadline = time.monotonic() + 60
@@ -619,9 +633,14 @@ def test_40_images_1000_cells_have_small_receipts_same_donor_math_and_exact_page
         job = wb.project.job(submitted["id"])
         if job["state"] not in {"queued", "running"}:
             break
-        if time.monotonic() >= deadline:
-            raise AssertionError("Bounded density agent save did not finish")
-        time.sleep(0.05)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            active = agent.supervisor.owned_worker_active(submitted["id"])
+            raise AssertionError(
+                "Bounded density agent save did not finish "
+                f"(state={job['state']}, worker active={active})"
+            )
+        time.sleep(min(0.25, remaining))
     assert job["state"] == "succeeded", job
     saved = execute(wb.project, "spatial_density_get", {"report_id": token["preview_id"]})
     assert saved["report"] == report
@@ -670,6 +689,14 @@ def test_40_images_1000_cells_have_small_receipts_same_donor_math_and_exact_page
             assert cell["index_axes"] == cell["measurement"]["index_axes"] == "YX"
             assert cell["intensity"] == cell["measurement"]["intensity"]
             assert cell["intensity"]["raw"]["mean"] is not None
+            row_y, row_x = divmod(cell["label"] - 1, 32)
+            assert cell["centroid_index"] == [row_y + 1, row_x + 1]
+            donor = int(cell["biological_replicate"][1:])
+            source_offset = (donor - 1) * 2 + (cell["condition"] == "B")
+            source_y = cell["selection"]["y"] + row_y + 1
+            source_x = cell["selection"]["x"] + row_x + 1
+            assert cell["centroid_world_xyz"] == [source_x, source_y, 0]
+            assert cell["intensity"]["raw"]["mean"] == source_y * 128 + source_x + source_offset
             assert cell["coordinate_unit"] == "um"
             assert cell["phenotype_name"] is None
             key = (cell["condition"], cell["biological_replicate"])
