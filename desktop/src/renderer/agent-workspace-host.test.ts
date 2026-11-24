@@ -97,8 +97,8 @@ describe("main agent workspace host", () => {
   it("hands off draft presentation and accepts the flushed draft when docked", async () => {
     const f = setup(); await settle();
     const presentation: AgentWorkspacePresentation = { selectedTaskId: "c".repeat(32), section: "plan", draft: { taskId: "c".repeat(32), baseRevision: 2, goal: "Edited goal", steps: [{ id: "step", title: "Inspect" }] } };
-    f.host.changePresentation(presentation); await f.host.open();
-    expect(f.api.open).toHaveBeenCalledWith(presentation);
+    f.host.changePresentation(presentation); await f.host.open(false, true);
+    expect(f.api.open).toHaveBeenCalledWith(presentation, { atPointer: true });
     f.emit({ status: "docked", binding: { ...binding, generation: 3 }, presentation: { ...presentation, draft: { ...presentation.draft!, goal: "Popup edit" } } });
     expect(f.onPresentation.mock.lastCall?.[0].draft.goal).toBe("Popup edit"); expect(f.onReturn).toHaveBeenCalledTimes(1); f.host.dispose();
   });

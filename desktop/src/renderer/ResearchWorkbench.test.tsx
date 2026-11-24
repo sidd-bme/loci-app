@@ -14,6 +14,9 @@ import { ViewerRequestQueue } from "../main/viewer-request-queue";
 import ResearchWorkbench from "./ResearchWorkbench";
 import { dispatchWorkbenchCommand } from "./workbench-commands";
 import { FIRST_STUDY_SOURCE_SHA256 } from "./first-study-display";
+import type { DisplayInspectorBinding, DisplayInspectorOwnerApi } from "../shared/display-inspector-api";
+import type { PreprocessInspectorEdit } from "../shared/preprocess-inspector-api";
+import { dropPanelOutside, installPanelPointerCapture, panelPointer } from "./panel-pointer.test-utils";
 import type {
   ResearchBatchReceipt,
   ResearchBatchTask,
@@ -1400,7 +1403,7 @@ describe("ResearchWorkbench", () => {
     });
   });
 
-  it("detaches the current unsaved display state with its source fingerprint", async () => {
+  it.each(["click", "drag"] as const)("detaches the current unsaved display state with its source fingerprint by %s", async (gesture) => {
     const open = vi.fn().mockResolvedValue({ views: [] });
     window.lociImageWindows = { open } as unknown as NonNullable<Window["lociImageWindows"]>;
     try {
@@ -1408,12 +1411,37 @@ describe("ResearchWorkbench", () => {
       await openTool("View", "Display");
       const opacity = await screen.findByLabelText("Channel 1 opacity");
       fireEvent.change(opacity, { target: { value: "0.37" } });
-      fireEvent.click(screen.getByRole("button", { name: "Detach image" }));
-      await waitFor(() => expect(open).toHaveBeenCalledWith(snapshot.sources[0].id,
+      const toolbar = screen.getByRole("group", { name: "Image view" });
+      const grip = within(toolbar).getByRole("button", { name: "Detach image" });
+      if (gesture === "click") fireEvent.click(grip);
+      else dropPanelOutside(toolbar);
+      await waitFor(() => expect(open).toHaveBeenCalledExactlyOnceWith(snapshot.sources[0].id,
         expect.objectContaining({ sourceSha256: snapshot.sources[0].sha256,
           presentation: expect.objectContaining({ channels: expect.arrayContaining([
             expect.objectContaining({ channel: 0, opacity: 0.37 }),
-          ]), mode: "plane", tool: "navigate" }) })));
+          ]), mode: "plane", tool: "navigate" }) }),
+        ...(gesture === "drag" ? [{ atPointer: true }] : [])));
+    } finally { delete window.lociImageWindows; }
+  });
+
+  it("cancels the image toolbar drag if the active source changes before release", async () => {
+    const other = { ...snapshot.sources[0], id: "e".repeat(32), sha256: "f".repeat(64), name: "New active source" };
+    const open = vi.fn().mockResolvedValue({ views: [] });
+    window.lociImageWindows = { open } as unknown as NonNullable<Window["lociImageWindows"]>;
+    try {
+      render(<ResearchWorkbench api={api({ getSnapshot: async () => ({ ...snapshot, sources: [...snapshot.sources, other] }) })}
+        onBack={vi.fn()} />);
+      const toolbar = await screen.findByRole("group", { name: "Image view" });
+      await waitFor(() => expect(within(toolbar).getByRole("button", { name: "Detach image" })).toBeEnabled());
+      const { capture, release } = installPanelPointerCapture(toolbar);
+      panelPointer(toolbar, "pointerdown");
+      panelPointer(window, "pointermove", { clientX: -20 });
+      expect(capture).toHaveBeenCalledExactlyOnceWith(7);
+      fireEvent.click(screen.getByLabelText(other.name));
+      await screen.findByLabelText(`Image viewer: ${other.name}`);
+      panelPointer(window, "pointerup", { clientX: -20 });
+      expect(release).toHaveBeenCalledExactlyOnceWith(7);
+      expect(open).not.toHaveBeenCalled();
     } finally { delete window.lociImageWindows; }
   });
 
@@ -3217,6 +3245,301 @@ describe("ResearchWorkbench", () => {
         }),
       ),
     );
+  });
+  async function detachedPreprocessWorkbench(withResult = false) {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    const source = snapshot.sources[0];
+    const otherSource = { ...source, id: "7".repeat(32), sha256: "8".repeat(64), name: "Second scalar source" };
+    const study = { ...structuredClone(snapshot), sources: [source, otherSource], results: withResult ? structuredClone(snapshot.results) : [] };
+    let finishPreview!: (result: { image: string }) => void;
+    const bridge = api({
+      getSnapshot: vi.fn().mockResolvedValue(study),
+      execute: vi.fn(async (operation, request) => {
+        if (operation === "preview_recipe") return new Promise((resolve) => { finishPreview = resolve; });
+        if (operation === "result") return resultPage(request, study.results);
+        if (operation === "result_view") return resultView();
+        return {};
+      }),
+    });
+    let lifecycle!: Parameters<DisplayInspectorOwnerApi["onLifecycle"]>[0];
+    let edit!: Parameters<DisplayInspectorOwnerApi["onEdit"]>[0];
+    let binding!: DisplayInspectorBinding;
+    let request = 0;
+    const native: DisplayInspectorOwnerApi = {
+      open: vi.fn(async (target) => {
+        binding = { ...target, generation: 1 };
+        lifecycle({ status: "opening", binding });
+        lifecycle({ status: "open", binding });
+        return binding;
+      }),
+      onLifecycle: (listener) => { lifecycle = listener; return () => {}; },
+      onEdit: (listener) => { edit = listener; return () => {}; },
+      focus: vi.fn(async () => {}), dock: vi.fn(async () => {}), revoke: vi.fn(async () => {}), publish: vi.fn(async () => {}),
+    };
+    vi.stubGlobal("lociDisplayInspectorOwner", native);
+    const view = render(<ResearchWorkbench api={bridge} onBack={vi.fn()} />);
+    await openTool("Analyze", "Process");
+    const send = (intent: PreprocessInspectorEdit) => act(() =>
+      edit({ binding, action: { kind: "preprocess", request: ++request, edit: intent } }));
+    const read = () => {
+      const value = vi.mocked(native.publish).mock.calls.at(-1)![1];
+      if (value.kind !== "preprocess") throw new Error("Expected Preprocess state");
+      return value;
+    };
+    const dock = () => act(() => lifecycle({ binding, status: "closed", reason: "dock" }));
+    const viewport = screen.getByLabelText(`Image viewer: ${source.name}`);
+    await waitFor(() => expect(viewport).toHaveAttribute("data-prepared", "true"));
+    const canvas = within(viewport).getByLabelText("Source image and bound annotations");
+    const button = screen.getByRole("button", { name: "Detach Preprocess" });
+    expect(button).toBeEnabled();
+    dropPanelOutside(button.parentElement!);
+    expect(native.open).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ kind: "preprocess", sourceId: source.id, sourceSha256: source.sha256 }),
+      expect.objectContaining({ kind: "preprocess" }), { atPointer: true },
+    );
+    expect(screen.getByRole("button", { name: "Focus Preprocess inspector" })).toBeVisible();
+    return { source, otherSource, bridge, native, view, viewport, canvas, send, read, dock,
+      binding: () => binding, finish: async (image: string) => act(async () => finishPreview({ image })) };
+  }
+
+  it.each(["a saved result", "3D volume", "Compare A/B"])("keeps a valid pipeline runnable after Preprocess retires for %s", async (destination) => {
+    const { native, binding, send, read } = await detachedPreprocessWorkbench(destination === "a saved result");
+    send({ kind: "add", op: "subtract_constant" });
+    send({ kind: "draft", id: read().editor.rows[0].id, text: "7.5" });
+    if (destination === "a saved result") await selectHistoryResult();
+    else fireEvent.click(screen.getByRole("button", { name: destination }));
+    await waitFor(() => expect(native.revoke).toHaveBeenCalledWith(binding()));
+    if (destination === "a saved result") fireEvent.click(await screen.findByRole("button", { name: "Show source" }));
+    else fireEvent.click(await screen.findByRole("button", { name: destination === "3D volume" ? "2D image" : "Compare A/B" }));
+    expect(screen.queryByText(/Preprocess was interrupted/)).toBeNull();
+    expect(screen.getByLabelText("Step 1 value")).toHaveValue("7.5");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeEnabled());
+    await openTool("Analyze", "Analyze");
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled();
+  });
+
+  it("holds preview and Run for an unacknowledged detached draft lost during same-source retirement", async () => {
+    const { native } = await detachedPreprocessWorkbench();
+    vi.mocked(native.revoke).mockResolvedValueOnce("unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Compare A/B" }));
+    fireEvent.click(screen.getByRole("button", { name: "Compare A/B" }));
+    const interruption = await screen.findByRole("alert");
+    expect(within(interruption).getByText(/Preprocess was interrupted/, { selector: "span" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
+    await openTool("Analyze", "Analyze");
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Restore applied numbers" }));
+    expect(interruption).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run recipe" })).toBeEnabled();
+  });
+
+  it("allows detached Preprocess to identify and restore invalid numbers from Analyze", async () => {
+    const { bridge, read, send, finish } = await detachedPreprocessWorkbench();
+    fireEvent.click(screen.getByRole("button", { name: "Show tools panel" }));
+    await openTool("Analyze", "Analyze");
+    const threshold = screen.getByLabelText("Threshold");
+    fireEvent.change(threshold, { target: { value: "0.35" } });
+    const appliedRevision = read().revision;
+    fireEvent.change(threshold, { target: { value: "0.35e" } });
+    expect(read()).toMatchObject({ previewDisabled: true, restoreNumbers: true });
+    send({ kind: "restore-numbers", revision: appliedRevision });
+    expect(read().restoreNumbers).toBe(true);
+    send({ kind: "preview", revision: read().revision });
+    expect(bridge.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
+    send({ kind: "restore-numbers", revision: read().revision });
+    expect(read()).toMatchObject({ previewDisabled: false, restoreNumbers: false });
+    expect(screen.getByLabelText("Threshold")).toHaveValue("0.35");
+    send({ kind: "preview", revision: read().revision });
+    expect(bridge.execute).toHaveBeenCalledWith("preview_recipe", expect.objectContaining({
+      recipe: expect.objectContaining({ segmentation: expect.objectContaining({ threshold: 0.35 }) }),
+    }));
+    await finish("data:image/png;base64,restored");
+    await screen.findByRole("button", { name: "Show source" });
+  });
+
+  it("clears displayed crop previews and drops late responses when the recipe or tool changes", async () => {
+    const { viewport, send, read, dock, finish } = await detachedPreprocessWorkbench();
+    send({ kind: "add", op: "subtract_constant" });
+    send({ kind: "add", op: "gaussian" });
+    const preview = () => send({ kind: "preview", revision: read().revision });
+    const expectSource = async () => waitFor(() => expect(within(viewport).queryByText(/^Preview ·/)).toBeNull());
+    preview();
+    await finish("data:image/png;base64,first");
+    await within(viewport).findByText(/^Preview ·/);
+    send({ kind: "move", id: read().editor.rows[1].id, delta: -1 });
+    await expectSource();
+
+    preview();
+    send({ kind: "draft", id: read().editor.rows[0].id, text: "1.25" });
+    await finish("data:image/png;base64,lateRecipe");
+    await expectSource();
+
+    preview();
+    await finish("data:image/png;base64,second");
+    await within(viewport).findByText(/^Preview ·/);
+    const sigma = read().editor.rows[0].id;
+    send({ kind: "draft", id: sigma, text: "1e-" });
+    expect(read().previewDisabled).toBe(true);
+    await expectSource();
+    send({ kind: "revert", id: sigma });
+    await expectSource();
+
+    preview();
+    await finish("data:image/png;base64,third");
+    await within(viewport).findByText(/^Preview ·/);
+    fireEvent.click(screen.getByRole("button", { name: "Show source" }));
+    await expectSource();
+    preview();
+    await finish("data:image/png;base64,beforeDisplay");
+    await within(viewport).findByText(/^Preview ·/);
+    fireEvent.click(screen.getByRole("button", { name: "Show tools panel" }));
+    await openTool("View", "Display");
+    await expectSource();
+
+    preview();
+    await finish("data:image/png;base64,beforeAnnotate");
+    await within(viewport).findByText(/^Preview ·/);
+    preview();
+    await openTool("Annotate", "Annotate");
+    await finish("data:image/png;base64,lateTool");
+    await expectSource();
+    await openTool("Analyze", "Process");
+    dock();
+    await expectSource();
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeEnabled();
+    expect(canvasContext.drawImage.mock.calls.flat().some(
+      (value) => value?.src?.startsWith?.("data:image/png;base64,late"),
+    )).toBe(false);
+  });
+
+  it("cancels detached region drawing and its held pointer when changing tools or pressing Escape", async () => {
+    const { viewport, canvas, send, read } = await detachedPreprocessWorkbench();
+    const scope = read().selection;
+    const draw = () => send({ kind: "draw", revision: read().revision });
+    const startDrag = () => {
+      fireEvent.pointerDown(canvas, { button: 0, clientX: 130, clientY: 140 });
+      fireEvent.pointerMove(canvas, { button: 0, clientX: 310, clientY: 290 });
+    };
+    const releaseDrag = () => fireEvent.pointerUp(canvas, { button: 0, clientX: 310, clientY: 290 });
+    draw();
+    startDrag();
+    fireEvent.keyDown(viewport, { key: "Escape" });
+    expect(read().drawing).toBe(false);
+    draw();
+    releaseDrag();
+    expect(read().selection).toEqual(scope);
+    expect(read().drawing).toBe(true);
+
+    startDrag();
+    fireEvent.click(screen.getByRole("button", { name: "Show tools panel" }));
+    await openTool("View", "Display");
+    releaseDrag();
+    expect(read().drawing).toBe(false);
+    expect(read().selection).toEqual(scope);
+    expect(screen.queryByText(/Esc to cancel/)).toBeNull();
+    expect(within(viewport).getByLabelText("Source image and bound annotations")).toBe(canvas);
+
+    await openTool("Analyze", "Analyze");
+    fireEvent.click(screen.getByRole("button", { name: "Draw region" }));
+    expect(screen.getByRole("button", { name: "Cancel drawing" })).toBeVisible();
+    fireEvent.keyDown(viewport, { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Draw region" })).toBeVisible();
+
+    draw();
+    await openTool("Annotate", "Annotate");
+    fireEvent.click(screen.getByRole("button", { name: "Rectangle" }));
+    const annotationViewport = screen.getByLabelText(`Image viewer: ${read().source.name}`);
+    await waitFor(() => expect(annotationViewport).toHaveAttribute("data-prepared", "true"));
+    const annotationCanvas = within(annotationViewport).getByLabelText("Source image and bound annotations");
+    fireEvent.pointerDown(annotationCanvas, { button: 0, clientX: 130, clientY: 140 });
+    fireEvent.pointerMove(annotationCanvas, { button: 0, clientX: 310, clientY: 290 });
+    fireEvent.pointerUp(annotationCanvas, { button: 0, clientX: 310, clientY: 290 });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    expect(read().selection).toEqual(scope);
+  });
+
+  it("preserves the expanded invalid draft and ordered duplicate steps across docking", async () => {
+    const { source, bridge, view, viewport, canvas, send, read, dock, binding, finish } = await detachedPreprocessWorkbench();
+    expect(binding()).toMatchObject({ kind: "preprocess", sourceId: source.id, sourceSha256: source.sha256 });
+    expect(view.container.querySelector("#research-tools-pane")).toHaveAttribute("hidden");
+    expect(screen.queryByRole("button", { name: "Add processing step" })).toBeNull();
+    expect(within(viewport).getByLabelText("Source image and bound annotations")).toBe(canvas);
+
+    send({ kind: "add", op: "subtract_constant" });
+    const first = read().editor.rows[0].id;
+    send({ kind: "draft", id: first, text: "5.5" });
+    send({ kind: "clip", id: first, checked: true });
+    send({ kind: "add", op: "subtract_constant" });
+    const second = read().editor.rows[1].id;
+    send({ kind: "draft", id: second, text: "12" });
+    send({ kind: "draft", id: second, text: "12e-" });
+    send({ kind: "move", id: second, delta: -1 });
+    expect(read().editor.rows.map((row) => row.id)).toEqual([second, first]);
+    send({ kind: "preview", revision: read().revision });
+    expect(bridge.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
+    dock();
+    const invalid = screen.getByLabelText("Step 1 value");
+    expect(invalid).toHaveValue("12e-");
+    expect(invalid).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
+    fireEvent.keyDown(invalid, { key: "Escape" });
+    expect(invalid).toHaveValue("12");
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview selected crop" }));
+    expect(bridge.execute).toHaveBeenCalledWith("preview_recipe", expect.objectContaining({
+      source_id: source.id, recipe: expect.objectContaining({ steps: [
+        { op: "subtract_constant", value: 12 },
+        { op: "subtract_constant", value: 5.5, clip_negative: true },
+      ] }),
+    }));
+    await finish("data:image/png;base64,docked");
+  });
+
+  it("draws the crop on the main canvas and keeps its exact preview there across docking", async () => {
+    const { source, bridge, viewport, canvas, send, read, dock, finish } = await detachedPreprocessWorkbench();
+    const beforeDraw = read();
+    send({ kind: "draw", revision: beforeDraw.revision });
+    expect(screen.getByText("Drag a rectangle on the image · Esc to cancel")).toBeVisible();
+    fireEvent.pointerDown(canvas, { button: 0, clientX: 130, clientY: 140 });
+    fireEvent.pointerMove(canvas, { button: 0, clientX: 310, clientY: 290 });
+    fireEvent.pointerUp(canvas, { button: 0, clientX: 310, clientY: 290 });
+    const crop = read();
+    expect(crop.drawing).toBe(false);
+    expect(crop.selection.width).toBeLessThan(beforeDraw.selection.width);
+    expect(crop.selection.height).toBeLessThan(beforeDraw.selection.height);
+    send({ kind: "preview", revision: beforeDraw.revision });
+    expect(bridge.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
+    send({ kind: "preview", revision: crop.revision });
+    expect(bridge.execute).toHaveBeenCalledWith("preview_recipe", expect.objectContaining({
+      source_id: source.id, selection: crop.selection,
+    }));
+    await finish("data:image/png;base64,previewA");
+    await within(viewport).findByText(/^Preview ·/);
+    expect(JSON.stringify(read())).not.toContain("previewA");
+    dock();
+    expect(within(viewport).getByText(/^Preview ·/)).toBeVisible();
+  });
+
+  it.each([undefined, "unavailable"] as const)("retires detached Preprocess and drops late work after a source change (%s)", async (closeReason) => {
+    const { otherSource, bridge, native, view, send, read, binding, finish } = await detachedPreprocessWorkbench();
+    vi.mocked(native.revoke).mockResolvedValueOnce(closeReason);
+    send({ kind: "add", op: "subtract_constant" });
+    const row = read().editor.rows[0].id;
+    send({ kind: "draft", id: row, text: "12" });
+    const { revision } = read();
+    send({ kind: "preview", revision });
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>(`button[data-source-id="${otherSource.id}"]`)!);
+    await waitFor(() => expect(native.revoke).toHaveBeenLastCalledWith(binding()));
+    send({ kind: "draft", id: row, text: "99" });
+    send({ kind: "preview", revision });
+    await finish("data:image/png;base64,lateA");
+    const secondViewport = screen.getByLabelText(`Image viewer: ${otherSource.name}`);
+    await waitFor(() => expect(secondViewport).toHaveAttribute("data-prepared", "true"));
+    expect(within(secondViewport).queryByText(/^Preview ·/)).toBeNull();
+    expect(screen.getByLabelText("Step 1 value")).toHaveValue("12");
+    expect(screen.queryByText(/Preprocess was interrupted/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeEnabled();
+    expect(vi.mocked(bridge.execute).mock.calls.filter(([operation]) => operation === "preview_recipe")).toHaveLength(1);
   });
   it.each([false, true])("persists the exact example display through the existing source-view API (saved=%s)", async (saved) => {
     const source = { ...snapshot.sources[0], sha256: FIRST_STUDY_SOURCE_SHA256,

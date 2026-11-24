@@ -475,6 +475,16 @@ const config: ForgeConfig = {
           config: "vite.preload.config.ts",
           target: "preload",
         },
+        {
+          entry: "src/display-inspector-preload.ts",
+          config: "vite.preload.config.ts",
+          target: "preload",
+        },
+        {
+          entry: "src/study-navigator-preload.ts",
+          config: "vite.preload.config.ts",
+          target: "preload",
+        },
       ],
       renderer: [
         {

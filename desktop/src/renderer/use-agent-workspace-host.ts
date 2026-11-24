@@ -25,9 +25,9 @@ export function useAgentWorkspaceHost(api: AgentWorkspaceApi | undefined, contex
   return { state, presentation, openRequest,
     detached: Boolean(state && state.status !== "docked"),
     changePresentation: (next: AgentWorkspacePresentation) => host?.changePresentation(next),
-    open: () => {
+    open: (atPointer?: true) => {
       const scope = latest.current.context.scope;
-      return host?.open().catch(error => { if (latest.current.context.scope === scope && !latest.current.context.switching)
+      return host?.open(false, atPointer).catch(error => { if (latest.current.context.scope === scope && !latest.current.context.switching)
         latest.current.onError(error instanceof Error ? error.message : "Could not open the agent workspace."); });
     },
     focus: () => {

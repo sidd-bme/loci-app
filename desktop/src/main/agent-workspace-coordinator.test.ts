@@ -8,6 +8,8 @@ import type { AgentWorkspaceLayout, AgentWorkspaceLayouts } from './agent-worksp
 
 const electron = vi.hoisted(() => ({ handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>(), displays: [{ workArea: { x: 0, y: 0, width: 1440, height: 900 } }], listeners: new Map<string, Set<() => void>>() }));
 vi.mock('electron', () => ({ ipcMain: { handle: (name: string, fn: (...args: unknown[]) => Promise<unknown>) => electron.handlers.set(name, fn) }, screen: { getAllDisplays: () => electron.displays,
+  getCursorScreenPoint: () => ({ x: 196, y: 118 }),
+  getDisplayNearestPoint: () => electron.displays[0],
   on: (name: string, listener: () => void) => { const listeners = electron.listeners.get(name) ?? new Set(); listeners.add(listener); electron.listeners.set(name, listeners); },
   removeListener: (name: string, listener: () => void) => electron.listeners.get(name)?.delete(listener),
 } }));
@@ -25,6 +27,7 @@ class Window extends EventEmitter {
   webContents = new Sender(); destroyed = false; bounds = { x: 10, y: 10, width: 1000, height: 700 };
   show = vi.fn(); focus = vi.fn(); setTitle = vi.fn();
   setBounds = vi.fn((bounds: typeof this.bounds) => { this.bounds = { ...bounds }; });
+  getBounds() { return { ...this.bounds }; }
   getNormalBounds() { return { ...this.bounds }; }
   isDestroyed() { return this.destroyed; }
   destroy() { if (!this.destroyed) { this.destroyed = true; this.webContents.destroyed = true; this.emit('closed'); } }
@@ -59,6 +62,16 @@ const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); 
 afterEach(() => { for (const coordinator of coordinators.splice(0)) coordinator.dispose(); vi.useRealTimers(); });
 
 describe('native agent workspace authority and lifecycle', () => {
+  it('uses the OS drop position and retains prior dimensions and presentation', async () => {
+    const layout = { schema: 'loci.agent-workspace-layout/v1' as const, bounds: { x: 49, y: 21, width: 960, height: 740 } };
+    const h = harness(layout);
+    await expect(h.call(h.main, 'open', draft(), { atPointer: true, windowId: 4 })).rejects.toThrow('placement');
+    expect(h.factory).not.toHaveBeenCalled();
+    const opened = await h.call(h.main, 'open', draft(), { atPointer: true });
+    expect(opened.presentation).toEqual(draft());
+    expect(h.windows[0].getBounds()).toEqual({ x: 100, y: 100, width: 960, height: 740 });
+    expect(h.windows[0].setBounds.mock.invocationCallOrder.at(-1)).toBeLessThan(h.load.mock.invocationCallOrder[0]);
+  });
   it('rejects unregistered, image-like and subframe senders; only native role selection is authoritative', async () => {
     const h = harness(), unknown = new Window();
     await expect(h.call(unknown, 'state')).rejects.toThrow('capability');

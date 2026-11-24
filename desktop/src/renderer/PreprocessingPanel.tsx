@@ -11,32 +11,25 @@ import {
   useCallback,
   useEffect,
   useId,
-  useMemo,
   useRef,
   useState,
-  type Dispatch,
   type KeyboardEvent,
-  type SetStateAction,
 } from "react";
 import type {
   ResearchDimensions,
-  ResearchRecipe,
   ResearchSelection,
-  ResearchSource,
 } from "../shared/research-contracts";
 import {
-  punctaDistanceUnit,
-  UNVERIFIED_DISTANCE_UNIT,
-} from "./puncta-distance-unit";
+  MAX_PREPROCESS_DRAFT_LENGTH,
+  type PreprocessEditorEdit,
+  type PreprocessEditorView,
+  type PreprocessOp,
+  type PreprocessRow,
+  type StepParameter,
+} from "../shared/preprocess-inspector-api";
+import { UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
+import { MAX_PROCESSING_STEPS, parameterBoundsHint } from "./use-preprocessing-editor";
 import "./PreprocessingPanel.css";
-
-export type PreprocessOp =
-  | "gaussian"
-  | "median"
-  | "subtract_background"
-  | "subtract_constant"
-  | "opening"
-  | "closing";
 
 export interface PreprocessStepGroup {
   id: string;
@@ -72,54 +65,8 @@ export const PREPROCESS_LABELS: Record<string, string> = {
   flatfield: "Flat-field correction",
 };
 
-const MAX_PROCESSING_STEPS = 32;
-
-const CLIP_NEGATIVE_OPS = new Set([
-  "subtract_background",
-  "subtract_constant",
-  "flatfield",
-]);
-
-function supportsClipNegative(op: string): boolean {
-  return CLIP_NEGATIVE_OPS.has(op);
-}
-
 function intensityUnitForStep(index: number): string {
   return index === 0 ? "source intensity" : `step ${index} intensity`;
-}
-
-type StepParameter = "sigma" | "radius" | "value";
-
-type PendingFocusTarget =
-  | { kind: "input"; id: string }
-  | { kind: "toggle"; id: string }
-  | { kind: "add" }
-  | null;
-
-interface StepDraft {
-  text: string;
-  error: string;
-  committedValue: number;
-}
-
-function stepParameterFor(step: Record<string, unknown>): StepParameter | null {
-  const op = String(step.op ?? "");
-  if (op === "flatfield") return null;
-  if ("sigma" in step || op === "gaussian" || op === "subtract_background") {
-    return "sigma";
-  }
-  if (
-    "radius" in step ||
-    op === "median" ||
-    op === "opening" ||
-    op === "closing"
-  ) {
-    return "radius";
-  }
-  if ("value" in step || op === "subtract_constant") {
-    return "value";
-  }
-  return null;
 }
 
 function parameterDisplayLabel(parameter: StepParameter): string {
@@ -128,61 +75,18 @@ function parameterDisplayLabel(parameter: StepParameter): string {
   return "Value";
 }
 
-function parameterBounds(parameter: StepParameter): {
-  minimum: number;
-  maximum: number;
-  hint: string;
-} {
-  if (parameter === "value") {
-    return {
-      minimum: -1e15,
-      maximum: 1e15,
-      hint: "Enter a finite value from -1000000000000000 to 1000000000000000.",
-    };
-  }
-  return {
-    minimum: 0,
-    maximum: 1e6,
-    hint: "Enter a finite value from 0 to 1000000.",
-  };
-}
-
-function defaultStepFor(op: PreprocessOp): Record<string, unknown> {
-  if (op === "gaussian" || op === "subtract_background") {
-    return { op, sigma: 1 };
-  }
-  if (op === "subtract_constant") {
-    return { op, value: 0 };
-  }
-  return { op, radius: 1 };
-}
-
 function formatStepIndex(index: number): string {
   return String(index + 1).padStart(2, "0");
 }
 
-function formatCollapsedSummary(
-  step: Record<string, unknown>,
-  parameter: StepParameter | null,
-  spatialUnit: string,
-): string {
-  const clipSuffix =
-    supportsClipNegative(String(step.op ?? "")) && step.clip_negative === true
-      ? " · ≥0"
-      : "";
-  if (!parameter) {
-    return String(step.op) === "flatfield" ? `references${clipSuffix}` : "";
-  }
-  const value = Number(step[parameter]);
+function formatCollapsedSummary({ op, parameter, value, clipNegative }: PreprocessRow, spatialUnit: string): string {
+  const clipSuffix = clipNegative ? " · ≥0" : "";
+  if (!parameter) return op === "flatfield" ? `references${clipSuffix}` : "";
   const formatted = Number.isFinite(value) ? String(value) : "—";
-  if (parameter === "value") {
-    return `= ${formatted}${clipSuffix}`;
-  }
+  if (parameter === "value") return `= ${formatted}${clipSuffix}`;
   const prefix = parameter === "sigma" ? "σ" : "r";
-  if (spatialUnit === UNVERIFIED_DISTANCE_UNIT) {
-    return `${prefix} ${formatted}${clipSuffix}`;
-  }
-  return `${prefix} ${formatted} ${spatialUnit}${clipSuffix}`;
+  const unit = spatialUnit === UNVERIFIED_DISTANCE_UNIT ? "" : ` ${spatialUnit}`;
+  return `${prefix} ${formatted}${unit}${clipSuffix}`;
 }
 
 export function isWholeImageSelection(
@@ -327,132 +231,43 @@ export function PreprocessingScopeControl({
 }
 
 export function PreprocessingPanel({
-  source,
-  selection,
-  recipe,
-  setRecipe,
+  editor,
+  spatialUnit,
+  onEdit,
   onPreview,
-  busy,
-  numberKey,
-  onNumberValidity,
-  configurationValid,
+  previewDisabled,
+  pendingText,
+  restoreNumbers,
 }: {
-  source: ResearchSource | null;
-  selection: ResearchSelection;
-  recipe: ResearchRecipe;
-  setRecipe: Dispatch<SetStateAction<ResearchRecipe>>;
+  editor: PreprocessEditorView;
+  spatialUnit: string;
+  onEdit: (edit: PreprocessEditorEdit) => void;
   onPreview: () => void;
-  busy: boolean;
-  numberKey: string;
-  onNumberValidity: (valid: boolean) => void;
-  configurationValid: boolean;
+  previewDisabled: boolean;
+  pendingText?: { id: number; text: string };
+  restoreNumbers?: { disabled: boolean; onRestore: () => void };
 }) {
-  const stepIdMapRef = useRef<WeakMap<Record<string, unknown>, string>>(
-    new WeakMap(),
-  );
-  const originalClipKeyRef = useRef<Map<string, boolean>>(new Map());
-  const nextStepIdRef = useRef(1);
-  const getStepId = useCallback((step: Record<string, unknown>): string => {
-    const existing = stepIdMapRef.current.get(step);
-    if (existing) return existing;
-    const created = `preprocess-step-${nextStepIdRef.current++}`;
-    stepIdMapRef.current.set(step, created);
-    originalClipKeyRef.current.set(
-      created,
-      Object.prototype.hasOwnProperty.call(step, "clip_negative"),
-    );
-    return created;
-  }, []);
-
-  const stepEntries = recipe.steps.map((step, index) => ({
-    id: getStepId(step),
-    step,
-    index,
-    parameter: stepParameterFor(step),
-  }));
-
-  const [selectedStepId, setSelectedStepId] = useState<string | null>(() =>
-    recipe.steps.length > 0 ? getStepId(recipe.steps[0]) : null,
-  );
-  const [drafts, setDrafts] = useState<Record<string, StepDraft>>({});
+  const { rows, selected, focus } = editor;
   const [chooserOpen, setChooserOpen] = useState(false);
-  const [pendingFocusTarget, setPendingFocusTarget] =
-    useState<PendingFocusTarget>(null);
-
   const chooserContainerRef = useRef<HTMLDivElement>(null);
   const addTriggerRef = useRef<HTMLButtonElement>(null);
   const chooserOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const stepInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
-  const stepToggleRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const stepInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
+  const stepToggleRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const lastFocusRevision = useRef(focus?.revision);
 
   const chooserId = useId();
   const baseErrorId = useId();
   const baseDetailsId = useId();
 
-  const spatialUnit = useMemo(() => {
-    if (!source) return UNVERIFIED_DISTANCE_UNIT;
-    return punctaDistanceUnit(source, selection);
-  }, [source, selection]);
-
-  // Clear local drafts when the workbench resets numeric inputs (e.g. Restore applied numbers or source change).
+  // A mounted presentation can inherit the last request from the other window.
   useEffect(() => {
-    setDrafts({});
-  }, [numberKey]);
-
-  // Reconcile selection if the currently selected step was removed externally.
-  const activeStepIdSet = useMemo(
-    () => new Set(stepEntries.map((entry) => entry.id)),
-    [stepEntries],
-  );
-  useEffect(() => {
-    if (selectedStepId !== null && !activeStepIdSet.has(selectedStepId)) {
-      setSelectedStepId(null);
-    }
-  }, [selectedStepId, activeStepIdSet]);
-
-  // Prune drafts belonging to steps removed externally so stale errors never leak.
-  useEffect(() => {
-    setDrafts((previous) => {
-      let changed = false;
-      const next: Record<string, StepDraft> = {};
-      for (const [id, draft] of Object.entries(previous)) {
-        if (activeStepIdSet.has(id)) {
-          next[id] = draft;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
-    });
-  }, [activeStepIdSet]);
-
-  // Compute live validity across ALL current steps (both expanded and collapsed).
-  const hasInvalidDraft = stepEntries.some(({ id, step, parameter }) => {
-    if (!parameter) return false;
-    const draft = drafts[id];
-    if (!draft) return false;
-    const applied = Number(step[parameter]);
-    if (!Object.is(draft.committedValue, applied)) return false;
-    return Boolean(draft.error);
-  });
-  const numbersValid = !hasInvalidDraft;
-
-  useEffect(() => {
-    onNumberValidity(numbersValid);
-  }, [numbersValid, onNumberValidity]);
-
-  // Move focus cleanly after adding, removing, or boundary-reordering a step.
-  useEffect(() => {
-    if (!pendingFocusTarget) return;
-    if (pendingFocusTarget.kind === "input") {
-      stepInputRefs.current[pendingFocusTarget.id]?.focus();
-    } else if (pendingFocusTarget.kind === "toggle") {
-      stepToggleRefs.current[pendingFocusTarget.id]?.focus();
-    } else if (pendingFocusTarget.kind === "add") {
-      addTriggerRef.current?.focus();
-    }
-    setPendingFocusTarget(null);
-  }, [pendingFocusTarget, selectedStepId, stepEntries.length]);
+    if (!focus || focus.revision === lastFocusRevision.current) return;
+    lastFocusRevision.current = focus.revision;
+    if (focus.kind === "input") stepInputRefs.current[focus.id]?.focus();
+    else if (focus.kind === "toggle") stepToggleRefs.current[focus.id]?.focus();
+    else addTriggerRef.current?.focus();
+  }, [focus?.revision]);
 
   // Dismiss chooser on outside pointerdown.
   useEffect(() => {
@@ -474,152 +289,6 @@ export function PreprocessingPanel({
     setChooserOpen(false);
     addTriggerRef.current?.focus();
   }, []);
-
-  const addStep = (op: PreprocessOp) => {
-    if (recipe.steps.length >= MAX_PROCESSING_STEPS) return;
-    const newStep = defaultStepFor(op);
-    const newId = getStepId(newStep);
-    setRecipe((old) =>
-      old.steps.length >= MAX_PROCESSING_STEPS
-        ? old
-        : { ...old, steps: [...old.steps, newStep] },
-    );
-    setSelectedStepId(newId);
-    setPendingFocusTarget({ kind: "input", id: newId });
-    setChooserOpen(false);
-  };
-
-  const patchStep = (index: number, values: Record<string, unknown>) => {
-    setRecipe((old) => {
-      const target = old.steps[index];
-      if (!target) return old;
-      const id = getStepId(target);
-      const updated = { ...target, ...values };
-      stepIdMapRef.current.set(updated, id);
-      return {
-        ...old,
-        steps: old.steps.map((item, i) => (i === index ? updated : item)),
-      };
-    });
-  };
-
-  const setClipNegative = (index: number, checked: boolean) => {
-    setRecipe((old) => {
-      const target = old.steps[index];
-      if (!target) return old;
-      const id = getStepId(target);
-      const hadExplicitKey = originalClipKeyRef.current.get(id) ?? false;
-      let updated: Record<string, unknown>;
-      if (checked) {
-        updated = { ...target, clip_negative: true };
-      } else if (hadExplicitKey) {
-        updated = { ...target, clip_negative: false };
-      } else {
-        const { clip_negative: _omitted, ...withoutClip } = target;
-        updated = withoutClip;
-      }
-      stepIdMapRef.current.set(updated, id);
-      return {
-        ...old,
-        steps: old.steps.map((item, i) => (i === index ? updated : item)),
-      };
-    });
-  };
-
-  const moveStep = (index: number, delta: number) => {
-    const targetIndex = index + delta;
-    if (targetIndex < 0 || targetIndex >= recipe.steps.length) return;
-    const movedStep = recipe.steps[index];
-    const movedId = movedStep ? getStepId(movedStep) : null;
-    setRecipe((old) => {
-      const target = index + delta;
-      if (target < 0 || target >= old.steps.length) return old;
-      const steps = [...old.steps];
-      [steps[index], steps[target]] = [steps[target], steps[index]];
-      return { ...old, steps };
-    });
-    if (
-      movedId &&
-      ((delta < 0 && targetIndex === 0) ||
-        (delta > 0 && targetIndex === recipe.steps.length - 1))
-    ) {
-      setPendingFocusTarget({ kind: "toggle", id: movedId });
-    }
-  };
-
-  const removeStep = (index: number) => {
-    const target = recipe.steps[index];
-    const removedId = target ? getStepId(target) : null;
-    const remainingCount = recipe.steps.length - 1;
-    let nextFocus: PendingFocusTarget = { kind: "add" };
-    if (remainingCount > 0) {
-      const neighborIndex = index < recipe.steps.length - 1 ? index + 1 : index - 1;
-      const neighborStep = recipe.steps[neighborIndex];
-      if (neighborStep) {
-        nextFocus = { kind: "toggle", id: getStepId(neighborStep) };
-      }
-    }
-    setRecipe((old) => ({
-      ...old,
-      steps: old.steps.filter((_, i) => i !== index),
-    }));
-    if (removedId) {
-      originalClipKeyRef.current.delete(removedId);
-      setDrafts((previous) => {
-        if (!(removedId in previous)) return previous;
-        const { [removedId]: _removed, ...next } = previous;
-        return next;
-      });
-      setSelectedStepId((current) => (current === removedId ? null : current));
-    }
-    setPendingFocusTarget(nextFocus);
-  };
-
-  const commitDraft = (
-    stepId: string,
-    index: number,
-    parameter: StepParameter,
-    appliedValue: number,
-    rawText: string,
-  ) => {
-    const { minimum, maximum, hint } = parameterBounds(parameter);
-    const parsed = Number(rawText);
-    if (
-      !rawText.trim() ||
-      !Number.isFinite(parsed) ||
-      parsed < minimum ||
-      parsed > maximum
-    ) {
-      setDrafts((previous) => ({
-        ...previous,
-        [stepId]: {
-          text: rawText,
-          error: hint,
-          committedValue: appliedValue,
-        },
-      }));
-      return;
-    }
-    if (!Object.is(parsed, appliedValue)) {
-      patchStep(index, { [parameter]: parsed });
-    }
-    setDrafts((previous) => ({
-      ...previous,
-      [stepId]: {
-        text: rawText,
-        error: "",
-        committedValue: parsed,
-      },
-    }));
-  };
-
-  const revertDraft = (stepId: string) => {
-    setDrafts((previous) => {
-      if (!(stepId in previous)) return previous;
-      const { [stepId]: _reverted, ...next } = previous;
-      return next;
-    });
-  };
 
   const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
     if (event.key === "Escape" && chooserOpen) {
@@ -668,9 +337,9 @@ export function PreprocessingPanel({
     }
   };
 
-  const atStepLimit = recipe.steps.length >= MAX_PROCESSING_STEPS;
+  const atStepLimit = rows.length >= MAX_PROCESSING_STEPS;
   const stepCountLabel =
-    recipe.steps.length === 1 ? "1 step" : `${recipe.steps.length} steps`;
+    rows.length === 1 ? "1 step" : `${rows.length} steps`;
 
   let optionCursor = 0;
 
@@ -685,45 +354,24 @@ export function PreprocessingPanel({
           <span className="preprocess-pipeline-count">{stepCountLabel}</span>
         </div>
 
-        {stepEntries.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="preprocess-empty-help">
             No steps configured. Steps run in sequence.
           </p>
         ) : (
           <ol className="preprocess-step-list">
-            {stepEntries.map(({ id, step, index, parameter }) => {
-              const op = String(step.op ?? "");
+            {rows.map((row, index) => {
+              const { id, op, parameter, value, draft, clipNegative } = row;
               const label = PREPROCESS_LABELS[op] ?? op;
-              const isSelected = selectedStepId === id;
+              const isSelected = selected === id;
               const detailsId = `${baseDetailsId}-${id}`;
               const errorId = `${baseErrorId}-${id}`;
-
-              const appliedValue = parameter ? Number(step[parameter]) : NaN;
-              const rawDraft = drafts[id];
-              const activeDraft =
-                parameter &&
-                rawDraft &&
-                Object.is(rawDraft.committedValue, appliedValue)
-                  ? rawDraft
-                  : null;
-              const inputText = activeDraft
-                ? activeDraft.text
-                : parameter
-                  ? String(appliedValue)
-                  : "";
-              const errorText = activeDraft?.error ?? "";
+              const inputText = pendingText?.id === id ? pendingText.text : draft?.text ?? String(value);
+              const errorText = draft?.error ?? "";
               const isInvalid = Boolean(errorText);
-              const bounds = parameter ? parameterBounds(parameter) : null;
-              const unitText =
-                parameter === "value"
-                  ? intensityUnitForStep(index)
-                  : parameter
-                    ? spatialUnit
-                    : "";
-              const hasClipOption = supportsClipNegative(op);
-              const collapsedSummary = isInvalid
-                ? "Invalid"
-                : formatCollapsedSummary(step, parameter, spatialUnit);
+              const hint = parameter ? parameterBoundsHint(parameter) : "";
+              const unitText = parameter === "value" ? intensityUnitForStep(index) : spatialUnit;
+              const collapsedSummary = isInvalid ? "Invalid" : formatCollapsedSummary(row, spatialUnit);
               const toggleAriaLabel =
                 !isSelected && collapsedSummary
                   ? `${formatStepIndex(index)} ${label}, ${collapsedSummary}`
@@ -746,11 +394,7 @@ export function PreprocessingPanel({
                       aria-label={toggleAriaLabel}
                       aria-expanded={isSelected}
                       aria-controls={detailsId}
-                      onClick={() =>
-                        setSelectedStepId((current) =>
-                          current === id ? null : id,
-                        )
-                      }
+                      onClick={() => onEdit({ kind: "select", id })}
                     >
                       <span className="preprocess-step-number" aria-hidden="true">
                         {formatStepIndex(index)}
@@ -784,12 +428,12 @@ export function PreprocessingPanel({
                         if (event.key === "Escape") {
                           event.preventDefault();
                           event.stopPropagation();
-                          setSelectedStepId(null);
-                          setPendingFocusTarget({ kind: "toggle", id });
+                          stepToggleRefs.current[id]?.focus();
+                          onEdit({ kind: "select", id });
                         }
                       }}
                     >
-                      {parameter && bounds ? (
+                      {parameter ? (
                         <div className="preprocess-param-field">
                           <label className="preprocess-param-row">
                             <span className="preprocess-param-name">
@@ -802,50 +446,21 @@ export function PreprocessingPanel({
                               className="preprocess-param-input"
                               aria-label={`Step ${index + 1} ${parameter}`}
                               aria-invalid={isInvalid}
-                              aria-description={errorText || bounds.hint}
+                              aria-description={errorText || hint}
                               aria-describedby={isInvalid ? errorId : undefined}
                               inputMode="decimal"
                               value={inputText}
-                              title={errorText || bounds.hint}
-                              onChange={(event) =>
-                                commitDraft(
-                                  id,
-                                  index,
-                                  parameter,
-                                  appliedValue,
-                                  event.target.value,
-                                )
-                              }
-                              onBlur={(event) =>
-                                commitDraft(
-                                  id,
-                                  index,
-                                  parameter,
-                                  appliedValue,
-                                  event.target.value,
-                                )
-                              }
+                              title={errorText || hint}
+                              maxLength={MAX_PREPROCESS_DRAFT_LENGTH}
+                              onChange={(event) => onEdit({ kind: "draft", id, text: event.target.value })}
                               onKeyDown={(event) => {
                                 if (event.key === "Enter") {
                                   event.preventDefault();
-                                  if (
-                                    document.activeElement ===
-                                    event.currentTarget
-                                  ) {
-                                    event.currentTarget.blur();
-                                  } else {
-                                    commitDraft(
-                                      id,
-                                      index,
-                                      parameter,
-                                      appliedValue,
-                                      event.currentTarget.value,
-                                    );
-                                  }
+                                  event.currentTarget.blur();
                                 } else if (event.key === "Escape") {
                                   event.preventDefault();
                                   event.stopPropagation();
-                                  revertDraft(id);
+                                  onEdit({ kind: "revert", id });
                                 }
                               }}
                             />
@@ -872,13 +487,13 @@ export function PreprocessingPanel({
                         </p>
                       )}
 
-                      {hasClipOption && (
+                      {clipNegative !== undefined && (
                         <label className="preprocess-clip-option">
                           <input
                             type="checkbox"
-                            checked={Boolean(step.clip_negative)}
+                            checked={clipNegative}
                             onChange={(event) =>
-                              setClipNegative(index, event.target.checked)
+                              onEdit({ kind: "clip", id, checked: event.target.checked })
                             }
                           />
                           <span>Clip negative values to zero</span>
@@ -893,7 +508,7 @@ export function PreprocessingPanel({
                             aria-label={`Move step ${index + 1} up`}
                             title={`Move step ${index + 1} up`}
                             disabled={index === 0}
-                            onClick={() => moveStep(index, -1)}
+                            onClick={() => onEdit({ kind: "move", id, delta: -1 })}
                           >
                             <ArrowUp size={13} aria-hidden="true" />
                             <span>Up</span>
@@ -903,8 +518,8 @@ export function PreprocessingPanel({
                             className="preprocess-step-action"
                             aria-label={`Move step ${index + 1} down`}
                             title={`Move step ${index + 1} down`}
-                            disabled={index === stepEntries.length - 1}
-                            onClick={() => moveStep(index, 1)}
+                            disabled={index === rows.length - 1}
+                            onClick={() => onEdit({ kind: "move", id, delta: 1 })}
                           >
                             <ArrowDown size={13} aria-hidden="true" />
                             <span>Down</span>
@@ -915,7 +530,7 @@ export function PreprocessingPanel({
                           className="preprocess-step-action preprocess-step-remove"
                           aria-label={`Remove ${op}`}
                           title={`Remove step ${index + 1}: ${label}`}
-                          onClick={() => removeStep(index)}
+                          onClick={() => onEdit({ kind: "remove", id })}
                         >
                           <X size={13} aria-hidden="true" />
                           <span>Remove</span>
@@ -987,7 +602,10 @@ export function PreprocessingPanel({
                           }}
                           type="button"
                           className="preprocess-chooser-option"
-                          onClick={() => addStep(op)}
+                          onClick={() => {
+                            onEdit({ kind: "add", op });
+                            setChooserOpen(false);
+                          }}
                         >
                           <span>{PREPROCESS_LABELS[op]}</span>
                           <Plus
@@ -1007,10 +625,15 @@ export function PreprocessingPanel({
       </section>
 
       <div className="preprocess-preview-section">
+        {restoreNumbers && <div className="preprocess-number-recovery">
+          <p role="status">Finish numeric fields before previewing or running a recipe.</p>
+          <button type="button" className="preprocess-preview-btn" disabled={restoreNumbers.disabled}
+            onClick={restoreNumbers.onRestore}>Restore applied numbers</button>
+        </div>}
         <button
           type="button"
           className="preprocess-preview-btn"
-          disabled={busy || !numbersValid || !configurationValid}
+          disabled={previewDisabled}
           onClick={onPreview}
         >
           <Scan size={14} aria-hidden="true" />

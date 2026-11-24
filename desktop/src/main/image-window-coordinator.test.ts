@@ -24,6 +24,8 @@ vi.mock("electron", () => ({
   },
   screen: {
     getAllDisplays: () => [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }],
+    getCursorScreenPoint: () => ({ x: -800, y: 150 }),
+    getDisplayNearestPoint: () => ({ workArea: { x: -1440, y: -90, width: 1440, height: 900 } }),
   },
 }));
 
@@ -229,6 +231,16 @@ function presentation(): ImageWindowPresentation {
 beforeEach(() => electronMocks.handlers.clear());
 
 describe("native image window coordinator authority", () => {
+  it("positions the requested display seed before showing the image", async () => {
+    const { control, imageWindows, loads } = harness();
+    const seed = { sourceSha256: HASH_A, presentation: presentation() };
+    await expect(invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true, y: 10 })).rejects.toThrow("placement");
+    expect(imageWindows).toHaveLength(0);
+    const opened = await invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true }) as ImageWindowState;
+    expect(opened.views[0].source.id).toBe(SOURCE_A);
+    expect(imageWindows[0].setBounds).toHaveBeenCalledExactlyOnceWith({ x: -900, y: 110, width: 900, height: 700 });
+    expect(imageWindows[0].setBounds.mock.invocationCallOrder[0]).toBeLessThan(loads[0].mock.invocationCallOrder[0]);
+  });
   it("validates and transfers current display settings before creating the native window", async () => {
     const { control, imageWindows } = harness();
     const seed = presentation();

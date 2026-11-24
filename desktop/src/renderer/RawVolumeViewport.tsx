@@ -708,6 +708,7 @@ export function RawVolumeViewport({
   const sceneLockedRef = useRef(false);
   const [sceneLocked, setSceneLocked] = useState(false);
   const [targetLongAxis, setTargetLongAxis] = useState(128);
+  const focusRequestGeneration = useRef(0);
   const snapshotRef = useRef<() => VolumeSceneSnapshot | null>(() => null);
   const snapshotKeyRef = useRef<string | null>(null);
   const pendingApply = useRef<{ state: VolumeViewState; resolve: () => void; reject: (e: Error) => void; timer: number } | null>(null);
@@ -853,7 +854,7 @@ export function RawVolumeViewport({
   }, [transfers, verifiedPlanes, volume, externalDisplayKey]);
 
   useEffect(() => {
-    if (onOpeningVolumeRender || !volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
+    if (loading || error || onOpeningVolumeRender || !volume?.context.refinement?.available || volume.focus || !onRequestRefinement) return;
     // Do not replace the coarse context until its verified bytes have been
     // bound to VTK. This preserves a genuinely visible progressive first pass
     // instead of starting refinement while the renderer is still decoding it.
@@ -861,13 +862,16 @@ export function RawVolumeViewport({
     const current = Math.max(...volume.context.dimensions_xyz);
     const maximum = volume.context.refinement.maximum_target_long_axis;
     if (current >= maximum) return;
+    const focusGenerationAtSchedule = focusRequestGeneration.current;
     const timer = window.setTimeout(() => {
-      if (sceneLockedRef.current) return;
+      // A detail click supersedes this scheduled overview, even before React
+      // commits the loading state and cleans up the timer.
+      if (sceneLockedRef.current || focusRequestGeneration.current !== focusGenerationAtSchedule) return;
       const target = Math.min(maximum, Math.max(128, current * 2)); setTargetLongAxis(target);
       onRequestRefinement({ target_long_axis: target });
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [onOpeningVolumeRender, onRequestRefinement, sceneRevision, volume]);
+  }, [error, loading, onOpeningVolumeRender, onRequestRefinement, sceneRevision, volume]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1442,6 +1446,7 @@ export function RawVolumeViewport({
     const extent: [number, number, number, number, number, number] = [
       bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1], bounds[2][0], bounds[2][1],
     ];
+    focusRequestGeneration.current++;
     setTargetLongAxis(256);
     onRequestRefinement({ target_long_axis: 256, focus_region_xyzxyz: extent });
   };

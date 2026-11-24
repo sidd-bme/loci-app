@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
@@ -41,6 +41,61 @@ const screenshots = [];
 async function capture(page, name) { const file = path.join(root, `${name}.png`); await page.screenshot({ path: file }); screenshots.push({ name, sha256: await hash(file) }); }
 async function until(check, label, timeout = 30000) { const end = Date.now() + timeout; while (Date.now() < end) { if (await check()) return; await main.waitForTimeout(80); } throw new Error(`Timed out: ${label}`); }
 async function state(page = main) { return page.evaluate(() => window.lociImageWindows.state()); }
+function describeRegistry(registry) {
+  return { role: registry.role, target: registry.target, pinned: registry.pinned,
+    views: registry.views.map(({ label, target, status }) => ({ label, target, status })) };
+}
+async function macOSFocus() {
+  // Inspect the exact launched PID and the OS frontmost app without changing either.
+  const script = `ObjC.import("AppKit");
+    function run([pid]) {
+      const target = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(pid));
+      const foreground = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+      const info = item => item.isNil() ? null : { pid: Number(item.processIdentifier),
+        bundleId: ObjC.unwrap(item.bundleIdentifier), active: Boolean(item.active),
+        hidden: Boolean(item.hidden), activationPolicy: Number(item.activationPolicy) };
+      return JSON.stringify({ target: info(target), foreground: info(foreground) });
+    }`;
+  const { stdout } = await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", script, String(app.process().pid)], { timeout: 3000 });
+  return JSON.parse(stdout);
+}
+async function windowFocusReceipt() {
+  const native = await app.evaluate(({ BrowserWindow }) => ({
+    applicationActive: globalThis.__detachedAppActive ?? null,
+    focusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null,
+    windows: BrowserWindow.getAllWindows().map(window => ({
+      id: window.id, focused: window.isFocused(), visible: window.isVisible(), minimized: window.isMinimized(),
+      loading: window.webContents.isLoadingMainFrame(), shown: globalThis.__detachedShownWindows?.has(window.id) ?? false,
+    })),
+    events: globalThis.__detachedFocusTrace ?? [],
+  }));
+  const os = await macOSFocus().catch(error => ({ error: String(error) }));
+  const renderers = await Promise.all(app.windows().filter(page => !page.isClosed()).map(async page => {
+    let windowId = null;
+    try {
+      const handle = await app.browserWindow(page);
+      windowId = await handle.evaluate(window => window.id);
+      await handle.dispose();
+      return { windowId, registry: describeRegistry(await state(page)) };
+    } catch (error) {
+      return { windowId, error: String(error) };
+    }
+  }));
+  return { ...native, os, renderers };
+}
+async function waitForWindow(check, label, expected, timeout) {
+  try { await until(check, label, timeout); }
+  catch (error) {
+    const observed = await windowFocusReceipt().catch(error => ({ receiptError: String(error) }));
+    throw new Error(`${error.message}\n${JSON.stringify({ expected, observed })}`, { cause: error });
+  }
+}
+async function expectControlTarget(target, pinned, label) {
+  await waitForWindow(async () => {
+    const registry = await state();
+    return registry.pinned === pinned && isDeepStrictEqual(registry.target, target);
+  }, label, { target, pinned });
+}
 async function imagePage(viewId) {
   let found;
   await until(async () => {
@@ -53,14 +108,63 @@ async function imagePage(viewId) {
   }, `image window ${viewId}`);
   return found;
 }
-async function focusNative(page) { const window = await app.browserWindow(page); await window.evaluate((window) => { window.show(); window.focus(); }); }
+async function waitForNativeFocus(handle, label) {
+  const windowId = await handle.evaluate(window => window.id);
+  await waitForWindow(() => handle.evaluate(window => window.isFocused()), label, { windowId });
+}
+async function focusNative(page, { confirm = true } = {}) {
+  const handle = await app.browserWindow(page);
+  try {
+    const windowId = await handle.evaluate(window => window.id);
+    await app.evaluate(({ app, BrowserWindow }, id) => {
+      const window = BrowserWindow.fromId(id);
+      if (!window) throw new Error(`Native window ${id} closed before focus`);
+      globalThis.__recordDetachedFocus("request window focus", window);
+      window.show();
+      window.focus();
+      window.moveTop();
+      if (!BrowserWindow.getFocusedWindow()) {
+        globalThis.__recordDetachedFocus("activate application after ordering window", window);
+        app.focus({ steal: true });
+      }
+    }, windowId);
+    if (confirm) await waitForNativeFocus(handle, "requested window owns native focus");
+  } finally { await handle.dispose().catch(() => {}); }
+}
 async function readyImage(page) {
   await page.locator('.image-viewport[data-prepared="true"]').waitFor({ timeout: 60000 });
+  const window = await app.browserWindow(page);
+  const windowId = await window.evaluate(window => {
+    globalThis.__recordDetachedFocus("renderer prepared", window);
+    return window.id;
+  });
+  await waitForWindow(() => window.evaluate(window => (globalThis.__detachedShownWindows.has(window.id) || window.isVisible()) &&
+    !window.webContents.isLoadingMainFrame()),
+    "image window is shown after loading", { windowId });
 }
 async function controller(label) { const node = main.getByRole("region", { name: `Controls for ${label}`, exact: true }); await node.waitFor({ state: "visible" }); return node; }
-let report;
+let report, focusJourney;
 try {
-  await app.evaluate(({ dialog, BrowserWindow }, { fixtures, study, figure }) => {
+  await app.evaluate(({ app, dialog, BrowserWindow }, { fixtures, study, figure }) => {
+    const trace = [];
+    globalThis.__detachedFocusTrace = trace;
+    const shown = new Set();
+    globalThis.__detachedShownWindows = shown;
+    globalThis.__detachedAppActive = Boolean(BrowserWindow.getFocusedWindow());
+    globalThis.__recordDetachedFocus = (event, window) => {
+      trace.push({ event, at: Date.now(), windowId: window?.id ?? null,
+        focusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null });
+      if (trace.length > 40) trace.shift();
+    };
+    for (const event of ["browser-window-focus", "browser-window-blur"])
+      app.on(event, (_event, window) => globalThis.__recordDetachedFocus(event, window));
+    for (const [event, active] of [["did-become-active", true], ["did-resign-active", false]])
+      app.on(event, () => { globalThis.__detachedAppActive = active; globalThis.__recordDetachedFocus(event); });
+    app.on("browser-window-created", (_event, window) => {
+      globalThis.__recordDetachedFocus("created", window);
+      window.once("ready-to-show", () => globalThis.__recordDetachedFocus("ready-to-show", window));
+      window.once("show", () => { shown.add(window.id); globalThis.__recordDetachedFocus("shown", window); });
+    });
     BrowserWindow.getAllWindows()[0].setBounds({ x: 10, y: 40, width: 1200, height: 800 });
     dialog.showOpenDialog = async (...args) => {
       const title = args.at(-1)?.title;
@@ -69,6 +173,16 @@ try {
     dialog.showSaveDialog = async (...args) => ({ canceled: false, filePath: args.at(-1)?.title === "Export volume figure" ? figure : study });
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
   }, { fixtures, study, figure });
+  // Playwright launches the executable directly. Ask Launch Services to foreground only
+  // that isolated application before testing real key-window changes.
+  await run("/usr/bin/osascript", ["-l", "JavaScript", "-e", `ObjC.import("AppKit");
+    function run([pid, executable]) {
+      const target = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(pid));
+      if (target.isNil() || ObjC.unwrap(target.executableURL.path) !== executable) throw Error("Unexpected QA application");
+      target.activateWithOptions(2);
+    }`, String(app.process().pid), await fs.realpath(executable)], { timeout: 3000 });
+  // Set the main window up before its renderer journey. Native focus is tested at the view switch.
+  await focusNative(main, { confirm: false });
   await main.getByRole("button", { name: "Open images", exact: true }).click();
   await main.getByRole("button", { name: "Detach image", exact: true }).waitFor({ timeout: 60000 });
   const snapshot = await main.evaluate(() => window.lociResearch.getSnapshot());
@@ -97,8 +211,14 @@ try {
   assert.ok(geometryBeforeDetach.toolsLeft >= geometryBeforeDetach.imageLeft && geometryBeforeDetach.toolsRight <= geometryBeforeDetach.right);
   await main.getByLabel("Channel 1 opacity", { exact: true }).scrollIntoViewIfNeeded();
   await capture(main, "00-configured-compact-workspace");
+  await selectWorkbenchTool(main, "Process");
+  await main.getByRole("button", { name: "Add processing step", exact: true }).click();
+  await main.getByRole("button", { name: "Gaussian blur", exact: true }).click();
+  await main.getByLabel("Step 1 sigma", { exact: true }).fill("");
+  assert.equal(await main.getByRole("button", { name: "Preview selected crop", exact: true }).isDisabled(), true);
   await main.getByRole("button", { name: "Detach image", exact: true }).click();
   await main.getByRole("heading", { name: "Image controls", exact: true }).waitFor();
+  assert.equal(await main.locator("#research-image-stage").count(), 0);
   let views = (await state()).views;
   const first = views[0];
   assert.equal(first.target.sourceId, a.id);
@@ -126,15 +246,20 @@ try {
   views = (await state()).views;
   const second = views.find((view) => view.target.viewId !== first.target.viewId);
   const pageB = await imagePage(second.target.viewId); await readyImage(pageB);
+  // Let the production open finish and confirm B's focus before requesting A.
+  await waitForNativeFocus(await app.browserWindow(pageB), "opening B gives it native focus");
+  await expectControlTarget(second.target, false, "follow B before switching to A");
   await focusNative(pageA);
-  await until(async () => (await state()).target?.viewId === first.target.viewId, "focus A");
+  await expectControlTarget(first.target, false, "follow native focus to A");
   await focusNative(main);
-  assert.equal((await state()).target.viewId, first.target.viewId);
+  await expectControlTarget(first.target, false, "control window retains A");
   await main.getByRole("button", { name: "Pin this target", exact: true }).click();
+  await expectControlTarget(first.target, true, "pin A");
   await focusNative(pageB);
-  assert.equal((await state()).target.viewId, first.target.viewId);
+  await expectControlTarget(first.target, true, "retain pinned A while B is focused");
   await main.getByRole("button", { name: "Follow focused view", exact: true }).click();
-  assert.equal((await state()).target.viewId, second.target.viewId);
+  await expectControlTarget(second.target, false, "follow B after unpinning A");
+  focusJourney = await windowFocusReceipt();
   passed.push("two-source focus follows image windows; control focus retains target; pin/unpin is explicit");
 
   await focusNative(pageA);
@@ -259,7 +384,15 @@ try {
   await main.getByRole("button", { name: "Return to workspace", exact: true }).click();
   await main.getByRole("button", { name: "Restore image windows", exact: true }).waitFor();
   assert.equal((await state()).views.length, 0);
-  await main.evaluate(() => window.lociResearch.openStudy());
+  const returnedViewer = main.getByLabel(`Image viewer: ${a.name}`, { exact: true });
+  await returnedViewer.waitFor();
+  assert.equal(await returnedViewer.getAttribute("data-viewer-source"), a.id);
+  const restoredSigma = main.getByLabel("Step 1 sigma", { exact: true });
+  assert.equal(await restoredSigma.inputValue(), "");
+  assert.equal(await restoredSigma.getAttribute("aria-invalid"), "true");
+  assert.equal(await main.getByRole("button", { name: "Preview selected crop", exact: true }).isDisabled(), true);
+  passed.push("unfinished preprocessing draft and input validation survive detach and return");
+  await fileMenuAction(main, "Open study");
   await main.getByRole("button", { name: "Restore image windows", exact: true }).click();
   await until(async () => (await state()).views.length === 2, "restored study layout");
   const restored = await state();
@@ -370,6 +503,7 @@ try {
   report = { status: "failed", source, identity, fixtures: fixtureHashes, passed, screenshots, error: String(error.stack ?? error), errors };
   process.exitCode = 1;
 } finally {
+  report.nativeFocus = focusJourney ?? await windowFocusReceipt().catch(() => null);
   report.nativeFullscreen = await app.evaluate(({ BrowserWindow }) => ({
     events: globalThis.__fullscreenTrace ?? [],
     final: BrowserWindow.getAllWindows().map(w => ({ id: w.id, title: w.getTitle(), fullscreen: w.isFullScreen(), fullscreenable: w.isFullScreenable() })),

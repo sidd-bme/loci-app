@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type RefObject } from "react";
-import { ArrowRight, CircleAlert, ExternalLink, PanelsTopLeft, Pause, Play, Shield, X } from "lucide-react";
+import { ArrowRight, CircleAlert, PanelsTopLeft, Pause, Play, Shield, X } from "lucide-react";
+import { DetachablePanelHandle } from "./DetachablePanelHandle";
 import type {
   ResearchAgentApprovalRecord, ResearchAgentControlRequest, ResearchAgentPermissionMode,
   ResearchAgentPolicyRecord, ResearchAgentSessionRecord, ResearchAgentSessionState,
@@ -32,7 +33,7 @@ export type AgentWorkspaceSurfaceProps = AgentActivityNavigation & {
   presentation?: AgentWorkspacePresentation;
   onPresentationChange?: (next: AgentWorkspacePresentation) => void;
   feedback?: { kind: "status" | "error"; message: string } | null;
-  onDetach?: () => void;
+  onDetach?: (atPointer?: true) => void;
   onDock?: () => void;
   onClose?: () => void;
   onConfigureAccess?: () => void;
@@ -143,6 +144,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   const permissionsId = useId();
   const followDescriptionId = useId();
   const activeSection = useRef<HTMLButtonElement>(null);
+  const workspaceTitle = useRef<HTMLHeadingElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const pendingHeading = useRef<HTMLHeadingElement>(null);
   const permissions = useRef<HTMLDetailsElement>(null);
@@ -292,7 +294,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   return <section className={`agent-workspace-surface agent-workspace-surface--${host}`} aria-label="Agent workspace">
           <header className="agent-session-drawer__header">
             <div className="agent-workspace-identity">
-              <div className="agent-workspace-title"><h2>Agent workspace</h2><p className="agent-workspace-study" title={snapshot.project.title}>{snapshot.project.title}</p></div>
+              <div className="agent-workspace-title"><h2 ref={workspaceTitle}>Agent workspace</h2><p className="agent-workspace-study" title={snapshot.project.title}>{snapshot.project.title}</p></div>
               <div className="agent-workspace-session">
                 <p className={`agent-session-drawer__status tone-${tone}`}><span className="agent-session-pill__dot" aria-hidden="true" />{label}</p>
                 {!refreshError && primarySession && <span className="agent-workspace-client" title={`${primarySession.client_id} (declared client)`}>{primarySession.client_id}</span>}
@@ -318,7 +320,9 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
                 {primaryPolicy.paused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}
                 {primaryPolicy.paused ? "Resume access" : "Pause access"}
               </button>}
-              {onDetach && <button type="button" disabled={controlBusy || commandBusy} onClick={onDetach} title="Open agent workspace in a separate window"><ExternalLink size={16} aria-hidden="true" />Pop out</button>}
+              {onDetach && <DetachablePanelHandle label="Pop out" disabled={controlBusy || commandBusy}
+                title="Drag outside the window or click to open the agent workspace separately" grabArea={workspaceTitle}
+                onDetach={() => onDetach()} onDropOutside={() => onDetach(true)} />}
               {onDock && <button type="button" disabled={controlBusy || commandBusy} onClick={onDock}><PanelsTopLeft size={16} aria-hidden="true" />Return to workspace</button>}
               {onClose && <button type="button" ref={closeButtonRef} className="agent-workspace-close"
                 aria-label="Close agent session drawer" title="Close agent workspace" onClick={onClose}><X size={16} aria-hidden="true" /></button>}

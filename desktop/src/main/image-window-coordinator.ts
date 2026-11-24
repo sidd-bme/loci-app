@@ -7,6 +7,8 @@ import { HEX_32_PATTERN, type ImageViewTargetSnapshot } from "../shared/image-vi
 import type { ImageWindowEntry, ImageWindowPresentation, ImageWindowState } from "../shared/image-window-api";
 import { imageViewDimensions, validateImagePresentation, validateImageInteraction } from "./image-window-validation";
 
+import { capturePanelDropPosition, wantsPanelAtPointer } from "./panel-drop-position";
+
 interface Entry extends ImageWindowEntry {
   window: BrowserWindow;
   sender: WebContents;
@@ -128,7 +130,7 @@ export class ImageWindowCoordinator {
     this.notify();
   }
 
-  private async open(sourceId: unknown, restored?: ImageLayoutView, seed?: unknown): Promise<void> {
+  private async open(sourceId: unknown, restored?: ImageLayoutView, seed?: unknown, place?: (child: BrowserWindow) => void): Promise<void> {
     if (this.opening) throw new Error("An image window is already opening.");
     if (typeof sourceId !== "string" || !HEX_32_PATTERN.test(sourceId)) throw new Error("Choose a valid source image.");
     if (this.entries.size >= 2) throw new Error("Two image windows are already open. Return one to the workspace first.");
@@ -152,7 +154,10 @@ export class ImageWindowCoordinator {
           throw new Error("Finish the active drawing before detaching this image.");
       }
       const { window, load } = this.factory();
-      if (restored) window.setBounds(visibleImageBounds(restored.bounds, screen.getAllDisplays().map((display) => display.workArea)));
+      try {
+        if (restored) window.setBounds(visibleImageBounds(restored.bounds, screen.getAllDisplays().map((display) => display.workArea)));
+        else place?.(window);
+      } catch (error) { window.destroy(); throw error; }
       let target: ImageViewTargetSnapshot;
       try {
         target = this.registry.registerImageView(window.webContents, { sourceId: source.id, sourceSha256: source.sha256 });
@@ -202,9 +207,10 @@ export class ImageWindowCoordinator {
       });
     };
     handle("state", false, (event) => this.state(event.sender));
-    handle("open", true, async (event, sourceId, seed) => {
+    handle("open", true, async (event, sourceId, seed, options) => {
       if (this.restoring) throw new Error("Wait for the saved layout to finish opening.");
-      await this.open(sourceId, undefined, seed); return this.state(event.sender);
+      const place = wantsPanelAtPointer(options) ? capturePanelDropPosition() : undefined;
+      await this.open(sourceId, undefined, seed, place); return this.state(event.sender);
     });
     handle("restore", true, async (event) => {
       if (this.entries.size || this.opening || this.restoring) throw new Error("Return the current image windows before restoring a layout.");

@@ -1,5 +1,6 @@
 import { GripVertical, Maximize, Minus, PanelBottom, PanelTop, Plus, RotateCcw, Scan } from "lucide-react";
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { DisplayChannel } from "../shared/display-inspector-api";
 import type { ResearchDesktopApi, ResearchSelection, ResearchSource } from "../shared/research-contracts";
 import { boundedCamera, fitCamera, imageExtent, screenToSource, sourceLevels,
   sourceToScreen, visibleTiles, zoomCamera, type Camera, type Tile } from "./viewer-camera";
@@ -17,10 +18,7 @@ import "./ImageViewport.css";
 
 const DEFAULT_STAGE_BACKGROUND = "#151515";
 
-export type ViewerChannel = {
-  channel: number; low?: number; high?: number; gamma: number;
-  visible: boolean; color: string; opacity?: number;
-};
+export type ViewerChannel = DisplayChannel;
 export type DisplaySamplingMode = "auto" | "nearest" | "smooth";
 export type ImagePoint = { x: number; y: number };
 export type AnnotationTool = "navigate" | "point" | "line" | "polygon" | "freehand" | "rectangle" | "transect";
@@ -243,7 +241,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
   const resultOverlayImage = useRef<{ key: string; image: HTMLImageElement } | null>(null);
   const request = useRef<{ scope: string; queue: Tile[]; overview: boolean; running: boolean; generation: number }>({ scope: "", queue: [], overview: true, running: false, generation: 0 });
   const drag = useRef<{ pointerId: number; x: number; y: number; camera: Camera; moved: boolean;
-    button: number; scientificScope?: string; vertex?: number; annotation?: { mode: "rectangle" | "freehand";
+    button: number; region?: typeof onRegion; scientificScope?: string; vertex?: number; annotation?: { mode: "rectangle" | "freehand";
       start: ImagePoint; points: ImagePoint[]; previous: ImagePoint[]; lastClientX: number; lastClientY: number } } | null>(null);
   const drawFrame = useRef(0);
   const alive = useRef(true);
@@ -911,6 +909,14 @@ export function ImageViewport({ api, source, selection, channels, projection = "
     setRegionDraft([]);
     if (state.annotation) onDraftChange?.(state.annotation.previous);
   };
+  useLayoutEffect(() => {
+    const state = drag.current;
+    if (!state?.region || state.region === onRegion) return;
+    drag.current = null;
+    setRegionDraft([]);
+    const element = frame.current;
+    if (element?.hasPointerCapture?.(state.pointerId)) element.releasePointerCapture?.(state.pointerId);
+  }, [onRegion]);
 
   const hasNavigator = showNavigator && extent.width * extent.height > 4_000_000;
   const isCurrentPlaneReady = prepared && paintedScope.current === scope;
@@ -963,7 +969,8 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (event.button === 0 && draftClosed && (drawingMode === "polygon" || drawingMode === "freehand")) return;
       event.currentTarget.setPointerCapture?.(event.pointerId);
       drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-        camera, moved: false, button: event.button, scientificScope: isCurrentPlaneReady ? scope : undefined };
+        camera, moved: false, button: event.button, region: isCurrentPlaneReady && event.button === 0 ? onRegion : undefined,
+        scientificScope: isCurrentPlaneReady ? scope : undefined };
       if (isCurrentPlaneReady && event.button === 0 && resultDrawing?.kind === "vertices" && resultOverlay) {
         const bounds = fieldBounds(event.currentTarget);
         const distances = resultDrawing.points.map((p) => {
@@ -1026,7 +1033,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
         onDraftChange?.(state.annotation.points);
         return;
       }
-      if (isCurrentPlaneReady && state.scientificScope === scope && onRegion && state.button === 0) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && onRegion && state.region === onRegion) {
         const bounds = fieldBounds(event.currentTarget);
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);
@@ -1043,7 +1050,7 @@ export function ImageViewport({ api, source, selection, channels, projection = "
       if (event.currentTarget.hasPointerCapture?.(event.pointerId))
         event.currentTarget.releasePointerCapture?.(event.pointerId);
       if (isCurrentPlaneReady && state.scientificScope === scope && resultDrawing?.kind === "vertices" && state?.button === 0) return;
-      if (isCurrentPlaneReady && state.scientificScope === scope && state && state.moved && state.button === 0 && onRegion) {
+      if (isCurrentPlaneReady && state.scientificScope === scope && state.moved && onRegion && state.region === onRegion) {
         const bounds = fieldBounds(event.currentTarget);
         const a = screenToSource(state.camera, size, extent, state.x - bounds.left, state.y - bounds.top);
         const b = screenToSource(state.camera, size, extent, event.clientX - bounds.left, event.clientY - bounds.top);

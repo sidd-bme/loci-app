@@ -11,7 +11,9 @@ export function createAgentWorkspaceApi(ipc: Pick<IpcRenderer, "invoke" | "on" |
   const prefix = "loci-agent-workspace:";
   return {
     state: () => ipc.invoke(prefix + "state"),
-    open: (presentation) => ipc.invoke(prefix + "open", presentation),
+    open: (presentation, options) => options === undefined
+      ? ipc.invoke(prefix + "open", presentation)
+      : ipc.invoke(prefix + "open", presentation, options),
     focus: () => ipc.invoke(prefix + "focus"),
     restore: () => ipc.invoke(prefix + "restore"),
     dock: (binding) => ipc.invoke(prefix + "dock", binding),

@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ChevronRight, FileImage, Folder, FolderOpen, GripVertical, List, ListTree, LocateFixed, Search, X } from "lucide-react";
 import type { ResearchSource } from "../shared/research-contracts";
+import { sourceMetadataDimensions, sourceSampleLayout } from "../shared/study-navigator-api";
 import { buildSourceBrowser, filterSourceBrowser, sourceAncestors, sourceDisplayPath, visibleSourceRows, type SourceBrowserNode } from "./source-browser";
 import { WorkbenchFilename } from "./WorkbenchFilename";
 import "./SourceTree.css";
@@ -10,11 +11,10 @@ type Props = {
   sources: ResearchSource[]; activeSourceId: string | null; selectedSourceIds: string[];
   onActivate: Activate; onReorder: (sources: ResearchSource[]) => void; reorderDisabled: boolean;
   onToggleSelection: (source: ResearchSource) => void;
-  dimensions: (source: ResearchSource) => { c: number; z: number };
 };
 
 function FlatSources({ sources, allSources, activeSourceId, selectedSourceIds, onActivate, onReorder,
-  reorderEnabled, dimensions }: Omit<Props, "reorderDisabled"> & { allSources: ResearchSource[]; reorderEnabled: boolean }) {
+  reorderEnabled }: Omit<Props, "reorderDisabled"> & { allSources: ResearchSource[]; reorderEnabled: boolean }) {
   const list = useRef<HTMLDivElement>(null);
   type Drag = { item: ResearchSource; start: number; current: number; rect: DOMRect; rows: DOMRect[]; offset: number; y: number };
   const [drag, setDrag] = useState<Drag | null>(null);
@@ -77,12 +77,26 @@ function FlatSources({ sources, allSources, activeSourceId, selectedSourceIds, o
         else if (index > drag.start && index <= drag.current) shift = -step;
         else if (index < drag.start && index >= drag.current) shift = step;
       }
-      const size = dimensions(item);
+      const { c, z, s } = sourceMetadataDimensions(item.metadata);
+      const samples = sourceSampleLayout(item.metadata, s);
+      const showChannels = c !== undefined && (!samples || (s !== undefined && s > 1 && c > 1));
+      const channelLabel = samples ? "C groups" : "Channels";
+      const channelCount = showChannels ? (samples ? `${c} C groups` : `${c}C`) : null;
+      const depth = z === undefined ? null : `${z}Z`;
+      const compactSummary = [samples?.compact, channelCount, depth].filter(Boolean).join(" · ");
+      const description = [
+        samples?.description,
+        showChannels ? `${channelLabel} ${c}` : null,
+        z === undefined ? null : `Z planes ${z}`,
+      ].filter(Boolean).join(", ");
+      const path = sourceDisplayPath(item, allSources);
+      const title = [samples?.description, showChannels ? `${c} ${samples ? "C groups" : "C"}` : null,
+        z === undefined ? null : `${z} Z`].filter(Boolean).join(" / ");
       return <button key={item.id} type="button" data-source-id={item.id}
         className={`research-source-item source-browser__leaf ${selectedSourceIds.includes(item.id) ? "selected" : ""} ${activeSourceId === item.id ? "active" : ""} ${drag?.item.id === item.id ? "is-ghost" : ""} ${dropped === item.id ? "is-dropped" : ""}`}
         aria-selected={selectedSourceIds.includes(item.id)} aria-current={activeSourceId === item.id ? "true" : undefined}
-        aria-label={item.name} aria-description={`Channels ${size.c}, Z planes ${size.z}`}
-        title={`${sourceDisplayPath(item, allSources)} · ${size.c} C / ${size.z} Z`}
+        aria-label={item.name} aria-description={description || undefined}
+        title={title ? `${path} · ${title}` : path}
         style={{ transform: shift ? `translateY(${shift}px)` : undefined }}
         onPointerDown={event => pointerDown(item, index, event)}
         onClick={event => { if (dragged.current) { dragged.current = false; return; } onActivate(item, event, sources.map(source => source.id)); }}
@@ -96,7 +110,7 @@ function FlatSources({ sources, allSources, activeSourceId, selectedSourceIds, o
         }}>
         {reorderEnabled && sources.length > 1 ? <span className="research-source-drag-handle" title="Drag to reorder the working list" aria-hidden="true"><GripVertical size={13} /></span> : <FileImage size={14} aria-hidden="true" />}
         <span className="research-source-name"><WorkbenchFilename name={item.name} /></span>
-        <span className="source-browser__dimensions" aria-hidden="true">{size.c}C · {size.z}Z</span>
+        {compactSummary && <span className="source-browser__dimensions" aria-hidden="true">{compactSummary}</span>}
       </button>;
     })}
     {drag && <div className="research-source-floating-card" style={{ left: drag.rect.left,

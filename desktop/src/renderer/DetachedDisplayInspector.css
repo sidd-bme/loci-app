@@ -1,0 +1,104 @@
+.display-inspector-window {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+  min-width: 0;
+  background: var(--surface-1);
+  color: var(--ink);
+}
+
+.display-inspector-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.display-inspector-heading > div { flex: 1 1 8rem; min-width: 0; }
+.display-inspector-heading h1 { margin: 0; font-size: var(--type-lg); font-weight: 600; }
+.display-inspector-heading p {
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+}
+
+.display-inspector-window :where(.display-inspector-heading, .source-display) button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-control);
+  background: var(--surface-3);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--type-sm);
+  cursor: pointer;
+}
+
+.display-inspector-window :where(.display-inspector-heading, .source-display) button svg { flex: none; width: 14px; height: 14px; }
+.display-inspector-window :where(.display-inspector-heading, .source-display) button:hover:not(:disabled) { background: var(--surface-4); }
+.display-inspector-window :where(.display-inspector-heading, .source-display) button:disabled { opacity: .55; cursor: default; }
+.display-inspector-window :is(button, input, select, summary):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.display-inspector-body {
+  container: detached-display / inline-size;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: var(--line-strong) transparent;
+  padding: var(--space-1) var(--space-2) var(--space-3);
+}
+
+.display-inspector-body .source-display { padding-inline: var(--space-2); }
+.display-inspector-body .source-channel-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.display-inspector-body .source-information-content { max-height: none; overflow: visible; }
+.display-inspector-body .source-information-heading { position: static; }
+.display-inspector-body .research-property-grid input[aria-invalid="true"] { border-color: var(--state-error); }
+.display-inspector-message { margin: var(--space-3) var(--space-2); font-size: var(--type-sm); }
+.display-inspector-message[role="alert"] { color: var(--warning); }
+
+
+/* Keep the transfer controls beside their numeric range when a larger window has room. */
+@container detached-display (min-width: 34rem) {
+  .display-inspector-body .source-channel-settings {
+    grid-template-columns: minmax(0, 1fr) minmax(0, .8fr);
+    column-gap: var(--space-4);
+    align-items: center;
+  }
+  .display-inspector-body .source-channel-settings > .research-property-grid {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    align-self: start;
+  }
+  .display-inspector-body .source-channel-settings > :is(label, button) { grid-column: 2; }
+  .display-inspector-body .source-channel-settings > label:has(input[type="color"]) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .display-inspector-body .source-channel-settings input[type="color"] { width: 3rem; }
+}
+
+.detached-preprocess-controls {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.detached-preprocess-controls .preprocess-param-input {
+  font-variant-numeric: tabular-nums;
+}

@@ -6,6 +6,8 @@ import { assertNavigationCurrent, emptyPresentation, object, exact, validateBind
 import { visibleAgentWorkspaceBounds, type AgentWorkspaceLayout, type AgentWorkspaceLayouts } from "./agent-workspace-layout";
 import { sanitizedWorkerErrorMessage } from "./worker-client";
 
+import { capturePanelDropPosition, wantsPanelAtPointer } from "./panel-drop-position";
+
 export interface AgentWorkspaceBridge {
   getViewDocumentIdentity(): string | null;
   getViewSnapshot(): Promise<ResearchSnapshot>;
@@ -139,7 +141,7 @@ export class AgentWorkspaceCoordinator {
     if (this.layoutTimer) clearTimeout(this.layoutTimer);
     this.layoutTimer = setTimeout(() => { this.layoutTimer = null; void this.persistLayout(entry); }, 250);
   }
-  private async open(event: IpcMainInvokeEvent, presentation?: unknown, restore = false): Promise<AgentWorkspaceState> {
+  private async open(event: IpcMainInvokeEvent, presentation?: unknown, restore = false, place?: (child: BrowserWindow) => void): Promise<AgentWorkspaceState> {
     this.sender(event, true); this.currentIdentity(); this.sender(event, true);
     if (this.shuttingDown) throw new Error('Loci is preparing to quit. Keep working before opening the agent workspace.');
     if (this.opening) { const identity = this.identity, epoch = this.studyEpoch; await this.opening; this.sender(event, true); this.currentIdentity(); if (!this.popup || this.identity !== identity || this.studyEpoch !== epoch) throw new Error('The agent workspace changed while opening.'); this.popup.window.show(); this.popup.window.focus(); return this.state(event.sender); }
@@ -154,8 +156,12 @@ export class AgentWorkspaceCoordinator {
       if (restore && !saved) throw new Error('There is no saved agent workspace arrangement for this study.');
       let entry = this.popup;
       if (!entry) {
-        const shell = this.factory(); entry = { ...shell, sender: shell.window.webContents, identity }; this.popup = entry; this.generation++;
-        if (saved) entry.window.setBounds(visibleAgentWorkspaceBounds(saved.bounds, screen.getAllDisplays().map(d => d.workArea)));
+        const shell = this.factory();
+        try {
+          if (saved) shell.window.setBounds(visibleAgentWorkspaceBounds(saved.bounds, screen.getAllDisplays().map(d => d.workArea)));
+          place?.(shell.window);
+        } catch (error) { shell.window.destroy(); throw error; }
+        entry = { ...shell, sender: shell.window.webContents, identity }; this.popup = entry; this.generation++;
         const owned = entry;
         owned.window.setTitle('Loci · Agent workspace');
         owned.window.on('move', () => this.queueLayout(owned));
@@ -220,7 +226,10 @@ export class AgentWorkspaceCoordinator {
   registerIpc(): void {
     const handle = (name: string, mainOnly: boolean, operation: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) => ipcMain.handle('loci-agent-workspace:' + name, async (event, ...args) => { this.sender(event, mainOnly); try { return await operation(event, ...args); } catch (error) { throw new Error(this.safe(error)); } });
     handle('state', false, event => { this.currentIdentity(); this.sender(event); return this.state(event.sender); });
-    handle('open', true, (event, presentation) => this.open(event, presentation));
+    handle('open', true, (event, presentation, options) => {
+      const place = wantsPanelAtPointer(options) ? capturePanelDropPosition() : undefined;
+      return this.open(event, presentation, false, place);
+    });
     handle('restore', true, event => this.open(event, undefined, true));
     handle('focus', false, event => { this.currentIdentity(); this.sender(event); if (!this.popup || this.status === 'crashed') throw new Error('Open the agent workspace first.'); this.popup.window.show(); this.popup.window.focus(); });
     handle('dock', false, async (event, binding) => { const captured = this.assertBinding(event, binding); await this.dockInternal(); this.currentIdentity(); if (captured.studyEpoch !== this.studyEpoch || captured.projectId !== this.projectId) throw new Error('The study changed while returning the workspace.'); return this.state(event.sender); });

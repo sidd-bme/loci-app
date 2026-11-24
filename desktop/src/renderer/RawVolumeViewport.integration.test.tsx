@@ -682,6 +682,40 @@ describe("RawVolumeViewport lifecycle", () => {
     await waitFor(() => expect(request).toHaveBeenCalledWith({ target_long_axis: 128 }), { timeout: 1_500 });
   });
 
+  it.each([
+    { timing: "scheduled", overviewStarted: false },
+    { timing: "in-flight", overviewStarted: true },
+  ])("lets a detail click take priority over a $timing automatic overview", async ({ overviewStarted }) => {
+    const coarse = sparseContext();
+    coarse.refinement = { available: true, maximum_target_long_axis: 256, focus_supported: true };
+    const volume: RawVolumeResponse = { schema_version: 1, context: coarse, focus: null };
+    const request = vi.fn();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const schedule = vi.spyOn(window, "setTimeout");
+    const mounted = render(<RawVolumeViewport volume={volume} onRequestRefinement={request} />);
+    try {
+      await vi.waitFor(() => expect(schedule.mock.calls.some(([, delay]) => delay === 450)).toBe(true));
+      expect(request).not.toHaveBeenCalled();
+      const automaticOverview = { target_long_axis: 128 };
+      if (overviewStarted) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(450); });
+        expect(request).toHaveBeenCalledExactlyOnceWith(automaticOverview);
+        mounted.rerender(<RawVolumeViewport volume={volume} loading onRequestRefinement={request} />);
+      }
+
+      fireEvent.click(screen.getByText("Rendering & detail", { exact: true }));
+      fireEvent.click(screen.getByRole("button", { name: "Detail at crosshair" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(450); });
+
+      const focus = { target_long_axis: 256, focus_region_xyzxyz: [0, 3, 0, 0, 0, 3] };
+      expect(request.mock.calls).toEqual(overviewStarted ? [[automaticOverview], [focus]] : [[focus]]);
+    } finally {
+      mounted.unmount();
+      schedule.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("anchors the linked crosshair to level zero across noncoincident overview grids", async () => {
     Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
     const overview = (indices: number[]): RawVolumePayload => {

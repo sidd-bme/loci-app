@@ -12,7 +12,7 @@ const sources = [image("first", "FBS/first.tif"), image("second", "FBS/second.ti
 function setup(items = sources, active = items[0].id) {
   const onActivate = vi.fn(), onReorder = vi.fn(), onToggleSelection = vi.fn();
   const props = { sources: items, activeSourceId: active, selectedSourceIds: [active], onActivate, onReorder,
-    onToggleSelection, reorderDisabled: false, dimensions: () => ({ c: 1, z: 1 }) };
+    onToggleSelection, reorderDisabled: false };
   return { ...render(<SourceTree {...props} />), props, onActivate, onReorder };
 }
 
@@ -39,10 +39,29 @@ function onTreeImageCount(element: HTMLElement) { return element.querySelector("
 
 it("retains the full accessible filename when the flat list abbreviates it visually", () => {
   const name = "Long kidney acquisition.ome.tiff";
-  setup([{ ...image("first"), name }]);
+  setup([{ ...image("first"), name, metadata: { dimensions: { t: 1, c: 1, z: 1, y: 32, x: 32 } } }]);
   const row = screen.getByRole("button", { name });
   expect(row).toHaveAccessibleDescription("Channels 1, Z planes 1");
+  expect(row).toHaveTextContent("1C · 1Z");
+  expect(row).toHaveAttribute("title", `${name} · 1 C / 1 Z`);
   expect(row).toHaveAttribute("data-source-id", "first");
+});
+
+it("shows verified scalar channels and interleaved components without guessing missing Z planes", () => {
+  setup([
+    { ...image("scalar"), metadata: { axes: "CYX", shape: [3, 20, 35] } },
+    { ...image("rgba"), metadata: { axes: "YXS", shape: [20, 35, 4], sample_semantics: "RGBA" } },
+    { ...image("unknown"), metadata: { shape: [3, 20, 35] } },
+  ]);
+  const scalar = screen.getByRole("button", { name: "scalar.tif" });
+  expect(scalar).toHaveTextContent("3C");
+  expect(scalar).toHaveAccessibleDescription("Channels 3");
+  const rgba = screen.getByRole("button", { name: "rgba.tif" });
+  expect(rgba).toHaveTextContent("RGBA");
+  expect(rgba).toHaveAccessibleDescription("4 RGBA components");
+  const unknown = screen.getByRole("button", { name: "unknown.tif" });
+  expect(unknown).not.toHaveAttribute("aria-description");
+  expect(unknown).toHaveAttribute("title", "unknown.tif");
 });
 
 it("filters by folder and filename, retains ancestors and reveals the active source without activating another image", () => {

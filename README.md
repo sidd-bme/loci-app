@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3
 
 Open images, folders, OME-Zarr stores or a selected CT/MR DICOM series. Explore whole-slide scans (SVS and NDPI) from a tissue overview down to native detail, or move through a stack by channel, depth and time. Loci autosaves your session. Save a named `.loci-study` to return to the work without copying the original images.
 
-Adjust channel ranges, colour maps, RGB tone curves, Z projections and pixel sampling while preserving raw measurements. Put two images side by side in **Compare A/B**, or move a view to a second display. Pan and zoom can be linked when both views share a source and grid. For volumes, follow the same point through axial, coronal and sagittal slices alongside the 3D rendering. [Viewing guide](docs/USING_LOCI.md#view-images-and-set-display) · [Supported formats and capabilities](docs/CAPABILITY_MATRIX.md)
+Adjust channel ranges, colour maps, RGB tone curves, Z projections and pixel sampling while preserving raw measurements. Put two images side by side in **Compare A/B**, or move a view to a second display. Pan and zoom can be linked when both views share a source and grid. Drag the Images navigator into its own window, then place Display or Preprocess beside a 2D image to adjust channels or preview a processing step while you watch the specimen. For volumes, follow the same point through axial, coronal and sagittal slices alongside the 3D rendering. [Viewing guide](docs/USING_LOCI.md#view-images-and-set-display) · [Supported formats and capabilities](docs/CAPABILITY_MATRIX.md)
 
 | Three-channel kidney fluorescence | Linked slices through the MNI ICBM152 MRI template |
 | :--- | :--- |

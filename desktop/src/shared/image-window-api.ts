@@ -1,3 +1,4 @@
+import type { PanelOpenOptions } from "./panel-open-options";
 import type { ImageViewTargetSnapshot } from "./image-view-contracts";
 import type { ResearchExecuteOptions, ResearchSelection, ResearchSource, VolumeFigureExportRequest, VolumeFigureExportReceipt } from "./research-contracts";
 
@@ -49,7 +50,7 @@ export type ImageWindowInteraction =
 
 export interface ImageWindowApi {
   state(): Promise<ImageWindowState>;
-  open(sourceId: string, seed?: { sourceSha256: string; presentation: ImageWindowPresentation }): Promise<ImageWindowState>;
+  open(sourceId: string, seed?: { sourceSha256: string; presentation: ImageWindowPresentation }, options?: PanelOpenOptions): Promise<ImageWindowState>;
   restore(): Promise<ImageWindowState>;
   close(target: ImageViewTargetSnapshot): Promise<void>;
   closeAll(): Promise<void>;

@@ -8,6 +8,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import { AgentSessionIndicator } from "./AgentSessionIndicator";
+import { dropPanelOutside } from "./panel-pointer.test-utils";
 import engineFixture from "./__fixtures__/agent-sessions-snapshot.json";
 
 // Captured from test_agent_sessions.session_fixture and the real snapshot boundary.
@@ -15,6 +16,18 @@ import engineFixture from "./__fixtures__/agent-sessions-snapshot.json";
 const wire = engineFixture as ResearchAgentSessionsSnapshot;
 
 afterEach(cleanup);
+
+it("keeps the Agent workspace pop-out action and supports dragging its title", () => {
+  const onDetach = vi.fn();
+  render(<AgentSessionIndicator api={makeApi()} snapshot={makeSnapshot({})}
+    onDetach={onDetach} onSnapshot={vi.fn()} onError={vi.fn()} followAgent={false} onFollowAgentChange={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Agent session status" }));
+  fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
+  expect(onDetach).toHaveBeenCalledExactlyOnceWith();
+  dropPanelOutside(screen.getByRole("heading", { name: "Agent workspace" }));
+  expect(onDetach).toHaveBeenLastCalledWith(true);
+  expect(onDetach).toHaveBeenCalledTimes(2);
+});
 
 function makeSnapshot(
   agentSessions: Partial<ResearchAgentSessionsSnapshot>,

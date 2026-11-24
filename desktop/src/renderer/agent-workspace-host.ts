@@ -159,12 +159,14 @@ export class AgentWorkspaceHost {
     }).catch(error => { if (this.live(lifecycle) && this.options.context().scope === context.scope) this.report(error); })
       .finally(() => { if (this.live(lifecycle)) this.presentationWrites--; });
   }
-  async open(restore = false): Promise<void> {
+  async open(restore = false, atPointer?: true): Promise<void> {
     const context = this.context(), lifecycle = this.lifecycle;
     await this.publish();
     await this.enqueue(async () => {
       if (this.context().scope !== context.scope) throw new Error("The study changed before opening its agent workspace.");
-      const next = restore ? await this.options.api.restore() : await this.options.api.open(clone(this.presentation));
+      const api = this.options.api;
+      const next = await (restore ? api.restore() : atPointer
+        ? api.open(clone(this.presentation), { atPointer }) : api.open(clone(this.presentation)));
       if (this.live(lifecycle) && this.options.context().scope === context.scope) this.accept(next);
     });
   }

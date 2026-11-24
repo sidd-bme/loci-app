@@ -14,9 +14,13 @@ import { GroupCentroidOverlay } from "./GroupCentroidOverlay";
 import type { PopulationHighlight } from "./PopulationGroups";
 import { CompactChannelControls } from "./CompactChannelControls";
 import { GuidedExplorationPanel } from "./GuidedExplorationPanel";
+import { DetachablePanelHandle } from "./DetachablePanelHandle";
 import type { ImageWindowPresentation } from "../shared/image-window-api";
 import { RecipeResourcePanel } from "./RecipeResourcePanel";
 import { PreprocessingPanel, PreprocessingScopeControl } from "./PreprocessingPanel";
+import { usePreprocessingEditor } from "./use-preprocessing-editor";
+import { punctaDistanceUnit, UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
+import type { PreprocessInspectorEdit, PreprocessInspectorSnapshot } from "../shared/preprocess-inspector-api";
 import { ResearchLabelsImportPanel } from "./ResearchLabelsImportPanel";
 import { ResearchCorrectionEffectPanel, type CorrectionEffectSeed } from "./ResearchCorrectionEffectPanel";
 import { SegmentationInputControl } from "./SegmentationInputControl";
@@ -60,7 +64,7 @@ import {
   Ban,
   Laptop,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { Activity as ReactActivity, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { flushSync } from "react-dom";
 import { InspectorResizeHandle, loadInspectorWidth } from "./InspectorResizeHandle";
 import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
@@ -143,6 +147,16 @@ import { VolumeSceneBridge, VolumeSceneSupersededError } from "./volume-scene-br
 import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import BrandMark from "./BrandMark";
 import { SourceDisplayPanel, type SourceInterpretation } from "./SourceDisplayPanel";
+import type { DisplayInspectorAction, DisplayInspectorSnapshot, DisplayInspectorTarget } from "../shared/display-inspector-api";
+import { applyDisplayChannelEdit } from "./display-channel-edit";
+import { useDisplayInspectorOwner } from "./use-display-inspector-owner";
+import {
+  trimStudyNavigatorSource,
+  type StudyNavigatorAction,
+  type StudyNavigatorSnapshot,
+  type StudyNavigatorTarget,
+} from "../shared/study-navigator-api";
+import { useStudyNavigatorOwner } from "./use-study-navigator-owner";
 import { SourceExportPanel } from "./SourceExportPanel";
 import { SourceViewStore, type SavedSourceView } from "./source-view-store";
 import type { Camera } from "./viewer-camera";
@@ -158,8 +172,14 @@ import type {
   ModelLibraryWorkbenchRouteKind,
 } from "../shared/model-library";
 
+export type WorkbenchReturn = {
+  target: { sourceId: string; sourceSha256: string } | null;
+};
+
 type Props = {
   initialSourceId?: string | null;
+  visible?: boolean;
+  returnRequest?: WorkbenchReturn | null;
   preferences?: UserPreferences;
   api: ResearchDesktopApi;
   onBack: () => void;
@@ -230,6 +250,7 @@ type ResultView = {
   index: number;
   geometry: ResultGeometry;
 };
+const PREPROCESS_INTERRUPTED = "Preprocess was interrupted. Review the pipeline and restore applied numbers before previewing or running a recipe.";
 const DEFAULT_SELECTION: ResearchSelection = {
   x: 0,
   y: 0,
@@ -855,6 +876,8 @@ export function findNearestObject(
 
 export default function ResearchWorkbench({
   initialSourceId,
+  visible = true,
+  returnRequest = null,
   api: desktopApi,
   onBack,
   onOpenSettings,
@@ -862,6 +885,8 @@ export default function ResearchWorkbench({
   onSourcesReorder,
   preferences = DEFAULT_PREFERENCES,
 }: Props): React.JSX.Element {
+  const [completedReturn, setCompletedReturn] = useState<WorkbenchReturn | null>(null);
+  const presenting = visible && completedReturn === returnRequest;
   const [snapshot, setSnapshot] = useState<ResearchSnapshot | null>(null);
   const latestSnapshot = useRef(snapshot);
   latestSnapshot.current = snapshot;
@@ -889,7 +914,8 @@ export default function ResearchWorkbench({
   const [studyOpened, setStudyOpened] = useState(false);
   const [selection, setSelection] = useState(DEFAULT_SELECTION);
   const [channelSettings, setChannelSettings] = useState<Channel[]>([]);
-  const [image, setImage] = useState<string | null>(null);
+  const [imageOverride, setImageOverride] = useState<{ image: string; preprocessRevision?: number } | null>(null);
+  const setImage = useCallback((image: string | null) => setImageOverride(image ? { image } : null), []);
   const [orthogonalCrop, setOrthogonalCrop] = useState<{ scope: string; value: Volume } | null>(null);
   const orthogonalRequest = useRef(0);
   const [projection, setProjection] = useState<"plane" | "max" | "mean">(
@@ -899,6 +925,8 @@ export default function ResearchWorkbench({
   const [segmentationFamily, setSegmentationFamily] = useState<"classical" | "stain" | "adaptive" | "cellpose-sam" | "cellpose-sam-v2" | "large-components">("classical");
   const [adaptiveBatchConfiguration, setAdaptiveBatchConfiguration] = useState<ResearchAdaptiveBatchConfiguration | null>(null);
   const [resultId, setResultId] = useState<string | null>(null);
+  const workspaceSelection = useRef({ sourceId, resultId });
+  workspaceSelection.current = { sourceId, resultId };
   const [correctionEffectSeed, setCorrectionEffectSeed] = useState<CorrectionEffectSeed | null>(null);
   useEffect(() => { if (tab !== "Study") setCorrectionEffectSeed(null); }, [tab]);
   const [resultView, setResultView] = useState<ResultView | null>(null);
@@ -962,18 +990,20 @@ export default function ResearchWorkbench({
   const [layersOpen, setLayersOpen] = useState(true);
   const sourcesToggle = useRef<HTMLButtonElement>(null);
   const toolsToggle = useRef<HTMLButtonElement>(null);
+  const toggleWorkbenchTools = useRef(() => setToolsHidden((hidden) => !hidden));
   useEffect(() => {
+    if (!presenting) return;
     function toggleSidePanel(event: KeyboardEvent) {
       if (!workbenchShortcutAvailable(event) || !sourcesToggle.current) return;
       if (event.key === "[") {
         event.preventDefault(); setSourcesHidden(hidden => !hidden); sourcesToggle.current.focus();
       } else if (event.key === "]") {
-        event.preventDefault(); setToolsHidden(hidden => !hidden); toolsToggle.current?.focus();
+        event.preventDefault(); toggleWorkbenchTools.current(); toolsToggle.current?.focus();
       }
     }
     window.addEventListener("keydown", toggleSidePanel);
     return () => window.removeEventListener("keydown", toggleSidePanel);
-  }, []);
+  }, [presenting]);
   const [isDraggingSources, setIsDraggingSources] = useState(false);
   const sourcesWidthRef = useRef(sourcesWidth);
   sourcesWidthRef.current = sourcesWidth;
@@ -1067,7 +1097,7 @@ export default function ResearchWorkbench({
   const externalLabelsDisclosureRef = useRef<HTMLDetailsElement | null>(null);
   const usamDisclosureRef = useRef<HTMLDetailsElement | null>(null);
   const [labelDestination, setLabelDestination] = useState<"labels-import" | "labels-usam-handoff" | null>(null);
-  const [drawingAnalysisRegion, setDrawingAnalysisRegion] = useState(false);
+  const [regionDrawing, setRegionDrawing] = useState<{ tab: Tab; scope: string } | null>(null);
   const [viewSettingsReady, setViewSettingsReady] = useState(false);
   const [sourcePreparation, setSourcePreparation] = useState<{
     key: string; phase: "loading" | "ready" | "failed"; error: string | null;
@@ -1133,7 +1163,7 @@ export default function ResearchWorkbench({
   const openingSelection = useRef<{ id: string; key: string } | null>(null);
   const directOpenPending = useRef<symbol | null>(null);
   useEffect(() => () => { directOpenPending.current = null; }, []);
-  const initialStudyRestore = useRef<Promise<unknown>>(Promise.resolve());
+  const workspaceRestore = useRef<Promise<unknown>>(Promise.resolve());
   const nativeCommandPending = useRef(false);
   const documentSwitch = useRef(false);
   const switchDocument = useCallback(async <T,>(action: () => Promise<T>, resetDisplay = true,
@@ -1281,7 +1311,7 @@ export default function ResearchWorkbench({
   const sourceResults = useMemo(() => snapshot?.results.filter((item) => item.source_id === sourceId) ?? [], [snapshot?.results, sourceId]);
   useLayoutEffect(() => {
     const header = toolHeaderRef.current;
-    if (!header) return;
+    if (!presenting || !header) return;
     const update = () => {
       const height = header.getBoundingClientRect().height;
       if (height > 0) header.parentElement?.style.setProperty("--research-tool-header-height", `${height}px`);
@@ -1290,7 +1320,7 @@ export default function ResearchWorkbench({
     const observer = new ResizeObserver(update);
     observer.observe(header);
     return () => observer.disconnect();
-  }, [source?.id, tab, preferences.textSize, preferences.font]);
+  }, [presenting, source?.id, tab, preferences.textSize, preferences.font]);
   const resultDiscriminators = useMemo(() => resultRowDiscriminators(sourceResults), [sourceResults]);
   const numberScope = `${documentEpoch}:${source?.id}:${source?.sha256}`;
   const reportSourceViewportSize = useCallback((size: { width: number; height: number }) => {
@@ -1298,7 +1328,9 @@ export default function ResearchWorkbench({
       ? previous : { scope: numberScope, ...size });
   }, [numberScope]);
   const numberKey = `${numberScope}:${numberResetEpoch}`;
-  const configurationValid = !Object.keys(invalidNumberForms).some((key) => key.startsWith(`${numberScope}:`));
+  const preprocessEditor = usePreprocessingEditor(recipe, setRecipe, numberKey);
+  const externalNumbersInvalid = Object.keys(invalidNumberForms).some((key) => key.startsWith(`${numberScope}:`));
+  const configurationValid = preprocessEditor.valid && !externalNumbersInvalid;
   const reportNumberValidity = useCallback((form: string, valid: boolean) => {
     const key = `${numberScope}:${form}`;
     setInvalidNumberForms((previous) => {
@@ -1311,6 +1343,7 @@ export default function ResearchWorkbench({
   const restoreAppliedNumbers = () => {
     setInvalidNumberForms((previous) => Object.fromEntries(Object.entries(previous).filter(([key]) => !key.startsWith(`${numberScope}:`))));
     setNumberResetEpoch((value) => value + 1);
+    setError((current) => current === PREPROCESS_INTERRUPTED ? null : current);
   };
   const sourceIsChanging = Boolean(source && (projectionSourceId.current !== source.id || projectionSourceSha256.current !== source.sha256));
   const resolvedProjection =
@@ -1371,7 +1404,7 @@ export default function ResearchWorkbench({
   }, []);
 
   const compute = useResearchCompute({ api, projectId: snapshot?.project.project_id, scope: studyEpoch,
-    enabled: Boolean(snapshot?.operations.remote_analysis_plan), suspended: documentSwitching,
+    enabled: Boolean(snapshot?.operations.remote_analysis_plan), suspended: documentSwitching || !presenting,
     onAttached: async () => {
       const expectedProject = snapshot?.project.project_id;
       const next = await api.getSnapshot();
@@ -1551,6 +1584,7 @@ export default function ResearchWorkbench({
   }, [workspaceUndo, api, busy, documentSwitching, adopt]);
 
   useEffect(() => {
+    if (!presenting) return;
     const handleSelectChange = (event: Event) => {
       if (event.target instanceof HTMLSelectElement) {
         event.target.blur();
@@ -1560,7 +1594,7 @@ export default function ResearchWorkbench({
     return () => {
       document.removeEventListener("change", handleSelectChange, true);
     };
-  }, []);
+  }, [presenting]);
 
   const handleSourcesResizeStart = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -1626,6 +1660,7 @@ export default function ResearchWorkbench({
     setEmptyDropActive(false);
   }, []);
   useEffect(() => {
+    if (!presenting) return;
     const reset = () => resetEmptyDrop();
     window.addEventListener("dragend", reset);
     window.addEventListener("blur", reset);
@@ -1634,7 +1669,7 @@ export default function ResearchWorkbench({
       window.removeEventListener("dragend", reset);
       window.removeEventListener("blur", reset);
     };
-  }, [resetEmptyDrop]);
+  }, [presenting, resetEmptyDrop]);
   useEffect(() => {
     if (snapshot) resetEmptyDrop();
   }, [snapshot, resetEmptyDrop]);
@@ -1665,9 +1700,42 @@ export default function ResearchWorkbench({
     setSelection(next);
   };
   const selectionScope = JSON.stringify([documentEpoch, source?.id, source?.sha256, shownSelection]);
+  const sourcePlaneReady = Boolean(presenting && source && viewSettingsReady && !sourceIsChanging &&
+    !documentSwitching && source.locator_state !== "relink-required" && !assistantFollowing && !assistantFollowBusy &&
+    !rawVolumeOpen && !abCompareMode && !surfaceOpen);
+  const drawingAnalysisRegion = Boolean(sourcePlaneReady && !resultId && regionDrawing?.tab === tab &&
+    regionDrawing.scope === selectionScope);
+  if (regionDrawing && !drawingAnalysisRegion) setRegionDrawing(null);
+  const selectDrawnRegion = useCallback((region: Pick<ResearchSelection, "x" | "y" | "width" | "height">) => {
+    if (!regionDrawing) return;
+    setSelection((previous) => ({ ...previous, ...region, level: 0 }));
+    setRegionDrawing(null);
+  }, [regionDrawing]);
   const liveSelectionScope = useRef(selectionScope);
   const labelImportBusyOwner = useRef<{ owner: string; message: string } | null>(null);
   liveSelectionScope.current = selectionScope;
+  const inProcess = tab === "Process";
+  const drawingPreprocessRegion = inProcess && drawingAnalysisRegion;
+  const previewInputs = { selectionScope, recipe, regionDrawing, configurationValid, sourcePlaneReady, inProcess, resultId };
+  const [preprocessContext, setPreprocessContext] = useState({ ...previewInputs, revision: 0 });
+  const resultChanged = preprocessContext.resultId !== resultId;
+  const previewInvalidated = preprocessContext.selectionScope !== selectionScope || preprocessContext.recipe !== recipe ||
+    preprocessContext.regionDrawing !== regionDrawing || preprocessContext.configurationValid !== configurationValid ||
+    preprocessContext.sourcePlaneReady !== sourcePlaneReady || (preprocessContext.inProcess && !inProcess) ||
+    (resultChanged && Boolean(resultId));
+  if (previewInvalidated || resultChanged || preprocessContext.inProcess !== inProcess) {
+    // Starting a detached preview can enter Process and replace the displayed result.
+    setPreprocessContext({ ...previewInputs, revision: preprocessContext.revision + Number(previewInvalidated) });
+    if (previewInvalidated && imageOverride?.preprocessRevision !== undefined) setImageOverride(null);
+  }
+  const preprocessVisible = inProcess && sourcePlaneReady && configurationValid;
+  const showingPreprocessPreview = imageOverride?.preprocessRevision !== undefined && preprocessVisible && !resultId &&
+    imageOverride.preprocessRevision === preprocessContext.revision;
+  const image = imageOverride?.preprocessRevision === undefined || showingPreprocessPreview ? imageOverride?.image ?? null : null;
+  const livePreprocess = useRef({ revision: preprocessContext.revision, visible: preprocessVisible });
+  useLayoutEffect(() => {
+    livePreprocess.current = { revision: preprocessContext.revision, visible: preprocessVisible };
+  }, [preprocessContext.revision, preprocessVisible]);
   const volume = orthogonalCrop?.scope === selectionScope ? orthogonalCrop.value : null;
   const annotationState = useAnnotationDrafts(documentEpoch, snapshot?.sources ?? [], source, shownSelection,
     tab === "Epidermis" ? "epidermis" : "general");
@@ -1689,15 +1757,79 @@ export default function ResearchWorkbench({
   );
   useEffect(() => {
     let active = true;
-    initialStudyRestore.current = report(
+    workspaceRestore.current = report(
       async () => { const next = await api.getSnapshot(); if (active) adopt(next); },
       "Could not restore this study.",
     );
     return () => { active = false; };
   }, [api, adopt, report]);
   useEffect(() => {
-    void api.sessionState?.().then(setSession).catch((caught) => setError(message(caught, "Could not inspect session recovery.")));
-  }, [api, snapshot?.project]);
+    if (!visible || !returnRequest || completedReturn === returnRequest) return;
+    let current = true;
+    workspaceRestore.current = report(async () => {
+      const next = await api.getSnapshot();
+      if (!current) return;
+      const previous = latestSnapshot.current;
+      const changedStudy = Boolean(previous && previous.project.project_id !== next?.project.project_id);
+      if (changedStudy) {
+        viewStore.current?.discard();
+        viewStore.current = null;
+        projectionSourceId.current = null;
+        displayToken.current++;
+        setViewSettingsReady(false);
+        setDocumentEpoch((value) => value + 1);
+        setStudyEpoch((value) => value + 1);
+        setRecipe(DEFAULT_RECIPE);
+      }
+      const target = returnRequest.target;
+      const exactSource = target && next?.sources.find((item) => item.id === target.sourceId && item.sha256 === target.sourceSha256);
+      const { sourceId, resultId } = workspaceSelection.current;
+      const previousSource = previous?.sources.find((item) => item.id === sourceId);
+      const retainedSource = next?.sources.find((item) => item.id === sourceId && item.sha256 === previousSource?.sha256);
+      const nextSource = exactSource ?? retainedSource;
+      const changedSource = !retainedSource || nextSource !== retainedSource;
+      if (changedStudy || changedSource) {
+        setImage(null);
+        pendingStudyNavigation.current = null;
+        setPendingResultNavigation(null);
+        setPendingAgentSource(null);
+        setSharedPreview(null);
+      }
+      const activeResult = previous?.results.find((item) => item.id === resultId);
+      const resultRetained = activeResult && next?.results.some((item) =>
+        item.id === activeResult.id && item.revision_hash === activeResult.revision_hash &&
+        item.source_id === activeResult.source_id && item.source_sha256 === activeResult.source_sha256);
+      if (changedStudy || changedSource || (resultId && !resultRetained)) {
+        resultLoadToken.current++;
+        resultViewToken.current++;
+        objectPickToken.current++;
+        setResultId(null);
+        setResultView(null);
+        setRows([]);
+        setSelectedRow(null);
+        setPopulationObject(null);
+        setCorrectionPreview(null);
+        setRedoStack([]);
+      }
+      if (next) adopt(next, nextSource?.id);
+      else setSnapshot(null);
+    }, "Could not refresh the study after returning to the workspace.", () => current)
+      .finally(() => { if (current) setCompletedReturn(returnRequest); });
+    return () => { current = false; };
+  }, [visible, returnRequest, completedReturn, api, adopt, report]);
+  useLayoutEffect(() => {
+    if (!presenting) {
+      annotationViewportReady.current = false;
+      setSourceAnnotations([]);
+    }
+  }, [presenting]);
+  useEffect(() => {
+    if (!presenting) return;
+    let current = true;
+    void api.sessionState?.().then((state) => { if (current) setSession(state); })
+      .catch((caught) => { if (current) setError(message(caught, "Could not inspect session recovery.")); });
+    return () => { current = false; };
+  }, [presenting, api, snapshot?.project]);
   const openImages = useCallback(async (kind: "files" | "folder" | "dicom" | "ome_zarr" = "files") => {
     resetEmptyDrop();
     setBusy("opening images");
@@ -1718,7 +1850,7 @@ export default function ResearchWorkbench({
     setBusy("opening 3D image");
     let previewRequestId: string | undefined;
     try {
-      await initialStudyRestore.current;
+      await workspaceRestore.current;
       if (directOpenPending.current !== inFlight) return;
       const previousSnapshot = latestSnapshot.current;
       await report(() => switchDocument(async () => {
@@ -1786,13 +1918,14 @@ export default function ResearchWorkbench({
   const nativeCommandState = useRef({ busy, documentSwitching, openImages, api, report, adopt });
   nativeCommandState.current = { busy, documentSwitching, openImages, api, report, adopt };
   useEffect(() => {
+    if (!visible) return;
     let active = true;
     const unsubscribe = subscribeWorkbenchCommands((command: WorkbenchCommand) => {
       const state = nativeCommandState.current;
       if (nativeCommandPending.current || state.busy || state.documentSwitching || documentSwitch.current) return;
       nativeCommandPending.current = true;
       void (async () => {
-        await initialStudyRestore.current;
+        await workspaceRestore.current;
         if (!active) return;
         const current = nativeCommandState.current;
         if (current.busy || current.documentSwitching || documentSwitch.current) return;
@@ -1802,8 +1935,16 @@ export default function ResearchWorkbench({
       })().finally(() => { nativeCommandPending.current = false; });
     });
     return () => { active = false; unsubscribe(); };
-  }, []);
+  }, [visible]);
   useEffect(() => {
+    if (!presenting) {
+      // A layout restore can detach before display preparation has finished.
+      if (!viewStore.current) {
+        displayToken.current++;
+        projectionSourceId.current = null;
+      }
+      return;
+    }
     const directOpen = pendingVolumeOpen.current?.documentEpoch === documentEpoch ? pendingVolumeOpen.current : null;
     if (directOpen) pendingVolumeOpen.current = null;
     if (!source) {
@@ -1854,7 +1995,7 @@ export default function ResearchWorkbench({
     setProjection("plane");
     setSelection(clamp({ ...DEFAULT_SELECTION, width: dimensions.x,
       height: dimensions.y, z: Math.floor(dimensions.z / 2) }, dimensions));
-    setDrawingAnalysisRegion(false);
+    setRegionDrawing(null);
     setSegmentationFamily("classical");
     setRecipe((old) => { const { input_transform: _conversion, ...scalar } = old; return { ...scalar, measurement_channels: [0] }; });
     setChannels([]);
@@ -1937,6 +2078,7 @@ export default function ResearchWorkbench({
     resultViewToken.current += 1;
     setPendingModel(null);
   }, [
+    presenting,
     documentEpoch,
     source?.id,
     source?.sha256,
@@ -1959,7 +2101,7 @@ export default function ResearchWorkbench({
       assistantFollower.current = null;
       void active?.stop();
     };
-  }, [api, source?.id, source?.sha256, documentEpoch, resultId]);
+  }, [presenting, api, source?.id, source?.sha256, documentEpoch, resultId]);
   const followAssistantDisplay = async (active: boolean) => {
     const generation = ++assistantFollowGeneration.current;
     setAssistantFollowBusy(true);
@@ -1991,7 +2133,7 @@ export default function ResearchWorkbench({
     } finally { if (generation === assistantFollowGeneration.current) setAssistantFollowBusy(false); }
   };
   useEffect(() => {
-    if (assistantFollowing || assistantFollowBusy) return;
+    if (!presenting || assistantFollowing || assistantFollowBusy) return;
     if (viewSettingsReady && channels.length && source && projectionSourceId.current === source.id) {
       const adopted = batchViewAdoption.current;
       if (adopted?.sourceId === source.id && adopted.sourceSha256 === source.sha256 && adopted.channels === channels) {
@@ -2000,7 +2142,7 @@ export default function ResearchWorkbench({
       }
       viewStore.current?.save({ interpretation, channels, projection, selection: shownSelection, camera: viewCamera, rgb_mapping: rgbMapping });
     }
-  }, [viewSettingsReady, interpretation, channels, projection, shownSelection, viewCamera, rgbMapping, source?.id, assistantFollowing, assistantFollowBusy]);
+  }, [presenting, viewSettingsReady, interpretation, channels, projection, shownSelection, viewCamera, rgbMapping, source?.id, assistantFollowing, assistantFollowBusy]);
   useEffect(() => () => { void viewStore.current?.flush(); }, []);
   const requestRawVolume = useCallback(async (refinement?: RawVolumeRefinementRequest) => {
     if (documentSwitch.current || !source || !canOpenRawVolume) return;
@@ -2022,11 +2164,16 @@ export default function ResearchWorkbench({
   const volumeChannelKey = channels.filter((item) => item.visible).map((item) => item.channel).join(",");
   useEffect(() => { if (!volumeSharedLocked.current) setVolumeTarget(null); }, [source?.id, shownSelection.t, volumeChannelKey]);
   useEffect(() => {
+    if (!presenting) {
+      setRawVolume(null);
+      setRawVolumeLoading(false);
+      return;
+    }
     if (!rawVolumeOpen || !canOpenRawVolume) return;
     setRawVolume(null);
     void requestRawVolume();
     return () => { rawVolumeToken.current++; };
-  }, [rawVolumeOpen, canOpenRawVolume, documentEpoch, source?.id, source?.sha256, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
+  }, [presenting, rawVolumeOpen, canOpenRawVolume, documentEpoch, source?.id, source?.sha256, shownSelection.t, volumeChannelKey, JSON.stringify(volumeTarget)]);
   useEffect(() => {
     const key = JSON.stringify([
       source?.id,
@@ -2096,8 +2243,8 @@ export default function ResearchWorkbench({
     if (output) setModels(output.models ?? []);
   }, [api, report]);
   useEffect(() => {
-    if (tab === "Model") void refreshModels();
-  }, [tab, refreshModels]);
+    if (presenting && tab === "Model") void refreshModels();
+  }, [presenting, tab, refreshModels]);
   const modelRequest = useCallback(() => {
     if (!source) return null;
     const { c: _c, z_stop: _stop, ...modelSelection } = shownSelection;
@@ -2280,7 +2427,7 @@ export default function ResearchWorkbench({
   useWorkspaceSnapshotPolling({
     snapshot, scope: exportDraftStudy,
     enabled: hasPendingJobs || hasActiveAgentActivity,
-    suspended: documentSwitching,
+    suspended: documentSwitching || !presenting,
     interval: hasPendingJobs ? 1000 : 2000,
     getSnapshot: () => agentSnapshotFence.current.read(api.getSnapshot),
     setSnapshot,
@@ -2292,6 +2439,7 @@ export default function ResearchWorkbench({
   });
   useEffect(() => { setAgentRefreshError(null); }, [exportDraftStudy]);
   useEffect(() => {
+    if (!presenting) return;
     const state = agentInteraction.current;
     const touched = () => { state.lastInput = Date.now(); state.generation++; };
     const down = (event: PointerEvent) => { state.pointers.add(event.pointerId); touched(); };
@@ -2305,7 +2453,7 @@ export default function ResearchWorkbench({
     window.addEventListener("input", touched, true);
     window.addEventListener("blur", blur);
     return () => {
-      state.pointers.clear();
+      blur();
       window.removeEventListener("pointerdown", down, true);
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", up, true);
@@ -2314,7 +2462,7 @@ export default function ResearchWorkbench({
       window.removeEventListener("input", touched, true);
       window.removeEventListener("blur", blur);
     };
-  }, []);
+  }, [presenting]);
   const hideOrthogonalCrop = () => {
     orthogonalRequest.current++;
     setOrthogonalCrop(null);
@@ -2512,7 +2660,7 @@ export default function ResearchWorkbench({
     const context = agentFollowContext.current;
     const interaction = agentInteraction.current;
     const editing = document.activeElement?.matches("input, textarea, select, [contenteditable=true]");
-    if ((!target && !sourceTarget) || !context.followAgent || !context.canNavigate || documentSwitch.current || editing ||
+    if (!presenting || (!target && !sourceTarget) || !context.followAgent || !context.canNavigate || documentSwitch.current || editing ||
       interaction.pointers.size > 0 || Date.now() - interaction.lastInput < 1500) return;
     if (!target && sourceTarget) { openAgentSourceRef.current(sourceTarget, true); return; }
     // Observed results are never queued to interrupt a later human action or draft.
@@ -2524,7 +2672,7 @@ export default function ResearchWorkbench({
     void context.navigateExactResult(target!, scope, "review", isCurrent);
   }, [snapshot, exportDraftStudy]);
   useEffect(() => {
-    if (!pendingAgentSource) return;
+    if (!presenting || !pendingAgentSource) return;
     if (!pendingAgentSource.isCurrent()) { setPendingAgentSource(null); return; }
     if (!snapshot || sourceId !== pendingAgentSource.target.id || sourceIsChanging || !viewSettingsReady) return;
     if (sourceViewportSize?.scope !== numberScope || sourceViewportSize.width <= 0 || sourceViewportSize.height <= 0) return;
@@ -2540,8 +2688,9 @@ export default function ResearchWorkbench({
       }
     } catch (caught) { if (pendingAgentSource.isCurrent()) setError(message(caught, "The recorded agent view is unavailable.")); }
     setPendingAgentSource(null);
-  }, [pendingAgentSource, snapshot, sourceId, sourceIsChanging, viewSettingsReady, sourceViewportSize, numberScope, isRgb]);
+  }, [presenting, pendingAgentSource, snapshot, sourceId, sourceIsChanging, viewSettingsReady, sourceViewportSize, numberScope, isRgb]);
   useEffect(() => {
+    if (!presenting) return;
     const guard = pendingStudyNavigation.current;
     if (guard) {
       if (guard.target !== pendingResultNavigation) pendingStudyNavigation.current = null;
@@ -2568,6 +2717,7 @@ export default function ResearchWorkbench({
     setPendingResultNavigation(null);
     void loadResult(target.id, target, guard?.isCurrent, guard?.isCurrent === undefined, pendingResultSection.current);
   }, [
+    presenting,
     pendingResultNavigation?.id,
     pendingResultNavigation?.revision_hash,
     sourceId,
@@ -2707,8 +2857,13 @@ export default function ResearchWorkbench({
       );
     }
   };
+  const canPreviewPreprocess = sourcePlaneReady && configurationValid && !busy && !drawingAnalysisRegion;
   const preview = async () => {
-    if (!source || !configurationValid) return;
+    if (!source || !canPreviewPreprocess || documentSwitch.current) return;
+    const revision = preprocessContext.revision;
+    const navigation = largeNavigationIntent.current;
+    const isCurrent = () => livePreprocess.current.revision === revision && livePreprocess.current.visible &&
+      largeNavigationIntent.current === navigation && !documentSwitch.current;
     setError(null);
     setBusy("preview");
     const output = await report(
@@ -2718,14 +2873,15 @@ export default function ResearchWorkbench({
           selection: shownSelection,
           recipe,
         }) as Promise<{ image: string; object_count: number }>,
-      "Could not preview this recipe.",
+      "Could not preview this recipe.", isCurrent,
     );
-    if (output) {
+    if (output && typeof output.image === "string" && isCurrent()) {
       setResultView(null);
       setResultId(null);
-      setImage(output.image);
+      setImageOverride({ image: output.image, preprocessRevision: revision });
     }
-    setBusy(null);
+    // The existing local worker remains reserved until the submitted preview drains.
+    setBusy((value) => value === "preview" ? null : value);
   };
   const restoreRecipePreset = async (item: unknown) => {
     if (!source) return;
@@ -2781,7 +2937,7 @@ export default function ResearchWorkbench({
     ? { result_id: selectedResult.id, revision_hash: selectedResult.revision_hash, name: selectedResult.method_label ?? "3D label result" } : null;
   const volumeSelectedLabel = Number(populationObject?.label ?? (selectedRow === null ? null : rows[selectedRow]?.label)) || null;
   const volumeContext = useRef({ source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady });
-  volumeContext.current = { source, snapshot, sourceId, rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady };
+  volumeContext.current = { source, snapshot, sourceId, rawVolumeOpen: presenting && rawVolumeOpen, busy, documentEpoch, selectedResult, volumeLabels, viewSettingsReady };
   const volumeChangeHandler = useRef<() => void>(() => undefined);
   const queueVolumeSceneChange = useCallback(() => volumeChangeHandler.current(), []);
   const chooseVolumeLabel = useCallback((label: number | null) => {
@@ -2791,14 +2947,14 @@ export default function ResearchWorkbench({
   }, [rows]);
   useEffect(() => {
     setVolumeLabels(null); setVolumeLabelsError(null); setVolumeLabelsLoading(false);
-    if (!rawVolumeOpen || !source || !volumeLabelResult) return;
+    if (!presenting || !rawVolumeOpen || !source || !volumeLabelResult) return;
     let cancelled = false; setVolumeLabelsLoading(true);
     void api.execute("volume_labels", { source_id: source.id, ...{ result_id: volumeLabelResult.result_id, revision_hash: volumeLabelResult.revision_hash }, t: volumeTarget?.t ?? shownSelection.t })
       .then(value => { if (!cancelled) setVolumeLabels(value as VolumeLabelPayload); })
       .catch(caught => { if (!cancelled) setVolumeLabelsError(message(caught, "These labels cannot be aligned to this volume.")); })
       .finally(() => { if (!cancelled) setVolumeLabelsLoading(false); });
     return () => { cancelled = true; };
-  }, [api, rawVolumeOpen, source?.id, source?.sha256, volumeLabelResult?.result_id, volumeLabelResult?.revision_hash, volumeTarget?.t, shownSelection.t]);
+  }, [presenting, api, rawVolumeOpen, source?.id, source?.sha256, volumeLabelResult?.result_id, volumeLabelResult?.revision_hash, volumeTarget?.t, shownSelection.t]);
   useEffect(() => {
     volumeSceneGeneration.current++; volumeBridgeScope.current = null; volumeStarting.current = false;
     volumeSceneWrite.current = null; volumeAdapter.current = null;
@@ -2807,7 +2963,7 @@ export default function ResearchWorkbench({
     if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current);
     setVolumeSceneError(null); setVolumeSceneConflict(null); setVolumeSceneRevision(null);
     return () => { volumeSceneGeneration.current++; if (volumeSaveTimer.current) clearTimeout(volumeSaveTimer.current); void volumeBridge.current?.dispose(); volumeBridge.current = null; };
-  }, [source?.id, source?.sha256, rawVolumeOpen, documentEpoch]);
+  }, [presenting, source?.id, source?.sha256, rawVolumeOpen, documentEpoch]);
   volumeScenePersist.current = async () => {
       // Native boundaries must join an in-flight first read/restore/save and
       // must also initialize a ready scene whose debounce has not fired yet.
@@ -3009,7 +3165,7 @@ export default function ResearchWorkbench({
     );
   }, []);
   useEffect(() => {
-    if (tab !== "Correction" || !selectedResult || isLargeResult(selectedResult)) {
+    if (!presenting || tab !== "Correction" || !selectedResult || isLargeResult(selectedResult)) {
       setCorrectionViewLoading(false);
       return;
     }
@@ -3052,6 +3208,7 @@ export default function ResearchWorkbench({
       if (token === resultViewToken.current) resultViewToken.current++;
     };
   }, [
+    presenting,
     api,
     correctionView.index,
     correctionView.plane,
@@ -3317,6 +3474,7 @@ export default function ResearchWorkbench({
     ? displayedPlaneDimensions
     : { width: 1, height: 1 };
   useEffect(() => {
+    if (!presenting) return;
     const frame = imageFrameRef.current;
     const sourceWidth = Math.max(1, canvasPlaneDimensions.width);
     const sourceHeight = Math.max(1, canvasPlaneDimensions.height);
@@ -3346,6 +3504,7 @@ export default function ResearchWorkbench({
     observer.observe(frame);
     return () => observer.disconnect();
   }, [
+    presenting,
     canvasPlaneDimensions.height,
     canvasPlaneDimensions.width,
     imageScale,
@@ -3422,7 +3581,7 @@ export default function ResearchWorkbench({
     current.openWorkbenchTab("Info");
   };
   const nativeAgentApi = window.lociAgentWorkspace;
-  const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, Boolean(nativeAgentApi) && !documentSwitching);
+  const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, presenting && Boolean(nativeAgentApi) && !documentSwitching);
   const agentCurrentTargets = useMemo(() => agentWorkflowTargets.map(({ version: _version, ...target }) => target), [agentWorkflowTargets]);
   const inspectableAgentPreviewIds = useMemo(() => snapshot?.jobs.filter(job => job.state === "succeeded" &&
     ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
@@ -3523,7 +3682,7 @@ export default function ResearchWorkbench({
   const agentPublishedPacket = useMemo(() => snapshot ? { snapshot, follow: followAgent, refreshError: agentRefreshError,
     currentTargets: agentCurrentTargets, inspectablePreviewJobIds: inspectableAgentPreviewIds } : null,
     [snapshot, followAgent, agentRefreshError, agentCurrentTargets, inspectableAgentPreviewIds]);
-  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, { scope: exportDraftStudy, switching: documentSwitching, packet: agentPublishedPacket }, {
+  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, { scope: exportDraftStudy, switching: documentSwitching || !presenting, packet: agentPublishedPacket }, {
     control: async (request, current) => {
       if (!current() || !api.controlAgentSession) throw new Error("Agent controls are unavailable for this study.");
       const next = await api.controlAgentSession(request);
@@ -3575,12 +3734,340 @@ export default function ResearchWorkbench({
       hideOpeningPreview(openingId);
     }
   }, [handoff, hideOpeningPreview, openingId, rawVolume]);
-  const provisionalVolume = keepOpeningPreview && opening && <VolumeOpeningPreview
+  const editSourceChannels = (value: Channel[]) => {
+    autoRequestToken.current++;
+    setChannels(value);
+    setRgbMapping(null);
+  };
+  const resetSourceDisplay = () => editSourceChannels(defaultChannels);
+  const autoSourceDisplay = (channel?: number) => {
+    if (!source) return;
+    const currentSource = source.id;
+    const token = displayToken.current;
+    const autoToken = ++autoRequestToken.current;
+    const planeKey = autoPlaneKey;
+    void report(async () => {
+      const output = await api.execute("viewer_defaults", { source_id: currentSource, t: shownSelection.t, z: shownSelection.z,
+        ...(isRgb ? { c: shownSelection.c } : {}), auto: true }) as { source_id: string; source_sha256: string; channels: Channel[] };
+      if (displayToken.current !== token || projectionSourceId.current !== currentSource ||
+          autoRequestToken.current !== autoToken || autoPlaneRef.current !== planeKey) return;
+      if (output.source_id !== currentSource || output.source_sha256 !== source.sha256 || !Array.isArray(output.channels))
+        throw new Error("Auto range does not match the selected source.");
+      setChannels((old) => old.map((item) => {
+        const auto = output.channels.find((candidate) => candidate.channel === item.channel);
+        return auto && (channel === undefined || item.channel === channel) ? { ...item, low: auto.low, high: auto.high } : item;
+      }));
+    }, "Could not calculate a full-source range.");
+  };
+  const detachDisplayButton = useRef<HTMLButtonElement>(null);
+  const detachPreprocessButton = useRef<HTMLButtonElement>(null);
+  const displayGrabArea = useRef<HTMLDivElement>(null);
+  const preprocessGrabArea = useRef<HTMLDivElement>(null);
+  const imageToolbar = useRef<HTMLDivElement>(null);
+  const imageDetachPending = useRef(false);
+  const restoreInspectorFocus = useRef<"display" | "preprocess" | null>(null);
+  const [showToolsAlongsideInspector, setShowToolsAlongsideInspector] = useState(false);
+  const inspectorCanvasAvailable = Boolean(window.lociDisplayInspectorOwner && sourcePlaneReady && dimensions && !resultId);
+  const displayAvailable = inspectorCanvasAvailable && channels.length > 0 && !drawingAnalysisRegion;
+  const displayTarget = useMemo<DisplayInspectorTarget | null>(() => displayAvailable && source ? {
+    sourceId: source.id, sourceSha256: source.sha256, studyGeneration: studyEpoch, documentGeneration: documentEpoch,
+  } : null, [displayAvailable, source?.id, source?.sha256, studyEpoch, documentEpoch]);
+  const displaySnapshot = useMemo<DisplayInspectorSnapshot | null>(() => {
+    if (!displayTarget || !source || !dimensions) return null;
+    const { axes, sample_semantics, physical_calibration, palette, channel_names, channel_dtypes } = source.metadata;
+    const calibration = shownSelection.level === 0 ? physical_calibration : source.metadata.levels?.find(
+      (level) => level.index === shownSelection.level)?.calibration;
+    return {
+      source: { id: source.id, sha256: source.sha256, name: source.name, source_kind: source.source_kind,
+        metadata: { dimensions, axes, sample_semantics, physical_calibration: calibration && { spacing: calibration.spacing, unit: calibration.unit },
+          palette, channel_names, channel_dtypes } },
+      channels, selection: shownSelection, projection: resolvedProjection, interpretation, rgbMapping,
+      viewReady: viewReadyKey === `${source.id}:${source.sha256}:${shownSelection.t}:${shownSelection.z}`,
+    };
+  }, [displayTarget, source, dimensions, channels, shownSelection, resolvedProjection, interpretation, rgbMapping, viewReadyKey]);
+  const applyInspectorEdit = (action: DisplayInspectorAction): boolean => {
+    if (!displayTarget || !source || !dimensions || documentSwitch.current) return false;
+    switch (action.kind) {
+      case "channel": {
+        const selected = channels.find((channel) => channel.channel === action.channel);
+        if (!selected) return false;
+        if ((action.edit.field === "window" || action.edit.field === "level") &&
+            source.source_kind !== "medical" && interpretation !== "medical") return false;
+        const maximum = isRgb ? (source.metadata.channel_dtypes?.[shownSelection.c] === "uint16" ? 65535 : 255) : null;
+        const next = applyDisplayChannelEdit(selected, action.edit, maximum);
+        if (!next) return false;
+        editSourceChannels(channels.map((channel) => channel === selected ? next : channel));
+        return true;
+      }
+      case "plane": {
+        if (action.value >= dimensions[action.axis] || (action.axis === "c" && !isRgb)) return false;
+        selectSourcePlane({ ...shownSelection, [action.axis]: action.value });
+        return true;
+      }
+      case "projection": {
+        if (dimensions.z < 2 || (isRgb && action.value !== "plane")) return false;
+        const { z_stop: _stop, ...plane } = shownSelection;
+        setProjection(action.value);
+        selectSourcePlane(action.value === "plane" ? plane : { ...plane, z: 0, z_stop: dimensions.z });
+        return true;
+      }
+      case "auto":
+        if (action.plane.t !== shownSelection.t || action.plane.z !== shownSelection.z || action.plane.c !== shownSelection.c ||
+          (action.channel !== undefined && !channels.some((channel) => channel.channel === action.channel))) return false;
+        autoSourceDisplay(action.channel);
+        return true;
+      case "reset": resetSourceDisplay(); return true;
+      case "compare": setCompareDefault(action.active); return true;
+    }
+  };
+  const preprocessTarget = useMemo<DisplayInspectorTarget | null>(() => inspectorCanvasAvailable && source ? {
+    kind: "preprocess", sourceId: source.id, sourceSha256: source.sha256, studyGeneration: studyEpoch, documentGeneration: documentEpoch,
+  } : null, [inspectorCanvasAvailable, source?.id, source?.sha256, studyEpoch, documentEpoch]);
+  const preprocessSpatialUnit = source ? punctaDistanceUnit(source, shownSelection) : UNVERIFIED_DISTANCE_UNIT;
+  const preprocessSourceLabel = source && snapshot ? sourceLabelForId(snapshot.sources, source.id) : "";
+  const canRestorePreprocessNumbers = externalNumbersInvalid && !busy;
+  const preprocessSnapshot = useMemo<PreprocessInspectorSnapshot | null>(() => {
+    if (!preprocessTarget || !dimensions) return null;
+    return { kind: "preprocess", source: { id: preprocessTarget.sourceId, sha256: preprocessTarget.sourceSha256, name: preprocessSourceLabel },
+      dimensions, selection: shownSelection, spatialUnit: preprocessSpatialUnit, drawing: drawingPreprocessRegion,
+      revision: preprocessContext.revision, editor: preprocessEditor.view, previewDisabled: !canPreviewPreprocess,
+      restoreNumbers: canRestorePreprocessNumbers };
+  }, [preprocessTarget, preprocessSourceLabel, dimensions, shownSelection, preprocessSpatialUnit, drawingPreprocessRegion,
+    preprocessContext.revision, preprocessEditor.view, canPreviewPreprocess, canRestorePreprocessNumbers]);
+  const selectWholePreprocessImage = () => {
+    const native = sourceMeta?.dimensions ?? dimensions;
+    if (!native) return;
+    setSelection((old) => ({ ...old, x: 0, y: 0, width: native.x, height: native.y, level: 0 }));
+    setRegionDrawing(null);
+    setImage(null);
+  };
+  const startAnalysisRegion = (owner: Tab) => {
+    setRegionDrawing({ tab: owner, scope: selectionScope });
+    setRawVolumeOpen(false);
+    setAbCompareMode(false);
+    setSurfaceOpen(false);
+    setResultId(null);
+    setResultView(null);
+    setImage(null);
+    setFocusedPanel(null);
+  };
+  const applyPreprocessEdit = (edit: PreprocessInspectorEdit): boolean => {
+    if (!preprocessSnapshot || documentSwitch.current) return false;
+    if (!("revision" in edit)) return preprocessEditor.apply(edit);
+    if (edit.revision !== preprocessSnapshot.revision) return false;
+    switch (edit.kind) {
+      case "preview":
+        if (!canPreviewPreprocess) return false;
+        if (tab !== "Process") void openWorkbenchTab("Process");
+        setFocusedPanel(null);
+        void preview();
+        return true;
+      case "whole": selectWholePreprocessImage(); return true;
+      case "draw":
+        if (tab !== "Process") void openWorkbenchTab("Process");
+        startAnalysisRegion("Process");
+        return true;
+      case "cancel-draw":
+        if (!drawingPreprocessRegion) return false;
+        setRegionDrawing(null);
+        return true;
+      case "restore-numbers":
+        if (!canRestorePreprocessNumbers) return false;
+        restoreAppliedNumbers();
+        return true;
+    }
+  };
+  const inspector = useDisplayInspectorOwner({
+    target: displayTarget, snapshot: displaySnapshot, apply: applyInspectorEdit,
+    onClosed: (reason) => {
+      setCompareDefault(false);
+      setShowToolsAlongsideInspector(false);
+      if (reason === "revoked") autoRequestToken.current++;
+      else {
+        setToolsHidden(false);
+        restoreInspectorFocus.current = "display";
+        if (reason === "unavailable") setError("The Display window closed unexpectedly. Display controls are back in the workspace.");
+      }
+    },
+  }, {
+    target: preprocessTarget, snapshot: preprocessSnapshot, apply: applyPreprocessEdit,
+    onClosed: (reason, binding) => {
+      setShowToolsAlongsideInspector(false);
+      if (reason === "revoked" || documentSwitch.current || binding.sourceId !== source?.id || binding.sourceSha256 !== source.sha256 ||
+          binding.studyGeneration !== studyEpoch || binding.documentGeneration !== documentEpoch) return;
+      setToolsHidden(false);
+      restoreInspectorFocus.current = "preprocess";
+      if (reason === "dock") return;
+      // A native interruption may discard text that the owner never received.
+      setRegionDrawing((current) => current?.tab === "Process" ? null : current);
+      reportNumberValidity("preprocess-interrupted", false);
+      setError(PREPROCESS_INTERRUPTED);
+    },
+  }, setError);
+  const preprocessDetached = inspector.detached && inspector.binding?.kind === "preprocess";
+  const displayDetached = inspector.detached && !inspector.binding?.kind;
+  const imageDetachKey = source ? `${documentEpoch}:${studyEpoch}:${source.id}:${source.sha256}` : "";
+  const imageDetachDisabled = !source || Boolean(busy) || documentSwitching || sourceIsChanging ||
+    !viewSettingsReady || source.locator_state === "relink-required" || correctionPoints.length > 0;
+  const detachImage = (atPointer?: true) => {
+    const native = window.lociImageWindows, store = viewStore.current;
+    if (!source || !native || imageDetachDisabled || imageDetachPending.current || documentSwitch.current) return;
+    const navigation = largeNavigationIntent.current;
+    const current = () => !documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
+      navigation === largeNavigationIntent.current && viewStore.current === store &&
+      agentNavigationView.current.source?.id === source.id && agentNavigationView.current.source.sha256 === source.sha256;
+    imageDetachPending.current = true;
+    void report(async () => {
+      // Capture the visible source before joining the serial persistence queue.
+      const presentation: ImageWindowPresentation = {
+        interpretation, mode: rawVolumeOpen ? "volume" : "plane", volumeDisplay,
+        channels, selection: shownSelection, projection: resolvedProjection,
+        camera: viewCamera, tool: "navigate", draft: [], annotations: [],
+        showScaleBar: preferences.viewer.showScaleBar,
+        showNavigator: preferences.viewer.showNavigator,
+      };
+      if (!await store?.flush()) throw new Error("Save the display settings before detaching this image.");
+      if (!current()) return;
+      const seed = { sourceSha256: source.sha256, presentation };
+      if (atPointer) await native.open(source.id, seed, { atPointer });
+      else await native.open(source.id, seed);
+    }, "Could not open the image window.", current).finally(() => { imageDetachPending.current = false; });
+  };
+  useLayoutEffect(() => {
+    if (inspector.binding || !restoreInspectorFocus.current) return;
+    const button = restoreInspectorFocus.current === "preprocess" ? detachPreprocessButton.current : detachDisplayButton.current;
+    restoreInspectorFocus.current = null;
+    (button && !button.disabled ? button : toolsToggle.current)?.focus();
+  });
+  const imagesHeaderRef = useRef<HTMLDivElement>(null);
+  const detachImagesButton = useRef<HTMLButtonElement>(null);
+  const restoreNavigatorFocus = useRef(false);
+  const studyNavigatorAvailable = Boolean(window.lociStudyNavigatorOwner && presenting && snapshot);
+  const studyNavigatorTarget = useMemo<StudyNavigatorTarget | null>(() => studyNavigatorAvailable && snapshot ? {
+    projectId: snapshot.project.project_id ?? null,
+    studyGeneration: studyEpoch,
+    documentGeneration: documentEpoch,
+  } : null, [studyNavigatorAvailable, snapshot?.project.project_id, studyEpoch, documentEpoch]);
+  const studyNavigatorSources = useMemo(
+    () => (snapshot ? snapshot.sources.map(trimStudyNavigatorSource) : []),
+    [snapshot?.sources],
+  );
+  const studyNavigatorResultCounts = useMemo(() => {
+    if (!snapshot) return undefined;
+    const counts: Record<string, number> = {};
+    for (const item of snapshot.sources) counts[item.id] = 0;
+    for (const result of snapshot.results) {
+      if (result.source_id in counts) counts[result.source_id] += 1;
+    }
+    return counts;
+  }, [snapshot?.sources, snapshot?.results]);
+  const studyNavigatorSnapshot = useMemo<StudyNavigatorSnapshot | null>(() => {
+    if (!studyNavigatorTarget || !snapshot) return null;
+    const knownIds = new Set(studyNavigatorSources.map((item) => item.id));
+    const active = source && knownIds.has(source.id) ? source : null;
+    return {
+      studyName: snapshot.project.title || "Study",
+      sources: studyNavigatorSources,
+      activeSourceId: active?.id ?? null,
+      activeSourceSha256: active?.sha256 ?? null,
+      selectedSourceIds: selectedSourceIds.filter((id) => knownIds.has(id)),
+      resultCounts: studyNavigatorResultCounts,
+      reorderDisabled: busy !== null || documentSwitching,
+      busy: busy !== null || documentSwitching,
+    };
+  }, [
+    studyNavigatorTarget,
+    snapshot?.project.title,
+    studyNavigatorSources,
+    source?.id,
+    source?.sha256,
+    selectedSourceIds,
+    studyNavigatorResultCounts,
+    busy,
+    documentSwitching,
+  ]);
+  const applyStudyNavigatorAction = (action: StudyNavigatorAction): boolean => {
+    if (!studyNavigatorTarget || !snapshot || documentSwitch.current) return false;
+    switch (action.kind) {
+      case "activate": {
+        const matched = snapshot.sources.find(
+          (item) => item.id === action.sourceId && item.sha256 === action.sourceSha256,
+        );
+        if (!matched) return false;
+        const syntheticEvent = {
+          metaKey: action.modifier === "toggle",
+          ctrlKey: false,
+          shiftKey: action.modifier === "range",
+        } as React.MouseEvent;
+        void handleSourceClick(matched, syntheticEvent, action.visibleSourceIds);
+        return true;
+      }
+      case "toggle-selection": {
+        const matched = snapshot.sources.find(
+          (item) => item.id === action.sourceId && item.sha256 === action.sourceSha256,
+        );
+        if (!matched) return false;
+        toggleSourceSelection(matched);
+        return true;
+      }
+      case "reorder": {
+        if (busy !== null || documentSwitching || action.order.length !== snapshot.sources.length) return false;
+        const byId = new Map(snapshot.sources.map((item) => [item.id, item]));
+        const seen = new Set<string>();
+        const nextSources: ResearchSource[] = [];
+        for (const item of action.order) {
+          const matched = byId.get(item.sourceId);
+          if (!matched || matched.sha256 !== item.sourceSha256 || seen.has(item.sourceId)) return false;
+          seen.add(item.sourceId);
+          nextSources.push(matched);
+        }
+        persistSourceOrder(nextSources);
+        return true;
+      }
+    }
+  };
+  const studyNavigator = useStudyNavigatorOwner({
+    target: studyNavigatorTarget,
+    snapshot: studyNavigatorSnapshot,
+    apply: applyStudyNavigatorAction,
+    onClosed: (reason) => {
+      if (reason === "revoked") return;
+      setSourcesHidden(false);
+      restoreNavigatorFocus.current = true;
+      if (reason === "unavailable") {
+        setError("The Images window closed unexpectedly. Image navigation is back in the workspace.");
+      }
+    },
+  }, setError);
+  const imagesDetached = studyNavigator.detached;
+  useLayoutEffect(() => {
+    if (studyNavigator.binding || !restoreNavigatorFocus.current) return;
+    restoreNavigatorFocus.current = false;
+    const button = detachImagesButton.current;
+    (button && !button.disabled ? button : sourcesToggle.current)?.focus();
+  });
+  useEffect(() => {
+    if (!drawingAnalysisRegion) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setRegionDrawing(null);
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [drawingAnalysisRegion]);
+  const inspectorOwnsTab = (displayDetached && tab === "Display") || (preprocessDetached && tab === "Process");
+  const toolsPanelHidden = toolsHidden || (inspectorOwnsTab && !showToolsAlongsideInspector);
+  toggleWorkbenchTools.current = () => {
+    if (inspectorOwnsTab) setShowToolsAlongsideInspector(toolsPanelHidden);
+    setToolsHidden(!toolsPanelHidden);
+  };
+  // Keep the keyed preview outside the Activity boundaries through verification.
+  const provisionalVolume = presenting && keepOpeningPreview && opening && <VolumeOpeningPreview
     key={openingId} payload={opening.preview} preparingVerifiedVolume={Boolean(handoff)}
     onHide={hideOpeningPreview} />;
   if (!snapshot)
     return (
       <>
+      <ReactActivity mode={presenting ? "visible" : "hidden"}>
       <main className={`image-first-empty${emptyDropActive ? " is-drag-active" : ""}`} aria-label="Loci workspace"
         inert={documentSwitching} aria-busy={documentSwitching || undefined}
         onDragEnter={(event) => {
@@ -3640,7 +4127,8 @@ export default function ResearchWorkbench({
           />
         )}
       </main>
-        {provisionalVolume}
+      </ReactActivity>
+      {provisionalVolume}
       </>
     );
   const changeSegmentationChannel = (channel: number) => {
@@ -3653,7 +4141,11 @@ export default function ResearchWorkbench({
     declaredChannels?.find((channel) => channel.index === index)?.name.trim() || source?.metadata.channel_names?.[index]?.trim() || `Channel ${index + 1}`);
   const is3D = Boolean(rawVolumeOpen || (dimensions && dimensions.z > 1));
   const canFocusPanel = Boolean(source && (["Analyze", "Workflow", "Model", "Agent", "Density", "Wound", "Morphology"].includes(tab) || (tab === "Info" && !isLargeResult(selectedResult))));
-  const panelFocused = !toolsHidden && canFocusPanel && focusedPanel === tab;
+  const panelFocused = !toolsPanelHidden && canFocusPanel && focusedPanel === tab;
+  const imageStageHidden = !toolsPanelHidden &&
+    (panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused));
+  const imageDetachTitle = correctionPoints.length ? "Finish or discard the current correction draft before detaching"
+    : "Drag outside the window or click to detach the image. This window becomes the control panel.";
   const focusLabel = panelFocused ? "Show image" : tab === "Workflow" ? "Focus workflow" : tab === "Model" || tab === "Agent" ? "Focus setup" : "Focus panel";
   const pathLabel = source?.browser_location ? sourceDisplayPath(source, snapshot.sources) : null;
   const imageTitle = pathLabel ?? source?.name ?? (snapshot.sources.length ? snapshot.project.title : "No image open");
@@ -3661,11 +4153,13 @@ export default function ResearchWorkbench({
   const showStudyTitle = source && ![source.name, sourceStem, sourceStem?.replace(/\.ome$/i, "")].includes(snapshot.project.title);
   return (
     <>
-    <main data-sources-hidden={sourcesHidden} data-tools-hidden={toolsHidden}
+    {visible && !presenting && <p role="status">Refreshing study…</p>}
+    <main data-sources-hidden={sourcesHidden} data-tools-hidden={toolsPanelHidden}
       className={`research-workbench image-first-workbench ${is3D ? "is-3d-active" : ""} ${panelFocused ? "is-panel-focused" : ""} ${tab === "Workflow" ? "is-workflow-workspace" : ""} ${tab === "Population" ? `is-statistics-workspace${statisticsFocused ? " is-statistics-focused" : ""}` : ""} ${tab === "Study" ? `is-study-workspace${studyFocused ? " is-study-focused" : ""}` : ""}`} aria-label="Research workspace"
-      inert={documentSwitching} aria-busy={documentSwitching || undefined}
+      hidden={!presenting} inert={!presenting || documentSwitching} aria-busy={documentSwitching || undefined}
       style={
         {
+          display: presenting ? undefined : "none",
           "--research-sources-width": `${sourcesWidth}px`,
           "--research-inspector-width": `${inspectorWidth}px`,
           cursor: isDraggingSources ? "col-resize" : undefined,
@@ -3688,6 +4182,7 @@ export default function ResearchWorkbench({
         }
       }}
 >
+      <ReactActivity mode={presenting ? "visible" : "hidden"}>
       <header>
         <div className="brand-lockup"><BrandMark /><span className="brand-name">Loci</span></div>
         <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
@@ -3726,8 +4221,8 @@ export default function ResearchWorkbench({
         </div></details>
         <span className="workbench-header-divider workbench-header-divider--optional" aria-hidden="true" />
         <button ref={toolsToggle} type="button" className="shell-panel-toggle" aria-controls="research-tools-pane"
-          aria-expanded={!toolsHidden} aria-label={toolsHidden ? "Show tools panel" : "Hide tools panel"}
-          title={`${toolsHidden ? "Show" : "Hide"} tools panel (${workbenchModifier()}])`} onClick={() => setToolsHidden(value => !value)}><PanelRight /></button>
+          aria-expanded={!toolsPanelHidden} aria-label={toolsPanelHidden ? "Show tools panel" : "Hide tools panel"}
+          title={`${toolsPanelHidden ? "Show" : "Hide"} tools panel (${workbenchModifier()}])`} onClick={() => toggleWorkbenchTools.current()}><PanelRight /></button>
         {onOpenSettings && (
           <button className="shell-panel-toggle" title="Appearance and preferences" aria-label="Open settings" onClick={onOpenSettings}>
             <Settings2 />
@@ -3738,7 +4233,7 @@ export default function ResearchWorkbench({
       <ContextHelp enabled={preferences.viewer.contextualHelp && !displayedError} />
       <div className="research-sources-pane" id="research-image-list" hidden={sourcesHidden}>
         <aside className="research-sources">
-          <div className="research-sources-header">
+          <div className="research-sources-header" ref={imagesHeaderRef}>
             <h2>
               Images{" "}
               {snapshot.sources.length > 0 && (
@@ -3746,6 +4241,18 @@ export default function ResearchWorkbench({
               )}
             </h2>
             <div className="research-sources-header-actions">
+              {studyNavigator.available && !imagesDetached && (
+                <DetachablePanelHandle
+                  ref={detachImagesButton}
+                  label="Detach Images"
+                  iconOnly
+                  className="research-source-icon-btn"
+                  grabArea={imagesHeaderRef}
+                  disabled={!studyNavigatorTarget || snapshot.sources.length === 0 || Boolean(studyNavigator.binding)}
+                  onDetach={() => studyNavigator.open()}
+                  onDropOutside={() => studyNavigator.open({ atPointer: true })}
+                />
+              )}
               <button
                 type="button"
                 className="research-source-icon-btn"
@@ -3777,11 +4284,16 @@ export default function ResearchWorkbench({
               <button onClick={() => void handleWorkspaceUndo()}>Undo</button>
             </div>
           )}
-          <SourceTree key={`source-browser:${studyEpoch}`} sources={snapshot.sources} activeSourceId={sourceId}
-            selectedSourceIds={selectedSourceIds} onActivate={handleSourceClick}
-            onToggleSelection={toggleSourceSelection}
-            onReorder={persistSourceOrder} reorderDisabled={busy !== null || documentSwitching}
-            dimensions={(item) => meta(item).dimensions} />
+          {imagesDetached ? (
+            <div className="study-navigator-detached">
+              <button type="button" onClick={studyNavigator.dock}><PanelLeft aria-hidden="true" />Dock Images</button>
+            </div>
+          ) : (
+            <SourceTree key={`source-browser:${studyEpoch}`} sources={snapshot.sources} activeSourceId={sourceId}
+              selectedSourceIds={selectedSourceIds} onActivate={handleSourceClick}
+              onToggleSelection={toggleSourceSelection}
+              onReorder={persistSourceOrder} reorderDisabled={busy !== null || documentSwitching} />
+          )}
           <div className="research-layers-heading"><h2><button type="button" aria-controls="research-layer-stack" aria-expanded={layersOpen}
             onClick={() => setLayersOpen(open => !open)}><ChevronRight aria-hidden="true" />Layers &amp; results</button></h2>
           {source && window.lociImageWindows && <div className="research-window-actions"><button aria-label="Restore image windows" title="Restore image windows" disabled={Boolean(busy) || documentSwitching}
@@ -3789,21 +4301,9 @@ export default function ResearchWorkbench({
               await viewStore.current?.flush();
               await window.lociImageWindows!.restore();
             }, "Could not restore the image-window layout.")}><PanelsTopLeft /></button>
-          <button aria-label="Detach image"
-            disabled={Boolean(busy) || documentSwitching || !viewSettingsReady || source.locator_state === "relink-required" || annotationDraft.length > 0 || correctionPoints.length > 0}
-            title={annotationDraft.length || correctionPoints.length ? "Finish or discard the current draft before detaching" : "Open this image in its own window; this window becomes the control panel"}
-            onClick={() => void report(async () => {
-              // Capture current React state before awaiting the serial persistence queue.
-              const presentation: ImageWindowPresentation = {
-                interpretation, mode: rawVolumeOpen ? "volume" : "plane", volumeDisplay,
-                channels, selection: shownSelection, projection: resolvedProjection,
-                camera: viewCamera, tool: "navigate", draft: [], annotations: [],
-                showScaleBar: preferences.viewer.showScaleBar,
-                showNavigator: preferences.viewer.showNavigator,
-              };
-              if (!await viewStore.current?.flush()) throw new Error("Save the display settings before detaching this image.");
-              await window.lociImageWindows!.open(source.id, { sourceSha256: source.sha256, presentation });
-            }, "Could not open the image window.")}><PictureInPicture2 /></button></div>}
+          {imageStageHidden && <DetachablePanelHandle key={imageDetachKey} label="Detach image" iconOnly
+            disabled={imageDetachDisabled} title={imageDetachTitle}
+            onDetach={() => detachImage()} onDropOutside={() => detachImage(true)} />}</div>}
           </div>
           <div id="research-layer-stack" className="research-layer-stack" hidden={!layersOpen}>
           {source && <button className={!resultId ? "selected original-layer" : "original-layer"} aria-pressed={!resultId}
@@ -3868,17 +4368,22 @@ export default function ResearchWorkbench({
           onKeyDown={handleSourcesResizeKeyDown}
         />
       </div>
-      <section id="research-image-stage" className="research-canvas" hidden={!toolsHidden && (panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused))}>
+      </ReactActivity>
+      {/* Release the viewport cache and native volume scene in the same commit as detach. */}
+      {presenting && <section id="research-image-stage" className="research-canvas" hidden={imageStageHidden}>
         <AgentPreviewComparison key={exportDraftStudy}
           preview={sharedPreview?.study === exportDraftStudy && sharedPreview.preview.source_id === source?.id &&
             sharedPreview.preview.source_sha256 === source?.sha256 ? sharedPreview.preview : null}
           sourceLabel={source ? sourceLabelForId(snapshot.sources, source.id) : "Source"} onClose={closeSharedPreview} />
         <div className="research-view-toolbar">
-          <div className="research-canvas-toolbar" role="group" aria-label="Image view">
+          <div ref={imageToolbar} className="research-canvas-toolbar" role="group" aria-label="Image view">
             {sourceResultOverlay && !rawVolumeOpen && !surfaceOpen && <div className="research-stage-context">
               <span className="result-source-link">Result on source · Z {(selectedResult?.selection?.z ?? 0) + 1}, T {(selectedResult?.selection?.t ?? 0) + 1}</span>
               {selectedResult && <span className="result-source-count">{resultSummary(selectedResult)}</span>}
             </div>}
+            {preprocessDetached && drawingPreprocessRegion && <span className="result-source-link" role="status">
+              Drag a rectangle on the image · Esc to cancel
+            </span>}
             {pendingSourceResultCanvas && <span className="result-source-link" role="status">Loading result…</span>}
             {displayedResultView && !sourceResultOverlay && !pendingSourceResultCanvas && !rawVolumeOpen && !surfaceOpen &&
               selectedResult && !isLargeResult(selectedResult) && <div className="research-stage-context">
@@ -3891,6 +4396,16 @@ export default function ResearchWorkbench({
               <button type="button" aria-pressed={imageScale === "actual"} onClick={() => setImageScale("actual")}>1:1</button>
             </div>}
             <div className="research-stage-actions">
+              {source && window.lociImageWindows && !imageStageHidden &&
+                <DetachablePanelHandle key={imageDetachKey} label="Detach image" grabArea={imageToolbar}
+                  disabled={imageDetachDisabled} title={imageDetachTitle}
+                  onDetach={() => detachImage()} onDropOutside={() => detachImage(true)} />}
+              {imagesDetached && <button type="button" aria-label="Focus Images navigator" onClick={studyNavigator.focus}>
+                <PanelLeft aria-hidden="true" /><span>Focus Images</span>
+              </button>}
+              {inspector.detached && <button type="button" aria-label={preprocessDetached ? "Focus Preprocess inspector" : "Focus Display inspector"} onClick={inspector.focus}>
+                <PictureInPicture2 aria-hidden="true" /><span>{preprocessDetached ? "Focus Preprocess" : "Focus Display"}</span>
+              </button>}
               {snapshot.sources.length >= 2 && !rawVolumeOpen && !surfaceOpen && !resultId && <button
                 type="button" aria-label="Compare A/B" aria-pressed={abCompareMode}
                 title="Compare A/B · two pinned images side by side" onClick={() => setAbCompareMode((previous) => !previous)}>
@@ -3917,9 +4432,10 @@ export default function ResearchWorkbench({
                 title="Review & Export · inspect measurements and export results" onClick={() => setTab("Info")}>
                 <ChartNoAxesColumn /><span>Review &amp; Export</span>
               </button>}
-              {resultId && <button type="button" aria-label="Show source" title="Show source image" onClick={() => {
+              {(resultId || showingPreprocessPreview) && <button type="button" aria-label="Show source" title="Show source image" onClick={() => {
                 largeNavigationIntent.current++;
                 largeSelectionIntent.current++;
+                if (showingPreprocessPreview) setImage(null);
                 setResultId(null);
                 setResultView(null);
                 setSelectedRow(null);
@@ -3927,7 +4443,7 @@ export default function ResearchWorkbench({
               }}><ArrowLeftToLine /><span>Show source</span></button>}
             </div>
           </div>
-          {tab !== "Display" && source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
+          {tab !== "Display" && !displayDetached && source && channels.length > 0 && viewSettingsReady && !sourceIsChanging && !abCompareMode && (!selectedResult || sourceResultOverlay || rawVolumeOpen) && <CompactChannelControls
             source={source} channels={channels} onChannels={setChannels}
             onSourceChannel={(c) => selectSourcePlane({ ...shownSelection, c })}
             disabled={documentSwitching || assistantFollowing || assistantFollowBusy}
@@ -4229,9 +4745,7 @@ export default function ResearchWorkbench({
             onResultPoint={sourceResultOverlay && tab === "Correction" && correctionViewReady && !busy && correctionPreview?.kind !== "vertices"
               ? (point) => setCorrectionPoints((old) => [...old, point]) : undefined}
             showRegion={!sourceResultOverlay && ["Process", "Analyze", "Quantify", "Model"].includes(tab)}
-            onRegion={drawingAnalysisRegion ? (region) => {
-              setSelection((old) => ({ ...old, ...region, level: 0 })); setDrawingAnalysisRegion(false);
-            } : undefined}
+            onRegion={drawingAnalysisRegion ? selectDrawnRegion : undefined}
             annotations={sourceAnnotations}
             draft={tab === "Annotate" || tab === "Epidermis" ? annotationDraft : []}
             drawingMode={tab === "Annotate" || tab === "Epidermis" ? annotationTool : "navigate"}
@@ -4277,12 +4791,13 @@ export default function ResearchWorkbench({
             onCrosshair={(crosshair) => void openVolume(crosshair)}
           />
         </div>}
-      </section>
-      <div id="research-tools-pane" className="research-inspector-shell" hidden={toolsHidden}>
+      </section>}
+      <ReactActivity mode={presenting ? "visible" : "hidden"}>
+      <div id="research-tools-pane" className="research-inspector-shell" hidden={toolsPanelHidden}>
       {!panelFocused && tab !== "Workflow" && tab !== "Population" && tab !== "Study" && <InspectorResizeHandle width={inspectorWidth} onChange={setInspectorWidth} />}
       <aside className="research-inspector">
         <div ref={toolHeaderRef} className={`research-tool-header${canFocusPanel ? " has-layout-tools" : ""}`}>
-          <WorkbenchTools tab={tab} onTab={openWorkbenchTab} onReveal={() => setToolsHidden(false)} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0}
+          <WorkbenchTools tab={tab} onTab={openWorkbenchTab} onReveal={() => { setToolsHidden(false); if (inspector.detached) setShowToolsAlongsideInspector(true); }} source={source} hasResult={Boolean(selectedResult)} hasStudyResults={snapshot.results.length > 0}
             layoutControl={canFocusPanel && <div className="research-panel-layout-tools" role="group" aria-label="Panel layout">
               <button type="button" aria-label={focusLabel} title={focusLabel} aria-pressed={panelFocused} aria-controls="research-image-stage"
                 onClick={() => setFocusedPanel((current) => current === tab ? null : tab)}>{panelFocused ? <Minimize2 /> : <Maximize2 />}</button>
@@ -4342,28 +4857,28 @@ export default function ResearchWorkbench({
             </div>
           </div>
         )}
-        {source && dimensions && tab === "Process" && (
+        {source && dimensions && tab === "Process" && inspector.available &&
+          <div ref={preprocessGrabArea} className="research-panel display-inspector-actions">
+            {preprocessDetached ? <button type="button" onClick={inspector.dock}><PanelRight aria-hidden="true" />Dock Preprocess</button>
+              : <DetachablePanelHandle key={imageDetachKey} ref={detachPreprocessButton}
+                label="Detach Preprocess" grabArea={preprocessGrabArea} disabled={!preprocessTarget || Boolean(inspector.binding)}
+                title={displayDetached ? "Dock Display to detach Preprocess" : undefined}
+                onDetach={() => inspector.open("preprocess")} onDropOutside={() => inspector.open("preprocess", true)} />}
+          </div>}
+        {source && dimensions && tab === "Process" && !preprocessDetached &&
           <PreprocessingScopeControl
             selection={shownSelection}
             dimensions={dimensions}
             drawing={drawingAnalysisRegion}
-            onSelectWholeImage={() => {
-              setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 }));
-              setDrawingAnalysisRegion(false);
-            }}
-            onStartDrawRegion={() => {
-              setDrawingAnalysisRegion(true);
-              setRawVolumeOpen(false);
-              setResultId(null);
-            }}
-            onCancelDrawRegion={() => setDrawingAnalysisRegion(false)}
-          />
-        )}
+            onSelectWholeImage={selectWholePreprocessImage}
+            onStartDrawRegion={() => startAnalysisRegion("Process")}
+            onCancelDrawRegion={() => setRegionDrawing(null)}
+          />}
         {source && dimensions && ["Analyze", "Quantify", "Model"].includes(tab) && <div className="analysis-scope-control">
           <span>Analysis scope</span><strong>{shownSelection.width === dimensions.x && shownSelection.height === dimensions.y ? "Whole image" : "Selected region"}</strong>
           <small>{shownSelection.width.toLocaleString()} × {shownSelection.height.toLocaleString()}{shownSelection.z_stop ? ` × ${shownSelection.z_stop - shownSelection.z} Z` : " · one plane"}</small>
-          <div><button aria-pressed={drawingAnalysisRegion} onClick={() => { setDrawingAnalysisRegion((value) => !value); setRawVolumeOpen(false); setResultId(null); }}>{drawingAnalysisRegion ? "Cancel drawing" : "Draw region"}</button>
-            <button onClick={() => { setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 })); setDrawingAnalysisRegion(false); }}>Whole image</button></div>
+          <div><button aria-pressed={drawingAnalysisRegion} onClick={() => drawingAnalysisRegion ? setRegionDrawing(null) : startAnalysisRegion(tab)}>{drawingAnalysisRegion ? "Cancel drawing" : "Draw region"}</button>
+            <button onClick={() => { setSelection((old) => ({ ...old, x: 0, y: 0, width: dimensions.x, height: dimensions.y, level: 0 })); setRegionDrawing(null); }}>Whole image</button></div>
           {drawingAnalysisRegion && <p>Drag a rectangle on the image. Right-drag still pans.</p>}
         </div>}
         {source && dimensions && (tab === "Annotate" || tab === "Epidermis") &&
@@ -4421,8 +4936,18 @@ export default function ResearchWorkbench({
           <p>Linked navigation requires the same source coordinate grid. Different images can be compared independently.</p>
           <button onClick={() => setAbCompareMode(false)}>Return to single image</button>
         </section>}
-        {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && (
-          <>{assistantFollowing && <div className="assistant-display-status" role="status"><span>Assistant display is active</span>
+        {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && displayDetached &&
+          <div className="research-panel display-inspector-actions">
+            <button type="button" onClick={inspector.dock}><PanelRight aria-hidden="true" />Dock Display</button>
+            <p>Dock Display to access image tools.</p>
+          </div>}
+        {source && dimensions && tab === "Display" && !rawVolumeOpen && !abCompareMode && !displayDetached && (
+          <>{inspector.available && <div ref={displayGrabArea} className="research-panel display-inspector-actions">
+            <DetachablePanelHandle key={imageDetachKey} ref={detachDisplayButton}
+              label="Detach Display" grabArea={displayGrabArea} disabled={!displayTarget || Boolean(inspector.binding)}
+              title={preprocessDetached ? "Dock Preprocess to detach Display" : undefined}
+              onDetach={() => inspector.open(undefined)} onDropOutside={() => inspector.open(undefined, true)} />
+          </div>}{assistantFollowing && <div className="assistant-display-status" role="status"><span>Assistant display is active</span>
             <button disabled={assistantFollowBusy} onClick={() => void followAssistantDisplay(false)}>Take control</button></div>}
           <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy || !viewSettingsReady || sourceIsChanging || documentSwitching}
             aria-busy={!viewSettingsReady || sourceIsChanging}><SourceDisplayPanel
@@ -4436,7 +4961,7 @@ export default function ResearchWorkbench({
             selection={shownSelection}
             channels={channels}
             onSelection={selectSourcePlane}
-            onChannels={(value) => { setChannels(value); setRgbMapping(null); }}
+            onChannels={editSourceChannels}
             onBeforeBatch={async () => {
               const store = viewStore.current;
               if (store && !await store.flush())
@@ -4484,26 +5009,9 @@ export default function ResearchWorkbench({
               else setSegmentationFamily("classical");
             }}
             onTask={(task) => { if (task === "volume") setRawVolumeOpen(canOpenRawVolume); else openWorkbenchTab(task); }}
-            onReset={() => { setChannels(defaultChannels); setRgbMapping(null); }}
+            onReset={resetSourceDisplay}
             onCompare={setCompareDefault}
-            onAuto={(channel) => {
-              const currentSource = source.id;
-              const token = displayToken.current;
-              const autoToken = ++autoRequestToken.current;
-              const planeKey = autoPlaneKey;
-              void report(async () => {
-                const output = await api.execute("viewer_defaults", { source_id: currentSource, t: shownSelection.t, z: shownSelection.z,
-                  ...(isRgb ? { c: shownSelection.c } : {}), auto: true }) as { source_id: string; source_sha256: string; channels: Channel[] };
-                if (displayToken.current !== token || projectionSourceId.current !== currentSource ||
-                    autoRequestToken.current !== autoToken || autoPlaneRef.current !== planeKey) return;
-                if (output.source_id !== currentSource || output.source_sha256 !== source.sha256 || !Array.isArray(output.channels))
-                  throw new Error("Auto range does not match the selected source.");
-                setChannels((old) => old.map((item) => {
-                  const auto = output.channels.find((candidate) => candidate.channel === item.channel);
-                  return auto && (channel === undefined || item.channel === channel) ? { ...item, low: auto.low, high: auto.high } : item;
-                }));
-              }, "Could not calculate a full-source range.");
-            }}
+            onAuto={autoSourceDisplay}
           /></fieldset><SourceExportPanel api={api} source={source} selection={shownSelection} channels={channels} defaultDpi={preferences.figureDpi}
             projection={resolvedProjection} onError={setError} /></>
         )}
@@ -4516,18 +5024,14 @@ export default function ResearchWorkbench({
             suspended={documentSwitching} busy={busy !== null} onBudget={(bytes) => setRecipe((old) => ({ ...old, working_bytes: bytes }))} />}
         {tab === "Process" && (
           <>
-            <PreprocessingPanel
+            {!preprocessDetached && <PreprocessingPanel
               key={numberScope}
-              source={source}
-              selection={shownSelection}
-              numberKey={numberKey}
-              configurationValid={configurationValid}
-              onNumberValidity={(valid) => reportNumberValidity("process", valid)}
-              recipe={recipe}
-              setRecipe={setRecipe}
+              editor={preprocessEditor.view}
+              spatialUnit={preprocessSpatialUnit}
+              onEdit={preprocessEditor.apply}
               onPreview={() => void preview()}
-              busy={busy !== null}
-            />
+              previewDisabled={!canPreviewPreprocess}
+            />}
             {source && (
               <div className="preprocess-inspector-memory">
                 <RecipeResourcePanel
@@ -4657,7 +5161,7 @@ export default function ResearchWorkbench({
           {segmentationFamily === "classical" && <details className="segmentation-comparison-disclosure"><summary>Compare settings on regions</summary>
           <GuidedExplorationPanel api={api} source={source} selection={shownSelection}
             busy={busy !== null || documentSwitching || sourceIsChanging} onBusy={setBusy} onSelection={setSelection}
-            onDrawRegion={() => { setDrawingAnalysisRegion(true); setResultId(null); setResultView(null); setImage(null); }}
+            onDrawRegion={() => startAnalysisRegion("Analyze")}
             onUse={(next, region) => { setRecipe(next); setSelection(region); }}
             onResult={async (target, measurements) => { await persistRevision(target, measurements); await api.getSnapshot().then(adopt); }} /></details>}
           <details className="external-labels-disclosure" onToggle={event => setMethodsOpened(event.currentTarget.open)}><summary>Reusable methods</summary>
@@ -5248,6 +5752,7 @@ export default function ResearchWorkbench({
           onSelectWorkbenchRoute={handleSelectModelLibraryRoute}
         />
       )}
+      </ReactActivity>
     </main>
       {provisionalVolume}
     </>

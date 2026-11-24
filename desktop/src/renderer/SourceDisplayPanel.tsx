@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Copy, RotateCcw, Undo2, X } from "lucide-react";
 import type {
   BatchChannelColorsResponse,
@@ -11,20 +11,22 @@ import { rawVolumeUnavailableReason } from "./raw-volume-eligibility";
 import { checkedHistogram, HistogramPlot, type SourceHistogram } from "./DisplayHistogram";
 import { BatchChannelColorsDialog } from "./BatchChannelColorsDialog";
 import { ValidatedNumberInput as NumberSetting } from "./ValidatedNumberInput";
+import type { ChannelEdit, DisplayProjection, SourceInterpretation } from "../shared/display-inspector-api";
+import { applyDisplayChannelEdit } from "./display-channel-edit";
 
-export type SourceInterpretation = "auto" | "generic" | "histology" | "fluorescence" | "volume" | "medical";
+export type { SourceInterpretation } from "../shared/display-inspector-api";
 
 export function SourceDisplayPanel({ source, selection, onSelection, channels, onChannels,
   projection, onProjection, onAuto, onReset, onCompare, interpretation, onInterpretation,
   viewReady = false,
   rgbMapping = null, onRgbMapping, onTask, api,
-  sources, selectedSourceIds, onBeforeBatch, onBatchApplied,
+  sources, selectedSourceIds, onBeforeBatch, onBatchApplied, inspector,
 }: {
-  source: ResearchSource; selection: ResearchSelection; onSelection: (value: ResearchSelection) => void;
-  channels: ViewerChannel[]; onChannels: (channels: ViewerChannel[]) => void;
-  projection: "plane" | "max" | "mean"; onProjection: (value: "plane" | "max" | "mean") => void;
+  source: ResearchSource; selection: ResearchSelection; onSelection?: (value: ResearchSelection) => void;
+  channels: ViewerChannel[]; onChannels?: (channels: ViewerChannel[]) => void;
+  projection: DisplayProjection; onProjection?: (value: DisplayProjection) => void;
   onAuto: (channel?: number) => void; onReset: () => void; onCompare: (active: boolean) => void;
-  interpretation: SourceInterpretation; onInterpretation: (value: SourceInterpretation) => void;
+  interpretation: SourceInterpretation; onInterpretation?: (value: SourceInterpretation) => void;
   viewReady?: boolean;
   onTask?: (task: "Annotate" | "Analyze" | "Quantify" | "volume") => void;
   rgbMapping?: [number, number, number] | null; onRgbMapping?: (mapping: [number, number, number] | null) => void;
@@ -32,13 +34,19 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
   sources?: ResearchSource[];
   selectedSourceIds?: string[];
   onBeforeBatch?: () => Promise<void>;
+  inspector?: {
+    onChannelEdit: (channel: number, edit: ChannelEdit) => void;
+    onPlane: (axis: "t" | "c" | "z", value: number) => void;
+    onProjection: (projection: DisplayProjection) => void;
+    restoreDrafts?: number;
+  };
   onBatchApplied?: (response: BatchChannelColorsResponse, activeChannels: ViewerChannel[] | null) => void;
 }) {
   const dimensions = source.metadata.dimensions ?? { x: source.metadata.shape?.at(-1) ?? 1,
     y: source.metadata.shape?.at(-2) ?? 1, z: source.metadata.shape?.length === 3 ? source.metadata.shape[0] : 1, t: 1, c: 1 };
   const rgbMaximum = source.metadata.channel_dtypes?.[selection.c] === "uint16" ? 65535 : 255;
   const rgb = ["RGB", "RGBA"].includes(source.metadata.sample_semantics ?? "");
-  const volumeUnavailable = rawVolumeUnavailableReason(source);
+  const volumeUnavailable = inspector ? null : rawVolumeUnavailableReason(source);
   const volumeAction = interpretation === "volume" || interpretation === "medical" && dimensions.z > 1;
   const information = useRef<HTMLDetailsElement>(null);
   const closeInformation = () => {
@@ -67,13 +75,37 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
   }, [api, source.id, source.sha256, selection.t, selection.z, selection.c, rgb, histogramRequested, playing]);
   const [mappingDraft, setMappingDraft] = useState<[number, number, number]>(rgbMapping ?? [0, 1, 2]);
   useEffect(() => { setMappingDraft(rgbMapping ?? [0, 1, 2]); }, [source.id, rgbMapping]);
-  useEffect(() => { setPlaying(false); }, [source.id]);
+  useEffect(() => { setPlaying(false); }, [source.id, source.sha256]);
+  const comparing = useRef(false);
+  const onCompareRef = useRef(onCompare);
+  onCompareRef.current = onCompare;
+  const changeComparison = useCallback((active: boolean) => {
+    if (comparing.current === active) return;
+    comparing.current = active;
+    onCompareRef.current(active);
+  }, []);
+  useEffect(() => {
+    const release = () => changeComparison(false);
+    window.addEventListener("blur", release);
+    return () => { window.removeEventListener("blur", release); release(); };
+  }, [source.id, source.sha256, changeComparison]);
+  const selectAxis = useCallback((axis: "t" | "c" | "z", value: number) => {
+    if (inspector) inspector.onPlane(axis, value);
+    else onSelection?.({ ...selection, [axis]: value });
+  }, [inspector, onSelection, selection]);
   useEffect(() => {
     if (!playing || !viewReady || dimensions.t < 2) return;
-    const timer = setTimeout(() => onSelection({ ...selection, t: (selection.t + 1) % dimensions.t }), 200);
+    const timer = setTimeout(() => selectAxis("t", (selection.t + 1) % dimensions.t), 200);
     return () => clearTimeout(timer);
-  }, [playing, viewReady, dimensions.t, selection, onSelection]);
-  const update = (channel: number, changes: Partial<ViewerChannel>) => onChannels(channels.map((item) => item.channel === channel ? { ...item, ...changes } : item));
+  }, [playing, viewReady, dimensions.t, selection.t, selectAxis]);
+  const update = (channel: number, changes: Partial<ViewerChannel>) => onChannels?.(channels.map((item) => item.channel === channel ? { ...item, ...changes } : item));
+  const editChannel = (channel: ViewerChannel, edit: ChannelEdit) => {
+    const next = applyDisplayChannelEdit(channel, edit, rgb ? rgbMaximum : null);
+    if (!next) return false;
+    if (inspector) inspector.onChannelEdit(channel.channel, edit);
+    else update(channel.channel, next);
+    return true;
+  };
   const [batchColorsOpen, setBatchColorsOpen] = useState(false);
   const [batchOpening, setBatchOpening] = useState(false);
   const [batchUndo, setBatchUndo] = useState<{
@@ -120,7 +152,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
         );
       }
       if (onBatchApplied) onBatchApplied(resp, updatedChannels);
-      else if (updatedChannels) onChannels(updatedChannels);
+      else if (updatedChannels) onChannels?.(updatedChannels);
       setUndoStatus(`Restored previous colors for ${resp.applied_count} image(s).`);
       setBatchUndo(null);
     } catch (err) {
@@ -161,7 +193,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
           <dt>Depth / time</dt><dd>{dimensions.z} Z · {dimensions.t} T</dd>
           {source.metadata.palette && <><dt>Colour storage</dt><dd>{source.metadata.palette.stored_index_dtype} palette indices, expanded through the source lookup table to uint16 RGB. Scalar fluorescence measurements are unavailable for these colour values.</dd></>}
           <dt>Calibration</dt><dd>{source.metadata.physical_calibration?.spacing?.map((value) => value.toLocaleString(undefined, { maximumSignificantDigits: 6 })).join(" × ") ?? "Not recorded"} {source.metadata.physical_calibration?.unit ?? ""}</dd></dl>
-        <label>Open as <select aria-label="Open as" value={interpretation} onChange={(event) => onInterpretation(event.target.value as SourceInterpretation)}>
+        {onInterpretation && <><label>Open as <select aria-label="Open as" value={interpretation} onChange={(event) => onInterpretation(event.target.value as SourceInterpretation)}>
           <option value="auto">Automatic</option><option value="generic">Generic image</option>
           <option value="histology">Histology</option><option value="fluorescence">Fluorescence</option>
           <option value="volume" disabled={volumeUnavailable !== null}>Volume</option><option value="medical">Medical research</option>
@@ -169,6 +201,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
         {dimensions.z === 1
           ? <small>One Z plane · a 2D source. Volume rendering requires measured depth.</small>
           : volumeUnavailable && <small>{volumeUnavailable}</small>}
+        </>}
         {!rgb && dimensions.c >= 3 && onRgbMapping && <div className="rgb-plane-mapping">
           <h3>RGB plane mapping</h3><p>Declare which scalar planes supply display red, green and blue. Analysis retains the original scalar channels.</p>
           {(["Red", "Green", "Blue"] as const).map((name, index) => <label key={name}>{name}<select aria-label={`${name} plane`} value={mappingDraft[index]} onChange={(event) => setMappingDraft((old) => old.map((value, position) => position === index ? Number(event.target.value) : value) as typeof old)}>
@@ -193,15 +226,17 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
     </div>}
     {(dimensions.z > 1 || dimensions.t > 1 || (rgb && dimensions.c > 1)) && <div className="source-axes">
       {rgb && dimensions.c > 1 && <label>Image channel<select aria-label="Image channel" value={selection.c}
-        onChange={(event) => onSelection({ ...selection, c: Number(event.target.value) })}>
+        onChange={(event) => selectAxis("c", Number(event.target.value))}>
         {Array.from({ length: dimensions.c }, (_, c) => <option key={c} value={c}>{source.metadata.channel_names?.[c] || `Channel ${c + 1}`}</option>)}
       </select></label>}
-      {dimensions.z > 1 && <label><span>Z <output>{selection.z + 1} / {dimensions.z}</output></span><input aria-label="Z plane" type="range" min={0} max={dimensions.z - 1} value={selection.z} onChange={(event) => onSelection({ ...selection, z: Number(event.target.value) })} /></label>}
-      {dimensions.t > 1 && <label><span>Time <output>{selection.t + 1} / {dimensions.t}</output><button onClick={() => setPlaying((value) => !value)}>{playing ? "Pause" : "Play"}</button></span><input aria-label="Time frame" type="range" min={0} max={dimensions.t - 1} value={selection.t} onChange={(event) => { setPlaying(false); onSelection({ ...selection, t: Number(event.target.value) }); }} /></label>}
+      {dimensions.z > 1 && <label><span>Z <output>{selection.z + 1} / {dimensions.z}</output></span><input aria-label="Z plane" type="range" min={0} max={dimensions.z - 1} value={selection.z} onChange={(event) => selectAxis("z", Number(event.target.value))} /></label>}
+      {dimensions.t > 1 && <label><span>Time <output>{selection.t + 1} / {dimensions.t}</output><button onClick={() => setPlaying((value) => !value)}>{playing ? "Pause" : "Play"}</button></span><input aria-label="Time frame" type="range" min={0} max={dimensions.t - 1} value={selection.t} onChange={(event) => { setPlaying(false); selectAxis("t", Number(event.target.value)); }} /></label>}
       {dimensions.z > 1 && <label>View <select aria-label="Display scope" value={projection} onChange={(event) => {
-        const next = event.target.value as typeof projection; onProjection(next);
+        const next = event.target.value as typeof projection;
+        if (inspector) { inspector.onProjection(next); return; }
+        onProjection?.(next);
         const { z_stop: _stop, ...plane } = selection;
-        onSelection(next === "plane" ? plane : { ...plane, z: 0, z_stop: dimensions.z });
+        onSelection?.(next === "plane" ? plane : { ...plane, z: 0, z_stop: dimensions.z });
       }}><option value="plane">Single plane</option><option value="max" disabled={rgb}>Maximum projection</option><option value="mean" disabled={rgb}>Mean projection</option></select></label>}
       {rgb && dimensions.z > 1 && <small>Colour images display one Z plane at a time.</small>}
       {projection !== "plane" && <small>Z {selection.z + 1}–{selection.z_stop} · display projection</small>}
@@ -216,13 +251,12 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
       {channels[0] && <div className="source-tone-settings">
         {histogramFor(channels[0], true)}
         <div className="research-property-grid">
-          <label>Black point<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB black point" minimum={0} maximum={rgbMaximum} rejectionHint="Black point must be below white point." value={channels[0].low ?? 0} onValue={(low) => {
-            if (low >= (channels[0].high ?? rgbMaximum)) return false; update(channels[0].channel, { low }); return true;
-          }} /></label><label>White point<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB white point" minimum={0} maximum={rgbMaximum} rejectionHint="White point must be above black point." value={channels[0].high ?? rgbMaximum} onValue={(high) => {
-            if (high <= (channels[0].low ?? 0)) return false; update(channels[0].channel, { high }); return true;
-          }} /></label><label>Gamma<NumberSetting key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
-            onValue={(gamma) => { update(channels[0].channel, { gamma }); return true; }} /></label>
-          <label>Gamma slider<input aria-label="RGB gamma slider" type="range" min={0.1} max={5} step={0.05} value={Math.min(5, channels[0].gamma)} onChange={(event) => update(channels[0].channel, { gamma: Number(event.target.value) })} /></label>
+          <label>Black point<NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB black point" minimum={0} maximum={rgbMaximum} rejectionHint="Black point must be below white point." value={channels[0].low ?? 0} onValue={(low) => editChannel(channels[0], { field: "low", value: low })} /></label>
+          <label>White point<NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB white point" minimum={0} maximum={rgbMaximum} rejectionHint="White point must be above black point." value={channels[0].high ?? rgbMaximum}
+            onValue={(high) => editChannel(channels[0], { field: "high", value: high })} /></label>
+          <label>Gamma<NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}:${selection.c}`} label="RGB gamma" value={channels[0].gamma} minimum={0.1} maximum={10}
+            onValue={(gamma) => editChannel(channels[0], { field: "gamma", value: gamma })} /></label>
+          <label>Gamma slider<input aria-label="RGB gamma slider" type="range" min={0.1} max={5} step={0.05} value={Math.min(5, channels[0].gamma)} onChange={(event) => editChannel(channels[0], { field: "gamma", value: Number(event.target.value) })} /></label>
         </div>
       </div>}</> : <>
       <div className="source-channel-heading">
@@ -267,57 +301,50 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
         <summary>
           <label className="source-channel-visibility" onClick={(event) => event.stopPropagation()}>
             <input type="checkbox" aria-label={`Channel ${channel.channel + 1} visible`} checked={channel.visible}
-              onChange={(event) => update(channel.channel, { visible: event.target.checked })} />
+              onChange={(event) => editChannel(channel, { field: "visible", value: event.target.checked })} />
           </label>
           <i aria-hidden="true" style={{ background: channel.color }} />
           <span>{source.metadata.channel_names?.[channel.channel]?.trim() || `Channel ${channel.channel + 1}`}</span>
           <ChevronDown className="source-channel-chevron" size={14} aria-hidden="true" />
         </summary>
         <div className="source-channel-settings">{histogramFor(channel)}<div className="research-property-grid">
-          <label>Low <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} low`} rejectionHint="Low must be below high." value={channel.low ?? 0} onValue={(low) => {
-          if (low >= (channel.high ?? 1)) return false; update(channel.channel, { low }); return true;
-        }} /></label><label>High <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} high`} rejectionHint="High must be above low." value={channel.high ?? 1} onValue={(high) => {
-          if (high <= (channel.low ?? 0)) return false; update(channel.channel, { high }); return true;
-        }} /></label><label>Gamma <NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} gamma`} value={channel.gamma} minimum={0.1} maximum={10} onValue={(gamma) => { update(channel.channel, { gamma }); return true; }} /></label>
+          <label>Low <NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} low`} rejectionHint="Low must be below high." value={channel.low ?? 0} onValue={(low) => editChannel(channel, { field: "low", value: low })} /></label>
+          <label>High <NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} high`} rejectionHint="High must be above low." value={channel.high ?? 1} onValue={(high) => editChannel(channel, { field: "high", value: high })} /></label>
+          <label>Gamma <NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} gamma`} value={channel.gamma} minimum={0.1} maximum={10} onValue={(gamma) => editChannel(channel, { field: "gamma", value: gamma })} /></label>
           {(source.source_kind === "medical" || interpretation === "medical") && <>
-          <label>Window<NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} window`} value={(channel.high ?? 1) - (channel.low ?? 0)} minimum={Number.MIN_VALUE} onValue={(width) => {
-            const level = ((channel.high ?? 1) + (channel.low ?? 0)) / 2;
-            if (!Number.isFinite(level - width / 2) || !Number.isFinite(level + width / 2) || level - width / 2 >= level + width / 2) return false;
-            update(channel.channel, { low: level - width / 2, high: level + width / 2 }); return true;
-          }} /></label><label>Level<NumberSetting key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} level`} value={((channel.high ?? 1) + (channel.low ?? 0)) / 2} onValue={(level) => {
-            const half = ((channel.high ?? 1) - (channel.low ?? 0)) / 2;
-            if (!Number.isFinite(level - half) || !Number.isFinite(level + half) || level - half >= level + half) return false;
-            update(channel.channel, { low: level - half, high: level + half }); return true;
-          }} /></label>
+          <label>Window<NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} window`} value={(channel.high ?? 1) - (channel.low ?? 0)} minimum={Number.MIN_VALUE}
+            onValue={(width) => editChannel(channel, { field: "window", value: width })} /></label>
+          <label>Level<NumberSetting restoreToken={inspector?.restoreDrafts} key={`${source.id}:${source.sha256}`} label={`Channel ${channel.channel + 1} level`} value={((channel.high ?? 1) + (channel.low ?? 0)) / 2}
+            onValue={(level) => editChannel(channel, { field: "level", value: level })} /></label>
           </>}
         </div>
-        <label>Colour <input aria-label={`Channel ${channel.channel + 1} color`} type="color" value={channel.color} onChange={(event) => update(channel.channel, { color: event.target.value })} /></label>
-        <label className="source-opacity">Opacity <output aria-label={`Channel ${channel.channel + 1} opacity value`}>{channel.opacity ?? 1}</output><input aria-label={`Channel ${channel.channel + 1} opacity`} type="range" min={0} max={1} step={0.01} value={channel.opacity ?? 1} onChange={(event) => update(channel.channel, { opacity: Number(event.target.value) })} /></label>
+        <label>Colour <input aria-label={`Channel ${channel.channel + 1} color`} type="color" value={channel.color} onChange={(event) => editChannel(channel, { field: "color", value: event.target.value })} /></label>
+        <label className="source-opacity">Opacity <output aria-label={`Channel ${channel.channel + 1} opacity value`}>{channel.opacity ?? 1}</output><input aria-label={`Channel ${channel.channel + 1} opacity`} type="range" min={0} max={1} step={0.01} value={channel.opacity ?? 1} onChange={(event) => editChannel(channel, { field: "opacity", value: Number(event.target.value) })} /></label>
         <button onClick={() => onAuto(channel.channel)} title="Set a stable full-image range for this channel.">Auto range</button></div>
       </details>)}
     </>}
-      <button className="compare-source" title="Hold to compare with acquisition/default display settings" onPointerDown={() => onCompare(true)} onPointerUp={() => onCompare(false)} onPointerLeave={() => onCompare(false)} onBlur={() => onCompare(false)}
-        onKeyDown={(event) => { if (event.key === " ") { event.preventDefault(); onCompare(true); } }} onKeyUp={(event) => { if (event.key === " ") onCompare(false); }}>Hold to show default display</button>
-    <details className="analysis-region-settings"><summary>Analysis region</summary><p>Used by analysis tools. X and Y are pixel offsets. X, Y, C, Z and T are zero-based here. Stop Z is exclusive. Moving the camera does not change this region.</p><div className="research-property-grid">
+      <button type="button" className="compare-source" title="Hold to compare with acquisition/default display settings" onPointerDown={(event) => { if (event.button === 0) changeComparison(true); }} onPointerUp={() => changeComparison(false)} onPointerLeave={() => changeComparison(false)} onPointerCancel={() => changeComparison(false)} onBlur={() => changeComparison(false)}
+        onKeyDown={(event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); if (!event.repeat) changeComparison(true); } }} onKeyUp={(event) => { if (event.key === " " || event.key === "Enter") changeComparison(false); }}>Hold to show default display</button>
+    {!inspector && <details className="analysis-region-settings"><summary>Analysis region</summary><p>Used by analysis tools. X and Y are pixel offsets. X, Y, C, Z and T are zero-based here. Stop Z is exclusive. Moving the camera does not change this region.</p><div className="research-property-grid">
       {(["x", "y", "width", "height", "c"] as const).map((key) => <label key={key}>{key === "c" ? "Analysis channel" : key[0].toUpperCase() + key.slice(1)}<NumberSetting
         key={`${source.id}:${source.sha256}`} integer label={key === "c" ? "C" : key[0].toUpperCase() + key.slice(1)} value={selection[key]}
         minimum={key === "width" || key === "height" ? 1 : 0}
         maximum={key === "c" ? dimensions.c - 1 : key === "x" ? dimensions.x - selection.width
           : key === "y" ? dimensions.y - selection.height : key === "width" ? dimensions.x - selection.x : dimensions.y - selection.y}
-        onValue={(value) => { onSelection({ ...selection, [key]: value }); return true; }} /></label>)}
+        onValue={(value) => { onSelection?.({ ...selection, [key]: value }); return true; }} /></label>)}
       {dimensions.z > 1 && <>
         <label>Start Z<NumberSetting key={`${source.id}:${source.sha256}`} integer label="Z" value={selection.z} minimum={0}
-          maximum={Math.min(dimensions.z - 1, (selection.z_stop ?? dimensions.z) - 1)} onValue={(z) => { onSelection({ ...selection, z }); return true; }} /></label>
+          maximum={Math.min(dimensions.z - 1, (selection.z_stop ?? dimensions.z) - 1)} onValue={(z) => { onSelection?.({ ...selection, z }); return true; }} /></label>
         <label>Depth<select aria-label="Analysis depth" value={selection.z_stop === undefined ? "plane" : "volume"} onChange={(event) => {
           const { z_stop: _stop, ...plane } = selection;
-          onSelection(event.target.value === "plane" ? plane : { ...plane, z_stop: dimensions.z });
+          onSelection?.(event.target.value === "plane" ? plane : { ...plane, z_stop: dimensions.z });
         }}><option value="plane">One plane</option><option value="volume" disabled={rgb}>Z range</option></select></label>
         {selection.z_stop !== undefined && <label>Stop Z<NumberSetting key={`${source.id}:${source.sha256}`} integer label="Z stop" value={selection.z_stop}
-          minimum={selection.z + 1} maximum={dimensions.z} onValue={(z_stop) => { onSelection({ ...selection, z_stop }); return true; }} /></label>}
+          minimum={selection.z + 1} maximum={dimensions.z} onValue={(z_stop) => { onSelection?.({ ...selection, z_stop }); return true; }} /></label>}
       </>}
       {dimensions.t > 1 && <label>Time<NumberSetting key={`${source.id}:${source.sha256}`} integer label="T" value={selection.t}
-        minimum={0} maximum={dimensions.t - 1} onValue={(t) => { onSelection({ ...selection, t }); return true; }} /></label>}
-    </div></details>
+        minimum={0} maximum={dimensions.t - 1} onValue={(t) => { onSelection?.({ ...selection, t }); return true; }} /></label>}
+    </div></details>}
       {batchColorsOpen && sources && api && (
         <BatchChannelColorsDialog
           open={batchColorsOpen}
@@ -330,7 +357,7 @@ export function SourceDisplayPanel({ source, selection, onSelection, channels, o
           onBeforeRequest={onBeforeBatch}
           onApplied={(response, updatedChannels) => {
             if (onBatchApplied) onBatchApplied(response, updatedChannels);
-            else if (updatedChannels) onChannels(updatedChannels);
+            else if (updatedChannels) onChannels?.(updatedChannels);
             setBatchUndo({
               palettes: response.previous_palettes,
               expectedRevisions: response.new_revisions,
