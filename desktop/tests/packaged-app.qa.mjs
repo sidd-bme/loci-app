@@ -406,7 +406,9 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   await until(snapshot, (s) => s.sources.length === 1 && s.results.length === saved.results.length, "reopen source with history");
   receipts.close_clear_undo = true;
   picker.sources = [path.join(root, "README.md")]; await installPickers();
-  await page.getByRole("button", { name: "Open images", exact: true }).click();
+  const addImages = page.locator('main.image-first-workbench > header')
+    .getByRole("button", { name: "Add images…", exact: true });
+  await addImages.click();
   await page.locator('.research-alert[role="alert"]').waitFor();
   await page.locator('main[aria-busy="true"]').waitFor({ state: "detached" });
   assert.match(await page.locator('.research-alert[role="alert"]').innerText(), /unsupported|not a supported|could not|cannot/i);
@@ -427,7 +429,8 @@ base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pick
   assert.equal(dismissHitTarget, true, "Dismiss must receive pointer input above the inspector");
   // Keyboard focus requests help immediately; errors must keep that overlay out of the recovery path.
   await page.keyboard.press("Tab");
-  await page.getByRole("button", { name: "Open images", exact: true }).focus();
+  await addImages.focus();
+  assert.equal(await addImages.evaluate((button) => button === document.activeElement), true);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await page.getByRole("tooltip").count(), 0, "Context help must pause during error recovery");
   await shot("05b-wrong-import");
