@@ -24,6 +24,7 @@ import App, {
 import { createProjectManifest } from "./project-manifest";
 import type { ResearchDesktopApi, ResearchSnapshot } from "../shared/research-contracts";
 import type { ImageWindowApi, ImageWindowEntry, ImageWindowState } from "../shared/image-window-api";
+import type { AgentWorkspaceApi, AgentWorkspaceState } from "../shared/agent-workspace-api";
 
 const nativeCommandMocks = vi.hoisted(() => ({ received: vi.fn(), useActualWorkspace: false }));
 
@@ -936,6 +937,47 @@ describe("Loci renderer", () => {
     expect(research.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
     await selectAppWorkbenchTool("Annotate", "Draw & measure");
     expect(await screen.findByText("Saved while viewing A")).toBeVisible();
+  });
+
+  it("republishes the same reopened study to Agent after returning from detached images without an alert", async () => {
+    window.loci = mockApi({ onWorkspaceRequested: vi.fn().mockReturnValue(() => undefined) });
+    const { snapshot } = detachedStudyFixture();
+    const binding = { projectId: snapshot.project.project_id!, studyEpoch: 0, generation: 0 };
+    let state: AgentWorkspaceState = { role: "main", status: "docked", binding, sequence: 0, snapshot: null,
+      follow: false, refreshError: null, freshness: "current", currentTargets: [], inspectablePreviewJobIds: [],
+      presentation: { selectedTaskId: null, section: "overview", draft: null }, error: null, pendingCommands: 0, pendingCommandId: null };
+    let receive!: Parameters<AgentWorkspaceApi["onState"]>[0];
+    const publish = vi.fn<AgentWorkspaceApi["publish"]>(async (target, packet) => {
+      expect(target).toEqual(state.binding);
+      state = { ...state, ...packet, binding: target ?? { ...binding, studyEpoch: 1, generation: 1 }, sequence: state.sequence + 1 };
+      return state;
+    });
+    vi.stubGlobal("lociAgentWorkspace", {
+      state: async () => state,
+      onState: (listener: typeof receive) => { receive = listener; return () => {}; },
+      onCommand: () => () => {},
+      publish,
+    });
+    render(<App />);
+    const detach = await screen.findByRole("button", { name: "Detach image" });
+    await waitFor(() => expect(detach).toBeEnabled());
+    await waitFor(() => expect(state.snapshot?.project.title).toBe("Detached study"));
+    fireEvent.click(detach);
+    await screen.findByRole("heading", { name: "Image controls" });
+    await act(async () => {
+      state = { ...state, binding: null, snapshot: null, sequence: state.sequence + 1 };
+      receive(state);
+    });
+    const before = publish.mock.calls.length;
+    snapshot.project.title = "Reopened detached study";
+    await act(async () => vi.mocked(window.loci!.onWorkspaceRequested!).mock.calls.at(-1)![0]());
+    await screen.findByRole("main", { name: "Research workspace" });
+    await waitFor(() => expect(state.snapshot?.project.title).toBe("Reopened detached study"));
+    expect(publish.mock.calls[before][0]).toBeNull();
+    expect(publish.mock.calls.slice(before).every(([, packet]) => packet.snapshot.project.title === "Reopened detached study")).toBe(true);
+    expect(state.binding?.studyEpoch).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Detach image" })).toBeEnabled();
   });
 
   it("recovers a source-bound annotation draft and refreshes committed records after the last image closes", async () => {

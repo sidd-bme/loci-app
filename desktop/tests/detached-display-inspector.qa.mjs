@@ -522,7 +522,11 @@ async function checkAdditionalDragRoutes(kidney, secondary) {
   await selectWorkbenchTool(main, "Process");
   const preprocess = await dragPanel("Detach Preprocess", "Loci · Preprocess", "right");
   await preprocess.getByRole("region", { name: "Analysis scope", exact: true }).waitFor();
-  await preprocess.getByText(`Image · ${kidney.name}`, { exact: true }).waitFor();
+  await preprocess.locator("header").getByText(kidney.name, { exact: true }).waitFor();
+  const preprocessTarget = await displayBinding(preprocess);
+  assert.equal(preprocessTarget.kind, "preprocess");
+  assert.equal(preprocessTarget.sourceId, kidney.id);
+  assert.equal(preprocessTarget.sourceSha256, kidney.sha256);
   assert.equal(await preprocess.title(), "Loci · Preprocess", "Preprocess document title");
   const pipeline = preprocess.getByRole("region", { name: "Processing pipeline", exact: true });
   await button(pipeline, "Add processing step").click();

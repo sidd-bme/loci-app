@@ -886,6 +886,7 @@ export default function ResearchWorkbench({
   preferences = DEFAULT_PREFERENCES,
 }: Props): React.JSX.Element {
   const [completedReturn, setCompletedReturn] = useState<WorkbenchReturn | null>(null);
+  const [agentBindingEpoch, setAgentBindingEpoch] = useState(0);
   const presenting = visible && completedReturn === returnRequest;
   const [snapshot, setSnapshot] = useState<ResearchSnapshot | null>(null);
   const latestSnapshot = useRef(snapshot);
@@ -1811,8 +1812,11 @@ export default function ResearchWorkbench({
         setCorrectionPreview(null);
         setRedoStack([]);
       }
-      if (next) adopt(next, nextSource?.id);
-      else setSnapshot(null);
+      if (next) {
+        adopt(next, nextSource?.id);
+        // An explicit reopen from the detached controls can keep the project ID and replace the native binding.
+        setAgentBindingEpoch(epoch => epoch + 1);
+      } else setSnapshot(null);
     }, "Could not refresh the study after returning to the workspace.", () => current)
       .finally(() => { if (current) setCompletedReturn(returnRequest); });
     return () => { current = false; };
@@ -3682,7 +3686,9 @@ export default function ResearchWorkbench({
   const agentPublishedPacket = useMemo(() => snapshot ? { snapshot, follow: followAgent, refreshError: agentRefreshError,
     currentTargets: agentCurrentTargets, inspectablePreviewJobIds: inspectableAgentPreviewIds } : null,
     [snapshot, followAgent, agentRefreshError, agentCurrentTargets, inspectableAgentPreviewIds]);
-  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, { scope: exportDraftStudy, switching: documentSwitching || !presenting, packet: agentPublishedPacket }, {
+  const agentWorkspace = useAgentWorkspaceHost(nativeAgentApi, {
+    scope: JSON.stringify([exportDraftStudy, agentBindingEpoch]), switching: documentSwitching || !presenting, packet: agentPublishedPacket,
+  }, {
     control: async (request, current) => {
       if (!current() || !api.controlAgentSession) throw new Error("Agent controls are unavailable for this study.");
       const next = await api.controlAgentSession(request);

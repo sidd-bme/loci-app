@@ -340,8 +340,8 @@ body,
 }
 
 /* The research workspace reflows in CSS pixels, including at native page zoom. */
-html:has(#root > :is(.image-first-workbench, .image-first-empty, .display-inspector-window)),
-html:has(#root > :is(.image-first-workbench, .image-first-empty, .display-inspector-window)) :is(body, #root) {
+html:has(#root > :is(.image-first-workbench, .image-first-empty, .display-inspector-window, .study-navigator-window)),
+html:has(#root > :is(.image-first-workbench, .image-first-empty, .display-inspector-window, .study-navigator-window)) :is(body, #root) {
   min-width: 0;
   min-height: 0;
 }

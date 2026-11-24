@@ -13,15 +13,7 @@ export function useAgentWorkspaceHost(api: AgentWorkspaceApi | undefined, contex
     actions: () => latest.current.actions, onState: setState, onPresentation: setPresentation,
     onReturn: () => setOpenRequest(value => value + 1), onError: value => latest.current.onError(value) }) : null, [api]);
   useEffect(() => { host?.start(); return () => host?.dispose(); }, [host]);
-  useEffect(() => {
-    let active = true;
-    if (host && !context.switching && context.packet) void host.publish().catch(error => {
-      if (active && latest.current.context.scope === context.scope && !latest.current.context.switching)
-        latest.current.onError(error instanceof Error ? error.message : "Agent workspace status could not be published.");
-    });
-    return () => { active = false; };
-  },
-    [host, context.scope, context.switching, context.packet]);
+  useEffect(() => { host?.publishPassive(); }, [host, context.scope, context.switching, context.packet]);
   return { state, presentation, openRequest,
     detached: Boolean(state && state.status !== "docked"),
     changePresentation: (next: AgentWorkspacePresentation) => host?.changePresentation(next),
