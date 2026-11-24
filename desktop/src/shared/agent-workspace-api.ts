@@ -1,3 +1,4 @@
+import type { PanelOpenOptions } from "./panel-open-options";
 import type { ResearchAgentControlRequest, ResearchAgentTargetReference, ResearchSnapshot } from "./research-contracts";
 
 /** Native-issued study/window capability; never a filesystem locator. */
@@ -50,7 +51,7 @@ export interface AgentWorkspaceFlushRequest { binding: AgentWorkspaceBinding; fl
 /** Dedicated IPC only. The popup never receives a generic research execute API. */
 export interface AgentWorkspaceApi {
   state(): Promise<AgentWorkspaceState>;
-  open(presentation?: AgentWorkspacePresentation): Promise<AgentWorkspaceState>;
+  open(presentation?: AgentWorkspacePresentation, options?: PanelOpenOptions): Promise<AgentWorkspaceState>;
   focus(): Promise<void>;
   restore(): Promise<AgentWorkspaceState>;
   dock(binding: AgentWorkspaceBinding): Promise<AgentWorkspaceState>;

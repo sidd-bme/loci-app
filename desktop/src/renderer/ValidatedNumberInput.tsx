@@ -19,24 +19,26 @@ export function useNumericValidity(onFormValidity?: (valid: boolean) => void) {
 
 /** Keeps typed text separate from the last validated value. Never coerces empty text to zero. */
 export function ValidatedNumberInput({ label, value, onValue, minimum, maximum, integer = false, rejectionHint, disabled = false,
-  commitOnChange = false, onValidity,
+  commitOnChange = false, onValidity, restoreToken,
 }: {
   label: string; value: number; onValue: (value: number) => boolean;
   minimum?: number; maximum?: number; integer?: boolean; rejectionHint?: string; disabled?: boolean;
-  commitOnChange?: boolean; onValidity?: (valid: boolean) => void;
+  commitOnChange?: boolean; onValidity?: (valid: boolean) => void; restoreToken?: number;
 }) {
   const [text, setText] = useState(String(value));
   const [error, setError] = useState("");
   const applied = useRef(value);
+  const restoration = useRef(restoreToken);
   const validityRef = useRef(onValidity);
   validityRef.current = onValidity;
   const errorId = useId();
   useEffect(() => {
     // Our accepted edit already updated applied; keep its exact typed spelling.
     // A different external value replaces the draft and clears its error.
-    if (Object.is(value, applied.current)) return;
+    if (Object.is(value, applied.current) && restoreToken === restoration.current) return;
+    restoration.current = restoreToken;
     applied.current = value; setText(String(value)); setError(""); validityRef.current?.(true);
-  }, [value]);
+  }, [value, restoreToken]);
   useEffect(() => () => { validityRef.current?.(true); }, []);
   const kind = integer ? "whole number" : "finite value";
   const rangeHint = minimum !== undefined && maximum !== undefined

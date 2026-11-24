@@ -53,6 +53,7 @@ describe("Detached agent workspace", () => {
     const next = { ...h.state, sequence: 2, snapshot: { ...h.state.snapshot!, project: { ...h.state.snapshot!.project, title: "Current study" } } };
     h.emit(next);
     expect(screen.getByText("Current study")).toBeVisible();
+    expect(document.title).toBe("Loci · Agent workspace");
     await act(async () => startup.resolve(h.state));
     expect(screen.getByText("Current study")).toBeVisible();
     expect(screen.queryByText("Source study")).not.toBeInTheDocument();

@@ -1,6 +1,6 @@
 import { isLociManualLink } from "./main/manual-links";
 import { nativeAboutIdentity } from "./main/about-identity";
-import { BrowserWindow, Menu, app, dialog, ipcMain, session, shell } from "electron";
+import { BrowserWindow, Menu, app, dialog, ipcMain, screen, session, shell } from "electron";
 import type {
   IpcMainEvent,
   IpcMainInvokeEvent,
@@ -13,6 +13,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { ImageWindowLayoutStore } from "./main/image-window-layout";
 import { ImageWindowCoordinator } from "./main/image-window-coordinator";
+import { DisplayInspectorCoordinator } from "./main/display-inspector-coordinator";
+import { StudyNavigatorCoordinator } from "./main/study-navigator-coordinator";
 import { AgentWorkspaceCoordinator } from "./main/agent-workspace-coordinator";
 import { AgentWorkspaceLayoutStore } from "./main/agent-workspace-layout";
 import { ResearchBridge } from "./main/research-bridge";
@@ -199,6 +201,8 @@ const imageWindows = new ImageWindowCoordinator(researchBridge, createImageWindo
   new ImageWindowLayoutStore(path.join(app.getPath("userData"), "image-window-layouts")));
 const agentWorkspace = new AgentWorkspaceCoordinator(researchBridge, createAgentWorkspaceWindow,
   new AgentWorkspaceLayoutStore(path.join(app.getPath("userData"), "agent-workspace-layouts")));
+const displayInspector = new DisplayInspectorCoordinator(researchBridge, createDisplayInspectorWindow);
+const studyNavigator = new StudyNavigatorCoordinator(researchBridge, createStudyNavigatorWindow);
 const engineResultResidency = new EngineResultResidencyCoordinator();
 let mainWindow: BrowserWindow | null = null;
 researchBridge.onViewDocumentChanged(() => {
@@ -3534,6 +3538,8 @@ function registerIpc(): void {
   researchBridge.register(assertTrustedSender);
   imageWindows.registerIpc();
   agentWorkspace.registerIpc();
+  displayInspector.registerIpc();
+  studyNavigator.registerIpc();
   ipcMain.handle("loci:create-project", (event, manifest: unknown) => {
     assertTrustedSender(event);
     return rendererSafeProjectOperation(
@@ -4315,6 +4321,8 @@ async function prepareApplicationQuit(window: BrowserWindow): Promise<boolean> {
     });
     return false;
   }
+  displayInspector.suspend();
+  studyNavigator.suspend();
   let confirmed = false;
   try {
     confirmed = await shouldQuitAfterProjectSave(
@@ -4328,7 +4336,11 @@ async function prepareApplicationQuit(window: BrowserWindow): Promise<boolean> {
     );
     return confirmed;
   } finally {
-    if (!confirmed) agentWorkspace.cancelShutdown();
+    if (!confirmed) {
+      agentWorkspace.cancelShutdown();
+      displayInspector.resume();
+      studyNavigator.resume();
+    }
   }
 }
 
@@ -4374,6 +4386,7 @@ function createImageWindow(): { window: BrowserWindow; load: () => Promise<void>
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
   const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
     ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
     : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
@@ -4389,6 +4402,51 @@ function createAgentWorkspaceWindow(): { window: BrowserWindow; load: () => Prom
   });
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
+  const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+  return { window, load };
+}
+
+function createDisplayInspectorWindow(owner: BrowserWindow, kind: "preprocess" | undefined): { window: BrowserWindow; load: () => Promise<void> } {
+  const bounds = owner.getBounds();
+  const { workArea } = screen.getDisplayMatching(bounds);
+  const width = 368;
+  const height = Math.min(660, workArea.height);
+  const window = new BrowserWindow({
+    x: Math.min(bounds.x + bounds.width + 12, workArea.x + workArea.width - width),
+    y: Math.min(Math.max(workArea.y, bounds.y + 24), workArea.y + workArea.height - height),
+    width, height, minWidth: 280, minHeight: 320, show: false,
+    title: kind === "preprocess" ? "Loci · Preprocess" : "Loci · Display", backgroundColor: "#121411",
+    webPreferences: { preload: path.join(__dirname, "display-inspector-preload.cjs"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
+  const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
+  return { window, load };
+}
+
+function createStudyNavigatorWindow(owner: BrowserWindow): { window: BrowserWindow; load: () => Promise<void> } {
+  const bounds = owner.getBounds();
+  const { workArea } = screen.getDisplayMatching(bounds);
+  const width = 340;
+  const height = Math.min(680, workArea.height);
+  const window = new BrowserWindow({
+    x: Math.max(workArea.x, Math.min(bounds.x - width - 12, workArea.x + workArea.width - width)),
+    y: Math.min(Math.max(workArea.y, bounds.y + 24), workArea.y + workArea.height - height),
+    width, height, minWidth: 280, minHeight: 320, show: false,
+    title: "Loci · Images", backgroundColor: "#121411",
+    webPreferences: { preload: path.join(__dirname, "study-navigator-preload.cjs"), contextIsolation: true,
+      nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.on("page-title-updated", (event) => event.preventDefault());
   const load = () => MAIN_WINDOW_VITE_DEV_SERVER_URL
     ? window.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
     : window.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
@@ -4417,6 +4475,8 @@ async function createWindow(): Promise<void> {
   mainWindow = window;
   imageWindows.registerControl(window);
   agentWorkspace.registerMain(window);
+  displayInspector.registerMain(window);
+  studyNavigator.registerMain(window);
   trackWindowState(window);
   const notifyPresentation = () => {
     if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
@@ -4526,6 +4586,8 @@ async function finishApplicationQuit(): Promise<void> {
   const cleanShutdown = (async () => {
     await imageWindows.flushLayout();
     agentWorkspace.dispose();
+    displayInspector.dispose();
+    studyNavigator.dispose();
     await researchBridge.dispose();
     await finalizeOpenBatchesForShutdown();
     for (const record of [...activeBatchRuns.values()]) {

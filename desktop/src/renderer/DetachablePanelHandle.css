@@ -1,0 +1,29 @@
+.detachable-panel-handle:not(:disabled),
+.detachable-panel-grab-area {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.detachable-panel-grab-area :where(button, a, input, select, textarea, label, summary, [tabindex]) {
+  user-select: auto;
+}
+
+.detachable-panel-handle:not(:disabled)[data-drag-state] {
+  cursor: grabbing;
+  outline: 2px solid var(--line-strong);
+  outline-offset: -2px;
+}
+
+.detachable-panel-handle:not(:disabled)[data-drag-state="outside"] {
+  outline-color: var(--mineral);
+}
+
+.detachable-panel-grab-area[data-panel-grab-state],
+.detachable-panel-grab-area:has(.detachable-panel-handle[data-drag-state]) {
+  cursor: grabbing;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detachable-panel-handle { transition: none; }
+}

@@ -22,23 +22,29 @@ import App, {
   viewerFilterParameters,
 } from "./App";
 import { createProjectManifest } from "./project-manifest";
-import type { ResearchDesktopApi } from "../shared/research-contracts";
-import type { ImageWindowApi, ImageWindowState } from "../shared/image-window-api";
+import type { ResearchDesktopApi, ResearchSnapshot } from "../shared/research-contracts";
+import type { ImageWindowApi, ImageWindowEntry, ImageWindowState } from "../shared/image-window-api";
+import type { AgentWorkspaceApi, AgentWorkspaceState } from "../shared/agent-workspace-api";
 
-const nativeCommandMocks = vi.hoisted(() => ({ received: vi.fn() }));
+const nativeCommandMocks = vi.hoisted(() => ({ received: vi.fn(), useActualWorkspace: false }));
 
-vi.mock("./ResearchWorkbench", async () => {
+vi.mock("./ResearchWorkbench", async (importOriginal) => {
+  const { default: ActualWorkbench } = await importOriginal<typeof import("./ResearchWorkbench")>();
   const { useEffect } = await import("react");
   const { subscribeWorkbenchCommands } = await import("./workbench-commands");
-  return { default: function Workbench({ onBack }: { onBack: () => void }) {
-    useEffect(() => subscribeWorkbenchCommands(nativeCommandMocks.received), []);
-    return <main aria-label="Research workspace"><button onClick={onBack}>Legacy workspace</button></main>;
-  } };
+  function MockWorkbench({ onBack, visible }: React.ComponentProps<typeof ActualWorkbench>) {
+    useEffect(() => visible ? subscribeWorkbenchCommands(nativeCommandMocks.received) : undefined, [visible]);
+    return <main aria-label="Research workspace" hidden={!visible}><button onClick={onBack}>Legacy workspace</button></main>;
+  }
+  return { default: (props: React.ComponentProps<typeof ActualWorkbench>) =>
+    nativeCommandMocks.useActualWorkspace ? <ActualWorkbench {...props} /> : <MockWorkbench {...props} /> };
 });
 
-vi.mock("./DetachedControlPanel", () => ({
-  DetachedControlPanel: () => <main aria-label="Detached controls" />,
-}));
+vi.mock("./DetachedControlPanel", async (importOriginal) => {
+  const { DetachedControlPanel } = await importOriginal<typeof import("./DetachedControlPanel")>();
+  return { DetachedControlPanel: (props: React.ComponentProps<typeof DetachedControlPanel>) =>
+    nativeCommandMocks.useActualWorkspace ? <DetachedControlPanel {...props} /> : <main aria-label="Detached controls" /> };
+});
 
 const previewDataUrl = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -641,19 +647,113 @@ function enterAnalyzeWorkspace(): void {
   fireEvent.click(modes.getByRole("tab", { name: "Analyze" }));
 }
 
+function detachedStudyFixture() {
+  nativeCommandMocks.useActualWorkspace = true;
+  vi.stubGlobal("PointerEvent", MouseEvent);
+  vi.stubGlobal("Image", class {
+    naturalWidth = 64;
+    naturalHeight = 48;
+    onload?: () => void;
+    set src(_value: string) { queueMicrotask(() => this.onload?.()); }
+  });
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    Object.fromEntries(["setTransform", "fillRect", "drawImage", "beginPath", "moveTo", "lineTo", "closePath",
+      "arc", "stroke", "fillText", "setLineDash", "save", "restore", "ellipse", "fill"].map((name) => [name, vi.fn()])
+    ) as unknown as CanvasRenderingContext2D,
+  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getBoundingClientRect").mockReturnValue(
+    { x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 480, width: 640, height: 480, toJSON: () => ({}) },
+  );
+  const sources = ["A", "B"].map((label, index) => ({
+    id: String(index + 1).repeat(32), sha256: String(index + 3).repeat(64), name: `Specimen ${label}.ome.tif`,
+    metadata: { format: "OME-TIFF", dimensions: { x: 64, y: 48, z: 1, t: 1, c: 1 } },
+  }));
+  const [a, b] = sources;
+  const snapshot: ResearchSnapshot = {
+    project: { project_id: "study", title: "Detached study" }, sources, results: [],
+    samples: [], recipes: [], displays: [], selections: [], jobs: [], operations: {},
+  };
+  const annotations = new Map<string, unknown[]>();
+  const read = async (operation: string, request: Record<string, unknown>) => {
+    const source = sources.find((item) => item.id === request.source_id);
+    if (!source) return {};
+    const binding = { source_id: source.id, source_sha256: source.sha256 };
+    const saved = annotations.get(source.id) ?? [];
+    const receipt = { ...binding, annotations: saved, revision: saved.length, can_undo: saved.length > 0, can_redo: false };
+    switch (operation) {
+      case "viewer_defaults":
+        return { ...binding, channels: [{ channel: 0, low: 0, high: 255, gamma: 1, visible: true, color: "#ffffff", opacity: 1 }] };
+      case "source_view": return { ...binding, revision: 0, state: null };
+      case "save_source_view": return { ...binding, revision: Number(request.expected_revision) + 1, state: request.state };
+      case "source_annotations": return receipt;
+      case "annotate_source": return receipt;
+      case "viewer_tile":
+        return { ...binding, image: previewDataUrl, source_extent: [64, 48], width: 64, height: 48,
+          selection: request.selection ?? { t: request.t ?? 0, z: request.z ?? 0, c: request.c ?? 0, z_stop: request.z_stop ?? null },
+          projection: request.projection ?? null };
+      default: return {};
+    }
+  };
+  const research = { getSnapshot: vi.fn(async () => structuredClone(snapshot)), execute: vi.fn(read),
+    saveAs: vi.fn(async () => structuredClone(snapshot)) };
+  window.lociResearch = research as unknown as ResearchDesktopApi;
+  const listeners = new Set<(value: ImageWindowState) => void>();
+  let state: ImageWindowState = { role: "control", target: null, views: [], pinned: false };
+  let focused: ImageWindowState["target"] = null;
+  function emit(next: ImageWindowState) {
+    state = next;
+    for (const listener of listeners) listener(state);
+    return state;
+  }
+  const imageWindows = {
+    state: vi.fn(async () => state),
+    onState: (listener: (value: ImageWindowState) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    onInteraction: () => () => undefined,
+    execute: vi.fn((_target: ImageWindowEntry["target"], op: string, request: Record<string, unknown>) => read(op, request)),
+    publish: vi.fn(async () => undefined),
+    open: vi.fn(async (sourceId: string, seed?: Parameters<ImageWindowApi["open"]>[1]) => {
+      const source = sources.find((item) => item.id === sourceId)!;
+      const label = state.views.length ? "B" : "A";
+      const target = { viewId: label, sourceId, sourceSha256: source.sha256, sessionEpoch: "study-session",
+        generation: 1, resultId: null, resultRevisionHash: null };
+      focused = target;
+      const entry: ImageWindowEntry = { target, source, label, status: "ready", initialPresentation: seed?.presentation };
+      return emit({ ...state, target: state.pinned ? state.target : target, views: [...state.views, entry] });
+    }),
+    pin: vi.fn(async (target: ImageWindowState["target"]) => emit({ ...state, target: target ?? focused, pinned: Boolean(target) })),
+    focus: vi.fn(async (target: ImageWindowState["target"]) => { focused = target; if (!state.pinned) emit({ ...state, target }); }),
+    closeAll: vi.fn(async () => { emit({ ...state, target: null, views: [], pinned: false }); }),
+  };
+  window.lociImageWindows = imageWindows as unknown as ImageWindowApi;
+  return { a, b, snapshot, annotations, research, imageWindows, emit };
+}
+
+async function selectAppWorkbenchTool(group: "Analyze" | "Annotate", label: string) {
+  const navigation = await screen.findByRole("navigation", { name: "Task groups" });
+  const tools = within(navigation.parentElement!);
+  fireEvent.click(within(navigation).getByRole("button", { name: group }));
+  fireEvent.click(tools.getByRole("combobox", { name: `${group} tool` }));
+  fireEvent.click(tools.getByRole("option", { name: label }));
+}
+
 describe("Loci renderer", () => {
   it("keeps range-track progress finite at collapsed scientific level bounds", () => {
     expect(rangeProgress(0, 0, 0)).toBe("0%");
     expect(rangeProgress(0.5, 0, 1)).toBe("50%");
     expect(rangeProgress(2, 0, 1)).toBe("100%");
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     window.localStorage.clear();
     delete window.lociResearch;
     delete window.lociImageWindows;
     nativeCommandMocks.received.mockReset();
+    nativeCommandMocks.useActualWorkspace = false;
     globalThis.ResizeObserver = class {
       observe(): void {}
       disconnect(): void {}
@@ -801,6 +901,166 @@ describe("Loci renderer", () => {
     expect(screen.getByRole("main", { name: "Detached controls" })).toBeVisible();
     expect(nativeCommandMocks.received).not.toHaveBeenCalled();
     expect(window.loci!.saveProject).not.toHaveBeenCalled();
+  });
+
+  it("keeps the real preprocessing draft through the native Window return", async () => {
+    window.loci = mockApi({ onWorkspaceRequested: vi.fn().mockReturnValue(() => undefined) });
+    const { a, annotations, research, imageWindows } = detachedStudyFixture();
+    render(<App />);
+    const workbench = await screen.findByRole("main", { name: "Research workspace" });
+    const detach = await screen.findByRole("button", { name: "Detach image" });
+    await waitFor(() => expect(detach).toBeEnabled());
+    await selectAppWorkbenchTool("Analyze", "Preprocess");
+    fireEvent.click(screen.getByRole("button", { name: "Add processing step" }));
+    fireEvent.click(screen.getByRole("button", { name: "Gaussian blur" }));
+    const sigma = screen.getByLabelText("Step 1 sigma");
+    fireEvent.change(sigma, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
+
+    fireEvent.click(detach);
+    await screen.findByRole("heading", { name: "Image controls" });
+    expect(screen.queryByRole("main", { name: "Research workspace" })).not.toBeInTheDocument();
+    expect(document.querySelector("#research-image-stage")).toBeNull();
+    expect(fireEvent.keyDown(window, { key: "[", metaKey: true })).toBe(true);
+    expect(research.getSnapshot).toHaveBeenCalledTimes(2); // Workbench and control panel.
+
+    annotations.set(a.id, [{ id: "new", kind: "point", label: "Saved while viewing A", color: "#ffd36a",
+      z: 0, t: 0, points: [{ x: 6, y: 5 }], area: null, length: null, unit: "px" }]);
+    await act(async () => vi.mocked(window.loci!.onWorkspaceRequested!).mock.calls.at(-1)![0]());
+    expect(imageWindows.closeAll).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("main", { name: "Research workspace" })).toBe(workbench);
+    expect(screen.getByLabelText("Active image")).toHaveTextContent(a.name);
+    expect(screen.getByLabelText("Step 1 sigma")).toBe(sigma);
+    expect(sigma).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
+    expect(research.getSnapshot).toHaveBeenCalledTimes(3);
+    expect(research.execute).not.toHaveBeenCalledWith("preview_recipe", expect.anything());
+    await selectAppWorkbenchTool("Annotate", "Draw & measure");
+    expect(await screen.findByText("Saved while viewing A")).toBeVisible();
+  });
+
+  it("republishes the same reopened study to Agent after returning from detached images without an alert", async () => {
+    window.loci = mockApi({ onWorkspaceRequested: vi.fn().mockReturnValue(() => undefined) });
+    const { snapshot } = detachedStudyFixture();
+    const binding = { projectId: snapshot.project.project_id!, studyEpoch: 0, generation: 0 };
+    let state: AgentWorkspaceState = { role: "main", status: "docked", binding, sequence: 0, snapshot: null,
+      follow: false, refreshError: null, freshness: "current", currentTargets: [], inspectablePreviewJobIds: [],
+      presentation: { selectedTaskId: null, section: "overview", draft: null }, error: null, pendingCommands: 0, pendingCommandId: null };
+    let receive!: Parameters<AgentWorkspaceApi["onState"]>[0];
+    const publish = vi.fn<AgentWorkspaceApi["publish"]>(async (target, packet) => {
+      expect(target).toEqual(state.binding);
+      state = { ...state, ...packet, binding: target ?? { ...binding, studyEpoch: 1, generation: 1 }, sequence: state.sequence + 1 };
+      return state;
+    });
+    vi.stubGlobal("lociAgentWorkspace", {
+      state: async () => state,
+      onState: (listener: typeof receive) => { receive = listener; return () => {}; },
+      onCommand: () => () => {},
+      publish,
+    });
+    render(<App />);
+    const detach = await screen.findByRole("button", { name: "Detach image" });
+    await waitFor(() => expect(detach).toBeEnabled());
+    await waitFor(() => expect(state.snapshot?.project.title).toBe("Detached study"));
+    fireEvent.click(detach);
+    await screen.findByRole("heading", { name: "Image controls" });
+    await act(async () => {
+      state = { ...state, binding: null, snapshot: null, sequence: state.sequence + 1 };
+      receive(state);
+    });
+    const before = publish.mock.calls.length;
+    snapshot.project.title = "Reopened detached study";
+    await act(async () => vi.mocked(window.loci!.onWorkspaceRequested!).mock.calls.at(-1)![0]());
+    await screen.findByRole("main", { name: "Research workspace" });
+    await waitFor(() => expect(state.snapshot?.project.title).toBe("Reopened detached study"));
+    expect(publish.mock.calls[before][0]).toBeNull();
+    expect(publish.mock.calls.slice(before).every(([, packet]) => packet.snapshot.project.title === "Reopened detached study")).toBe(true);
+    expect(state.binding?.studyEpoch).toBe(1);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Detach image" })).toBeEnabled();
+  });
+
+  it("recovers a source-bound annotation draft and refreshes committed records after the last image closes", async () => {
+    const { a, b, snapshot, annotations, research, imageWindows, emit } = detachedStudyFixture();
+    render(<App />);
+    await selectAppWorkbenchTool("Annotate", "Draw & measure");
+    fireEvent.click(screen.getByRole("button", { name: "Distance" }));
+    const viewport = await screen.findByLabelText(`Image viewer: ${a.name}`);
+    await waitFor(() => expect(viewport).toHaveAttribute("data-prepared", "true"));
+    const canvas = screen.getByLabelText("Source image and bound annotations");
+    const camera = JSON.parse(viewport.getAttribute("data-camera")!);
+    const expectedPoints = [{ x: 16, y: 14 }, { x: 26, y: 24 }];
+    for (const point of expectedPoints) {
+      const pointer = { button: 0, clientX: 320 + (point.x - camera.x) * camera.scale,
+        clientY: 240 + (point.y - camera.y) * camera.scale };
+      fireEvent.pointerDown(canvas, pointer);
+      fireEvent.pointerUp(canvas, pointer);
+    }
+    fireEvent.change(screen.getByLabelText("Annotation label"), { target: { value: "Unfinished distance on A" } });
+    expect(screen.getByRole("button", { name: "Save annotation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Detach image" }));
+    const heading = await screen.findByRole("heading", { name: "Image controls" });
+    const panel = within(heading.closest("main")!);
+    const first = (await imageWindows.state()).views[0];
+    expect(first.initialPresentation).toMatchObject({ tool: "navigate", draft: [] });
+    const controlsA = await panel.findByRole("region", { name: "Controls for A" });
+    fireEvent.click(await within(controlsA).findByRole("button", { name: "Distance" }));
+    const opacityA = within(controlsA).getByLabelText("A channel 1 opacity", { selector: "input" });
+    fireEvent.change(opacityA, { target: { value: "0.23" } });
+    fireEvent.change(within(controlsA).getByLabelText("Annotation label"), { target: { value: "Independent detached draft" } });
+    await act(async () => { fireEvent.click(panel.getByRole("button", { name: "Pin this target" })); });
+    const sourcePicker = panel.getByLabelText("Open source in a new view");
+    fireEvent.change(sourcePicker, { target: { value: b.id } });
+    const openSecond = panel.getByRole("button", { name: "Open selected source" });
+    expect(openSecond).toBeEnabled();
+    await act(async () => { fireEvent.click(openSecond); });
+    expect(await imageWindows.state()).toMatchObject({ target: first.target, views: [first, expect.any(Object)] });
+    fireEvent.click(panel.getByRole("button", { name: "Follow focused view" }));
+    const controlsB = await panel.findByRole("region", { name: "Controls for B" });
+    await within(controlsB).findByRole("button", { name: "Distance" });
+    expect(within(controlsB).getByLabelText("B channel 1 opacity", { selector: "input" })).toHaveValue("1");
+    expect(within(controlsB).queryByLabelText("Annotation label")).toBeNull();
+    const active = await imageWindows.state();
+    expect(active.target?.sourceId).toBe(b.id);
+    const second = active.views[1];
+    await act(async () => imageWindows.focus(first.target));
+    expect(within(controlsA).getByLabelText("Annotation label")).toHaveValue("Independent detached draft");
+    expect(opacityA).toHaveValue("0.23");
+    expect(imageWindows.execute.mock.calls.some(([, operation]) => operation === "save_source_view")).toBe(false);
+    await act(async () => imageWindows.focus(second.target));
+
+    annotations.set(a.id, [{ id: "committed", kind: "point", label: "Committed while detached", color: "#ffd36a",
+      z: 0, t: 0, points: [{ x: 10, y: 10 }], area: null, length: null, unit: "px" }]);
+    const result = { id: "c".repeat(32), source_id: b.id, source_sha256: b.sha256, kind: "segmentation",
+      revision_hash: "d".repeat(64), created_at: "2026-11-23", object_count: 1 };
+    snapshot.results.push(result);
+    act(() => { emit({ ...active, views: [second] }); emit({ ...active, target: null, views: [] }); });
+    await waitFor(() => {
+      const activeImage = screen.getByLabelText("Active image");
+      expect(activeImage).toBeVisible();
+      expect(activeImage).toHaveTextContent(b.name);
+      expect(document.querySelector(`[data-result-id="${result.id}"]`)).toBeVisible();
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^Specimen A\.ome\.tif/ }));
+    expect(await screen.findByText("Committed while detached")).toBeVisible();
+    expect(screen.getByLabelText("Annotation label")).toHaveValue("Unfinished distance on A");
+    const save = screen.getByRole("button", { name: "Save annotation" });
+    await waitFor(() => expect(save).toBeEnabled());
+    expect(research.execute).not.toHaveBeenCalledWith("annotate_source", expect.anything());
+    fireEvent.click(save);
+    await waitFor(() => expect(research.execute).toHaveBeenCalledWith("annotate_source", expect.objectContaining({
+      source_id: a.id, source_sha256: a.sha256, expected_revision: 1,
+      annotation: expect.objectContaining({ label: "Unfinished distance on A", kind: "line",
+        z: 0, t: 0 }),
+    })));
+    const writes = research.execute.mock.calls.filter(([op]) => op === "annotate_source");
+    expect(writes).toHaveLength(1);
+    const points = (writes[0][1].annotation as { points: typeof expectedPoints }).points;
+    expect(points).toHaveLength(2);
+    for (const [index, point] of points.entries()) {
+      expect(point.x).toBeCloseTo(expectedPoints[index].x, 0);
+      expect(point.y).toBeCloseTo(expectedPoints[index].y, 0);
+    }
   });
 
   it("caps freehand correction strokes while preserving their endpoints", () => {

@@ -665,6 +665,18 @@
   border-top: 1px solid var(--line);
 }
 
+.preprocess-number-recovery {
+  display: grid;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.preprocess-number-recovery p {
+  margin: 0;
+  color: var(--ink-secondary);
+  font-size: var(--type-sm);
+}
+
 .image-first-workbench .preprocess-preview-section .preprocess-preview-btn,
 .preprocess-preview-section .preprocess-preview-btn {
   display: inline-flex;

@@ -7,7 +7,7 @@ import type { RefObject } from "react";
 import { isVolumeOpeningPreviewRequestId, type VolumeOpeningPreviewEvent, type VolumeOpeningPreviewPayload } from "../shared/volume-opening-preview";
 import type { VolumeOpeningDesktopApi } from "./useVolumeOpeningPreview";
 import type { ResearchAgentSessionsSnapshot, ResearchDesktopApi, ResearchResult, ResearchSnapshot, ResearchSource, ResearchWorkspaceChange } from "../shared/research-contracts";
-import type { RawVolumeOpeningRenderStatus, RawVolumeResponse } from "./RawVolumeViewport";
+import type { RawVolumeOpeningRenderStatus, RawVolumeRefinementRequest, RawVolumeResponse } from "./RawVolumeViewport";
 import type { SavedSourceView } from "./source-view-store";
 import type { VolumeSceneAdapter, VolumeSceneSnapshot, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
 import ResearchWorkbench from "./ResearchWorkbench";
@@ -21,13 +21,18 @@ const openingRenderer = vi.hoisted(() => ({
   current: null as { volume: RawVolumeResponse | null; notify: (status: RawVolumeOpeningRenderStatus) => void } | null,
 }));
 
+const volumeRequests = vi.hoisted(() => ({
+  current: null as { volume: RawVolumeResponse | null; request: (request: RawVolumeRefinementRequest) => void; loading: boolean } | null,
+}));
+
 // Keep the Workbench, SourceViewStore and VolumeSceneBridge real. The test boundary
 // replaces GPU rendering with an explicit adapter, never the lifecycle under test.
 vi.mock("./RawVolumeViewport", async () => {
   const React = await import("react");
-  return { RawVolumeViewport: ({ volume, loading, error, sceneHandleRef, onSceneChange, labelResult, labelPayload, onOpeningVolumeRender, externalDisplay }: {
+  return { RawVolumeViewport: ({ volume, loading, error, sceneHandleRef, onSceneChange, labelResult, labelPayload, onOpeningVolumeRender, externalDisplay, onRequestRefinement }: {
     externalDisplay?: { renderMode: string };
-    volume: RawVolumeResponse | null; loading?: boolean;
+    volume: RawVolumeResponse | null; loading: boolean;
+    onRequestRefinement: (request: RawVolumeRefinementRequest) => void;
     onOpeningVolumeRender?: (status: RawVolumeOpeningRenderStatus) => void;
     error?: string | null;
     sceneHandleRef?: RefObject<VolumeSceneAdapter | null>; onSceneChange?: () => void;
@@ -36,6 +41,10 @@ vi.mock("./RawVolumeViewport", async () => {
   }) => {
     const sourceId = !loading ? volume?.context.source_id : undefined;
     const entry = sourceId ? renderers.get(sourceId) : undefined;
+    React.useEffect(() => {
+      volumeRequests.current = { volume, request: onRequestRefinement, loading };
+      return () => { volumeRequests.current = null; };
+    }, [loading, onRequestRefinement, volume]);
     React.useEffect(() => {
       if (!onOpeningVolumeRender) return;
       openingRenderer.current = { volume, notify: onOpeningVolumeRender };
@@ -217,7 +226,8 @@ function fixture() {
     if (operation === "viewer_volume") {
       if (nextRawVolume) { const pending = nextRawVolume; nextRawVolume = null; await pending.wait(); }
       return { schema_version: 1, context: { source_id: sourceId, source_sha256: source.sha256, t: request.t,
-        components: (request.channel_indices as number[]).map(channel_index => ({ channel_index })) }, focus: null };
+        components: (request.channel_indices as number[]).map(channel_index => ({ channel_index })) },
+        focus: request.focus_region_xyzxyz ? { source_extent_xyzxyz: request.focus_region_xyzxyz } : null };
     }
     if (operation === "volume_view") {
       if (nextRead) { const pending = nextRead; nextRead = null; await pending.wait(); }
@@ -314,6 +324,41 @@ function openVolumeFromFileMenu() {
   fireEvent.click(screen.getByText("File", { selector: "summary" }));
   fireEvent.click(screen.getByRole("button", { name: "Open image in 3D…" }));
 }
+
+describe("Volume refinement ordering", () => {
+  it.each(["before", "after"])("keeps the requested focus when the in-flight overview completes %s it", async (order) => {
+    const f = fixture();
+    await openVolume(f, false);
+    const initialVolume = volumeRequests.current!.volume;
+    const overview = f.holdRawVolume();
+    act(() => { volumeRequests.current!.request({ target_long_axis: 256 }); });
+    expect(overview.entered()).toBe(true);
+    expect(volumeRequests.current!.loading).toBe(true);
+
+    const focus = f.holdRawVolume();
+    const extent: NonNullable<RawVolumeRefinementRequest["focus_region_xyzxyz"]> = [4, 35, 3, 34, 0, 2];
+    act(() => { volumeRequests.current!.request({ target_long_axis: 256, focus_region_xyzxyz: extent }); });
+    expect(focus.entered()).toBe(true);
+    expect(f.execute).toHaveBeenCalledWith("viewer_volume", {
+      source_id: first.id, t: 0, channel_indices: [0], target_long_axis: 256, focus_region_xyzxyz: extent,
+    });
+
+    if (order === "before") {
+      await act(async () => { overview.release(); });
+      expect(volumeRequests.current!.volume).toBe(initialVolume);
+      expect(volumeRequests.current!.loading).toBe(true);
+    }
+    await act(async () => { focus.release(); });
+    const focused = volumeRequests.current!.volume;
+    expect(focused?.focus?.source_extent_xyzxyz).toEqual(extent);
+    expect(volumeRequests.current!.loading).toBe(false);
+
+    if (order === "after") {
+      await act(async () => { overview.release(); });
+      expect(volumeRequests.current!.volume).toBe(focused);
+    }
+  });
+});
 
 describe("Direct image open in 3D", () => {
   it.each(["native", "ome_zarr"] as const)("opens the exact imported %s source from welcome without 2D tiling", async (kind) => {

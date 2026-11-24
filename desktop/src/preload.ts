@@ -1,5 +1,7 @@
 import type { ImageWindowApi } from "./shared/image-window-api";
 import { contextBridge, ipcRenderer, webUtils } from "electron";
+import { createDisplayInspectorOwnerApi } from "./display-inspector-bridge";
+import { createStudyNavigatorOwnerApi } from "./study-navigator-bridge";
 import { createAgentWorkspaceApi } from "./agent-workspace-preload";
 
 import type { LociDesktopApi } from "./shared/contracts";
@@ -379,7 +381,9 @@ contextBridge.exposeInMainWorld("lociResearch", researchApi);
 
 const imageWindows: ImageWindowApi = {
   state: () => ipcRenderer.invoke("loci-image:state"),
-  open: (sourceId, seed) => ipcRenderer.invoke("loci-image:open", sourceId, seed),
+  open: (sourceId, seed, options) => options === undefined
+    ? ipcRenderer.invoke("loci-image:open", sourceId, seed)
+    : ipcRenderer.invoke("loci-image:open", sourceId, seed, options),
   restore: () => ipcRenderer.invoke("loci-image:restore"),
   close: (target) => ipcRenderer.invoke("loci-image:close", target),
   closeAll: () => ipcRenderer.invoke("loci-image:close-all"),
@@ -411,3 +415,8 @@ const imageWindows: ImageWindowApi = {
 };
 contextBridge.exposeInMainWorld("lociImageWindows", imageWindows);
 contextBridge.exposeInMainWorld("lociAgentWorkspace", createAgentWorkspaceApi(ipcRenderer));
+
+if (process.argv.includes("--loci-main-workspace")) {
+  contextBridge.exposeInMainWorld("lociDisplayInspectorOwner", createDisplayInspectorOwnerApi(ipcRenderer));
+  contextBridge.exposeInMainWorld("lociStudyNavigatorOwner", createStudyNavigatorOwnerApi(ipcRenderer));
+}

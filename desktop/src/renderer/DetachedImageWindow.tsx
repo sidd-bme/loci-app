@@ -127,6 +127,8 @@ export function DetachedImageWindow({ api }: { api: ImageWindowApi }) {
   }, [api, loadAttempt]);
 
   const entry = entryForState(windowState);
+  const windowTitle = entry ? `Loci · ${entry.label} · ${entry.source.name}` : "Loci · Image";
+  useEffect(() => { document.title = windowTitle; }, [windowTitle]);
   const target = entry?.target ?? null;
   const presentation = targetPresentation(presentationEvent, target);
   const reportCancelError = useCallback((caught: unknown) => {

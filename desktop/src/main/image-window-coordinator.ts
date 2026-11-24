@@ -7,6 +7,8 @@ import { HEX_32_PATTERN, type ImageViewTargetSnapshot } from "../shared/image-vi
 import type { ImageWindowEntry, ImageWindowPresentation, ImageWindowState } from "../shared/image-window-api";
 import { imageViewDimensions, validateImagePresentation, validateImageInteraction } from "./image-window-validation";
 
+import { preparePanelDrop } from "./panel-drop-position";
+
 interface Entry extends ImageWindowEntry {
   window: BrowserWindow;
   sender: WebContents;
@@ -128,7 +130,11 @@ export class ImageWindowCoordinator {
     this.notify();
   }
 
-  private async open(sourceId: unknown, restored?: ImageLayoutView, seed?: unknown): Promise<void> {
+  private ownsEntry(entry: Entry): boolean {
+    return this.entries.get(entry.target.viewId) === entry && !entry.window.isDestroyed();
+  }
+
+  private async open(sourceId: unknown, restored?: ImageLayoutView, seed?: unknown, place?: (child: BrowserWindow) => void): Promise<boolean> {
     if (this.opening) throw new Error("An image window is already opening.");
     if (typeof sourceId !== "string" || !HEX_32_PATTERN.test(sourceId)) throw new Error("Choose a valid source image.");
     if (this.entries.size >= 2) throw new Error("Two image windows are already open. Return one to the workspace first.");
@@ -136,7 +142,7 @@ export class ImageWindowCoordinator {
     const epoch = this.registry.getSessionEpoch();
     try {
       const snapshot = await this.bridge.getViewSnapshot();
-      if (epoch !== this.registry.getSessionEpoch()) throw new Error("The study changed while opening the view.");
+      if (epoch !== this.registry.getSessionEpoch()) return false;
       const source = snapshot.sources.find((item) => item.id === sourceId);
       if (!source || source.locator_state === "relink-required") throw new Error("Relink this image before opening a detached view.");
       if (restored && restored.sourceSha256 !== source.sha256) throw new Error("The saved layout source hash has changed. Open this image again.");
@@ -152,7 +158,10 @@ export class ImageWindowCoordinator {
           throw new Error("Finish the active drawing before detaching this image.");
       }
       const { window, load } = this.factory();
-      if (restored) window.setBounds(visibleImageBounds(restored.bounds, screen.getAllDisplays().map((display) => display.workArea)));
+      try {
+        if (restored) window.setBounds(visibleImageBounds(restored.bounds, screen.getAllDisplays().map((display) => display.workArea)));
+        else place?.(window);
+      } catch (error) { window.destroy(); throw error; }
       let target: ImageViewTargetSnapshot;
       try {
         target = this.registry.registerImageView(window.webContents, { sourceId: source.id, sourceSha256: source.sha256 });
@@ -174,6 +183,7 @@ export class ImageWindowCoordinator {
         if (this.entries.get(target.viewId) === entry) this.closeEntry(entry);
       });
       window.webContents.on("render-process-gone", () => {
+        if (!this.ownsEntry(entry)) return;
         this.bridge.cancelImageView(entry.target.viewId);
         entry.initialPresentation = displayForLayout(entry.presentation) ?? undefined;
         // The old command generation is revoked; the native shell remains recoverable.
@@ -184,11 +194,17 @@ export class ImageWindowCoordinator {
         this.notify();
       });
       try { await load(); }
-      catch (error) { this.closeEntry(entry); throw error; }
-      if (!this.entries.has(target.viewId)) throw new Error("The study changed while opening the view.");
+      catch (error) {
+        // The native load rejects when Return to workspace destroys its shell.
+        if (!this.ownsEntry(entry)) return false;
+        this.closeEntry(entry);
+        throw error;
+      }
+      if (!this.ownsEntry(entry)) return false;
       window.show();
       this.queueLayout();
       this.notify();
+      return true;
     } finally { this.opening = false; }
   }
 
@@ -202,26 +218,36 @@ export class ImageWindowCoordinator {
       });
     };
     handle("state", false, (event) => this.state(event.sender));
-    handle("open", true, async (event, sourceId, seed) => {
+    handle("open", true, async (event, sourceId, seed, options) => {
       if (this.restoring) throw new Error("Wait for the saved layout to finish opening.");
-      await this.open(sourceId, undefined, seed); return this.state(event.sender);
+      const place = preparePanelDrop(options);
+      await this.open(sourceId, undefined, seed, place); return this.state(event.sender);
     });
     handle("restore", true, async (event) => {
       if (this.entries.size || this.opening || this.restoring) throw new Error("Return the current image windows before restoring a layout.");
       const document = this.bridge.getViewDocumentIdentity();
       if (!document || !this.layouts) throw new Error("Open the saved study before restoring its windows.");
-      await this.flushLayout();
       const epoch = this.registry.getSessionEpoch();
-      const layout = await this.layouts.read(document);
-      if (!layout?.views.length) throw new Error("There is no saved image-window layout for this study yet.");
-      if (epoch !== this.registry.getSessionEpoch()) throw new Error("The study changed while restoring the layout.");
+      const current = () => epoch === this.registry.getSessionEpoch();
       this.restoring = true;
+      let openingLayout = false;
       try {
-        for (const view of layout.views) await this.open(view.sourceId, view);
+        await this.flushLayout();
+        if (!current()) return this.state(event.sender);
+        const layout = await this.layouts.read(document);
+        if (!current()) return this.state(event.sender);
+        if (!layout?.views.length) throw new Error("There is no saved image-window layout for this study yet.");
+        openingLayout = true;
+        for (const view of layout.views) {
+          if (!await this.open(view.sourceId, view) || !current()) return this.state(event.sender);
+        }
         if (layout.pinnedIndex !== null) this.registry.pinTarget([...this.entries.keys()][layout.pinnedIndex]);
         this.notify();
-      } catch (error) { this.revokeDocument(); throw error; }
-      finally { this.restoring = false; }
+      } catch (error) {
+        if (!current()) return this.state(event.sender);
+        if (openingLayout) this.revokeDocument();
+        throw error;
+      } finally { this.restoring = false; }
       return this.state(event.sender);
     });
     handle("close", false, (event, target) => this.closeEntry(this.target(event, target)));
@@ -242,7 +268,13 @@ export class ImageWindowCoordinator {
     handle("reopen", true, async (event, target) => {
       const entry = this.target(event, target, true);
       if (entry.status !== "crashed") throw new Error("This image window is already running.");
-      await entry.load();
+      const generation = entry.target.generation;
+      try { await entry.load(); }
+      catch (error) {
+        if (this.ownsEntry(entry)) throw error;
+        return;
+      }
+      if (!this.ownsEntry(entry) || entry.target.generation !== generation) return;
       entry.status = "ready";
       entry.window.show(); this.notify();
     });

@@ -24,6 +24,8 @@ vi.mock("electron", () => ({
   },
   screen: {
     getAllDisplays: () => [{ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }],
+    getCursorScreenPoint: () => ({ x: -800, y: 150 }),
+    getDisplayNearestPoint: () => ({ workArea: { x: -1440, y: -90, width: 1440, height: 900 } }),
   },
 }));
 
@@ -158,7 +160,7 @@ interface Harness {
   layout: { read: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> };
 }
 
-function harness(): Harness {
+function harness(navigate: (index: number) => Promise<void> = async () => undefined): Harness {
   const bridge = makeBridge();
   const control = new FakeWindow();
   const imageWindows: FakeWindow[] = [];
@@ -166,7 +168,8 @@ function harness(): Harness {
   const factory = () => {
     const window = new FakeWindow();
     window.bounds.x += imageWindows.length * 80;
-    const load = vi.fn(async () => undefined);
+    const index = imageWindows.length;
+    const load = vi.fn(() => navigate(index));
     imageWindows.push(window);
     loads.push(load);
     return {
@@ -229,6 +232,16 @@ function presentation(): ImageWindowPresentation {
 beforeEach(() => electronMocks.handlers.clear());
 
 describe("native image window coordinator authority", () => {
+  it("positions the bound image from its release before showing it", async () => {
+    const { control, imageWindows, loads } = harness();
+    const seed = { sourceSha256: HASH_A, presentation: presentation() };
+    await expect(invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true, y: 10 })).rejects.toThrow("placement");
+    expect(imageWindows).toHaveLength(0);
+    const opened = await invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true, dropPoint: { x: -1600, y: 600 } }) as ImageWindowState;
+    expect(opened.views[0].source.id).toBe(SOURCE_A);
+    expect(imageWindows[0].setBounds).toHaveBeenCalledExactlyOnceWith({ x: -1440, y: 110, width: 900, height: 700 });
+    expect(imageWindows[0].setBounds.mock.invocationCallOrder[0]).toBeLessThan(loads[0].mock.invocationCallOrder[0]);
+  });
   it("validates and transfers current display settings before creating the native window", async () => {
     const { control, imageWindows } = harness();
     const seed = presentation();
@@ -241,6 +254,7 @@ describe("native image window coordinator authority", () => {
     expect(imageWindows).toHaveLength(0);
     const opened = await invoke("open", control.webContents, SOURCE_A,
       { sourceSha256: HASH_A, presentation: seed }) as ImageWindowState;
+    expect(imageWindows[0].setBounds).not.toHaveBeenCalled();
     expect(opened.views[0].initialPresentation).toEqual(seed);
     expect(await invoke("presentation", imageWindows[0].webContents)).toMatchObject({ presentation: seed });
   });
@@ -379,6 +393,97 @@ describe("native image window coordinator authority", () => {
     await expect(invoke("execute", imageWindows[0].webContents, currentTarget, "source_view", {
       source_id: SOURCE_A,
     })).resolves.toMatchObject({ source_id: SOURCE_A });
+  });
+
+  it("ignores the late native load rejection after returning during restoration of two views", async () => {
+    let rejectLoad!: (error: Error) => void;
+    const loadPending = new Promise<void>((_resolve, reject) => { rejectLoad = reject; });
+    let navigationStarted!: () => void;
+    const secondNavigation = new Promise<void>((resolve) => { navigationStarted = resolve; });
+    const { control, imageWindows, layout } = harness(async (index) => {
+      if (index === 1) {
+        navigationStarted();
+        await loadPending;
+      }
+    });
+    layout.read.mockResolvedValueOnce({
+      schema: "loci.image-layout/v1",
+      pinnedIndex: 0,
+      views: sources.map((source) => ({ sourceId: source.id, sourceSha256: source.sha256,
+        bounds: { x: 30, y: 40, width: 900, height: 700 } })),
+    });
+    const restoring = invoke("restore", control.webContents);
+    const cancelled = expect(restoring).resolves.toMatchObject({ views: [], target: null });
+    await secondNavigation;
+    expect((await state(control.webContents)).views).toHaveLength(2);
+    await invoke("close-all", control.webContents);
+    expect(imageWindows.every((window) => window.isDestroyed())).toBe(true);
+    rejectLoad(new Error("ERR_FAILED (-2) loading 'file:///local/renderer/index.html'"));
+    await cancelled;
+    expect(imageWindows[1].show).not.toHaveBeenCalled();
+    await expect(open(control.webContents, SOURCE_B)).resolves.toMatchObject({ views: [{ source: { id: SOURCE_B } }] });
+  });
+
+  it("surfaces a genuine native load rejection while the image view is still live", async () => {
+    const { control, imageWindows } = harness(async () => {
+      throw new Error("ERR_FAILED (-2) loading 'file:///local/renderer/index.html'");
+    });
+    await expect(open(control.webContents, SOURCE_A)).rejects.toThrow("ERR_FAILED (-2)");
+    expect(imageWindows[0].isDestroyed()).toBe(true);
+    expect(imageWindows[0].show).not.toHaveBeenCalled();
+    expect((await state(control.webContents)).views).toEqual([]);
+  });
+
+  it("rolls back a partially restored layout and surfaces a live child's load error", async () => {
+    const { control, imageWindows, layout } = harness(async (index) => {
+      if (index === 1) throw new Error("ERR_FILE_NOT_FOUND loading 'file:///local/renderer/index.html'");
+    });
+    layout.read.mockResolvedValueOnce({
+      schema: "loci.image-layout/v1",
+      pinnedIndex: null,
+      views: sources.map((source) => ({ sourceId: source.id, sourceSha256: source.sha256,
+        bounds: { x: 30, y: 40, width: 900, height: 700 } })),
+    });
+    await expect(invoke("restore", control.webContents)).rejects.toThrow("ERR_FILE_NOT_FOUND");
+    expect(imageWindows).toHaveLength(2);
+    expect(imageWindows.every((window) => window.isDestroyed())).toBe(true);
+    expect((await state(control.webContents)).views).toEqual([]);
+  });
+
+  it("does not resurrect a layout read before the user returned to the workspace", async () => {
+    const { control, imageWindows, layout } = harness();
+    let resolveLayout!: (value: object) => void;
+    let startedReading!: () => void;
+    const started = new Promise<void>((resolve) => { startedReading = resolve; });
+    layout.read.mockImplementationOnce(() => {
+      startedReading();
+      return new Promise((resolve) => { resolveLayout = resolve; });
+    });
+    const restoring = invoke("restore", control.webContents);
+    const cancelled = expect(restoring).resolves.toMatchObject({ views: [] });
+    await started;
+    await invoke("close-all", control.webContents);
+    resolveLayout({ schema: "loci.image-layout/v1", pinnedIndex: null,
+      views: [{ sourceId: SOURCE_A, sourceSha256: HASH_A, bounds: { x: 30, y: 40, width: 900, height: 700 } }] });
+    await cancelled;
+    expect(imageWindows).toHaveLength(0);
+  });
+
+  it("ignores an aborted reopen without publishing a retired image-view generation", async () => {
+    const { control, imageWindows, loads } = harness();
+    await open(control.webContents, SOURCE_A);
+    imageWindows[0].webContents.emit("render-process-gone");
+    const crashed = (await state(control.webContents)).views[0];
+    let rejectLoad!: (error: Error) => void;
+    const loadPending = new Promise<void>((_resolve, reject) => { rejectLoad = reject; });
+    loads[0].mockReturnValueOnce(loadPending);
+    const reopening = invoke("reopen", control.webContents, crashed.target);
+    const cancelled = expect(reopening).resolves.toBeUndefined();
+    await invoke("close-all", control.webContents);
+    rejectLoad(new Error("ERR_FAILED (-2) loading 'file:///local/renderer/index.html'"));
+    await cancelled;
+    expect(imageWindows[0].show).toHaveBeenCalledTimes(1);
+    expect((await state(control.webContents)).views).toEqual([]);
   });
 
   it("allows two same-source views with independent identities and enforces the limit", async () => {

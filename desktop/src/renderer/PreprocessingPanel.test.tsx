@@ -2,6 +2,8 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
+import { punctaDistanceUnit, UNVERIFIED_DISTANCE_UNIT } from "./puncta-distance-unit";
+import { usePreprocessingEditor } from "./use-preprocessing-editor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   ResearchDimensions,
@@ -9,12 +11,34 @@ import type {
   ResearchSelection,
   ResearchSource,
 } from "../shared/research-contracts";
+import type { PreprocessEditorView } from "../shared/preprocess-inspector-api";
 import {
   PreprocessingPanel,
   PreprocessingScopeControl,
 } from "./PreprocessingPanel";
 
 afterEach(cleanup);
+
+it("preserves the dock trigger focus on remount and applies a later step focus request", () => {
+  const editor: PreprocessEditorView = {
+    rows: [{ id: 1, op: "gaussian", parameter: "sigma", value: 1 }],
+    selected: 1,
+    focus: { kind: "input", id: 1, revision: 1 },
+  };
+  const workspace = (view?: PreprocessEditorView) => <>
+    <button>Detach Preprocess</button>
+    {view && <PreprocessingPanel editor={view} spatialUnit="px" onEdit={vi.fn()} onPreview={vi.fn()}
+      previewDisabled={false} />}
+  </>;
+  const { rerender } = render(workspace());
+  const detach = screen.getByRole("button", { name: "Detach Preprocess" });
+  detach.focus();
+  rerender(workspace(editor));
+  expect(detach).toHaveFocus();
+
+  rerender(workspace({ ...editor, focus: { kind: "toggle", id: 1, revision: 2 } }));
+  expect(screen.getByRole("button", { name: "01 Gaussian blur" })).toHaveFocus();
+});
 
 const baseDimensions: ResearchDimensions = { t: 1, c: 1, z: 1, y: 64, x: 64 };
 const baseSelection: ResearchSelection = {
@@ -86,7 +110,6 @@ function PanelHarness({
   const [recipe, setRecipeState] = useState<ResearchRecipe>(() =>
     makeRecipe(initialSteps),
   );
-  const [panelValid, setPanelValid] = useState(true);
   const setRecipe: typeof setRecipeState = (updater) => {
     setRecipeState((prev) => {
       const next = typeof updater === "function" ? updater(prev) : updater;
@@ -94,17 +117,14 @@ function PanelHarness({
       return next;
     });
   };
+  const editor = usePreprocessingEditor(recipe, setRecipe, numberKey);
   return (
     <PreprocessingPanel
-      source={source}
-      selection={selection}
-      recipe={recipe}
-      setRecipe={setRecipe}
+      editor={editor.view}
+      onEdit={editor.apply}
+      spatialUnit={source ? punctaDistanceUnit(source, selection) : UNVERIFIED_DISTANCE_UNIT}
       onPreview={() => onPreview?.(recipe)}
-      busy={busy}
-      numberKey={numberKey}
-      onNumberValidity={setPanelValid}
-      configurationValid={externalConfigurationValid && panelValid}
+      previewDisabled={busy || !externalConfigurationValid || !editor.valid}
     />
   );
 }

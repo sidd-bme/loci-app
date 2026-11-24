@@ -85,7 +85,7 @@ import type {
 } from "../shared/foundation-contracts";
 import { MODEL_EVIDENCE_REGISTRY } from "../shared/model-registry";
 import BrandMark from "./BrandMark";
-import ResearchWorkbench from "./ResearchWorkbench";
+import ResearchWorkbench, { type WorkbenchReturn } from "./ResearchWorkbench";
 import { dispatchWorkbenchCommand, type WorkbenchCommand } from "./workbench-commands";
 import JobCenter from "./JobCenter";
 import ModelTrustCard from "./ModelTrustCard";
@@ -539,8 +539,26 @@ function PreviewHistogram({
 }
 
 export default function App(): React.JSX.Element {
-  const [imageWindowsState, setImageWindowsState] = useState<ImageWindowState | null>(null);
-  const [returnSourceId, setReturnSourceId] = useState<string | null>(null);
+  const [{ imageWindowsState, workbenchReturn }, setWindowWorkspace] = useState<{
+    imageWindowsState: ImageWindowState | null;
+    lastTarget: ImageWindowState["target"];
+    workbenchReturn: WorkbenchReturn | null;
+  }>({ imageWindowsState: null, lastTarget: null, workbenchReturn: null });
+  const adoptImageWindows = useCallback((state: ImageWindowState | null) => {
+    setWindowWorkspace((previous) => {
+      if (state?.views.length) return {
+        imageWindowsState: state,
+        lastTarget: state.target ?? previous.lastTarget,
+        workbenchReturn: previous.workbenchReturn,
+      };
+      return {
+        imageWindowsState: state,
+        lastTarget: null,
+        workbenchReturn: previous.imageWindowsState?.views.length
+          ? { target: previous.lastTarget } : previous.workbenchReturn,
+      };
+    });
+  }, []);
   const [pendingWorkbenchCommand, setPendingWorkbenchCommand] = useState<WorkbenchCommand | null>(null);
   const [nativeCommandError, setNativeCommandError] = useState<string | null>(null);
   const returningWorkbench = useRef(false);
@@ -551,14 +569,11 @@ export default function App(): React.JSX.Element {
     let receivedState = false;
     const stop = windows.onState((state) => {
       receivedState = true;
-      if (live) {
-        if (state.target) setReturnSourceId(state.target.sourceId);
-        setImageWindowsState(state);
-      }
+      if (live) adoptImageWindows(state);
     });
-    void windows.state().then((state) => { if (live && !receivedState) setImageWindowsState(state); });
+    void windows.state().then((state) => { if (live && !receivedState) adoptImageWindows(state); });
     return () => { live = false; stop(); };
-  }, []);
+  }, [adoptImageWindows]);
 
   const [researchOpen, setResearchOpen] = useState(true);
   const researchActive = useRef(researchOpen);
@@ -2206,15 +2221,14 @@ export default function App(): React.JSX.Element {
     try {
       await windows.closeAll();
       if (!researchActive.current) return;
-      if (imageWindowsState?.target) setReturnSourceId(imageWindowsState.target.sourceId);
-      setImageWindowsState(null);
+      adoptImageWindows(null);
       if (command) setPendingWorkbenchCommand(command);
     } catch {
       setNativeCommandError("Could not return to the workspace. Try Return to workspace again.");
     } finally {
       returningWorkbench.current = false;
     }
-  }, [imageWindowsState]);
+  }, [adoptImageWindows]);
 
   const routeNativeCommand = useCallback((command: WorkbenchCommand, legacy: () => unknown) => {
     if (!researchOpen || !window.lociResearch) { void legacy(); return; }
@@ -2722,21 +2736,22 @@ export default function App(): React.JSX.Element {
       onChange={setPreferences} preferenceError={preferenceError} />
   </>;
 
-  if (researchOpen && window.lociResearch && window.lociImageWindows && imageWindowsState?.views.length) {
-    return withSettings(<>{nativeErrorBanner}<DetachedControlPanel api={window.lociImageWindows} researchApi={window.lociResearch}
-      preferences={preferences} onReturn={() => setImageWindowsState(null)} /></>);
-  }
   if (researchOpen && window.lociResearch) {
+    const detached = Boolean(window.lociImageWindows && imageWindowsState?.views.length);
     return withSettings(<>
       {nativeErrorBanner}
       <ResearchWorkbench
-        initialSourceId={returnSourceId}
+        visible={!detached}
+        returnRequest={workbenchReturn}
         api={window.lociResearch}
         preferences={preferences}
         onBack={() => setResearchOpen(false)}
         onOpenSettings={() => openSettings()}
         onOpenCompute={() => openSettings("compute")}
       />
+      {detached && window.lociImageWindows && <DetachedControlPanel
+        api={window.lociImageWindows} researchApi={window.lociResearch} preferences={preferences}
+        onReturn={() => adoptImageWindows(null)} />}
     </>);
   }
 

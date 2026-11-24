@@ -3,6 +3,8 @@
  * LOCI_QA_OUTPUT_ROOT, LOCI_QA_PYTHON (numpy, tifffile, zarr installed).
  * Required pins: LOCI_QA_SOURCE_COMMIT, LOCI_QA_BIO_IMAGE_SHA256.
  * Optional LOCI_QA_SECONDARY_DISPLAY and LOCI_QA_IMAGING_ROUTES (JSON).
+ * --detached-preprocess limits the journey to the native Preprocess inspector.
+ * That mode uses numpy, tifffile and Pillow, and an existing external output root.
  * Run with Node 24.15.0. The harness substitutes only native picker responses
  * and the external URL dispatch. All app controls and conversions are real.
  */
@@ -16,13 +18,14 @@ import { _electron as electron } from "playwright";
 
 import { placeQaWindow } from "../../scripts/qa/display-placement.mjs";
 import { checkZooDestinations, checkZooLayouts } from "./model-zoo-workflows-qa.mjs";
-import { auditPreprocessingInspector } from "./preprocessing-inspector-qa.mjs";
+import { auditDetachedPreprocessing, auditPreprocessingInspector } from "./preprocessing-inspector-qa.mjs";
 import { closeSettings, escapeSettings, measureSettingsPaint, openSettings } from "./settings-qa-helpers.mjs";
 import { selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const exec = promisify(execFile);
 const desktop = path.resolve(import.meta.dirname, "..");
 const env = process.env;
+const detachedPreprocess = process.argv.includes("--detached-preprocess");
 const kidneySha256 = "83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564";
 const paperUrl = "https://doi.org/10.1101/2025.04.28.651001";
 const formats = [
@@ -55,8 +58,10 @@ const source = await fs.realpath(absolute("LOCI_QA_BIO_IMAGE"));
 const python = absolute("LOCI_QA_PYTHON");
 const outputRoot = absolute("LOCI_QA_OUTPUT_ROOT");
 await fs.mkdir(outputRoot, { recursive: true });
-const output = await fs.mkdtemp(path.join(await fs.realpath(outputRoot), "imaging-tools-"));
-const checker = path.resolve(desktop, "../scripts/fixtures/imaging_tools_qa.py");
+const realOutputRoot = await fs.realpath(outputRoot);
+const output = await fs.mkdtemp(path.join(realOutputRoot, detachedPreprocess ? "detached-preprocess-" : "imaging-tools-"));
+const checker = path.resolve(desktop, detachedPreprocess
+  ? "tests/fixtures/preprocessing-preview.py" : "../scripts/fixtures/imaging_tools_qa.py");
 const artifacts = {
   executable: path.join(bundle, "Contents/MacOS/Loci"),
   asar: path.join(bundle, "Contents/Resources/app.asar"),
@@ -77,6 +82,14 @@ const report = {
     "The model catalog is exercised without provisioning weights. The exact publisher link dispatch is intercepted in Electron.",
   ],
 };
+if (detachedPreprocess) {
+  report.mode = "detached-preprocess";
+  report.scope = [
+    "One fingerprinted public fixture and a level-zero crop on one channel and plane.",
+    "Real native inspector windows and renderer controls with a substituted file picker.",
+    "Exact cached preview PNG pixel comparison after display normalization.",
+  ];
+}
 const receipt = path.join(output, "receipt.json");
 const save = () => fs.writeFile(receipt, JSON.stringify(report, null, 2) + "\n");
 let app, page;
@@ -99,24 +112,29 @@ async function requireFocus(locator, message) {
 const redacted = value => String(value).replaceAll(source, "<public fixture>").replaceAll(bundle, "<app bundle>")
   .replaceAll(output, "<QA output>").replaceAll(desktop, "<desktop checkout>");
 
-async function capture(label, { nativeWindow = false } = {}) {
-  await paint();
+async function capture(label, { nativeWindow = false, target = page } = {}) {
+  if (target === page) await paint();
   const filename = `${label}.png`;
   let bytes;
   if (nativeWindow) {
     // Chromium CSS screenshots crop the compositor surface when Electron page zoom is above 100%.
-    const bitmap = await app.evaluate(async ({ BrowserWindow }) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      const frame = await win.webContents.capturePage();
-      const [width, height] = win.getContentSize();
-      return { png: frame.toPNG().toString("base64"), width, height };
-    });
+    const window = await app.browserWindow(target);
+    let bitmap;
+    try {
+      bitmap = await window.evaluate(async win => {
+        const frame = await win.webContents.capturePage();
+        const [width, height] = win.getContentSize();
+        return { png: frame.toPNG().toString("base64"), width, height };
+      });
+    } finally {
+      await window.dispose();
+    }
     bytes = Buffer.from(bitmap.png, "base64");
     assert.ok(bytes.readUInt32BE(16) >= bitmap.width && bytes.readUInt32BE(20) >= bitmap.height,
       "Native capture must include the complete workbench content area");
     await fs.writeFile(path.join(output, filename), bytes);
   } else {
-    bytes = await page.screenshot({ path: path.join(output, filename), scale: "css", animations: "allow" });
+    bytes = await target.screenshot({ path: path.join(output, filename), scale: "css", animations: "allow" });
   }
   assert.ok(bytes.length > 2000, `Capture has little visible content: ${label}`);
   report.screenshots.push({ filename, sha256: createHash("sha256").update(bytes).digest("hex"),
@@ -581,15 +599,21 @@ try {
     .map(async ([key, file]) => [key, await sha256(file)])));
   report.harness_sha256 = await sha256(import.meta.filename);
   report.checker_sha256 = await sha256(checker);
-  const mediaChecker = path.resolve(desktop, "../scripts/fixtures/model_zoo_media.py");
-  const media = await exec(python, [mediaChecker]);
-  report.model_zoo_source_media = JSON.parse(media.stdout);
-  report.media_checker_sha256 = await sha256(mediaChecker);
+  if (detachedPreprocess) {
+    report.preprocess_driver_sha256 = await sha256(path.join(desktop, "tests/preprocessing-inspector-qa.mjs"));
+  }
+  if (!detachedPreprocess) {
+    const mediaChecker = path.resolve(desktop, "../scripts/fixtures/model_zoo_media.py");
+    const media = await exec(python, [mediaChecker]);
+    report.model_zoo_source_media = JSON.parse(media.stdout);
+    report.media_checker_sha256 = await sha256(mediaChecker);
+  }
   report.fixture.size_bytes = (await fs.stat(source)).size;
   report.fixture.sha256_before = await sha256(source);
   assert.equal(report.fixture.sha256_before, kidneySha256);
+  const readers = detachedPreprocess ? "numpy,tifffile,PIL" : "numpy,tifffile,zarr";
   const { stdout } = await exec(python, ["-c",
-    "import json,numpy,tifffile,zarr; print(json.dumps({m.__name__:m.__version__ for m in [numpy,tifffile,zarr]}))"]);
+    `import json,${readers}; print(json.dumps({m.__name__:m.__version__ for m in [${readers}]}))`]);
   report.independent_reader_versions = JSON.parse(stdout);
   await save();
 
@@ -628,7 +652,7 @@ try {
       evidence.external.push(url === paperUrl ? url : "<unexpected URL>");
       if (url !== paperUrl) throw new Error("Unexpected external dispatch blocked by imaging QA");
     };
-  }, { source, output, formats: formats.map(format => format.id), paperUrl });
+  }, { source, output, formats: detachedPreprocess ? [] : formats.map(format => format.id), paperUrl });
 
   report.stage = "render-kidney";
   const snapshot = await timed("open-and-render-kidney", async () => {
@@ -641,6 +665,7 @@ try {
     for (let plane = 0; plane < 8; plane++) await z.press("ArrowRight");
     assert.equal(await z.inputValue(), "8", "Expected the public middle plane");
     report.fixture.rendered_z_index = 8;
+    if (detachedPreprocess) return value;
     const displayColors = ["#598cfa", "#64d88b", "#ee6462"];
     for (const [index, color] of displayColors.entries()) {
       const channel = index + 1;
@@ -665,26 +690,33 @@ try {
   const entry = snapshot.sources[0];
   assert.match(entry.id, /^[a-f0-9]{32}$/u);
   assert.equal(entry.locator_state ?? null, null, "The original source must be linked");
-  await capture("01-public-kidney-rendered");
-
-  report.stage = "settings-guide";
-  await auditSettingsAndGuide(report.rendered_source);
-  await save();
-  report.stage = "model-library";
-  await auditModelLibrary();
-  await save();
-  report.stage = "conversion";
-  await convertBoth(entry.id, snapshot.project.project_id);
-  report.stage = "preprocessing";
-  report.preprocessing = await auditPreprocessingInspector(page, entry.id, capture);
+  if (detachedPreprocess) {
+    report.stage = "detached-preprocess";
+    report.preprocessing = { previews: [] };
+    await auditDetachedPreprocessing({ app, page, entry, capture, evidence: report.preprocessing,
+      output, source, python, save,
+      onPageError: error => report.renderer_errors.push(redacted(error.message)) });
+  } else {
+    await capture("01-public-kidney-rendered");
+    report.stage = "settings-guide";
+    await auditSettingsAndGuide(report.rendered_source);
+    await save();
+    report.stage = "model-library";
+    await auditModelLibrary();
+    await save();
+    report.stage = "conversion";
+    await convertBoth(entry.id, snapshot.project.project_id);
+    report.stage = "preprocessing";
+    report.preprocessing = await auditPreprocessingInspector(page, entry.id, capture);
+  }
 
   report.stage = "final-invariants";
   report.native_actions = await app.evaluate(() => globalThis.__lociImagingTools);
   assert.deepEqual(report.native_actions.pickers, [
     { type: "open", title: "Add microscopy or medical images" },
-    ...formats.map(format => ({ type: "save", title: "Save converted image", folder: format.id })),
+    ...(detachedPreprocess ? [] : formats.map(format => ({ type: "save", title: "Save converted image", folder: format.id }))),
   ]);
-  assert.deepEqual(report.native_actions.external, [paperUrl]);
+  assert.deepEqual(report.native_actions.external, detachedPreprocess ? [] : [paperUrl]);
   assert.deepEqual(report.blocked_requests, [], "A local journey attempted HTTP(S) renderer requests");
   assert.deepEqual(report.renderer_errors, []);
   report.fixture.sha256_after = await sha256(source);

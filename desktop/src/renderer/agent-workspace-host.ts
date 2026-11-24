@@ -1,6 +1,7 @@
 import type { AgentWorkspaceApi, AgentWorkspaceBinding, AgentWorkspaceCommand, AgentWorkspaceNavigationRequest,
   AgentWorkspacePresentation, AgentWorkspacePublishedState, AgentWorkspaceState } from "../shared/agent-workspace-api";
 import type { ResearchAgentControlRequest, ResearchSnapshot } from "../shared/research-contracts";
+import type { PanelOpenOptions } from "../shared/panel-open-options";
 
 const EMPTY: AgentWorkspacePresentation = { selectedTaskId: null, section: "overview", draft: null };
 const key = (binding: AgentWorkspaceBinding | null): string => binding
@@ -66,11 +67,11 @@ export class AgentWorkspaceHost {
   constructor(private readonly options: Options) {}
 
   start(): void {
-    const lifecycle = ++this.lifecycle, scope = this.options.context().scope;
-    this.alive = true; this.queue = Promise.resolve(); this.state = null;
+    const lifecycle = ++this.lifecycle;
+    this.alive = true; this.queue = Promise.resolve(); this.state = null; this.boundScope = null;
     this.unlisten = [this.options.api.onState(state => { if (this.live(lifecycle)) this.accept(state); }),
       this.options.api.onCommand(command => { if (this.live(lifecycle)) void this.command(command); })];
-    void this.publish().catch(error => { if (this.live(lifecycle) && this.options.context().scope === scope) this.report(error); });
+    this.publishPassive();
   }
   dispose(): void {
     this.alive = false; this.lifecycle++; this.activeCommand = null; this.presentationWrites = 0;
@@ -78,20 +79,24 @@ export class AgentWorkspaceHost {
   }
   private live(lifecycle: number): boolean { return this.alive && lifecycle === this.lifecycle; }
   private report(error: unknown): void { if (this.alive) this.options.onError(failure(error)); }
-  private context(): AgentHostContext {
-    const context = this.options.context();
+  private readyContext(context = this.options.context()): AgentHostContext | null {
     if (context.scope !== this.scope) { this.scope = context.scope; this.blockedScope = null; this.activeCommand = null; }
-    if (!this.alive || context.switching || this.blockedScope === context.scope)
-      throw new Error("The study changed or is still opening.");
+    return this.alive && !context.switching && this.blockedScope !== context.scope ? context : null;
+  }
+  private context(): AgentHostContext {
+    const context = this.readyContext();
+    if (!context) throw new Error("The study changed or is still opening.");
     return context;
   }
-  private accept(next: AgentWorkspaceState): void {
+  private accept(next: AgentWorkspaceState, observedScope = this.options.context().scope): void {
     if (!this.alive || next.role !== "main" || (this.state && next.sequence < this.state.sequence)) return;
     const previous = this.state;
     const rebound = key(previous?.binding ?? null) !== key(next.binding);
     if (previous?.binding && (!next.binding || previous.binding.studyEpoch !== next.binding.studyEpoch || previous.binding.projectId !== next.binding.projectId)) {
-      this.blockedScope = this.boundScope ?? this.scope ?? this.options.context().scope; this.boundScope = null; this.activeCommand = null;
+      this.blockedScope = this.boundScope; this.boundScope = null; this.activeCommand = null;
     }
+    // Associate the binding when observed, even if its first publication never acknowledges.
+    if (next.binding && this.boundScope === null) this.boundScope = observedScope;
     this.state = next;
     if (rebound || this.presentationWrites === 0) {
       this.presentation = clone(next.presentation); this.options.onPresentation(clone(next.presentation));
@@ -109,23 +114,34 @@ export class AgentWorkspaceHost {
     return next;
   }
   private async nativeState(): Promise<AgentWorkspaceState> {
-    const lifecycle = this.lifecycle;
+    const lifecycle = this.lifecycle, scope = this.options.context().scope;
     const next = await this.options.api.state();
     if (!this.live(lifecycle)) throw new Error("The agent workspace renderer was replaced.");
-    this.accept(next);
+    this.accept(next, scope);
     if (!this.state || this.state.role !== "main") throw new Error("The main agent workspace is unavailable.");
     return this.state;
   }
-  publish(snapshot?: ResearchSnapshot): Promise<void> {
+  publishPassive(): void {
+    const { scope, packet } = this.options.context(), lifecycle = this.lifecycle;
+    const read = () => {
+      const latest = this.options.context();
+      if (!packet || !this.live(lifecycle) || latest.scope !== scope || latest.packet !== packet) return null;
+      return this.readyContext(latest);
+    };
+    if (read()) void this.publish(undefined, read).catch(error => { if (read()) this.report(error); });
+  }
+  private publish(snapshot?: ResearchSnapshot, passiveContext?: () => AgentHostContext | null): Promise<void> {
     const requested = this.options.context().scope, lifecycle = this.lifecycle;
+    const current = () => {
+      const context = passiveContext ? passiveContext() : this.context();
+      return context?.scope === requested && context.packet ? context : null;
+    };
     return this.enqueue(async () => {
-      let context = this.context();
-      if (context.scope !== requested || !context.packet) return;
+      if (!current()) return;
       if (!this.state) await this.nativeState();
-      context = this.context();
-      if (context.scope !== requested || !context.packet) return;
+      let context = current();
       for (let attempt = 0; attempt < 2; attempt++) {
-        const native = this.state!, currentPacket = context.packet;
+        const native = this.state!, currentPacket = context?.packet;
         if (!currentPacket) return;
         const packet: AgentWorkspacePublishedState = { ...currentPacket, ...(snapshot ? { snapshot } : {}),
           ...(native.status === "docked" ? { presentation: clone(this.presentation) } : {}) };
@@ -133,11 +149,15 @@ export class AgentWorkspaceHost {
           throw new Error("The native study binding does not match the current snapshot.");
         try {
           const next = await this.options.api.publish(native.binding, packet);
-          if (this.options.context().scope !== requested || !this.live(lifecycle)) return;
-          this.accept(next); this.boundScope = requested; return;
+          if (this.options.context().scope !== requested || !this.live(lifecycle) ||
+              (passiveContext && !current())) return;
+          this.accept(next);
+          if (next.binding && key(this.state?.binding ?? null) === key(next.binding)) this.boundScope = requested;
+          return;
         } catch (error) {
           if (attempt || !this.live(lifecycle) || this.options.context().scope !== requested) throw error;
-          await this.nativeState(); context = this.context();
+          if (passiveContext && !current()) return;
+          await this.nativeState(); context = current();
         }
       }
     });
@@ -159,12 +179,14 @@ export class AgentWorkspaceHost {
     }).catch(error => { if (this.live(lifecycle) && this.options.context().scope === context.scope) this.report(error); })
       .finally(() => { if (this.live(lifecycle)) this.presentationWrites--; });
   }
-  async open(restore = false): Promise<void> {
+  async open(restore = false, options?: PanelOpenOptions): Promise<void> {
     const context = this.context(), lifecycle = this.lifecycle;
     await this.publish();
     await this.enqueue(async () => {
       if (this.context().scope !== context.scope) throw new Error("The study changed before opening its agent workspace.");
-      const next = restore ? await this.options.api.restore() : await this.options.api.open(clone(this.presentation));
+      const api = this.options.api;
+      const next = await (restore ? api.restore() : options
+        ? api.open(clone(this.presentation), options) : api.open(clone(this.presentation)));
       if (this.live(lifecycle) && this.options.context().scope === context.scope) this.accept(next);
     });
   }

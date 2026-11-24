@@ -11,6 +11,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
+import { dropPanelOutside, panelDropPoint } from "./panel-pointer.test-utils";
+import type { DisplayInspectorBinding, DisplayInspectorOwnerApi } from "../shared/display-inspector-api";
 import type {
   ResearchDesktopApi,
   ResearchSnapshot,
@@ -850,5 +852,128 @@ describe("Milestone 5B: A/B Image Viewing in ResearchWorkbench", () => {
     expect(within(restoredMain).getByText("Reduced · nearest pixel")).toBeVisible();
     const restoredCtx = contexts.get(restoredMain.querySelector("canvas")!)!;
     await waitFor(() => expect(restoredCtx.drawCalls.at(-1)?.smooth).toBe(false));
+  });
+});
+
+describe("detachable Display in the loaded workbench", () => {
+  async function displayWorkbench() {
+    const snapshot = structuredClone(twoSourceSnapshot);
+    const source = snapshot.sources[0];
+    source.source_kind = "medical";
+    source.metadata.dimensions!.z = 5;
+    source.metadata.levels![0].dimensions.z = 5;
+    source.metadata.physical_calibration = { spacing: [4, 2, 2], unit: "µm" };
+    const api = mockApi(snapshot);
+    let lifecycle!: Parameters<DisplayInspectorOwnerApi["onLifecycle"]>[0];
+    let edit!: Parameters<DisplayInspectorOwnerApi["onEdit"]>[0];
+    let binding!: DisplayInspectorBinding;
+    let generation = 0;
+    const native: DisplayInspectorOwnerApi = {
+      open: vi.fn(async (target) => {
+        binding = { ...target, generation: ++generation };
+        lifecycle({ status: "opening", binding });
+        lifecycle({ status: "open", binding });
+        return binding;
+      }),
+      onLifecycle: (listener) => { lifecycle = listener; return () => {}; },
+      onEdit: (listener) => { edit = listener; return () => {}; },
+      focus: vi.fn(async () => {}), dock: vi.fn(async () => {}), revoke: vi.fn(async () => {}),
+      publish: vi.fn(async () => {}),
+    };
+    vi.stubGlobal("lociDisplayInspectorOwner", native);
+    const onBack = vi.fn();
+    const view = render(<ResearchWorkbench api={api} onBack={onBack} />);
+    const tools = () => view.container.querySelector<HTMLElement>("#research-tools-pane")!;
+    const detachButton = () => within(tools()).getByRole("button", { name: "Detach Display" });
+    const stage = () => view.container.querySelector<HTMLElement>("#research-image-stage");
+    await waitFor(() => expect(detachButton()).toBeEnabled());
+    const close = () => act(() => lifecycle({ binding, status: "closed", reason: "native-close" }));
+    const apply = (action: Parameters<typeof edit>[0]["action"]) => act(() => edit({ binding, action }));
+    const open = () => act(async () => { fireEvent.click(detachButton()); });
+    return {
+      api, native, source, otherSource: snapshot.sources[1],
+      tools, stage, detachButton, open, close, apply, binding: () => binding,
+      hide: () => view.rerender(<ResearchWorkbench api={api} onBack={onBack} visible={false} />),
+    };
+  }
+
+  it("keeps one viewport and one source view store across native edits and redocking", async () => {
+    const workbench = await displayWorkbench();
+    const { api, native, source, tools, detachButton, close, apply } = workbench;
+    const stage = workbench.stage()!;
+    const canvas = stage.querySelector("canvas");
+    expect(canvas).not.toBeNull();
+    await workbench.open();
+    expect(within(stage).getByRole("button", { name: "Focus Display inspector" })).toBeVisible();
+    expect(tools()).toHaveAttribute("hidden");
+    expect(workbench.stage()?.querySelector("canvas")).toBe(canvas);
+    const initial = vi.mocked(native.open).mock.calls[0][1];
+    expect(initial.source).toEqual(expect.objectContaining({ id: source.id, sha256: source.sha256 }));
+    if (initial.kind) throw new Error("Expected the Display snapshot");
+    expect(initial.source.metadata.physical_calibration).toEqual(source.metadata.physical_calibration);
+    apply({ kind: "channel", channel: 0, edit: { field: "color", value: "#a1b2c3" } });
+    apply({ kind: "channel", channel: 0, edit: { field: "opacity", value: 0.27 } });
+    apply({ kind: "channel", channel: 0, edit: { field: "level", value: 200 } });
+    apply({ kind: "channel", channel: 0, edit: { field: "window", value: 126 } });
+    apply({ kind: "projection", value: "max" });
+    apply({ kind: "projection", value: "plane" });
+    apply({ kind: "plane", axis: "z", value: 3 });
+    const last = vi.mocked(native.publish).mock.calls.at(-1)![1];
+    if (last.kind) throw new Error("Expected the Display snapshot");
+    expect(last.channels[0]).toEqual(expect.objectContaining({ color: "#a1b2c3", opacity: 0.27, low: 137, high: 263 }));
+    expect(last.selection).toEqual(expect.objectContaining({ z: 3 }));
+    expect(last.selection.z_stop).toBeUndefined();
+
+    apply({ kind: "channel", channel: 0, edit: { field: "high", value: 136 } });
+    expect(native.publish).toHaveBeenLastCalledWith(workbench.binding(), last, true);
+    apply({ kind: "compare", active: true });
+    close();
+    expect(detachButton()).toHaveFocus();
+    expect(workbench.stage()?.querySelector("canvas")).toBe(canvas);
+    const display = within(tools());
+    expect(display.getByLabelText("Z plane")).toHaveValue("3");
+    const channel = display.getByRole("checkbox", { name: "Channel 1 visible" }).closest("details")!;
+    channel.open = true;
+    expect(within(channel).getByLabelText("Channel 1 color")).toHaveValue("#a1b2c3");
+    expect(within(channel).getByLabelText("Channel 1 opacity")).toHaveValue("0.27");
+    expect(within(channel).getByLabelText("Channel 1 window")).toHaveValue("126");
+    await waitFor(() => expect(api.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+      source_id: source.id,
+      source_sha256: source.sha256,
+      state: expect.objectContaining({
+        selection: expect.objectContaining({ z: 3 }),
+        channels: expect.arrayContaining([expect.objectContaining({ channel: 0, opacity: 0.27 })]),
+      }),
+    })));
+  });
+
+  it("fences retired Display edits after a source switch or workbench hide", async () => {
+    const { native, source, otherSource, stage, detachButton, open, apply, binding, hide } = await displayWorkbench();
+    await act(async () => { dropPanelOutside(detachButton().parentElement!); });
+    const focusInspector = () => within(stage()!).queryByRole("button", { name: "Focus Display inspector" });
+    expect(focusInspector()).toBeVisible();
+    expect(native.open).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceId: source.id, sourceSha256: source.sha256 }), expect.anything(),
+      { atPointer: true, dropPoint: panelDropPoint },
+    );
+    const firstBinding = binding();
+    fireEvent.click(screen.getByLabelText(otherSource.name));
+    await waitFor(() => expect(native.revoke).toHaveBeenLastCalledWith(firstBinding));
+    const beforeStaleEdit = vi.mocked(native.publish).mock.calls.length;
+    apply({ kind: "reset" });
+    expect(native.publish).toHaveBeenCalledTimes(beforeStaleEdit);
+    expect(focusInspector()).toBeNull();
+
+    await waitFor(() => expect(detachButton()).toBeEnabled());
+    await open();
+    expect(focusInspector()).toBeVisible();
+    const detachedBinding = binding();
+    expect(detachedBinding).toMatchObject({ sourceId: otherSource.id, sourceSha256: otherSource.sha256 });
+    hide();
+    await waitFor(() => expect(native.revoke).toHaveBeenLastCalledWith(detachedBinding));
+    const publications = vi.mocked(native.publish).mock.calls.length;
+    apply({ kind: "plane", axis: "z", value: 1 });
+    expect(native.publish).toHaveBeenCalledTimes(publications);
+    expect(stage()).toBeNull();
   });
 });

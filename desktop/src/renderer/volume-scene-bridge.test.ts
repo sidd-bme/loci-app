@@ -105,11 +105,83 @@ describe("volume scene lifecycle and CAS", () => {
     const f = setup(); f.adapter.snapshot = () => null; await f.bridge.dispose();
     expect(f.execute).not.toHaveBeenCalled();
   });
-  it("restores a saved scene once under a gesture lock and publishes only its exact bound revision", async () => {
+  it.each([
+    { name: "no saved scene", saved: null, restore: true, available: false },
+    { name: "an equal saved scene", saved: scene(), restore: true, available: true },
+    { name: "restore disabled", saved: scene(), restore: false, available: false },
+  ])("keeps local input active during startup presence with $name", async ({ saved, restore, available }) => {
+    vi.useFakeTimers();
+    const f = setup({ saved });
+    const presenceEntered = deferred<void>(), presenceGate = deferred<void>();
+    f.execute.mockImplementation(async (operation, request) => {
+      if (operation === "volume_view_presence") {
+        presenceEntered.resolve();
+        await presenceGate.promise;
+      }
+      return f.handle(operation, request);
+    });
+    const start = f.bridge.start({ restore });
+    await presenceEntered.promise;
+    const joinedStart = f.bridge.start({ restore });
+    const edited = scene(); edited.crosshair_source_xyz = [4, 5, 3];
+    // The viewport suppresses its keyboard event while the adapter is locked.
+    if (f.lock.mock.lastCall?.[0] !== true) f.change({ state: edited, liveEpoch: 4 });
+    presenceGate.resolve();
+    await Promise.all([start, joinedStart]);
+
+    expect(f.lock).not.toHaveBeenCalled();
+    expect(f.apply).not.toHaveBeenCalled();
+    expect(f.local()).toMatchObject({ state: edited, liveEpoch: 4 });
+    expect(f.onChanged).toHaveBeenCalledExactlyOnceWith(f.document());
+    const publications = f.execute.mock.calls.filter(([operation]) => operation === "volume_view_presence");
+    expect(publications.map(([, request]) => request)).toEqual([
+      expect.objectContaining({ available, live_epoch: 3, revision: 2, display_revision: 7 }),
+      ...(available ? [expect.objectContaining({ available: false, live_epoch: 3, revision: 2, display_revision: 7 })] : []),
+    ]);
+    expect(f.presence()).toMatchObject({ available: false });
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(f.presence()).toMatchObject({ available: false, live_epoch: 4, revision: 2 });
+    expect(f.execute.mock.calls.filter(([operation]) => operation === "volume_view_requests")).toHaveLength(0);
+    await f.bridge.save(f.local());
+    expect(f.presence()).toMatchObject({ available: true, live_epoch: 4, revision: 3 });
+    expect(f.document().state).toEqual(edited);
+    expect(f.onError).not.toHaveBeenCalled();
+  });
+  it("locks through the exact saved scene application and releases before publishing presence", async () => {
     const saved = scene(); saved.crosshair_source_xyz = [8, 7, 6];
-    const f = setup({ saved }); await f.bridge.start(); await f.bridge.start(); await f.bridge.update();
+    const f = setup({ saved });
+    const applyEntered = deferred<void>(), applyGate = deferred<void>();
+    const presenceEntered = deferred<void>(), presenceGate = deferred<void>();
+    f.apply.mockImplementation(async (state) => {
+      applyEntered.resolve();
+      await applyGate.promise;
+      f.change({ state });
+    });
+    f.execute.mockImplementation(async (operation, request) => {
+      if (operation === "volume_view_presence") {
+        presenceEntered.resolve();
+        await presenceGate.promise;
+      }
+      return f.handle(operation, request);
+    });
+
+    const start = f.bridge.start();
+    await applyEntered.promise;
+    const locksDuringApply = [...f.lock.mock.calls];
+    const presenceDuringApply = f.execute.mock.calls.some(([operation]) => operation === "volume_view_presence");
+    applyGate.resolve();
+    await presenceEntered.promise;
+    const locksDuringPresence = [...f.lock.mock.calls];
+    presenceGate.resolve();
+    await start;
+    await f.bridge.start();
+    await f.bridge.update();
+
+    expect(locksDuringApply).toEqual([[true]]);
+    expect(presenceDuringApply).toBe(false);
+    expect(locksDuringPresence).toEqual([[true], [false]]);
     expect(f.apply).toHaveBeenCalledExactlyOnceWith(saved);
-    expect(f.lock.mock.calls.slice(0, 2)).toEqual([[true], [false]]);
     expect(f.local().state).toEqual(saved);
     expect(f.presence()).toMatchObject({ available: true, revision: 2, display_revision: 7, live_epoch: 3 });
   });

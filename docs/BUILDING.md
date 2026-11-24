@@ -305,6 +305,28 @@ node desktop/tests/volume-entry.qa.mjs --app "$APP" --out "$QA_OUTPUT" \
   --source "$IMAGE" --sha256 "$IMAGE_SHA256" --dimensions "$IMAGE_XYZ" --route both
 ```
 
+Run the detached Display inspector packaged journey against a signed Apple-silicon candidate with the pinned public CC0 kidney stack (`83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564`). The script verifies `codesign`, clean build identity, isolated profiles, main-canvas mount/usability during detachment into `Loci · Display`, displayed Z `12 / 16` (source index 11), channel opacity and visibility edits, distinct main-frame pixels, narrow/wide layout bounds, docking via `Dock Display` and native close with focus return, independent `study.sqlite3` `source_view` verification, cold study reopen, and unchanged raw source files:
+
+```bash
+node desktop/tests/detached-display-inspector.qa.mjs \
+  --app "$APP" --out "$QA_OUTPUT" \
+  --source "$PUBLIC_KIDNEY_OME_TIFF" \
+  --source-commit "$(git rev-parse HEAD)"
+```
+
+Optionally pass `--secondary-source /abs/path/second.ome.tif --secondary-sha256 <64-hex-sha>` (for example, the pinned public CellSeg3D `source.ome.tif`) to also exercise source-switch isolation and verify the kidney's persisted `source_view` remains untouched. The journey tests ordinary single-source 2D `Display` detachment; the raw 3D docked instrument and physical display hot-unplug remain outside its scope.
+
+The journey checks the docked workbench at 1280 × 800 and 1440 × 900 when the display can accommodate them. Its report records the actual window dimensions. Pass `--input drag` to check that a panel opens where it was released, including at screen edges. Add `--drag-image --drag-agent` to cover the viewer and Agent workspace.
+
+The detached Preprocess journey uses the same kidney stack. It checks the source, plane, crop and calibrated geometry, then compares the preview from each order of two subtraction steps with a separate NumPy calculation. Set `LOCI_QA_PYTHON` to the verification environment with NumPy, tifffile and Pillow.
+
+```bash
+LOCI_PACKAGED_APP="$APP" LOCI_QA_BIO_IMAGE="$PUBLIC_KIDNEY_OME_TIFF" \
+  LOCI_QA_SOURCE_COMMIT="$(git rev-parse HEAD)" LOCI_QA_OUTPUT_ROOT="$QA_OUTPUT" \
+  LOCI_QA_BIO_IMAGE_SHA256=83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564 \
+  node desktop/tests/imaging-tools.qa.mjs --detached-preprocess
+```
+
 An optional Cellpose packaged journey can provision one official checkpoint
 through the real UI and assert both profile provenance and a locked expected
 count. Replace the illustrative fixture, checkpoint, and count with authorized

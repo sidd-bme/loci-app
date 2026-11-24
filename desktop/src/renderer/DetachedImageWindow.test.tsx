@@ -103,6 +103,7 @@ describe("DetachedImageWindow", () => {
     savePreferences({ ...DEFAULT_PREFERENCES, theme: "black", density: "comfortable" });
     render(<DetachedImageWindow api={api} />);
     await screen.findByLabelText("Mock image viewer: Stack A");
+    expect(document.title).toBe("Loci · View A · Stack A");
     expect(document.documentElement).toHaveAttribute("data-theme", "black");
     expect(document.documentElement).toHaveAttribute("data-density", "comfortable");
 

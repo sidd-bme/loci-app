@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
+import { DetachedDisplayInspector } from "./DetachedDisplayInspector";
+import { DetachedStudyNavigator } from "./DetachedStudyNavigator";
 import { DetachedAgentWorkspace } from "./DetachedAgentWorkspace";
 import { rendererRole } from "./renderer-role";
 import { DetachedImageWindow } from "./DetachedImageWindow";
@@ -14,6 +16,16 @@ if (!root) throw new Error("Loci renderer root was not found.");
 const reactRoot = createRoot(root);
 async function startRenderer(): Promise<void> {
   // The main process chooses the role from the native sender; URL parameters cannot grant it.
+  const display = window.lociDisplayInspector;
+  if (display) {
+    reactRoot.render(<StrictMode><DetachedDisplayInspector api={display} /></StrictMode>);
+    return;
+  }
+  const studyNavigator = window.lociStudyNavigator;
+  if (studyNavigator) {
+    reactRoot.render(<StrictMode><DetachedStudyNavigator api={studyNavigator} /></StrictMode>);
+    return;
+  }
   const windows = window.lociImageWindows;
   const agent = window.lociAgentWorkspace;
   const role = await rendererRole(agent, windows);
