@@ -8,7 +8,7 @@ import type {
   ResearchSnapshot,
 } from "../shared/research-contracts";
 import { AgentSessionIndicator } from "./AgentSessionIndicator";
-import { dropPanelOutside } from "./panel-pointer.test-utils";
+import { dropPanelOutside, panelDropPoint } from "./panel-pointer.test-utils";
 import engineFixture from "./__fixtures__/agent-sessions-snapshot.json";
 
 // Captured from test_agent_sessions.session_fixture and the real snapshot boundary.
@@ -25,7 +25,7 @@ it("keeps the Agent workspace pop-out action and supports dragging its title", (
   fireEvent.click(screen.getByRole("button", { name: "Pop out" }));
   expect(onDetach).toHaveBeenCalledExactlyOnceWith();
   dropPanelOutside(screen.getByRole("heading", { name: "Agent workspace" }));
-  expect(onDetach).toHaveBeenLastCalledWith(true);
+  expect(onDetach).toHaveBeenLastCalledWith({ atPointer: true, dropPoint: panelDropPoint });
   expect(onDetach).toHaveBeenCalledTimes(2);
 });
 

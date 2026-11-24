@@ -6,7 +6,7 @@ import {
 } from "../shared/display-inspector-api";
 import { MAX_PREPROCESS_DRAFT_LENGTH, PREPROCESS_OPS, type PreprocessInspectorEdit } from "../shared/preprocess-inspector-api";
 
-import { placePanelAtPointer, wantsPanelAtPointer } from "./panel-drop-position";
+import { preparePanelDrop } from "./panel-drop-position";
 
 type InspectorWindowFactory = (owner: BrowserWindow, kind: DisplayInspectorTarget["kind"]) => { window: BrowserWindow; load: () => Promise<void> };
 type Entry = { window: BrowserWindow; sender: WebContents; state: DisplayInspectorState; ready: boolean; comparing: boolean; lastRequest: number };
@@ -141,7 +141,7 @@ export class DisplayInspectorCoordinator {
     return entry;
   }
 
-  private open(target: DisplayInspectorTarget, snapshot: InspectorSnapshot, atPointer: boolean): DisplayInspectorBinding {
+  private open(target: DisplayInspectorTarget, snapshot: InspectorSnapshot, place?: (child: BrowserWindow) => void): DisplayInspectorBinding {
     if (this.shuttingDown || !this.main) throw invalid();
     checkSnapshot(target, snapshot);
     if (this.entry && sameDisplayTarget(target, this.entry.state.binding)) {
@@ -151,10 +151,8 @@ export class DisplayInspectorCoordinator {
     if (this.entry && this.entry.state.binding.kind !== target.kind) throw invalid();
     this.close("revoked");
     const { window, load } = this.factory(this.main, target.kind);
-    if (atPointer) {
-      try { placePanelAtPointer(window); }
-      catch (error) { window.destroy(); throw error; }
-    }
+    try { place?.(window); }
+    catch (error) { window.destroy(); throw error; }
     const binding = { ...(target.kind ? { kind: target.kind } : {}), sourceId: target.sourceId, sourceSha256: target.sourceSha256,
       studyGeneration: target.studyGeneration, documentGeneration: target.documentGeneration, generation: ++this.generation };
     const entry: Entry = { window, sender: window.webContents, state: { binding, snapshot, sequence: 0 }, ready: false, comparing: false, lastRequest: 0 };
@@ -192,7 +190,7 @@ export class DisplayInspectorCoordinator {
     const inspector = (event: IpcMainInvokeEvent) => { if (this.senderRole(event) !== "inspector") throw invalid(); };
     ipcMain.handle(prefix + "open", (event, target: DisplayInspectorTarget, snapshot: InspectorSnapshot, options?: unknown) => {
       owner(event);
-      return this.open(target, snapshot, wantsPanelAtPointer(options));
+      return this.open(target, snapshot, preparePanelDrop(options));
     });
     ipcMain.handle(prefix + "publish", (event, binding: DisplayInspectorBinding, snapshot: InspectorSnapshot, rejected?: boolean, request?: number) => {
       owner(event);

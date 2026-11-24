@@ -316,7 +316,7 @@ node desktop/tests/detached-display-inspector.qa.mjs \
 
 Optionally pass `--secondary-source /abs/path/second.ome.tif --secondary-sha256 <64-hex-sha>` (for example, the pinned public CellSeg3D `source.ome.tif`) to also exercise source-switch isolation and verify the kidney's persisted `source_view` remains untouched. The journey tests ordinary single-source 2D `Display` detachment; the raw 3D docked instrument and physical display hot-unplug remain outside its scope.
 
-Pass `--input drag` to exercise captured pointer movement across the window edge and window placement. Add `--drag-image --drag-agent` to cover the viewer and Agent workspace. The button path remains available with the default arguments.
+The journey checks the docked workbench at 1280 × 800 and 1440 × 900 when the display can accommodate them. Its report records the actual window dimensions. Pass `--input drag` to check that a panel opens where it was released, including at screen edges. Add `--drag-image --drag-agent` to cover the viewer and Agent workspace.
 
 The detached Preprocess journey uses the same kidney stack. It checks the source, plane, crop and calibrated geometry, then compares the preview from each order of two subtraction steps with a separate NumPy calculation. Set `LOCI_QA_PYTHON` to the verification environment with NumPy, tifffile and Pillow.
 

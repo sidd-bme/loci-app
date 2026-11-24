@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { PanelRight } from "lucide-react";
 import type { DisplayInspectorApi, DisplayInspectorState } from "../shared/display-inspector-api";
 import type { PreprocessInspectorEdit, PreprocessInspectorSnapshot } from "../shared/preprocess-inspector-api";
@@ -30,7 +30,7 @@ export function DetachedPreprocessInspector({ api, state, snapshot }: {
     });
   }, [api, binding, acknowledgedRequest, interrupted]);
 
-  useEffect(() => { dockButton.current?.focus(); }, []);
+  useLayoutEffect(() => { dockButton.current?.focus(); }, []);
   useEffect(() => { if (dockRequested && (!pending || interrupted)) dock(); }, [dockRequested, pending, interrupted, dock]);
 
   const send = (edit: PreprocessInspectorEdit) => {

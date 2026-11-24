@@ -62,14 +62,14 @@ const tick = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); 
 afterEach(() => { for (const coordinator of coordinators.splice(0)) coordinator.dispose(); vi.useRealTimers(); });
 
 describe('native agent workspace authority and lifecycle', () => {
-  it('uses the OS drop position and retains prior dimensions and presentation', async () => {
+  it('uses the explicit drop position and retains prior dimensions and presentation', async () => {
     const layout = { schema: 'loci.agent-workspace-layout/v1' as const, bounds: { x: 49, y: 21, width: 960, height: 740 } };
     const h = harness(layout);
     await expect(h.call(h.main, 'open', draft(), { atPointer: true, windowId: 4 })).rejects.toThrow('placement');
     expect(h.factory).not.toHaveBeenCalled();
-    const opened = await h.call(h.main, 'open', draft(), { atPointer: true });
+    const opened = await h.call(h.main, 'open', draft(), { atPointer: true, dropPoint: { x: 1700, y: 122 } });
     expect(opened.presentation).toEqual(draft());
-    expect(h.windows[0].getBounds()).toEqual({ x: 100, y: 100, width: 960, height: 740 });
+    expect(h.windows[0].getBounds()).toEqual({ x: 480, y: 104, width: 960, height: 740 });
     expect(h.windows[0].setBounds.mock.invocationCallOrder.at(-1)).toBeLessThan(h.load.mock.invocationCallOrder[0]);
   });
   it('rejects unregistered, image-like and subframe senders; only native role selection is authoritative', async () => {

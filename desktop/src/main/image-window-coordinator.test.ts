@@ -232,14 +232,14 @@ function presentation(): ImageWindowPresentation {
 beforeEach(() => electronMocks.handlers.clear());
 
 describe("native image window coordinator authority", () => {
-  it("positions the requested display seed before showing the image", async () => {
+  it("positions the bound image from its release before showing it", async () => {
     const { control, imageWindows, loads } = harness();
     const seed = { sourceSha256: HASH_A, presentation: presentation() };
     await expect(invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true, y: 10 })).rejects.toThrow("placement");
     expect(imageWindows).toHaveLength(0);
-    const opened = await invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true }) as ImageWindowState;
+    const opened = await invoke("open", control.webContents, SOURCE_A, seed, { atPointer: true, dropPoint: { x: -1600, y: 600 } }) as ImageWindowState;
     expect(opened.views[0].source.id).toBe(SOURCE_A);
-    expect(imageWindows[0].setBounds).toHaveBeenCalledExactlyOnceWith({ x: -900, y: 110, width: 900, height: 700 });
+    expect(imageWindows[0].setBounds).toHaveBeenCalledExactlyOnceWith({ x: -1440, y: 110, width: 900, height: 700 });
     expect(imageWindows[0].setBounds.mock.invocationCallOrder[0]).toBeLessThan(loads[0].mock.invocationCallOrder[0]);
   });
   it("validates and transfers current display settings before creating the native window", async () => {
@@ -254,6 +254,7 @@ describe("native image window coordinator authority", () => {
     expect(imageWindows).toHaveLength(0);
     const opened = await invoke("open", control.webContents, SOURCE_A,
       { sourceSha256: HASH_A, presentation: seed }) as ImageWindowState;
+    expect(imageWindows[0].setBounds).not.toHaveBeenCalled();
     expect(opened.views[0].initialPresentation).toEqual(seed);
     expect(await invoke("presentation", imageWindows[0].webContents)).toMatchObject({ presentation: seed });
   });

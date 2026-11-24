@@ -157,6 +157,7 @@ import {
   type StudyNavigatorTarget,
 } from "../shared/study-navigator-api";
 import { useStudyNavigatorOwner } from "./use-study-navigator-owner";
+import type { PanelOpenOptions } from "../shared/panel-open-options";
 import { SourceExportPanel } from "./SourceExportPanel";
 import { SourceViewStore, type SavedSourceView } from "./source-view-store";
 import type { Camera } from "./viewer-camera";
@@ -3915,7 +3916,7 @@ export default function ResearchWorkbench({
   const imageDetachKey = source ? `${documentEpoch}:${studyEpoch}:${source.id}:${source.sha256}` : "";
   const imageDetachDisabled = !source || Boolean(busy) || documentSwitching || sourceIsChanging ||
     !viewSettingsReady || source.locator_state === "relink-required" || correctionPoints.length > 0;
-  const detachImage = (atPointer?: true) => {
+  const detachImage = (options?: PanelOpenOptions) => {
     const native = window.lociImageWindows, store = viewStore.current;
     if (!source || !native || imageDetachDisabled || imageDetachPending.current || documentSwitch.current) return;
     const navigation = largeNavigationIntent.current;
@@ -3935,7 +3936,7 @@ export default function ResearchWorkbench({
       if (!await store?.flush()) throw new Error("Save the display settings before detaching this image.");
       if (!current()) return;
       const seed = { sourceSha256: source.sha256, presentation };
-      if (atPointer) await native.open(source.id, seed, { atPointer });
+      if (options) await native.open(source.id, seed, options);
       else await native.open(source.id, seed);
     }, "Could not open the image window.", current).finally(() => { imageDetachPending.current = false; });
   };
@@ -4256,7 +4257,7 @@ export default function ResearchWorkbench({
                   grabArea={imagesHeaderRef}
                   disabled={!studyNavigatorTarget || snapshot.sources.length === 0 || Boolean(studyNavigator.binding)}
                   onDetach={() => studyNavigator.open()}
-                  onDropOutside={() => studyNavigator.open({ atPointer: true })}
+                  onDropOutside={dropPoint => studyNavigator.open({ atPointer: true, dropPoint })}
                 />
               )}
               <button
@@ -4309,7 +4310,7 @@ export default function ResearchWorkbench({
             }, "Could not restore the image-window layout.")}><PanelsTopLeft /></button>
           {imageStageHidden && <DetachablePanelHandle key={imageDetachKey} label="Detach image" iconOnly
             disabled={imageDetachDisabled} title={imageDetachTitle}
-            onDetach={() => detachImage()} onDropOutside={() => detachImage(true)} />}</div>}
+            onDetach={() => detachImage()} onDropOutside={dropPoint => detachImage({ atPointer: true, dropPoint })} />}</div>}
           </div>
           <div id="research-layer-stack" className="research-layer-stack" hidden={!layersOpen}>
           {source && <button className={!resultId ? "selected original-layer" : "original-layer"} aria-pressed={!resultId}
@@ -4405,7 +4406,7 @@ export default function ResearchWorkbench({
               {source && window.lociImageWindows && !imageStageHidden &&
                 <DetachablePanelHandle key={imageDetachKey} label="Detach image" grabArea={imageToolbar}
                   disabled={imageDetachDisabled} title={imageDetachTitle}
-                  onDetach={() => detachImage()} onDropOutside={() => detachImage(true)} />}
+                  onDetach={() => detachImage()} onDropOutside={dropPoint => detachImage({ atPointer: true, dropPoint })} />}
               {imagesDetached && <button type="button" aria-label="Focus Images navigator" onClick={studyNavigator.focus}>
                 <PanelLeft aria-hidden="true" /><span>Focus Images</span>
               </button>}
@@ -4869,7 +4870,7 @@ export default function ResearchWorkbench({
               : <DetachablePanelHandle key={imageDetachKey} ref={detachPreprocessButton}
                 label="Detach Preprocess" grabArea={preprocessGrabArea} disabled={!preprocessTarget || Boolean(inspector.binding)}
                 title={displayDetached ? "Dock Display to detach Preprocess" : undefined}
-                onDetach={() => inspector.open("preprocess")} onDropOutside={() => inspector.open("preprocess", true)} />}
+                onDetach={() => inspector.open("preprocess")} onDropOutside={dropPoint => inspector.open("preprocess", { atPointer: true, dropPoint })} />}
           </div>}
         {source && dimensions && tab === "Process" && !preprocessDetached &&
           <PreprocessingScopeControl
@@ -4952,7 +4953,7 @@ export default function ResearchWorkbench({
             <DetachablePanelHandle key={imageDetachKey} ref={detachDisplayButton}
               label="Detach Display" grabArea={displayGrabArea} disabled={!displayTarget || Boolean(inspector.binding)}
               title={preprocessDetached ? "Dock Preprocess to detach Display" : undefined}
-              onDetach={() => inspector.open(undefined)} onDropOutside={() => inspector.open(undefined, true)} />
+              onDetach={() => inspector.open(undefined)} onDropOutside={dropPoint => inspector.open(undefined, { atPointer: true, dropPoint })} />
           </div>}{assistantFollowing && <div className="assistant-display-status" role="status"><span>Assistant display is active</span>
             <button disabled={assistantFollowBusy} onClick={() => void followAssistantDisplay(false)}>Take control</button></div>}
           <fieldset className="source-display-local" disabled={assistantFollowing || assistantFollowBusy || !viewSettingsReady || sourceIsChanging || documentSwitching}

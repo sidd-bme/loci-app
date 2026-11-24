@@ -82,9 +82,9 @@ describe("native Display inspector", () => {
     const first = h.open();
     expect(h.windows[0].setBounds).not.toHaveBeenCalled();
     h.call(h.main, "dock", first);
-    const second = h.call<DisplayInspectorBinding>(h.main, "open", target, snapshot, { atPointer: true });
+    const second = h.call<DisplayInspectorBinding>(h.main, "open", target, snapshot, { atPointer: true, dropPoint: { x: -1400, y: -5 } });
     const child = h.windows[1];
-    expect(child.setBounds).toHaveBeenCalledExactlyOnceWith({ x: -446, y: 192, width: 368, height: 600 });
+    expect(child.setBounds).toHaveBeenCalledExactlyOnceWith({ x: -1200, y: 0, width: 368, height: 600 });
     expect(child.show).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(child.show).toHaveBeenCalledOnce());
     expect(h.call(h.main, "open", target, snapshot, { atPointer: true })).toEqual(second);

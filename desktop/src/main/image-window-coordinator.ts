@@ -7,7 +7,7 @@ import { HEX_32_PATTERN, type ImageViewTargetSnapshot } from "../shared/image-vi
 import type { ImageWindowEntry, ImageWindowPresentation, ImageWindowState } from "../shared/image-window-api";
 import { imageViewDimensions, validateImagePresentation, validateImageInteraction } from "./image-window-validation";
 
-import { capturePanelDropPosition, wantsPanelAtPointer } from "./panel-drop-position";
+import { preparePanelDrop } from "./panel-drop-position";
 
 interface Entry extends ImageWindowEntry {
   window: BrowserWindow;
@@ -220,7 +220,7 @@ export class ImageWindowCoordinator {
     handle("state", false, (event) => this.state(event.sender));
     handle("open", true, async (event, sourceId, seed, options) => {
       if (this.restoring) throw new Error("Wait for the saved layout to finish opening.");
-      const place = wantsPanelAtPointer(options) ? capturePanelDropPosition() : undefined;
+      const place = preparePanelDrop(options);
       await this.open(sourceId, undefined, seed, place); return this.state(event.sender);
     });
     handle("restore", true, async (event) => {

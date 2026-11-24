@@ -10,7 +10,7 @@ import {
   type StudyNavigatorState,
   type StudyNavigatorTarget,
 } from "../shared/study-navigator-api";
-import { placePanelAtPointer, wantsPanelAtPointer } from "./panel-drop-position";
+import { preparePanelDrop } from "./panel-drop-position";
 
 type NavigatorWindowFactory = (owner: BrowserWindow) => { window: BrowserWindow; load: () => Promise<void> };
 type Entry = {
@@ -25,9 +25,9 @@ const invalid = () => new Error("The Images navigator request is invalid or stal
 const isIndex = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
 const isSha256 = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
 
-function checkOpenOptions(options: unknown): boolean {
+function checkOpenOptions(options: unknown) {
   try {
-    return wantsPanelAtPointer(options);
+    return preparePanelDrop(options);
   } catch {
     throw invalid();
   }
@@ -226,11 +226,10 @@ export class StudyNavigatorCoordinator {
     options?: StudyNavigatorOpenOptions,
   ): StudyNavigatorBinding {
     if (this.shuttingDown || !this.main) throw invalid();
-    const atPointer = checkOpenOptions(options);
+    const place = checkOpenOptions(options);
     checkSnapshot(target, snapshot);
     if (this.entry && sameStudyNavigatorTarget(target, this.entry.state.binding)) {
       if (this.entry.ready) {
-        if (atPointer) placePanelAtPointer(this.entry.window);
         this.entry.window.show();
         this.entry.window.focus();
       }
@@ -238,7 +237,8 @@ export class StudyNavigatorCoordinator {
     }
     this.close("revoked");
     const { window, load } = this.factory(this.main);
-    if (atPointer) placePanelAtPointer(window);
+    try { place?.(window); }
+    catch (error) { window.destroy(); throw error; }
     const binding: StudyNavigatorBinding = {
       projectId: target.projectId,
       studyGeneration: target.studyGeneration,

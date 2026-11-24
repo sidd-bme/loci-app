@@ -8,26 +8,22 @@ import {
 import {
   STUDY_NAVIGATOR_IPC as prefix,
   type StudyNavigatorBinding,
+  type StudyNavigatorOpenOptions,
   type StudyNavigatorSnapshot,
   type StudyNavigatorState,
 } from "../shared/study-navigator-api";
 
 const electron = vi.hoisted(() => ({
   handlers: new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>(),
-  placePanelAtPointer: vi.fn(),
 }));
 vi.mock("electron", async () => {
   const { EventEmitter } = await import("node:events");
   return {
     ipcMain: { handle: (name: string, handler: never) => electron.handlers.set(name, handler) },
-    screen: new EventEmitter(),
-  };
-});
-vi.mock("./panel-drop-position", async (importOriginal) => {
-  const original = await importOriginal<typeof import("./panel-drop-position")>();
-  return {
-    ...original,
-    placePanelAtPointer: electron.placePanelAtPointer,
+    screen: Object.assign(new EventEmitter(), {
+      getCursorScreenPoint: () => ({ x: 25, y: 80 }),
+      getDisplayNearestPoint: () => ({ workArea: { x: -1024, y: 40, width: 1024, height: 768 } }),
+    }),
   };
 });
 
@@ -45,6 +41,8 @@ class TestWindow extends EventEmitter {
     send: vi.fn(),
   });
   show = vi.fn();
+  getBounds = () => ({ x: 0, y: 0, width: 340, height: 680 });
+  setBounds = vi.fn();
   focus = vi.fn(() => {
     this.focused = true;
   });
@@ -92,7 +90,6 @@ const snapshot: StudyNavigatorSnapshot = {
 
 const disposables: Array<{ dispose(): void }> = [];
 afterEach(() => {
-  electron.placePanelAtPointer.mockReset();
   for (const item of disposables.splice(0)) item.dispose();
 });
 
@@ -126,7 +123,7 @@ function setup() {
   const open = (
     nextTarget = target,
     nextSnapshot = snapshot,
-    options?: { atPointer?: true },
+    options?: StudyNavigatorOpenOptions,
   ) => call<StudyNavigatorBinding>(main, "open", nextTarget, nextSnapshot, options);
   const ownerActions = () =>
     main.webContents.send.mock.calls
@@ -144,7 +141,7 @@ describe("native Images navigator coordinator", () => {
     const binding = h.open();
     const child = h.windows[0];
     expect(binding).toEqual({ ...target, generation: 1 });
-    expect(electron.placePanelAtPointer).not.toHaveBeenCalled();
+    expect(child.setBounds).not.toHaveBeenCalled();
     expect(h.call<StudyNavigatorState>(child, "state")).toEqual({ binding, snapshot, sequence: 0 });
 
     // Sender and frame boundaries
@@ -222,16 +219,18 @@ describe("native Images navigator coordinator", () => {
     expect(() => h.call(h.main, "publish", binding, { ...updated, activeSourceSha256: sourceA.sha256 })).toThrow("invalid");
   });
 
-  it("places the window at the OS pointer before showing when opened with atPointer", async () => {
+  it("places a new window at the release before showing and preserves position on reuse", async () => {
     const h = setup();
     expect(() => h.open(target, snapshot, { atPointer: false as unknown as true })).toThrow("invalid");
-    const binding = h.open(target, snapshot, { atPointer: true });
+    const binding = h.open(target, snapshot, { atPointer: true, dropPoint: { x: -1125, y: 850 } });
     const child = h.windows[0];
     expect(binding.generation).toBe(1);
-    expect(electron.placePanelAtPointer).toHaveBeenCalledExactlyOnceWith(child);
+    expect(child.setBounds).toHaveBeenCalledExactlyOnceWith({ x: -1024, y: 128, width: 340, height: 680 });
     expect(child.show).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(child.show).toHaveBeenCalledOnce());
-    expect(electron.placePanelAtPointer.mock.invocationCallOrder[0]).toBeLessThan(child.show.mock.invocationCallOrder[0]);
+    expect(child.setBounds.mock.invocationCallOrder[0]).toBeLessThan(child.show.mock.invocationCallOrder[0]);
+    expect(h.open(target, snapshot, { atPointer: true, dropPoint: { x: -480, y: 120 } })).toEqual(binding);
+    expect(child.setBounds).toHaveBeenCalledOnce();
   });
 
   it.each(["dock", "native-close", "unavailable", "display-removed"] as const)(

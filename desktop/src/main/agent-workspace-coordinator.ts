@@ -6,7 +6,7 @@ import { assertNavigationCurrent, emptyPresentation, object, exact, validateBind
 import { visibleAgentWorkspaceBounds, type AgentWorkspaceLayout, type AgentWorkspaceLayouts } from "./agent-workspace-layout";
 import { sanitizedWorkerErrorMessage } from "./worker-client";
 
-import { capturePanelDropPosition, wantsPanelAtPointer } from "./panel-drop-position";
+import { preparePanelDrop } from "./panel-drop-position";
 
 export interface AgentWorkspaceBridge {
   getViewDocumentIdentity(): string | null;
@@ -227,7 +227,7 @@ export class AgentWorkspaceCoordinator {
     const handle = (name: string, mainOnly: boolean, operation: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) => ipcMain.handle('loci-agent-workspace:' + name, async (event, ...args) => { this.sender(event, mainOnly); try { return await operation(event, ...args); } catch (error) { throw new Error(this.safe(error)); } });
     handle('state', false, event => { this.currentIdentity(); this.sender(event); return this.state(event.sender); });
     handle('open', true, (event, presentation, options) => {
-      const place = wantsPanelAtPointer(options) ? capturePanelDropPosition() : undefined;
+      const place = preparePanelDrop(options);
       return this.open(event, presentation, false, place);
     });
     handle('restore', true, event => this.open(event, undefined, true));

@@ -89,6 +89,7 @@ async function rendererGesture(page, locator, record, { grip, side, outcome, bef
     const up = events.find(event => event.type === "pointerup" && event.trusted && event.buttons === 0);
     assert.ok(up?.handle_target && up.captured && outside(up, dimensions) === (outcome === "drop"),
       `The captured mouse release did not occur ${outcome === "drop" ? "outside" : "back inside"} the client frame`);
+    record.renderer_release_screen_dip = { x: Math.round(up.screen_x), y: Math.round(up.screen_y) };
   }
   if (outcome === "escape") {
     assert.ok(events.some(event => event.type === "keydown" && event.key === "Escape" && event.trusted), "Chromium did not deliver Escape");
@@ -128,6 +129,7 @@ export async function checkPointerGesture({ app, main, locator, grip = locator, 
       assert.deepEqual(await nativeIds(app), before, "Crossing the client edge without releasing opened a child window");
       record.native_cursor_before_release = await nativePointer(app);
     } });
+    record.native_cursor_after_release = await nativePointer(app);
     if (outcome !== "drop") {
       record.native_ids_after = await nativeIds(app);
       assert.deepEqual(record.native_ids_after, before, `${label}: native windows changed after a cancelled or unrelated gesture`);
@@ -141,7 +143,15 @@ export async function checkPointerGesture({ app, main, locator, grip = locator, 
       y: content.y + release.y * content.height / client.height };
     assert.ok(record.projected_application_drop_dip.x < parent.x || record.projected_application_drop_dip.x > parent.x + parent.width,
       "The renderer release must project beyond the windowed parent frame");
-    record.native_cursor_after_release = await nativePointer(app);
+    const releasePoint = record.renderer_release_screen_dip;
+    const slop = 2; // Native screen bounds and content geometry can round to adjacent DIPs.
+    const near = (a, b, tolerance = slop) => Math.abs(a.x - b.x) <= tolerance && Math.abs(a.y - b.y) <= tolerance;
+    assert.ok(near(releasePoint, record.projected_application_drop_dip),
+      `${label}: the Chromium release screen point differs from the native content projection`);
+    record.release_display = await app.evaluate(({ screen }, point) => {
+      const display = screen.getDisplayNearestPoint(point);
+      return { display_id: display.id, work_area: display.workArea };
+    }, releasePoint);
     const child = await poll(async () => {
       for (const candidate of opened) {
         if (!candidate.isClosed() && (await nativeDetails(app, candidate).catch(() => null))?.title === title) return candidate;
@@ -152,27 +162,31 @@ export async function checkPointerGesture({ app, main, locator, grip = locator, 
     record.native_ids_after = await nativeIds(app);
     assert.deepEqual(record.native_ids_after, [...before, record.native_child.id].sort((a, b) => a - b), `${label}: expected exactly one new native window`);
     assert.equal(opened.length, 1, `${label}: Playwright observed more than one new child`);
+    const { work_area: area } = record.release_display;
+    const bounds = record.native_child.bounds;
+    assert.ok(bounds.x >= area.x && bounds.y >= area.y && bounds.x + bounds.width <= area.x + area.width + slop
+      && bounds.y + bounds.height <= area.y + area.height + slop, `${label}: child extends beyond the release display work area`);
+    const placementFor = (point, workArea) => {
+      const width = Math.min(bounds.width, workArea.width), height = Math.min(bounds.height, workArea.height);
+      return {
+        x: clamp(point.x - Math.min(96, Math.round(width / 2)), workArea.x, workArea.x + workArea.width - width),
+        y: clamp(point.y - 18, workArea.y, workArea.y + workArea.height - height),
+      };
+    };
+    const expected = placementFor(releasePoint, area);
+    record.expected_native_origin_from_release = expected;
+    assert.ok(near(bounds, expected), `${label}: child origin differs from the release anchor and work-area clamp`);
+    const point = { x: clamp(releasePoint.x, area.x, area.x + area.width), y: clamp(releasePoint.y, area.y, area.y + area.height) };
+    record.release_clamped_to_work_area = point;
+    assert.ok(point.x >= bounds.x - slop && point.y >= bounds.y - slop && point.x <= bounds.x + bounds.width + slop
+      && point.y <= bounds.y + bounds.height + slop, `${label}: the clamped release misses the child bounds`);
     const cursor = record.native_cursor_before_release;
     const observed = record.native_cursor_after_release;
-    assert.ok(cursor.display_id === observed.display_id && Math.hypot(cursor.point.x - observed.point.x, cursor.point.y - observed.point.y) <= 4,
-      "Physical cursor moved during placement sampling. Repeat without moving the mouse.");
-    const { work_area: area } = cursor;
-    const bounds = record.native_child.bounds;
-    const slop = 2; // Native screen bounds and content geometry can round to adjacent DIPs.
-    assert.ok(bounds.x >= area.x && bounds.y >= area.y && bounds.x + bounds.width <= area.x + area.width + slop
-      && bounds.y + bounds.height <= area.y + area.height + slop, `${label}: child extends beyond the cursor display work area`);
-    const placementFor = ({ x, y }) => ({
-      x: clamp(x - Math.min(96, Math.round(bounds.width / 2)), area.x, area.x + area.width - bounds.width),
-      y: clamp(y - 18, area.y, area.y + area.height - bounds.height),
-    });
-    const placements = [placementFor(cursor.point), placementFor(observed.point)];
-    record.expected_native_origin_from_cursor_samples = placements;
-    assert.ok(["x", "y"].every(axis => bounds[axis] >= Math.min(...placements.map(p => p[axis])) - slop
-      && bounds[axis] <= Math.max(...placements.map(p => p[axis])) + slop), `${label}: child origin differs from the native cursor anchor and work-area clamp`);
-    const point = { x: clamp(cursor.point.x, area.x, area.x + area.width), y: clamp(cursor.point.y, area.y, area.y + area.height) };
-    record.native_cursor_clamped_to_work_area = point;
-    assert.ok(point.x >= bounds.x - slop && point.y >= bounds.y - slop && point.x <= bounds.x + bounds.width + slop
-      && point.y <= bounds.y + bounds.height + slop, `${label}: clamped native cursor misses the child bounds`);
+    record.native_cursor_stable_during_release = cursor.display_id === observed.display_id && near(cursor.point, observed.point, 4);
+    const cursorOrigins = [cursor, observed].map(sample => placementFor(sample.point, sample.work_area));
+    record.expected_native_origin_from_cursor_samples = cursorOrigins;
+    record.distinguishes_native_cursor_placement = record.native_cursor_stable_during_release
+      && cursorOrigins.every(origin => !near(expected, origin, 2 * slop));
     record.status = "passed";
     return child;
   } catch (error) {

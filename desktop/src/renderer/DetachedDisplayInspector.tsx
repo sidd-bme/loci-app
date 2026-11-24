@@ -52,7 +52,7 @@ export function DetachedDisplayInspector({ api }: { api: DisplayInspectorApi }) 
     };
   // IPC snapshots clone the binding. Keep playback callbacks stable across plane changes.
   }, [api, binding?.generation, restoreDrafts]);
-  useEffect(() => { if (binding) dockButton.current?.focus(); }, [binding?.generation]);
+  useLayoutEffect(() => { dockButton.current?.focus(); }, [binding?.generation]);
 
   const dock = () => {
     if (binding) void api.dock(binding).catch(() => setError("Close this window to dock Display."));

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentWorkspaceApi, AgentWorkspacePresentation, AgentWorkspaceState } from "../shared/agent-workspace-api";
+import type { PanelOpenOptions } from "../shared/panel-open-options";
 import { AgentWorkspaceHost, type AgentHostActions, type AgentHostContext } from "./agent-workspace-host";
 
 const EMPTY: AgentWorkspacePresentation = { selectedTaskId: null, section: "overview", draft: null };
@@ -17,9 +18,9 @@ export function useAgentWorkspaceHost(api: AgentWorkspaceApi | undefined, contex
   return { state, presentation, openRequest,
     detached: Boolean(state && state.status !== "docked"),
     changePresentation: (next: AgentWorkspacePresentation) => host?.changePresentation(next),
-    open: (atPointer?: true) => {
+    open: (options?: PanelOpenOptions) => {
       const scope = latest.current.context.scope;
-      return host?.open(false, atPointer).catch(error => { if (latest.current.context.scope === scope && !latest.current.context.switching)
+      return host?.open(false, options).catch(error => { if (latest.current.context.scope === scope && !latest.current.context.switching)
         latest.current.onError(error instanceof Error ? error.message : "Could not open the agent workspace."); });
     },
     focus: () => {

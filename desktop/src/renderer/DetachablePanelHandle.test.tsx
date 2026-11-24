@@ -50,6 +50,29 @@ it("keeps ordinary activation and commits a captured drag exactly once on outsid
   expect(onDetach).toHaveBeenCalledTimes(3);
 });
 
+it("uses the release when macOS sends a zero-button move across the window edge", () => {
+  const { grip, onDetach, onDropOutside } = mount();
+  panelPointer(grip, "pointerdown", { clientX: 126, clientY: 65 });
+  panelPointer(grip, "pointermove", { clientX: -32, clientY: 65, buttons: 0, button: -1 });
+  expect(onDropOutside).not.toHaveBeenCalled();
+  panelPointer(document.documentElement, "pointerup", { clientX: -32, clientY: 65, screenX: 168, screenY: 232 });
+  fireEvent.click(grip, { detail: 1 });
+  expect(onDropOutside).toHaveBeenCalledExactlyOnceWith({ x: 168, y: 232 });
+  expect(onDetach).not.toHaveBeenCalled();
+});
+
+it("discards an unfinished grab when the same pointer starts a new press", () => {
+  const { grip, onDropOutside } = mount();
+  panelPointer(grip, "pointerdown");
+  panelPointer(window, "pointermove", { clientX: -32, buttons: 0, button: -1 });
+  panelPointer(document.body, "pointerdown", { clientX: 240 });
+  panelPointer(document.body, "pointerup", { clientX: -32 });
+  expect(onDropOutside).not.toHaveBeenCalled();
+  panelPointer(grip, "pointerdown");
+  panelPointer(window, "pointerup", { clientX: -20 });
+  expect(onDropOutside).toHaveBeenCalledOnce();
+});
+
 it("ignores a short edge crossing, re-entry, secondary buttons and non-primary pointers", () => {
   const { grip, onDetach, onDropOutside } = mount();
   panelPointer(grip, "pointerdown", { clientX: 3 });

@@ -1,5 +1,6 @@
 import { GripVertical } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref, type RefObject } from "react";
+import type { PanelDropPoint } from "../shared/panel-open-options";
 import "./DetachablePanelHandle.css";
 
 const dragSlop = 8;
@@ -13,7 +14,7 @@ const interactive = [
 type PanelHandleProps = {
   label: string;
   onDetach: () => void;
-  onDropOutside: () => void;
+  onDropOutside: (point: PanelDropPoint) => void;
   disabled?: boolean;
   className?: string;
   title?: string;
@@ -62,9 +63,12 @@ export function DetachablePanelHandle({ label, onDetach, onDropOutside, disabled
     const events = new AbortController();
     const listeners = { capture: true, signal: events.signal };
     cancelDrag.current = cancel;
+    window.addEventListener("pointerdown", next => {
+      if (next.pointerId === pointerId) cancel();
+    }, listeners);
     window.addEventListener("pointermove", next => {
-      if (next.pointerId !== pointerId) return;
-      if (!(next.buttons & 1)) { cancel(); return; }
+      // macOS can deliver a zero-button move just before the matching outside release.
+      if (next.pointerId !== pointerId || !(next.buttons & 1)) return;
       moved ||= crossesSlop(next);
       if (!moved) return;
       const nextState = inContent(next) ? "inside" : "outside";
@@ -82,7 +86,7 @@ export function DetachablePanelHandle({ label, onDetach, onDropOutside, disabled
       const insideOrigin = end.clientX >= hit.left && end.clientX < hit.right && end.clientY >= hit.top && end.clientY < hit.bottom;
       const shouldDrop = moved && outside && end.button === 0;
       finish(moved || outside || !insideOrigin || end.button !== 0);
-      if (shouldDrop) drop.current();
+      if (shouldDrop) drop.current({ x: Math.round(end.screenX), y: Math.round(end.screenY) });
     }, listeners);
     for (const type of ["pointercancel", "lostpointercapture"] as const) {
       window.addEventListener(type, next => { if (next.pointerId === pointerId) cancel(); }, listeners);

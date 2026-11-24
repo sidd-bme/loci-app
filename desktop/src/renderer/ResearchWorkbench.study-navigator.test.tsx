@@ -382,13 +382,14 @@ describe("ResearchWorkbench detachable Images navigator", () => {
     const heading = screen.getByRole("heading", { name: /Images\s*\(2\)/ });
     fireEvent.pointerDown(heading, { isPrimary: true, button: 0, pointerId: 2, clientX: 40, clientY: 50 });
     fireEvent.pointerMove(window, { pointerId: 2, buttons: 1, clientX: -60, clientY: 50 });
-    fireEvent.pointerUp(window, { pointerId: 2, button: 0, clientX: -60, clientY: 50 });
+    const dropPoint = { x: -1250, y: 440 };
+    fireEvent.pointerUp(window, { pointerId: 2, button: 0, clientX: -60, clientY: 50, screenX: dropPoint.x, screenY: dropPoint.y });
 
     await waitFor(() =>
       expect(nav.native.open).toHaveBeenCalledWith(
         { projectId: "study-kidney", studyGeneration: 0, documentGeneration: 0 },
         expect.objectContaining({ activeSourceId: sourceA.id }),
-        { atPointer: true },
+        { atPointer: true, dropPoint },
       ),
     );
   });

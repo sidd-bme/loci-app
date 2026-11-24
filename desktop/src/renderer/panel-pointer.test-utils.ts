@@ -19,9 +19,11 @@ export function panelPointer(target: EventTarget, type: string, options: MouseEv
   }), { pointerId, isPrimary }));
 }
 
+export const panelDropPoint = { x: -1245, y: 243 };
+
 export function dropPanelOutside(grip: HTMLElement) {
   installPanelPointerCapture(grip);
   panelPointer(grip, "pointerdown");
   panelPointer(window, "pointermove", { clientX: -20 });
-  panelPointer(window, "pointerup", { clientX: -20 });
+  panelPointer(window, "pointerup", { clientX: -20, screenX: panelDropPoint.x, screenY: panelDropPoint.y });
 }

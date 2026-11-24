@@ -282,6 +282,77 @@ async function checkLayout(page, label) {
   return { ...geometry, zText, controls: controls.length };
 }
 
+async function sizeMainWindow(electronApp, page, width, height, label) {
+  const placed = await electronApp.evaluate(({ BrowserWindow, screen }, { width, height }) => {
+    const win = BrowserWindow.getAllWindows()[0], [minW, minH] = win.getMinimumSize();
+    const disp = screen.getDisplayMatching(win.getBounds()), wa = disp.workArea;
+    let w = Math.max(minW, Math.min(width, wa.width)), h = Math.max(minH, Math.min(height, wa.height));
+    if (w >= wa.width && wa.width - 30 >= minW) w = wa.width - 30;
+    if (h >= wa.height && wa.height - 30 >= minH) h = wa.height - 30;
+    const requested = { x: wa.x + Math.min(15, Math.floor((wa.width - w) / 2)), y: wa.y + Math.min(15, Math.floor((wa.height - h) / 2)), width: w, height: h };
+    win.setBounds(requested);
+    const actual = win.getBounds(), content = win.getContentBounds();
+    return { target: { width, height }, requested, actual, content, min: [minW, minH], work_area: wa,
+      display: { id: disp.id, label: disp.label }, clamped: w < width || h < height,
+      matched_target: actual.width === width && actual.height === height, fullscreen: win.isFullScreen(), maximized: win.isMaximized() };
+  }, { width, height });
+  const { requested: req, actual: a, work_area: wa, content: c, min } = placed;
+  assert.ok(!placed.fullscreen && !placed.maximized && a.width >= min[0] && a.height >= min[1], `${label}: invalid native window state`);
+  assert.deepEqual([a.width, a.height], [req.width, req.height], `${label}: native size ${a.width}x${a.height} did not match requested ${req.width}x${req.height}`);
+  assert.ok(a.x >= wa.x && a.y >= wa.y && a.x + a.width <= wa.x + wa.width && a.y + a.height <= wa.y + wa.height, `${label}: offscreen main window`);
+  await poll(() => page.evaluate(({ w, h }) => Math.abs(innerWidth - w) <= 2 && Math.abs(innerHeight - h) <= 2, { w: c.width, h: c.height }), `${label} viewport`);
+  await raf2(page);
+  if (placed.clamped) {
+    const note = `unclamped ${width}x${height} main bounds (${label}: ${placed.display.label} workArea ${wa.width}x${wa.height}, actual ${a.width}x${a.height})`;
+    if (!report.not_exercised.includes(note)) report.not_exercised.push(note);
+  }
+  return placed;
+}
+
+async function checkWorkbenchBounds(page, sourceId, placed, label) {
+  await raf2(page);
+  const dom = await page.evaluate((id) => {
+    const rect = (el) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: Math.round(r.width), height: Math.round(r.height) };
+    };
+    const hit = (el, scroll = false) => {
+      if (!el) return false;
+      if (scroll) el.scrollIntoView({ block: "center", inline: "nearest" });
+      const r = el.getBoundingClientRect(), at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return r.width > 0 && r.height > 0 && r.left >= -1 && r.right <= innerWidth + 1 && r.top >= -1 && r.bottom <= innerHeight + 1 && Boolean(at && (at === el || el.contains(at)));
+    };
+    const vp = document.querySelector(`.image-viewport[data-viewer-source="${id}"][data-prepared="true"]`), canvas = vp?.querySelector("canvas") ?? null;
+    const controls = [
+      ["Active image", '[aria-label="Active image"]', false], ["Add images…", 'button[aria-label="Add images…"]', false],
+      ["Save study", 'button[aria-label="Save study"]', false], ["Detach Images", 'button[aria-label="Detach Images"]', false],
+      ["Active source", `.research-sources button[data-source-id="${id}"]`, true], ["Fit image", 'button[aria-label="Fit image"]', false],
+      ["Detach image", 'button[aria-label="Detach image"]', false], ["Detach Display", 'button[aria-label="Detach Display"]', true],
+      ["Z plane", '.research-inspector .source-display input[aria-label="Z plane"]', true],
+      ["Channel 1 visible", '.research-inspector .source-display input[aria-label="Channel 1 visible"]', true],
+    ].map(([name, sel, sc]) => [name, hit(document.querySelector(sel), sc)]);
+    document.querySelector(".research-sources")?.scrollTo(0, 0);
+    document.querySelector(".research-inspector")?.scrollTo(0, 0);
+    return {
+      viewport: { width: innerWidth, height: innerHeight, scroll_width: document.documentElement.scrollWidth },
+      header: rect(document.querySelector("main.research-workbench > header")), sources: rect(document.querySelector("#research-image-list")),
+      stage: rect(document.querySelector("#research-image-stage")), toolbar: rect(document.querySelector("#research-image-stage .research-view-toolbar")),
+      image_viewport: rect(vp), canvas: rect(canvas), inspector: rect(document.querySelector("#research-tools-pane")),
+      canvas_hit: hit(canvas), unreachable: controls.filter(([, ok]) => !ok).map(([name]) => name),
+    };
+  }, sourceId);
+  const { viewport: v, header, sources, stage, toolbar, image_viewport: iv, canvas, inspector } = dom;
+  assert.ok(v.scroll_width <= v.width + 1, `${label}: horizontal overflow`);
+  for (const [k, r] of Object.entries({ header, sources, stage, toolbar, image_viewport: iv, canvas, inspector })) {
+    assert.ok(r && r.width > 0 && r.height > 0 && r.left >= -1 && r.top >= -1 && r.right <= v.width + 1 && r.bottom <= v.height + 1, `${label}: invalid/clipped ${k}`);
+  }
+  assert.ok(sources.right <= stage.left + 1 && stage.right <= inspector.left + 1 && sources.right <= canvas.left + 1 && canvas.right <= inspector.left + 1, `${label}: sidebars overlap visible image`);
+  assert.ok(header.bottom <= stage.top + 1 && toolbar.bottom <= iv.top + 1 && dom.canvas_hit, `${label}: chrome overlaps visible image`);
+  assert.deepEqual(dom.unreachable, [], `${label}: unreachable core controls`);
+  return { ...placed, ...dom };
+}
+
 async function expectFocusOnDetach(mainPage, label, name = "Detach Display") {
   const btn = button(mainPage, name);
   await btn.waitFor({ state: "visible", timeout: 10_000 });
@@ -309,7 +380,7 @@ async function waitForDisplayChild(app, mainPage) {
   return child;
 }
 
-let app = null, main = null, child = null, failure = null, kidneyBefore = null, secondaryBefore = null;
+let app = null, main = null, child = null, failure = null, kidneyBefore = null, secondaryBefore = null, initialBounds = null;
 const button = (page, name) => page.getByRole("button", { name, exact: true });
 const pointer = (locator, label, options = {}) => checkPointerGesture({ app, main, locator, label, cases: report.pointer_input.cases, poll, ...options });
 const dragPanel = (name, title, side = "right") => pointer(button(main, name), name, { title, side });
@@ -603,6 +674,7 @@ async function launch(profile, { reopen = false } = {}) {
   watch(first, `${profile}:main`);
   launched.on("window", (w) => { if (w !== first) watch(w, `${profile}:child`); });
   await placeQaWindow(launched, { requestedDisplay: display, launch: profile }, report);
+  const workbenchBounds = await sizeMainWindow(launched, first, 1280, 800, `${profile}:1280x800`);
   await launched.evaluate(({ dialog }, opts) => {
     let idx = 0;
     dialog.showOpenDialog = async (...a) => {
@@ -617,7 +689,7 @@ async function launch(profile, { reopen = false } = {}) {
     };
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
   }, { openFiles: reopen ? [] : [kidneyFile, ...(secondaryFile ? [secondaryFile] : [])], studyPath, reopen });
-  return { launched, first };
+  return { launched, first, workbenchBounds };
 }
 
 try {
@@ -647,7 +719,7 @@ try {
 
   // 2. Open kidney as 2D stack; explicitly enable Ch1 + Ch2 (kidney defaults often show Ch1 only).
   report.stage = "open-kidney-2d";
-  ({ launched: app, first: main } = await launch("initial"));
+  ({ launched: app, first: main, workbenchBounds: initialBounds } = await launch("initial"));
   await main.getByRole("button", { name: "Open images", exact: true }).click();
   const snap1 = await waitForSnapshot(main, (s) => s?.sources?.length === 1 && s.sources[0].sha256 === kidneySha, "kidney import", 90_000);
   const kidney = snap1.sources[0];
@@ -674,8 +746,9 @@ try {
   }
   const baseline = await sampleCanvas(main, kidney.id);
   report.canvas.baseline = { initial_z: initialZ, default_visible: defaultVisible, ...stripProbe(baseline) };
-  await capture(main, "01-docked-baseline", "Docked 2D Display baseline with Ch1 & Ch2 visible");
-  report.passed.push("opened pinned kidney 2D stack with verified Ch1+Ch2 baseline");
+  report.layout.workbench_1280x800 = await checkWorkbenchBounds(main, kidney.id, initialBounds, "workbench-1280x800");
+  await capture(main, "01-docked-baseline", `Docked normal workbench (${initialBounds.actual.width}x${initialBounds.actual.height} native, target 1280x800) with Ch1 & Ch2 visible`);
+  report.passed.push(`opened pinned kidney 2D stack with verified Ch1+Ch2 baseline at ${initialBounds.actual.width}x${initialBounds.actual.height}`);
 
   // 3. Detach Display; prove main canvas stays mounted & usable without entering detached-image mode.
   report.stage = "detach-display";
@@ -846,7 +919,9 @@ try {
   await closeWithConfirmedQuit(app);
   app = main = null;
 
-  ({ launched: app, first: main } = await launch("reopen", { reopen: true }));
+  const { launched: reopenedApp, first: reopenedMain, workbenchBounds: reopenBounds } = await launch("reopen", { reopen: true });
+  app = reopenedApp; main = reopenedMain;
+  assert.deepEqual([reopenBounds.actual.width, reopenBounds.actual.height], [initialBounds.actual.width, initialBounds.actual.height], "Cold reopen native bounds must match initial launch");
   await main.getByRole("button", { name: "Open study", exact: true }).click();
   const reopenedSnap = await waitForSnapshot(main, (s) => s?.sources?.some((x) => x.sha256 === kidneySha), "reopened study", 90_000);
   assert.equal(reopenedSnap.sources.find((x) => x.sha256 === kidneySha).id, kidney.id);
@@ -859,7 +934,18 @@ try {
   const reopenCanvas = await sampleCanvas(main, kidney.id);
   report.canvas.cold_reopen = { ...stripProbe(reopenCanvas), delta_from_baseline: diffCanvas(baseline, reopenCanvas, "cold reopen vs baseline") };
   await capture(main, "11-cold-reopen", "Cold-reopened saved study retaining detached Display edits");
-  if (drag) await checkAdditionalDragRoutes(kidney, secondary);
+  report.stage = "workbench-1440x900";
+  const desktopBounds = await sizeMainWindow(app, main, 1440, 900, "reopen:1440x900");
+  await main.getByRole("button", { name: "Fit image", exact: true }).click();
+  report.canvas.workbench_1440x900 = stripProbe(await sampleCanvas(main, kidney.id));
+  report.layout.workbench_1440x900 = await checkWorkbenchBounds(main, kidney.id, desktopBounds, "workbench-1440x900");
+  await capture(main, "11b-docked-workbench-1440x900", `Docked normal workbench (${desktopBounds.actual.width}x${desktopBounds.actual.height} native, target 1440x900)`);
+  report.passed.push(`docked normal workbench verified at ${initialBounds.actual.width}x${initialBounds.actual.height} and ${desktopBounds.actual.width}x${desktopBounds.actual.height}`);
+  if (drag) {
+    await checkAdditionalDragRoutes(kidney, secondary);
+    assert.ok(report.pointer_input.cases.some((test) => test.distinguishes_native_cursor_placement),
+      "At least one outside drag must distinguish release-point placement from the OS cursor.");
+  }
   await closeWithConfirmedQuit(app);
   app = main = null;
   report.passed.push("independent SQLite readback and cold study reopen retained exact kidney Display state");

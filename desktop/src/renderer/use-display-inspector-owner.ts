@@ -5,6 +5,7 @@ import {
   type DisplayInspectorLifecycle, type DisplayInspectorSnapshot, type DisplayInspectorTarget,
 } from "../shared/display-inspector-api";
 import type { PreprocessInspectorEdit, PreprocessInspectorSnapshot } from "../shared/preprocess-inspector-api";
+import type { PanelOpenOptions } from "../shared/panel-open-options";
 
 type Closed = (reason: DisplayInspectorLifecycle["reason"], binding: DisplayInspectorBinding) => void;
 type Candidate<Snapshot, Edit> = {
@@ -100,12 +101,12 @@ export function useDisplayInspectorOwner(
     }
   }, [api, active.target, active.snapshot, lifecycle?.binding.generation]);
 
-  const open = (kind: DisplayInspectorTarget["kind"], atPointer?: true) => {
+  const open = (kind: DisplayInspectorTarget["kind"], options?: PanelOpenOptions) => {
     const { target, snapshot } = currentCandidate(kind);
     if (!api || !target || !snapshot || pendingOpen.current || session.current) return;
     pendingOpen.current = true;
     const subscribed = subscription.current;
-    const opening = atPointer ? api.open(target, snapshot, { atPointer }) : api.open(target, snapshot);
+    const opening = options ? api.open(target, snapshot, options) : api.open(target, snapshot);
     void opening.then((binding) => {
       if (subscribed !== subscription.current || !sameDisplayTarget(binding, currentCandidate(kind).target))
         return api.revoke(binding);

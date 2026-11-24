@@ -42,6 +42,9 @@ it("forwards optional atPointer placement and strips native IPC events on the ow
   expect(invoke).toHaveBeenLastCalledWith("loci-study-navigator:open", target, snapshot);
   await owner.open(target, snapshot, { atPointer: true });
   expect(invoke).toHaveBeenLastCalledWith("loci-study-navigator:open", target, snapshot, { atPointer: true });
+  const placement = { atPointer: true, dropPoint: { x: -1440, y: 65 } } as const;
+  await owner.open(target, snapshot, placement);
+  expect(invoke).toHaveBeenLastCalledWith("loci-study-navigator:open", target, snapshot, placement);
   const onAction = vi.fn();
   const stop = owner.onAction(onAction);
   const [channel, listener] = on.mock.calls[0];

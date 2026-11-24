@@ -10,6 +10,7 @@ import { sourceLabelForId } from "./source-browser";
 import { AgentActivityTimeline, AgentApprovalDetails, RecordedTime, type AgentActivityNavigation } from "./AgentActivityTimeline";
 import { AgentTaskPanel } from "./AgentTaskPanel";
 import type { AgentWorkspacePresentation } from "../shared/agent-workspace-api";
+import type { PanelOpenOptions } from "../shared/panel-open-options";
 export type { AgentWorkspacePresentation } from "../shared/agent-workspace-api";
 import "./AgentSessionIndicator.css";
 import "./AgentWorkspaceSurface.css";
@@ -33,7 +34,7 @@ export type AgentWorkspaceSurfaceProps = AgentActivityNavigation & {
   presentation?: AgentWorkspacePresentation;
   onPresentationChange?: (next: AgentWorkspacePresentation) => void;
   feedback?: { kind: "status" | "error"; message: string } | null;
-  onDetach?: (atPointer?: true) => void;
+  onDetach?: (options?: PanelOpenOptions) => void;
   onDock?: () => void;
   onClose?: () => void;
   onConfigureAccess?: () => void;
@@ -322,7 +323,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
               </button>}
               {onDetach && <DetachablePanelHandle label="Pop out" disabled={controlBusy || commandBusy}
                 title="Drag outside the window or click to open the agent workspace separately" grabArea={workspaceTitle}
-                onDetach={() => onDetach()} onDropOutside={() => onDetach(true)} />}
+                onDetach={() => onDetach()} onDropOutside={dropPoint => onDetach({ atPointer: true, dropPoint })} />}
               {onDock && <button type="button" disabled={controlBusy || commandBusy} onClick={onDock}><PanelsTopLeft size={16} aria-hidden="true" />Return to workspace</button>}
               {onClose && <button type="button" ref={closeButtonRef} className="agent-workspace-close"
                 aria-label="Close agent session drawer" title="Close agent workspace" onClick={onClose}><X size={16} aria-hidden="true" /></button>}

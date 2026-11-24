@@ -52,10 +52,14 @@ it("uses shared Display controls, sends only field intents and discards a reject
   fireEvent.change(screen.getByLabelText("Channel 1 opacity"), { target: { value: "0.35" } });
   expect(api.edit).toHaveBeenLastCalledWith(binding, { kind: "channel", channel: 0, edit: { field: "opacity", value: 0.35 } });
   const windowWidth = screen.getByLabelText("Channel 1 window");
+  windowWidth.focus();
   fireEvent.change(windowWidth, { target: { value: "123" } });
+  act(() => receive({ ...state, sequence: 2 }));
+  expect(windowWidth).toHaveFocus();
+  expect(windowWidth).toHaveValue("123");
   fireEvent.keyDown(windowWidth, { key: "Enter" });
   expect(api.edit).toHaveBeenLastCalledWith(binding, { kind: "channel", channel: 0, edit: { field: "window", value: 123 } });
-  act(() => receive({ ...state, sequence: 2, rejectedSequence: 2 }));
+  act(() => receive({ ...state, sequence: 3, rejectedSequence: 3 }));
   expect(windowWidth).toHaveValue("255");
   expect(channel.open).toBe(true);
   const compare = screen.getByRole("button", { name: "Hold to show default display" });
@@ -96,15 +100,20 @@ it("shows the source Preprocess panel and keeps an unacknowledged number visible
   expect(screen.getByText("µm")).toBeVisible();
   expect(screen.queryByLabelText("Z plane")).toBeNull();
   const input = screen.getByLabelText("Step 1 sigma");
+  input.focus();
+  expect(input).toHaveFocus();
   fireEvent.change(input, { target: { value: "1e" } });
   fireEvent.change(input, { target: { value: "1e-" } });
   expect(dock).toBeDisabled();
   expect(screen.getByRole("button", { name: "Preview selected crop" })).toBeDisabled();
   expect(api.edit).toHaveBeenLastCalledWith(preprocessBinding, { kind: "preprocess", request: 2, edit: { kind: "draft", id: 8, text: "1e-" } });
-  act(() => receive({ binding: preprocessBinding, sequence: 1, snapshot, acknowledgedRequest: 1, dockRequested: true }));
+  act(() => receive({ binding: preprocessBinding, sequence: 1, snapshot, acknowledgedRequest: 1 }));
+  expect(input).toHaveFocus();
+  expect(input).toHaveValue("1e-");
+  act(() => receive({ binding: preprocessBinding, sequence: 2, snapshot, acknowledgedRequest: 1, dockRequested: true }));
   expect(input).toHaveValue("1e-");
   expect(api.dock).not.toHaveBeenCalled();
-  act(() => receive({ binding: preprocessBinding, sequence: 2, acknowledgedRequest: 2, dockRequested: true,
+  act(() => receive({ binding: preprocessBinding, sequence: 3, acknowledgedRequest: 2, dockRequested: true,
     snapshot: { ...snapshot, previewDisabled: true, editor: { ...snapshot.editor,
       rows: [{ ...snapshot.editor.rows[0], draft: { text: "1e-", error: "Enter a finite value" } }] } } }));
   expect(input).toHaveAttribute("aria-invalid", "true");

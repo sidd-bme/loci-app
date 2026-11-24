@@ -26,9 +26,9 @@ export function createStudyNavigatorApi(ipc: NavigatorIpc): StudyNavigatorApi {
 
 export function createStudyNavigatorOwnerApi(ipc: NavigatorIpc): StudyNavigatorOwnerApi {
   return {
-    open: (target, snapshot, options) => options?.atPointer === true
-      ? ipc.invoke(prefix + "open", target, snapshot, { atPointer: true })
-      : ipc.invoke(prefix + "open", target, snapshot),
+    open: (target, snapshot, options) => options === undefined
+      ? ipc.invoke(prefix + "open", target, snapshot)
+      : ipc.invoke(prefix + "open", target, snapshot, options),
     publish: (binding, snapshot, rejected) => rejected === undefined
       ? ipc.invoke(prefix + "publish", binding, snapshot)
       : ipc.invoke(prefix + "publish", binding, snapshot, rejected),

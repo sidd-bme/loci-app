@@ -1,2 +1,6 @@
-/** Position a newly opened native panel at the OS pointer, without renderer coordinates. */
-export type PanelOpenOptions = { atPointer?: true };
+/** Rounded global device-independent coordinates from a panel's pointer release. */
+export type PanelDropPoint = Readonly<{ x: number; y: number }>;
+
+export type PanelOpenOptions =
+  | { atPointer?: undefined; dropPoint?: never }
+  | { atPointer: true; dropPoint?: PanelDropPoint };

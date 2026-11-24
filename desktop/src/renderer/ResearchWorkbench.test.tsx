@@ -16,7 +16,7 @@ import { dispatchWorkbenchCommand } from "./workbench-commands";
 import { FIRST_STUDY_SOURCE_SHA256 } from "./first-study-display";
 import type { DisplayInspectorBinding, DisplayInspectorOwnerApi } from "../shared/display-inspector-api";
 import type { PreprocessInspectorEdit } from "../shared/preprocess-inspector-api";
-import { dropPanelOutside, installPanelPointerCapture, panelPointer } from "./panel-pointer.test-utils";
+import { dropPanelOutside, installPanelPointerCapture, panelDropPoint, panelPointer } from "./panel-pointer.test-utils";
 import type {
   ResearchBatchReceipt,
   ResearchBatchTask,
@@ -1420,7 +1420,7 @@ describe("ResearchWorkbench", () => {
           presentation: expect.objectContaining({ channels: expect.arrayContaining([
             expect.objectContaining({ channel: 0, opacity: 0.37 }),
           ]), mode: "plane", tool: "navigate" }) }),
-        ...(gesture === "drag" ? [{ atPointer: true }] : [])));
+        ...(gesture === "drag" ? [{ atPointer: true, dropPoint: panelDropPoint }] : [])));
     } finally { delete window.lociImageWindows; }
   });
 
@@ -3295,7 +3295,7 @@ describe("ResearchWorkbench", () => {
     dropPanelOutside(button.parentElement!);
     expect(native.open).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ kind: "preprocess", sourceId: source.id, sourceSha256: source.sha256 }),
-      expect.objectContaining({ kind: "preprocess" }), { atPointer: true },
+      expect.objectContaining({ kind: "preprocess" }), { atPointer: true, dropPoint: panelDropPoint },
     );
     expect(screen.getByRole("button", { name: "Focus Preprocess inspector" })).toBeVisible();
     return { source, otherSource, bridge, native, view, viewport, canvas, send, read, dock,
