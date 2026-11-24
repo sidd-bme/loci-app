@@ -1,6 +1,6 @@
 import io
 import signal
-import time
+import threading
 
 import pytest
 
@@ -174,19 +174,27 @@ def test_location_uses_exact_zero_based_result_grid_axes(point, axes):
     assert "records" not in text and "b" * 64 not in text
 
 
+class IndicatorStream(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.frame_flushed = threading.Event()
+
+    def flush(self):
+        super().flush()
+        self.frame_flushed.set()
+
+
 def test_indicator_only_runs_during_work_and_cleans_after_exception():
-    stream = io.StringIO()
+    stream = IndicatorStream()
     with (
-        pytest.raises(ValueError),
-        WorkIndicator(stream, "running", True, delay=0.01, interval=0.02),
+        pytest.raises(ValueError, match="real execution error"),
+        WorkIndicator(stream, "running", True, delay=0.01, interval=0.02) as work,
     ):
-        time.sleep(0.06)
+        assert stream.frame_flushed.wait(2), "The indicator did not flush its first frame"
+        assert "Loci (o . .) running" in stream.getvalue()
         raise ValueError("real execution error")
-    assert "Loci (o . .) running" in stream.getvalue()
     assert stream.getvalue().endswith("\r\x1b[2K")
-    before = stream.getvalue()
-    time.sleep(0.04)
-    assert stream.getvalue() == before
+    assert work.thread is not None and not work.thread.is_alive()
 
 
 def test_fast_and_disabled_work_never_produces_motion():
@@ -199,12 +207,12 @@ def test_fast_and_disabled_work_never_produces_motion():
 
 def test_sigterm_handler_clears_motion_and_restores_previous_handler():
     previous = signal.getsignal(signal.SIGTERM)
-    stream = io.StringIO()
+    stream = IndicatorStream()
     with (
         pytest.raises(SystemExit) as stopped,
         WorkIndicator(stream, "running", True, delay=0.01, interval=0.02) as work,
     ):
-        time.sleep(0.03)
+        assert stream.frame_flushed.wait(2), "The indicator did not flush its first frame"
         work._terminate(signal.SIGTERM, None)
     assert stopped.value.code == 143
     assert stream.getvalue().endswith("\r\x1b[2K")
