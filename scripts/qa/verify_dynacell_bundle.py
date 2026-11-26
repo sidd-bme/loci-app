@@ -107,7 +107,7 @@ def verify(source, expected_prediction, bundle):
     for actual_plane, expected_plane in zip(prediction, expected, strict=True):
         reference = expected_plane.astype(np.float64)
         error = np.abs(actual_plane.astype(np.float64) - reference)
-        mismatches += np.count_nonzero(error > ATOL + RTOL * np.abs(reference))
+        mismatches += int(np.count_nonzero(error > ATOL + RTOL * np.abs(reference)))
         max_abs = max(max_abs, float(error.max()))
         total_abs += float(error.sum())
     require(

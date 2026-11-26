@@ -223,7 +223,7 @@ try {
   const installPublisher = panel.getByRole("button", { name: "Install from Biohub", exact: true });
   const install = checkpoint ? installLocal : installPublisher;
   const missing = panel.getByText(/download from Biohub/u);
-  const channel = panel.getByLabel("Reconstructed phase channel", { exact: true });
+  const channel = panel.getByRole("combobox", { name: /^Reconstructed phase channel\b/u });
   const confirm = panel.getByRole("checkbox", { name: /This channel is reconstructed Phase3D/u });
   const predict = panel.getByRole("button", { name: "Predict nuclear stain…", exact: true });
   await visible(page, missing, "missing checkpoint in the fresh profile");
@@ -262,9 +262,13 @@ try {
 
   report.stage = "predict";
   await predict.click();
+  const failed = page.locator(".research-alert[role=alert]").filter({ visible: true }).first();
+  await visible(page, page.locator("[data-source-id]").filter({ hasText: /DynaCell predicted nuclei/u }).first().or(failed).first(),
+    "published source or prediction error", 600_000);
+  if (await failed.isVisible()) throw new Error(await failed.innerText());
   const published = await waitForSnapshot(page,
     (state) => state?.sources?.some((item) => item.name.startsWith("DynaCell predicted nuclei")),
-    "published DynaCell source", 600_000);
+    "published DynaCell source");
   assert.equal(published.sources.length, 2);
   const derived = published.sources.find((item) => item.id !== parent.id);
   assert.equal(derived.name, `DynaCell predicted nuclei · ${parent.name.slice(0, 210)} · T0`);
