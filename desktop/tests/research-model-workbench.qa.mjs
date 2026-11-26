@@ -581,10 +581,14 @@ try {
   await selectWorkbenchTool(page, "Model");
   await visible(
     page,
-    page.getByRole("heading", { name: "Managed model package", exact: true }),
-    "model workbench",
+    page.getByRole("heading", { name: "No model packages in this study.", exact: true }),
+    "empty model workbench",
   );
-  await page.getByLabel("Model working memory").selectOption(String(TWO_GIB));
+  const resources = page.locator("details.research-model-resources");
+  if (!(await resources.evaluate((element) => element.open))) {
+    await resources.locator(":scope > summary").click();
+  }
+  await resources.getByLabel("Model working memory", { exact: true }).selectOption(String(TWO_GIB));
   await page
     .getByRole("button", { name: "Import model package…", exact: true })
     .click();
@@ -659,9 +663,14 @@ try {
       .filter({ hasText: "Reference check passed." }),
     "visible useful model qualification",
   );
-  const modelTechnical = page.locator(".research-model-records details");
+  const modelTechnical = page.locator(".research-model-records details.research-technical-record");
   assert.equal(await modelTechnical.getAttribute("open"), null);
-  assert.ok((await modelTechnical.textContent()).includes("reference-qualified on the recorded CPU runtime"));
+  await modelTechnical.locator(":scope > summary").click();
+  await visible(
+    page,
+    modelTechnical.getByText("reference-qualified on the recorded CPU runtime", { exact: true }),
+    "technical compatibility record",
+  );
   await screenshot(page, "02-useful-model-qualified");
 
   const usefulRun = await previewAndAdopt(
