@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+from pathlib import PureWindowsPath
 
 import numpy as np
 import pytest
@@ -19,6 +21,7 @@ from loci_engine.research_project import ResearchProject, canonical_json
 from loci_engine.research_rpc import dispatch_research
 from loci_engine.research_session import clone_study
 from loci_engine.research_vendor import validate_derivation
+from loci_engine.virtual_stain_bundle import publication, validate_windows_path
 from loci_engine.workbench import Workbench
 
 
@@ -75,7 +78,7 @@ def setup(tmp_path, source_file, monkeypatch):
 
 def test_rpc_publication_native_readback_and_offline_identity(setup, source_file, monkeypatch):
     wb, req, target, weights = setup
-    native = tifffile.memmap(source_file)[1, :, 1]
+    native = tifffile.memmap(source_file, mode="r")[1, :, 1]
 
     def predict(phase, path, mean, std):
         assert path == weights
@@ -103,6 +106,11 @@ def test_rpc_publication_native_readback_and_offline_identity(setup, source_file
     np.testing.assert_array_equal(disk[0], native / 16)
     deriv = src["derivation"]
     assert json.loads((target / stain.SIDECAR).read_bytes()) == deriv["record"]
+    assert deriv["record"]["phase_pixels_sha256"] == hashlib.sha256(native.tobytes()).hexdigest()
+    assert disk[1].tobytes() == native.tobytes()
+    assert (
+        hashlib.sha256(disk[0].tobytes()).hexdigest() == deriv["record"]["prediction_pixels_sha256"]
+    )
     assert deriv["record"]["population_voxels"] == native.size
     assert deriv["record"]["mean"] == native.copy().mean(dtype=np.float64)
     assert deriv["record"]["std"] == native.copy().std(dtype=np.float64)
@@ -192,6 +200,7 @@ def test_refuses_invalid_binding_before_inference(setup, fields):
         "registration",
         "sidecar",
         "race",
+        "empty-race",
     ],
 )
 def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
@@ -204,8 +213,9 @@ def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
             return phase.astype(np.int32), "2.13.0"
         if failure == "nonfinite":
             return np.full_like(phase, np.nan), "2.13.0"
-        if failure == "race":
+        if failure in {"race", "empty-race"}:
             target.mkdir()
+        if failure == "race":
             (target / "keep").write_text("original")
         return phase.copy(), "2.13.0"
 
@@ -250,6 +260,8 @@ def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
         stain.run(wb, req, target, weights)
     if failure in {"race", "existing"}:
         assert (target / "keep").read_text() == "original"
+    elif failure == "empty-race":
+        assert target.is_dir() and not list(target.iterdir())
     elif failure == "link":
         assert target.is_symlink()
     else:
@@ -308,3 +320,95 @@ def test_modified_registered_bytes_are_rejected(setup, tmp_path, source_file):
         stream.write(b"changed")
     with pytest.raises((ValueError, NativeSourceChangedError)):
         stain.run(wb, req, target, weights)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        r"\\server\share\out",
+        r"\\?\C:\out",
+        r"\\.\C:\out",
+        r"C:relative",
+        r"C:\parent\..\out",
+        r"C:\data:stream\out",
+        r"C:\CON.txt\out",
+        "C:\\space \\out",
+        "C:\\trailing.\\out",
+    ],
+)
+def test_windows_namespace_rejected_before_io(name):
+    with pytest.raises(ValueError, match="drive-letter"):
+        validate_windows_path(PureWindowsPath(name))
+
+
+def test_windows_unicode_drive_path():
+    validate_windows_path(PureWindowsPath(r"C:\Study Results\μm nuclei"))
+
+
+def test_rollback_preserves_unowned_artifacts(setup):
+    wb, _, target, _ = setup
+    with publication(wb.project, target, ()) as bundle:
+        bundle.start()
+        with bundle.file(stain.IMAGE) as stream:
+            stream.write(b"owned")
+        with bundle.file(stain.SIDECAR) as stream:
+            stream.write(b"owned")
+        stage = next(target.parent.glob(".loci-virtual-stain-*"))
+        (stage / stain.SIDECAR).rename(stage / "moved")
+        (stage / stain.SIDECAR).write_bytes(b"independent")
+        with pytest.raises(ValueError):
+            bundle.verify({})
+    assert not target.exists()
+    assert not (stage / stain.IMAGE).exists()
+    assert (stage / stain.SIDECAR).read_bytes() == b"independent"
+    assert (stage / "moved").read_bytes() == b"owned"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native junction and sharing semantics")
+def test_windows_native_parent_input_and_publication_handles(setup):
+    import _winapi
+
+    wb, _, target, weights = setup
+    parent = target.parent / "dest"
+    parent.mkdir()
+    target = parent / "derived"
+    link = parent.with_name("junction")
+    _winapi.CreateJunction(str(parent), str(link))
+    with pytest.raises((ValueError, OSError)), publication(wb.project, link / target.name, ()):
+        pytest.fail("accepted a junction")
+
+    with publication(wb.project, target, (weights,)) as bundle:
+        with pytest.raises(PermissionError):
+            parent.rename(parent.with_name("other"))
+        with pytest.raises(PermissionError):
+            weights.open("r+b").close()
+        bundle.start()
+        with bundle.file(stain.IMAGE) as stream:
+            stream.write(b"owned")
+        bundle.publish()
+        with pytest.raises(PermissionError):
+            (target / stain.IMAGE).unlink()
+        with pytest.raises(PermissionError):
+            target.rename(parent / "elsewhere")
+    assert not target.exists()
+    assert not list(parent.iterdir())
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native volume queries")
+@pytest.mark.parametrize("unsupported", ["remote", "non-NTFS"])
+def test_windows_volume_refusal_before_staging(setup, monkeypatch, unsupported):
+    from loci_engine import virtual_stain_windows as windows
+
+    wb, _, target, _ = setup
+    if unsupported == "remote":
+        monkeypatch.setattr(windows, "_drive_type", lambda _: 4)  # DRIVE_REMOTE
+    else:
+
+        def other_filesystem(_handle, _label, _size, _serial, _maximum, _flags, filesystem, _count):
+            filesystem.value = "exFAT"
+            return True
+
+        monkeypatch.setattr(windows, "_volume", other_filesystem)
+    with pytest.raises(ValueError, match="local NTFS"), publication(wb.project, target, ()):
+        pytest.fail("accepted an unsupported volume")
+    assert not list(target.parent.glob(".loci-virtual-stain-*"))

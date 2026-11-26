@@ -334,12 +334,13 @@ describe("native research bridge", () => {
     const request = { source_id: "a".repeat(32), source_sha256: sha, timepoint: 0, channel: 1, phase_confirmed: true };
     await expect(call("virtual-stain", { ...request, checkpoint: "/from-renderer" })).rejects.toThrow(/Confirm/);
     await expect(call("virtual-stain", { ...request, phase_confirmed: false })).rejects.toThrow(/Confirm/);
-    if (process.platform === "win32") {
+    if (process.platform === "win32" && process.arch !== "x64") {
       expect(await call("dynacell-status")).toBe("unsupported");
       await expect(call("virtual-stain", request)).rejects.toThrow(/atomic directory publication/);
       expect(mocks.request.mock.calls.some(([method]) => method === "research_virtual_stain")).toBe(false);
       return;
     }
+    expect(await call("dynacell-status")).toBe("missing");
     const directory = path.join(await fs.realpath(root), "dynacell-ipsc-nucleus");
     await fs.mkdir(directory, { mode: 0o700 });
     const checkpoint = path.join(directory, "nucleus.ckpt");

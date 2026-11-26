@@ -82,7 +82,7 @@ export function VirtualStainPanel({ api, source, timepoint, busy, onRun }: Props
   };
   if (state === "unsupported") return <section className="research-panel" aria-label="DynaCell virtual stain">
     <h2>Virtual nuclear stain</h2>
-    <p>Local prediction currently requires macOS or Linux for atomic OME-TIFF publication. You can open an existing prediction in this workbench.</p>
+    <p>Local prediction requires macOS, Linux, or Windows x64 with a fixed local NTFS drive. You can open an existing prediction in this workbench.</p>
   </section>;
   return <section className="research-panel" aria-label="DynaCell virtual stain">
     <h2>Virtual nuclear stain</h2>

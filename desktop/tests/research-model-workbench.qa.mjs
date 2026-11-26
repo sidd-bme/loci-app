@@ -29,7 +29,7 @@ export function inside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return (
     relative === "" ||
-    (!relative.startsWith(".." + path.sep) && relative !== "..")
+    (!path.isAbsolute(relative) && !relative.startsWith(".." + path.sep) && relative !== "..")
   );
 }
 
