@@ -1118,7 +1118,21 @@ def test_volume_reuses_one_tiff_for_context_and_focus(tmp_path, monkeypatch, com
         assert base64.b64decode(block["data_base64"]) == expected.astype("<u2").tobytes()
 
 
-def test_scoped_tiff_reader_refuses_replacement_and_closes_on_error(tmp_path, monkeypatch):
+def _change_open_tiff(path: Path, replacement: Path) -> None:
+    if os.name != "nt":
+        replacement.replace(path)
+        return
+    # The open TIFF denies delete sharing on Windows. Confirm that protection,
+    # then change the last-write time to exercise detection on the open file.
+    original = path.stat()
+    with pytest.raises(PermissionError) as refused:
+        replacement.replace(path)
+    assert refused.value.winerror in (5, 32)
+    assert os.path.samestat(original, path.stat())
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns - 5_000_000_000))
+
+
+def test_scoped_tiff_reader_refuses_source_change_and_closes_on_error(tmp_path, monkeypatch):
     path = tmp_path / "stack.tif"
     replacement = tmp_path / "different.tif"
     for target, offset in ((path, 0), (replacement, 1)):
@@ -1129,7 +1143,7 @@ def test_scoped_tiff_reader_refuses_replacement_and_closes_on_error(tmp_path, mo
         monkeypatch.setattr(tifffile, "TiffFile", lambda *args: opened)
         with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
             assert read_region(selection).pixels[0, 0] == 19
-            replacement.replace(path)
+            _change_open_tiff(path, replacement)
             read_region(selection)
         assert opened.filehandle.closed
 
@@ -1146,7 +1160,7 @@ def test_scoped_tiff_reader_expires_and_detects_late_replacement(tmp_path):
             read_region(selection)
         with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
             assert read_region(selection).pixels[0, 0] == 19
-            replacement.replace(path)
+            _change_open_tiff(path, replacement)
 
 
 def test_scoped_tiff_reader_checks_open_descriptor(tmp_path, monkeypatch):

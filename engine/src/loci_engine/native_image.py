@@ -417,7 +417,7 @@ def _file_identity(path: Path) -> _FileIdentity:
             # On Windows, Python 3.12 stat(path) reports the creation time as
             # ctime, while fstat(fd) reports the NTFS change time. Use the same
             # handle metadata here and on the descriptor that supplies pixels.
-            with path.open("rb") as stream:
+            with io.FileIO(path, "r") as stream:
                 status = os.fstat(stream.fileno())
         else:
             status = path.stat()
