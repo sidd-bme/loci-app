@@ -255,6 +255,9 @@ jobs:
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
+      - name: Check the pinned model descriptor on a Windows checkout
+        working-directory: desktop
+        run: npx --no-install vitest run src/main/nuclei-model-download.test.ts
       - name: Build unsigned Windows qualification installer and ZIP
         working-directory: desktop
         run: npm run make:windows:local
