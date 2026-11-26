@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  assertKidneyLinkedSlice,
   assertInitialMipContrast,
   assertNavigationFocus,
   assertRecoveredMprRaster,
@@ -10,8 +11,46 @@ import {
   focusSlicePositions,
   observeNavigationRequests,
   specimenForeground,
+  validateKidneyOverview,
   validateVolumeState,
 } from "./volume-entry.qa.mjs";
+
+test("public kidney accepts either exact level-zero entry grid without changing the generic budget", () => {
+  const initial = {
+    sourceSha256: "83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564",
+    contextDimensions: "128x128x4", contextLevel: "0", contextByteLength: "131072", transferRanges: "109:4095",
+  };
+  const refined = { ...initial, contextDimensions: "256x256x8", contextByteLength: "1048576" };
+  assert.equal(validateKidneyOverview(initial).entry_stage, "initial");
+  assert.equal(validateKidneyOverview(refined).entry_stage, "refined");
+  const threeChannels = { ...refined, transferRanges: "109:4095,12:2801,7:1000", contextByteLength: "3145728" };
+  assert.equal(validateKidneyOverview(threeChannels).bytes_per_voxel_across_components, 6);
+  assert.throws(() => validateVolumeState(refined, [512, 512, 16]), /Context exceeds target size/);
+  assert.throws(() => validateKidneyOverview({ ...refined, contextDimensions: "256x256x9" }), /neither the initial nor the refined/);
+  assert.throws(() => validateKidneyOverview({ ...refined, contextLevel: "1" }), /Wrong overview pyramid level/);
+  assert.throws(() => validateKidneyOverview({ ...refined, contextByteLength: "2097152" }), /Wrong component encoding/);
+  assert.throws(() => validateKidneyOverview({ ...refined, sourceSha256: "0".repeat(64) }), /bound kidney fingerprint/);
+});
+
+test("public kidney linked XY requires changed pixels at consecutive calibrated native Z indices", () => {
+  const sample = (z, worldZ, digest) => ({
+    index_xyz: [258, 258, z],
+    world_readout: `World 319.920, 319.920, ${worldZ.toFixed(3)} um`,
+    raster: {
+      dimensions_xy: [64, 64],
+      rgba_sha256: digest.repeat(64),
+      render_binding: ["a".repeat(64), "axial", [319.92, 319.92, worldZ], [], null, null, null],
+    },
+  });
+  const before = sample(10, 12.5, "b");
+  const after = sample(11, 13.75, "c");
+  assert.doesNotThrow(() => assertKidneyLinkedSlice(before, after));
+  assert.throws(() => assertKidneyLinkedSlice(before, sample(11, 13.75, "b")), /change the painted native XY/);
+  assert.throws(() => assertKidneyLinkedSlice(before, { ...after, world_readout: after.world_readout.replace("um", "pixel") }),
+    /World 319.920, 319.920, 13.750 um/);
+  const stalePlane = { ...after, raster: { ...after.raster, render_binding: before.raster.render_binding } };
+  assert.throws(() => assertKidneyLinkedSlice(before, stalePlane), /painted XY plane is on the wrong physical source voxel/);
+});
 
 const embryo = [2169, 2048, 988];
 const center = [992, 672, 528];

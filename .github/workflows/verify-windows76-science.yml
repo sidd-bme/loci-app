@@ -1,0 +1,109 @@
+name: Verify build 76 Windows microscopy
+on:
+  push:
+    branches: [t3/verify-windows76-science-20261126]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  packaged-science:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Prepare the independent reference and UI drivers
+        shell: pwsh
+        run: |
+          uv sync --directory engine --frozen --extra onnx --extra dev
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm ci --prefix desktop
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --test desktop/tests/volume-entry-qa.node-test.mjs
+      - name: Fetch the installer-tested Windows application and verify its identity
+        id: candidate
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Run = '45840763641'
+          $Expected = 'a1db1f7a01c056c41b9411b655c3cc089fa38c5a'
+          $Repo = $env:GITHUB_REPOSITORY
+          $RunRef = gh api "repos/$Repo/actions/runs/$Run" | ConvertFrom-Json
+          if ($LASTEXITCODE -or $RunRef.head_sha -ne $Expected) { throw 'Wrong candidate run or source' }
+          $Tree = gh api "repos/$Repo/git/commits/$Expected" --jq .tree.sha
+          if ($LASTEXITCODE -or $Tree -notmatch '^[0-9a-f]{40}$') { throw 'Missing pinned source tree' }
+          $Deadline = [DateTime]::UtcNow.AddMinutes(15)
+          do {
+            $Jobs = gh api "repos/$Repo/actions/runs/$Run/jobs" | ConvertFrom-Json
+            if ($LASTEXITCODE) { throw 'Unable to read the packaging job' }
+            $Job = $Jobs.jobs | Where-Object name -eq 'package-windows'
+            if ($Job.status -eq 'completed') { break }
+            Start-Sleep -Seconds 15
+          } while ([DateTime]::UtcNow -lt $Deadline)
+          if ($Job.conclusion -ne 'success') { throw 'The candidate installer journey must pass before reuse' }
+          $Root = Join-Path $env:RUNNER_TEMP 'loci-verified-candidate'
+          $Package = Join-Path $Root 'distribution'
+          $Receipts = Join-Path $Root 'receipts'
+          gh run download $Run --repo $Repo -n loci-windows-x64-unsigned-qualification -D $Package
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          gh run download $Run --repo $Repo -n loci-windows-x64-installed-journey -D $Receipts
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $Installer = Get-Content -Raw (Get-ChildItem $Receipts -Recurse -Filter installer.json).FullName | ConvertFrom-Json
+          $Journey = Get-Content -Raw (Get-ChildItem $Receipts -Recurse -Filter journey.json).FullName | ConvertFrom-Json
+          if (-not ($Installer.app_passed -and $Installer.installed_verified -and $Installer.files_retired) -or $Journey.status -ne 'passed') { throw 'Missing native installer acceptance' }
+          $Zip = @(Get-ChildItem $Package -Recurse -File -Filter '*.zip')
+          if ($Zip.Count -ne 1) { throw 'Ambiguous portable package' }
+          $Extracted = Join-Path $Root 'portable'
+          New-Item -ItemType Directory $Extracted | Out-Null
+          tar -xf $Zip[0].FullName -C $Extracted
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $Asar = @(Get-ChildItem $Extracted -Recurse -File -Filter app.asar)
+          if ($Asar.Count -ne 1) { throw 'Ambiguous application archive' }
+          $Resources = $Asar[0].Directory.FullName
+          $App = Split-Path -Parent $Resources
+          $Identity = Get-Content -Raw (Join-Path $Resources 'loci-build-identity.json') | ConvertFrom-Json
+          if ($Identity.buildNumber -ne 76 -or $Identity.sourceDirty -or $Identity.sourceTree -ne $Tree -or $Identity.sourceRevision -ne $Installer.commit) { throw 'Portable source identity mismatch' }
+          if ((Get-FileHash (Join-Path $App 'Loci.exe')).Hash -ne $Journey.identity.executable_sha256 -or
+              (Get-FileHash (Join-Path $Resources 'loci-engine/loci-engine.exe')).Hash -ne $Journey.identity.worker_sha256) { throw 'Installed and portable binary identities differ' }
+          "LOCI_CANDIDATE_DIR=$App" >> $env:GITHUB_ENV
+      - name: Run the installed-gallery model on the public Broad fluorescence field
+        shell: pwsh
+        run: |
+          ./scripts/qa/windows76/run-windows-onnx-qa.ps1 -RepoRoot $PWD.Path -AppRoot $env:LOCI_CANDIDATE_DIR -WorkRoot "$env:RUNNER_TEMP/loci-onnx76"
+      - name: Open the calibrated kidney stack in the ordinary 3D renderer
+        if: ${{ !cancelled() && steps.candidate.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $Source = Join-Path $env:RUNNER_TEMP 'kidney-source/Kidney fluorescence.ome.tiff'
+          & ./engine/.venv/Scripts/python.exe scripts/qa/windows76/prepare-kidney.py --download --out $Source
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node desktop/tests/volume-entry.qa.mjs --app $env:LOCI_CANDIDATE_DIR --out "$env:RUNNER_TEMP/loci-kidney76" --public-kidney --source $Source --timeout-ms 60000
+      - name: Retain numerical and graphics receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows76-scientific-receipts
+          path: |
+            ${{ runner.temp }}/loci-onnx76/package-identity.json
+            ${{ runner.temp }}/loci-onnx76/fixture/fixture-identity.json
+            ${{ runner.temp }}/loci-onnx76/qa/qa-report.json
+            ${{ runner.temp }}/loci-onnx76/qa/qa-failure.json
+            ${{ runner.temp }}/loci-kidney76/*/report.json
+          if-no-files-found: warn
+          retention-days: 7

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
@@ -8,6 +9,17 @@ import { parseArgs } from "node:util";
 
 import { placeQaWindow } from "../../scripts/qa/display-placement.mjs";
 import { measureRafDuring, startProcessTreeRssSampler } from "./navigation-performance-qa-helpers.mjs";
+import { waitForSnapshot } from "./workbench-qa-helpers.mjs";
+
+const KIDNEY = {
+  sha256: "83f9df040b58d0d4ee175730e3087216bb313cb4d450c59ac5d612525c6c9564",
+  dimensions: [512, 512, 16],
+  overview: { initial: [128, 128, 4], refined: [256, 256, 8] },
+  center: [258, 258, 10],
+  spacing: [1.24, 1.24, 1.25],
+  origin: [0, 0, 0],
+  unit: "um",
+};
 
 const AXES = ["X", "Y", "Z"];
 const VOLUME_BUDGET = 128 * 1024 * 1024;
@@ -29,12 +41,14 @@ const PICKERS = {
 };
 
 const usage = `Usage: node desktop/tests/volume-entry.qa.mjs --app /path/Loci.app --out /path/evidence
+  On Windows pass the packaged Loci.exe or the directory containing it.
   --source /path/image.ome.tiff --sha256 HEX --dimensions X,Y,Z
   [--center X,Y,Z] [--span 64|wide] [--route direct|comparison|both]
   Optional exact checks: --overview-dimensions X,Y,Z --overview-level L --bytes-per-voxel N
   Optional specimen checks: --expect-preview --min-focus-width FRACTION --repeat-open N --navigate
   Optional direct entry check: --min-initial-mip-contrast N (foreground P90 minus P10, in 8-bit display levels)
   or --cases /path/fixtures.json (array of objects using the same option names)
+  or --public-kidney --source /path/Kidney fluorescence.ome.tiff [--route direct|comparison|both]
   Optional: --timeout-ms MS --display NAME_OR_ID
   LOCI_PACKAGED_APP and LOCI_QA_OUTPUT_ROOT may supply --app and --out.`;
 
@@ -60,7 +74,7 @@ export function focusExtentXYZ(dimensions, center, span) {
   });
 }
 
-export function validateVolumeState(state, dimensions, { center, span, expected } = {}) {
+export function validateVolumeState(state, dimensions, { center, span, expected, contextLimit = center ? 256 : 128 } = {}) {
   const contextDimensions = vector(state.contextDimensions, 3, 1, "context dimensions", "x");
   const [contextLevel] = vector([state.contextLevel], 1, 0, "context level");
   const contextBytes = byteLength(state.contextByteLength, "context byte length");
@@ -69,7 +83,7 @@ export function validateVolumeState(state, dimensions, { center, span, expected 
   assert.ok([1, 2, 3, 4, 6, 8, 12, 16].includes(componentBytes), "Invalid context bytes per voxel");
   assert.ok(contextDimensions.every((size, axis) => size <= dimensions[axis]),
     "Context display dimensions exceed the level-zero source");
-  assert.ok(Math.max(...contextDimensions) <= (center ? 256 : 128), "Context exceeds target size");
+  assert.ok(Math.max(...contextDimensions) <= contextLimit, "Context exceeds target size");
   if (expected?.dimensions) assert.deepEqual(contextDimensions, expected.dimensions, "Wrong overview display dimensions");
   if (expected?.level !== undefined) assert.equal(contextLevel, expected.level, "Wrong overview pyramid level");
   if (expected?.bytesPerVoxel !== undefined)
@@ -98,6 +112,24 @@ export function validateVolumeState(state, dimensions, { center, span, expected 
     aggregate_payload_estimate_bytes: aggregatePayloadEstimate,
     aggregate_budget_bytes: VOLUME_BUDGET,
     bytes_per_voxel_across_components: componentBytes,
+  };
+}
+
+export function validateKidneyOverview(state) {
+  // The first observed stable frame may follow automatic refinement, which
+  // doubles the 128-voxel target once, up to the worker's limit of 256.
+  assert.equal(state.sourceSha256, KIDNEY.sha256, "Overview changed the bound kidney fingerprint");
+  const stage = Object.keys(KIDNEY.overview).find((entry) => KIDNEY.overview[entry].join("x") === state.contextDimensions);
+  assert.ok(stage, "The kidney overview is neither the initial nor the refined level-zero grid");
+  const ranges = (state.transferRanges ?? "").split(",").filter(Boolean);
+  assert.ok(ranges.length >= 1 && ranges.length <= 3, "Invalid number of kidney scalar component ranges");
+  const dimensions = KIDNEY.overview[stage];
+  return {
+    ...validateVolumeState(state, KIDNEY.dimensions, {
+      expected: { dimensions, level: 0, bytesPerVoxel: 2 * ranges.length },
+      contextLimit: dimensions[0],
+    }),
+    entry_stage: stage,
   };
 }
 
@@ -182,15 +214,22 @@ async function sha256(file) {
 }
 
 async function inspectBundle(bundle) {
-  const executable = path.join(bundle, "Contents/MacOS/Loci");
-  const resources = path.join(bundle, "Contents/Resources");
+  const windows = process.platform === "win32";
+  const candidate = await fs.realpath(bundle);
+  const packageRoot = (await fs.stat(candidate)).isDirectory() ? candidate
+    : path.resolve(path.dirname(candidate), windows ? "." : "../..");
+  const executable = path.join(packageRoot, windows ? "Loci.exe" : "Contents/MacOS/Loci");
+  assert.ok(candidate === packageRoot || candidate === await fs.realpath(executable),
+    "Pass the exact packaged Loci executable or its package directory.");
+  const resources = path.join(packageRoot, windows ? "resources" : "Contents/Resources");
+  const worker = path.join(resources, "loci-engine", windows ? "loci-engine.exe" : "loci-engine");
   const [identity, executableSha, asarSha, workerSha] = await Promise.all([
     fs.readFile(path.join(resources, "loci-build-identity.json"), "utf8").then(JSON.parse),
     sha256(executable),
     sha256(path.join(resources, "app.asar")),
-    sha256(path.join(resources, "loci-engine/loci-engine")),
+    sha256(worker),
   ]);
-  return { path: bundle, executable, identity, executable_sha256: executableSha, asar_sha256: asarSha, worker_sha256: workerSha };
+  return { path: packageRoot, executable, identity, executable_sha256: executableSha, asar_sha256: asarSha, worker_sha256: workerSha };
 }
 
 async function caseSettings(item) {
@@ -215,6 +254,11 @@ async function caseSettings(item) {
   const source = await fs.realpath(item.source);
   const status = await fs.stat(source);
   assert.ok(status.isFile() || status.isDirectory(), "The source must be a file or an OME-Zarr directory");
+  const publicKidney = item["public-kidney"] === true;
+  if (publicKidney) {
+    assert.ok(status.isFile(), "The public kidney fixture must be an OME-TIFF file");
+    assert.equal(await sha256(source), KIDNEY.sha256, "Public kidney fixture SHA-256 does not match");
+  }
   const expectPreview = item["expect-preview"] ?? false;
   assert.ok(typeof expectPreview === "boolean" && (!expectPreview || (status.isDirectory() && route !== "comparison")),
     "An opening preview requires direct entry to a local OME-Zarr directory");
@@ -231,7 +275,7 @@ async function caseSettings(item) {
   assert.equal(typeof navigate, "boolean", "Navigate must be true or false");
   return {
     source, sha256: item.sha256, dimensions, center, span, expected, expectPreview, minFocusWidth, minInitialMipContrast,
-    repeatOpen, navigate,
+    repeatOpen, navigate, publicKidney,
     comparison: status.isDirectory() ? "zarr" : "file",
     routes: route === "both" ? ["direct", "comparison"] : [route],
   };
@@ -433,6 +477,114 @@ async function captureMprRaster(locator) {
   });
 }
 
+function kidneyWorld(index) {
+  return index.map((native, axis) => KIDNEY.origin[axis] + native * KIDNEY.spacing[axis]);
+}
+
+function assertKidneyWorld(position, index) {
+  const world = kidneyWorld(index);
+  assert.deepEqual(position.index_xyz, index, "The native crosshair is on the wrong source voxel");
+  assert.equal(position.world_readout, `World ${world.map((value) => value.toFixed(3)).join(", ")} ${KIDNEY.unit}`);
+  return world;
+}
+
+export function assertKidneyLinkedSlice(before, after) {
+  const start = KIDNEY.center;
+  const end = [start[0], start[1], start[2] + 1];
+  for (const [capture, index] of [[before, start], [after, end]]) {
+    const world = assertKidneyWorld(capture, index);
+    const [payload, plane, paintedWorld] = capture.raster.render_binding;
+    assert.match(payload, /^[a-f0-9]{64}$/u);
+    assert.equal(plane, "axial");
+    assert.ok(paintedWorld?.length === 3 && paintedWorld.every((value, axis) => Math.abs(value - world[axis]) < 1e-6),
+      "The painted XY plane is on the wrong physical source voxel");
+    assert.match(capture.raster.rgba_sha256, /^[a-f0-9]{64}$/u);
+  }
+  const [beforePayload, , , ...beforeDisplay] = before.raster.render_binding;
+  const [afterPayload, , , ...afterDisplay] = after.raster.render_binding;
+  assert.equal(afterPayload, beforePayload, "Linked Z navigation swapped the native volume payload");
+  assert.deepEqual(afterDisplay, beforeDisplay, "Linked Z navigation changed MPR display settings");
+  assert.deepEqual(after.raster.dimensions_xy, before.raster.dimensions_xy);
+  assert.notEqual(after.raster.rgba_sha256, before.raster.rgba_sha256,
+    "Linked Z navigation did not change the painted native XY raster");
+}
+
+async function checkKidneyLinkedSlice(app, page, directory, detail, report, timeout) {
+  const sourceId = detail.renderer.state.sourceId;
+  const snapshot = await waitForSnapshot(page, (state) => state?.sources?.some((source) => source.id === sourceId),
+    "registered public kidney", timeout);
+  assert.equal(snapshot.sources.length, 1);
+  const [source] = snapshot.sources;
+  assert.equal(source.sha256, KIDNEY.sha256);
+  const { x, y, z, c, t, s } = source.metadata.dimensions;
+  assert.deepEqual([x, y, z, c, t, s], [...KIDNEY.dimensions, 3, 1, 1],
+    "Registered specimen geometry or scalar channel count disagrees with the pinned kidney fixture");
+  report.registered_source = { id: sourceId, sha256: source.sha256, dimensions: { x, y, z, c, t, s } };
+  report.reference_geometry = { spacing_xyz: KIDNEY.spacing, origin_xyz: KIDNEY.origin, unit: KIDNEY.unit };
+  const volume = page.locator(".raw-volume");
+  // Use the visible native sliders at the zero vector before requesting a focus crop.
+  assertKidneyWorld(report.origin_check, [0, 0, 0]);
+  const axial = volume.locator(AXIAL_CANVAS);
+  const read = async (name, index) => {
+    const painted = await page.waitForFunction(({ selector, world }) => {
+      const binding = document.querySelector(selector)?.dataset.renderBinding;
+      const point = binding && JSON.parse(binding)[2];
+      return Array.isArray(point) && point.length === 3 &&
+        point.every((value, axis) => Math.abs(value - world[axis]) < 1e-6);
+    }, { selector: AXIAL_CANVAS, world: kidneyWorld(index) }, { timeout });
+    await painted.dispose();
+    const indexXyz = await sourcePosition(page, KIDNEY.dimensions, null);
+    const state = await volume.evaluate((element) => ({ ...element.dataset }));
+    assertNavigationFocus(state, detail.renderer.state, KIDNEY.sha256, indexXyz, index);
+    const image = await captureVolume(app, page, directory, name, axial);
+    assertSignal(image, name);
+    return {
+      index_xyz: indexXyz, world_readout: await volume.locator(".raw-volume-world").textContent(),
+      raster: await captureMprRaster(axial), image,
+    };
+  };
+  report.before = await read("kidney-xy-native-z10", KIDNEY.center);
+  await volume.getByRole("slider", { name: "Z slice", exact: true }).press("ArrowRight");
+  report.after = await read("kidney-xy-native-z11", [...KIDNEY.center.slice(0, 2), KIDNEY.center[2] + 1]);
+  assertKidneyLinkedSlice(report.before, report.after);
+}
+
+async function recordVolumeGraphics(app, page) {
+  const receipt = { electron: null, webgl: null, model_compute_exercised: false };
+  receipt.electron = await app.evaluate(async ({ app }) => {
+    let timer;
+    const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(null), 4_000); });
+    const info = await Promise.race([app.getGPUInfo("basic").catch(() => null), deadline])
+      .finally(() => clearTimeout(timer));
+    return {
+      version: process.versions.electron, hardware_acceleration_enabled: app.isHardwareAccelerationEnabled(),
+      features: app.getGPUFeatureStatus(),
+      devices: info?.gpuDevice?.map(({ active, vendorId, deviceId, vendorString, deviceString }) =>
+        ({ active, vendorId, deviceId, vendorString, deviceString })) ?? null,
+    };
+  }).catch((error) => {
+    receipt.electron_error = String(error);
+    return null;
+  });
+  if (page && !page.isClosed()) {
+    receipt.webgl = await page.evaluate(() => {
+      const canvas = document.querySelector(".raw-volume-stage canvas");
+      const gl = canvas?.getContext("webgl2") ?? canvas?.getContext("webgl");
+      if (!gl || gl.isContextLost()) return null;
+      const debug = gl.getExtension("WEBGL_debug_renderer_info");
+      return {
+        version: gl.getParameter(gl.VERSION), renderer: gl.getParameter(gl.RENDERER),
+        unmasked_vendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null,
+        unmasked_renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
+      };
+    }).catch((error) => {
+      receipt.webgl_error = String(error);
+      return null;
+    });
+  }
+  return receipt;
+}
+
 export function assertRecoveredMprRaster(actual, baseline) {
   assert.deepEqual(actual.render_binding, baseline.render_binding,
     "The restored XY plane changed its payload, world position or display settings");
@@ -618,13 +770,18 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     status: "running",
     package: bundle,
     source: { path: fixture.source, sha256: fixture.sha256, dimensions_xyz: fixture.dimensions },
-    expected_overview: fixture.expected,
+    expected_overview: fixture.publicKidney ? { allowed_grids_xyz: KIDNEY.overview, level: 0 } : fixture.expected,
     route, focus_span: fixture.span, requested_center_xyz: fixture.center,
     timing_basis: "Trusted renderer click to bound 3D and three MPR canvases followed by two animation frames",
     profile: "Isolated profile and processes for each route. OS file cache uncontrolled.",
     display_check: "Canvas brightness/variation and source binding. Native intensity fidelity requires an independent source run.",
     page_errors: [], renderer_http_requests: [],
   };
+  if (fixture.publicKidney) {
+    report.host = { platform: process.platform, arch: process.arch, os_release: os.release() };
+    report.source.sha256_before = fixture.sha256;
+    report.graphics = { electron: null, webgl: null, model_compute_exercised: false };
+  }
   const environment = { ...process.env };
   delete environment.ELECTRON_RUN_AS_NODE;
   delete environment.PYTHONPATH;
@@ -665,9 +822,13 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     await page.locator(".image-first-empty").waitFor();
     if (kind === "zarr") await page.getByRole("button", { name: "More opening options", exact: true }).click();
     const open = page.getByRole("button", { name: LAUNCH_BUTTONS[kind], exact: true });
-    sampler = await startProcessTreeRssSampler(app.process().pid, {
-      intervalMs: 250, workerCommandIncludes: "/Resources/loci-engine/",
-    });
+    if (process.platform === "win32") {
+      report.rss = { status: "unavailable", reason: "The QA process-tree sampler uses POSIX ps." };
+    } else {
+      sampler = await startProcessTreeRssSampler(app.process().pid, {
+        intervalMs: 250, workerCommandIncludes: "/Resources/loci-engine/",
+      });
+    }
 
     await installObserver(page, fixture.sha256);
     await timedClick(open, "open");
@@ -712,7 +873,8 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     }
     const overview = await waitForPhase(page, "overview", timeout);
     report.overview = {
-      ...validateVolumeState(overview.state, fixture.dimensions, { expected: fixture.expected }),
+      ...(fixture.publicKidney ? validateKidneyOverview(overview.state)
+        : validateVolumeState(overview.state, fixture.dimensions, { expected: fixture.expected })),
       renderer: overview,
     };
     const measureForeground = fixture.minInitialMipContrast !== null;
@@ -724,6 +886,21 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     assertSignal(report.overview.image, "Overview");
     if (measureForeground) assertInitialMipContrast(report.overview, fixture.minInitialMipContrast);
 
+    if (fixture.publicKidney) {
+      const volume = page.locator(".raw-volume");
+      for (const axis of AXES) await volume.getByRole("slider", { name: `${axis} slice`, exact: true }).press("Home");
+      report.kidney_linked_mpr = {
+        origin_check: {
+          index_xyz: await sourcePosition(page, KIDNEY.dimensions, null),
+          world_readout: await volume.locator(".raw-volume-world").textContent(),
+        },
+        displayed_scalar_components: await volume.locator('.raw-volume-channel input[aria-label$=" visible"]').count(),
+      };
+      assert.ok(report.kidney_linked_mpr.displayed_scalar_components >= 1 &&
+        report.kidney_linked_mpr.displayed_scalar_components <= 3, "Wrong number of displayed scalar channel controls");
+      assert.equal(2 * report.kidney_linked_mpr.displayed_scalar_components, report.overview.bytes_per_voxel_across_components,
+        "Volume controls disagree with the overview's uint16 component count");
+    }
     const center = await sourcePosition(page, fixture.dimensions, fixture.center);
     report.focus_center_xyz = center;
     await page.getByText("Rendering & detail", { exact: true }).click();
@@ -732,7 +909,9 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     const focus = await waitForPhase(page, "focus", timeout);
     report.detail = {
       ...validateVolumeState(focus.state, fixture.dimensions, {
-        center, span: fixture.span, expected: { bytesPerVoxel: fixture.expected.bytesPerVoxel },
+        center, span: fixture.span, expected: fixture.publicKidney
+          ? { dimensions: KIDNEY.overview.refined, level: 0, bytesPerVoxel: report.overview.bytes_per_voxel_across_components }
+          : { bytesPerVoxel: fixture.expected.bytesPerVoxel },
       }),
       renderer: focus,
     };
@@ -762,6 +941,9 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
       };
       await runBoundedNavigation(app, page, directory, fixture, center, report.detail, report.navigation);
     }
+    if (fixture.publicKidney) {
+      await checkKidneyLinkedSlice(app, page, directory, report.detail, report.kidney_linked_mpr, timeout);
+    }
     if (fixture.repeatOpen) {
       report.marks = await page.evaluate(() => window.__lociVolumeEntry);
       report.same_session_reopens = [];
@@ -784,6 +966,10 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     report.status = "passed";
   } catch (error) {
     fail(error);
+    if (fixture.publicKidney && page && !page.isClosed()) {
+      report.renderer_volume_status = await page.evaluate(() =>
+        document.querySelector(".raw-volume-status")?.textContent?.trim() ?? null).catch(() => null);
+    }
     await page?.screenshot({ path: path.join(directory, "failure.png"), timeout: 5_000 }).catch(() => {});
   } finally {
     try {
@@ -814,7 +1000,14 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
       try { report.rss = await sampler.stop(); } catch (error) { fail(error); }
     }
     if (app) {
+      if (fixture.publicKidney) report.graphics = await recordVolumeGraphics(app, page);
       try { await app.close(); } catch (error) { fail(error); }
+    }
+    if (fixture.publicKidney) {
+      try {
+        report.source.sha256_after = await sha256(fixture.source);
+        assert.equal(report.source.sha256_after, fixture.sha256, "Public kidney fixture changed during the journey");
+      } catch (error) { fail(error); }
     }
     if (report.page_errors.length) fail(new Error("Uncaught renderer exception during the volume journey"));
     report.completed_at = new Date().toISOString();
@@ -832,6 +1025,7 @@ async function main(args) {
     "bytes-per-voxel": { type: "string" },
     "expect-preview": { type: "boolean" }, "min-focus-width": { type: "string" }, "repeat-open": { type: "string" },
     "min-initial-mip-contrast": { type: "string" },
+    "public-kidney": { type: "boolean" },
     navigate: { type: "boolean" },
     "timeout-ms": { type: "string" }, display: { type: "string" }, help: { type: "boolean" },
   } });
@@ -839,13 +1033,19 @@ async function main(args) {
   if (values.cases) {
     assert.ok(["source", "sha256", "dimensions", "center", "span", "route",
       "overview-dimensions", "overview-level", "bytes-per-voxel", "expect-preview", "min-focus-width", "repeat-open",
-      "min-initial-mip-contrast", "navigate"]
+      "min-initial-mip-contrast", "navigate", "public-kidney"]
       .every((key) => values[key] === undefined), "Use --cases or single-source options");
   }
   const bundlePath = values.app ?? process.env.LOCI_PACKAGED_APP;
   const outputRoot = values.out ?? process.env.LOCI_QA_OUTPUT_ROOT;
   assert.ok(path.isAbsolute(bundlePath ?? "") && path.isAbsolute(outputRoot ?? ""), usage);
-  const cases = values.cases ? JSON.parse(await fs.readFile(values.cases, "utf8")) : [values];
+  let cases = values.cases ? JSON.parse(await fs.readFile(values.cases, "utf8")) : [values];
+  if (values["public-kidney"]) {
+    assert.ok(Object.keys(values).every((key) =>
+      ["app", "out", "public-kidney", "source", "route", "timeout-ms", "display"].includes(key)),
+      "Use only --source, --route and runner options with --public-kidney.");
+    cases = [{ ...values, sha256: KIDNEY.sha256, dimensions: KIDNEY.dimensions, center: KIDNEY.center }];
+  }
   assert.ok(Array.isArray(cases) && cases.length > 0, "Supply a nonempty fixture array");
   const [timeout] = vector([values["timeout-ms"] ?? 180_000], 1, 1, "timeout");
   const [bundle, fixtures] = await Promise.all([inspectBundle(bundlePath), Promise.all(cases.map(caseSettings))]);
