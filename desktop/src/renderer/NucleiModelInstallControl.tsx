@@ -130,7 +130,7 @@ export function NucleiModelInstallControl({
     >
       <p>
         {surface === "model-panel" && <strong>BioImage.IO 2D Nuclei Boundary ONNX · </strong>}
-        {downloadSize} download &amp; storage · {memoryBudget} CPU · {NUCLEI_INSTALL_ORIGIN}
+        {downloadSize} download. Runs locally with a {memoryBudget} working-memory budget.
       </p>
 
       {statusText && (
@@ -207,10 +207,10 @@ export function NucleiModelInstallControl({
       >
         <summary>Origin &amp; verification</summary>
         <p>
-          Installs adapter <code>0.1.0-publication-20261015-r2</code> (SHA-256{" "}
+          Model source is {NUCLEI_INSTALL_ORIGIN}. Loci installs adapter <code>0.1.0-publication-20261015-r2</code> (SHA-256{" "}
           <code title={NUCLEI_MODEL_INSTALL.packageSha256}>{digestShort}</code>) into
-          the current study only. Does not run inference. Reference check verifies
-          CPU ONNX Runtime compatibility only, not biological accuracy.
+          this study. Installation does not run inference on your images. Loci compares
+          the model’s output on a reference image with the publisher’s expected values.
         </p>
       </details>
     </section>

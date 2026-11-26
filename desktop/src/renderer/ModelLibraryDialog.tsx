@@ -325,6 +325,13 @@ function ModelZooDetail({
 
         <p className="model-zoo-detail__summary">{entry.summary}</p>
 
+        {entry.catalogInstall && nucleiInstall?.supported && (
+          <NucleiModelInstallControl
+            surface="model-zoo"
+            install={nucleiInstall}
+          />
+        )}
+
         <dl className="model-zoo-spec-list">
           <div>
             <dt>Version</dt>
@@ -353,13 +360,6 @@ function ModelZooDetail({
             <dd>{entry.lociPathway}</dd>
           </div>
         </dl>
-
-        {entry.catalogInstall && nucleiInstall?.supported && (
-          <NucleiModelInstallControl
-            surface="model-zoo"
-            install={nucleiInstall}
-          />
-        )}
 
         <div className="model-zoo-detail__primary-action">
           {onSelectWorkbenchRoute && (

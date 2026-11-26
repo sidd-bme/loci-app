@@ -635,7 +635,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
       "BioImage.IO 0.5 / loci.model-package/1",
     ],
     summary:
-      "Boundary-aware 2D U-Net for fluorescence nuclei on local CPU ONNX Runtime. Install the verified Loci-compatible ONNX-only package for the current study or import a local package directory offline (raw Zenodo 6647674 is multi-format BioImage.IO 0.4.4).",
+      "Find nuclei in a single fluorescence channel. Preview the outlines, correct touching objects and measure each nucleus against the original image.",
     cardSummary:
       "Maps nuclear interiors and boundaries in fluorescence images with a 2D U-Net.",
     publisherBadge: "Zenodo 6647674 · 0.4.4",
@@ -654,9 +654,9 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     taskSummary:
       "Executes static BCYX float32 tiled inference with halo cropping, overlays probability and candidate label boundaries in a non-adopted preview, and requires bit-exact preview reproduction on publication.",
     inputContract:
-      "Static BCYX float32 input ([1, 1, 256, 256] tiles with [16, 16] reflect halo) mapped to one explicit scalar fluorescence channel. Requires matching declared physical scale or an explicit scale-compatibility override declaration; RGB components are rejected as biological channels.",
+      "One scalar fluorescence channel at the model’s declared pixel scale. Calibrated sources require an explicit scale declaration.",
     lociPathway:
-      "Install the verified Loci-compatible ONNX-only package into the current study from this Model Zoo entry or Analyze → Use a model (or import a local ONNX-only directory offline per docs/MODEL_PACKAGE_FORMAT.md). Installation is separate from inference: once installed, map the source channel and physical scale in Analyze → Use a model, preview, and adopt verified results.",
+      "Choose the fluorescence channel in Analyze → Use a model. Check the preview before saving the result.",
     workbenchRoute: {
       kind: "onnx-model-package",
       actionLabel: "Open Use a model in Analyze",

@@ -6575,7 +6575,7 @@ function ModelPanel({
     } finally { setImporting(false); }
   };
   const requirements = <details className="model-package-requirements"><summary>Package requirements</summary>
-    <p>Model files and reference tensors must be supplied locally.</p>
+    <p>For local import, supply the model files and reference tensors together.</p>
     <p>Choose a directory with a loci-model.json or BioImage.IO 0.5 rdf.yaml description, ONNX weights and hashed .npy reference tensors. The supported profile uses one static float32 input and output, BCYX axes, batch size one and a 2D probability output on the input grid.</p>
     <p>Channels, physical scale and units must be declared. Loci checks the package against its supported CPU runtime and reference tensors before import. This check does not establish biological accuracy or usage rights.</p>
   </details>;
@@ -6599,7 +6599,7 @@ function ModelPanel({
           </details>;
   if (!models.length) return <section className="research-panel research-prerequisite">
     <h2>No model packages in this study.</h2>
-    <p>Import a local Loci-compatible ONNX package to use this tool.</p>
+    <p>{nucleiInstall.supported ? "Install the nuclei model or import a compatible local ONNX package." : "Import a compatible local ONNX package to use this tool."}</p>
     <div className="research-actions">
       {api.importModel && <button className="research-primary" disabled={busy || importing || nucleiInstallActive} onClick={() => void importPackage()}>Import model package…</button>}
       <button onClick={onOpenMethods}>Open Segment &amp; measure</button>

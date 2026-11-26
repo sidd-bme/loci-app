@@ -516,7 +516,7 @@ describe("ResearchWorkbench", () => {
     expect(screen.queryByLabelText("Model threshold")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import model package…" })).toBeEnabled();
     fireEvent.click(screen.getByText("Package requirements"));
-    expect(screen.getByText("Model files and reference tensors must be supplied locally.")).toBeVisible();
+    expect(screen.getByText("For local import, supply the model files and reference tensors together.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Open Segment & measure" }));
     expect(await screen.findByLabelText("Segmentation model")).toHaveValue("classical");
     expect(bridge.importModel).not.toHaveBeenCalled();
@@ -2048,7 +2048,12 @@ describe("ResearchWorkbench", () => {
     await openTool("View", "Display");
     const low = await screen.findByLabelText("Channel 1 low");
     await waitFor(() => expect(low).toHaveValue("0"));
-    // Settle the committed edit and its persistence effect before the next native action.
+    // A new source persists its initial view after the camera settles.
+    await waitFor(() => expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+      source_id: first.id, expected_revision: 0,
+      state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 0 })]) }),
+    })));
+    const initialRevision = revision;
     fireEvent.change(low, { target: { value: "7" } });
     await act(async () => fireEvent.keyDown(low, { key: "Enter" }));
     fireEvent.click(screen.getByRole("button", { name: "Remove selected images" }));
@@ -2056,16 +2061,17 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByLabelText("Active image")).toHaveTextContent(first.name);
     expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
     expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
-      source_id: first.id, expected_revision: 0,
+      source_id: first.id, expected_revision: initialRevision,
       state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 7 })]) }),
     }));
+    const revisionAfterCloseFailure = revision;
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     fireEvent.change(low, { target: { value: "9" } });
     await act(async () => fireEvent.keyDown(low, { key: "Enter" }));
     fireEvent.click(screen.getByRole("button", { name: "Save study" }));
     await waitFor(() => expect(saveAs).toHaveBeenCalledOnce());
     expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({ source_id: first.id,
-      expected_revision: revision - 1, state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 9 })]) }) }));
+      expected_revision: revisionAfterCloseFailure, state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 9 })]) }) }));
     expect(vi.mocked(desktop.execute).mock.calls.filter(([operation]) => operation === "source_view")).toHaveLength(1);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });

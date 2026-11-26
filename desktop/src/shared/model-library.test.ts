@@ -123,7 +123,7 @@ describe("curated model library catalog", () => {
     expect(onnx.artifact.companionNote).toContain(NUCLEI_MODEL_INSTALL.packageSha256);
     expect(onnx.artifact.companionNote).toMatch(/adapted ONNX-only package wrapper/i);
     expect(onnx.artifact.companionNote).toContain("docs/MODEL_PACKAGE_FORMAT.md");
-    expect(onnx.summary).toMatch(/Loci-compatible ONNX-only package/i);
+    expect(onnx.summary).toMatch(/single fluorescence channel/i);
     expect(onnx.catalogInstall).toBeDefined();
     expect(Object.isFrozen(onnx.catalogInstall)).toBe(true);
     expect(onnx.catalogInstall).toMatchObject({
