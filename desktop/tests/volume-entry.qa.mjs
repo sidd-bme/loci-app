@@ -808,7 +808,9 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     page.on("request", (request) => {
       if (/^https?:/i.test(request.url())) report.renderer_http_requests.push(request.url());
     });
-    await placeQaWindow(app, { requestedDisplay: display, launch: 1 }, report);
+    // A 1024 × 720 work area can fit the Windows window at its full minimum size.
+    const margin = fixture.publicKidney && process.platform === "win32" ? 0 : undefined;
+    await placeQaWindow(app, { requestedDisplay: display, margin, launch: 1 }, report);
     await app.evaluate(({ dialog }, fixture) => {
       globalThis.__lociVolumeEntryPickers = [];
       dialog.showOpenDialog = async (...args) => {
