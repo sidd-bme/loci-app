@@ -1,0 +1,131 @@
+{
+  "schema_version": "loci.model-package/1",
+  "id": "nuclei-segmentation-boundary-model",
+  "version": "0.1.0-publication-20261015-r2",
+  "task": "semantic-segmentation",
+  "model": {
+    "source": "weights.onnx",
+    "sha256": "df913b85947f5132bcdaf81d91af0963f60d44f4caf8a4fec672d96a2f327b44",
+    "opset_version": 12
+  },
+  "input": {
+    "id": "input.1",
+    "axes": "BCYX",
+    "dtype": "float32",
+    "shape": [
+      1,
+      1,
+      256,
+      256
+    ],
+    "channels": [
+      {
+        "name": "supplier-single-scalar-input",
+        "source_index": 0
+      }
+    ],
+    "scale_yx": [
+      1.0,
+      1.0
+    ],
+    "scale_unit": "pixel"
+  },
+  "output": {
+    "id": "506",
+    "axes": "BCYX",
+    "dtype": "float32",
+    "shape": [
+      1,
+      2,
+      256,
+      256
+    ],
+    "channels": [
+      {
+        "name": "supplier-output-0",
+        "source_index": 0
+      },
+      {
+        "name": "supplier-output-1",
+        "source_index": 1
+      }
+    ],
+    "scale_yx": [
+      1.0,
+      1.0
+    ],
+    "scale_unit": "pixel",
+    "semantics": "probabilities"
+  },
+  "preprocessing": [
+    {
+      "id": "ensure_dtype",
+      "kwargs": {
+        "dtype": "float32"
+      }
+    },
+    {
+      "id": "zero_mean_unit_variance",
+      "kwargs": {
+        "axes": [
+          "channel",
+          "y",
+          "x"
+        ],
+        "eps": 1e-06
+      }
+    }
+  ],
+  "tiling": {
+    "input_yx": [
+      256,
+      256
+    ],
+    "halo_yx": [
+      16,
+      16
+    ],
+    "padding": "reflect"
+  },
+  "postprocessing": [
+    {
+      "id": "ensure_dtype",
+      "kwargs": {
+        "dtype": "float32"
+      }
+    }
+  ],
+  "labels": {
+    "threshold": 0.5,
+    "channel": 0
+  },
+  "reference": {
+    "input": {
+      "source": "reference-input-float32.npy",
+      "sha256": "c29bd6e16e3f7856217b407ba948222b1c2a0da41922a0f79297e25588614fe2"
+    },
+    "output": {
+      "source": "test_output_0.npy",
+      "sha256": "510181f38930e59e4fd8ecc03d6ea7c980eb6609759655f2d4a41fe36108d5f5"
+    },
+    "rtol": 0.001,
+    "atol": 0.001,
+    "mismatched_elements_per_million": 0
+  },
+  "citations": [
+    {
+      "text": "Constantin Pape. NucleiSegmentationBoundaryModel, deposited supplier model and reference tensors.",
+      "doi": "10.5281/zenodo.6647674"
+    }
+  ],
+  "rights": {
+    "license": "CC-BY-4.0 declared by exact Zenodo 6647674 record and supplier RDF",
+    "redistribution": "Not redistributed in this qualification; attribution and asset-specific terms retained for review",
+    "commercial_use": "No commercial-use conclusion for training-data lineage from this technical test",
+    "training_data": "Supplier documentation: Data Science Bowl Kaggle challenge, 447 training and 50 validation images; no independent-data separation established here"
+  },
+  "validation": {
+    "status": "unvalidated",
+    "summary": "Technical reference reproducibility and public-data software-workflow qualification only. No independent biological, clinical or acquisition-domain validation."
+  }
+}

@@ -6,100 +6,26 @@ import { constants, createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { pathToFileURL } from "node:url";
+
 import { _electron as electron } from "playwright";
 
-const run = promisify(execFile);
-const desktopRoot = path.resolve(import.meta.dirname, "..");
-const projectRoot = path.resolve(desktopRoot, "..");
-const TWO_GIB = 2 * 1024 ** 3;
-const publicationReceipt = process.env.LOCI_QA_LEARNED_RECEIPT
-  ? JSON.parse(await fs.readFile(process.env.LOCI_QA_LEARNED_RECEIPT, "utf8")) : null;
-if (publicationReceipt) assert.equal(publicationReceipt.status, "passed");
-const publicationCase = publicationReceipt?.cases.find((item) => item.name === "onnx");
-const EXPECTED_SOURCE_SHA256 = publicationReceipt?.source.sha256 ??
-  "2b086faa8e3b55202ea40604da32aec01aa7e99c7a7df861d03e773430730539";
-const EXPECTED_MODEL = publicationReceipt ? {
-  id: publicationReceipt.package_identity.package.id,
-  version: publicationReceipt.package_identity.package.version,
-  package_sha256: publicationReceipt.package_identity.package.package_sha256,
-  metadata_sha256: publicationReceipt.package_identity.package.metadata_sha256,
-  model_sha256: publicationReceipt.package_identity.package.model.sha256,
-  reference_input_sha256: publicationReceipt.package_identity.package.reference.input.sha256,
-  reference_output_sha256: publicationReceipt.package_identity.package.reference.output.sha256,
-  result_arrays: Object.fromEntries(Object.entries(publicationCase.arrays).map(([name, value]) => [name, value.sha256])),
-} : {
-  id: "nuclei-segmentation-boundary-model",
-  version: "0.1.0-zenodo-v7",
-  package_sha256:
-    "94259d554d02f43c4d5fa116f0e9e647be4be5c7ed00fb7555b141a9e9f2937b",
-  metadata_sha256:
-    "dfde9bd3902187e53c537a10f94c93e67ebc3b11cc41ec40a1c3c4b4ef18c745",
-  model_sha256:
-    "df913b85947f5132bcdaf81d91af0963f60d44f4caf8a4fec672d96a2f327b44",
-  reference_input_sha256:
-    "c29bd6e16e3f7856217b407ba948222b1c2a0da41922a0f79297e25588614fe2",
-  reference_output_sha256:
-    "510181f38930e59e4fd8ecc03d6ea7c980eb6609759655f2d4a41fe36108d5f5",
-  result_arrays: {
-    image: "bd1676c1096983436be9d8e6627d3b18a74b6d69456528758c029c17d467185f",
-    labels: "49c5403d08909cf31473562a871ad3ed6fe7c85a998ed4ae00fa66c28c638ee2",
-    probabilities:
-      "7d7611de29733d5448c2cbab6faa5bb70816cc5f0a718301925c122fbc8d9f5e",
-  },
-};
+export const run = promisify(execFile);
+export const desktopRoot = path.resolve(import.meta.dirname, "..");
+export const projectRoot = path.resolve(desktopRoot, "..");
+export const TWO_GIB = 2 * 1024 ** 3;
 
-function requiredPath(name) {
+let defaultScreenshotsDir;
+let defaultExecutablePath;
+
+export function requiredPath(name) {
   const value = process.env[name];
   if (!value) throw new Error(`Set ${name} to an explicit absolute path.`);
   assert.equal(path.isAbsolute(value), true, `${name} must be absolute`);
   return path.resolve(value);
 }
 
-const appBundle = requiredPath("LOCI_PACKAGED_APP");
-const usefulPackage = requiredPath("LOCI_QA_MODEL_PACKAGE");
-const sourcePath = requiredPath("LOCI_QA_MODEL_SOURCE");
-const outputRoot = requiredPath("LOCI_QA_OUTPUT_ROOT");
-const packageBuilderPython = path.resolve(
-  process.env.LOCI_QA_PACKAGE_BUILDER_PYTHON ??
-    path.join(projectRoot, "engine", ".venv", "bin", "python"),
-);
-
-if (!["darwin", "win32"].includes(process.platform)) {
-  throw new Error(
-    "Packaged research-model QA supports macOS and Windows only.",
-  );
-}
-
-const executablePath =
-  process.platform === "darwin"
-    ? path.join(appBundle, "Contents", "MacOS", "Loci")
-    : path.join(appBundle, "Loci.exe");
-const workerPath =
-  process.platform === "darwin"
-    ? path.join(
-        appBundle,
-        "Contents",
-        "Resources",
-        "loci-engine",
-        "loci-engine",
-      )
-    : path.join(appBundle, "resources", "loci-engine", "loci-engine.exe");
-const appArchivePath =
-  process.platform === "darwin"
-    ? path.join(appBundle, "Contents", "Resources", "app.asar")
-    : path.join(appBundle, "resources", "app.asar");
-const userData = path.join(outputRoot, "user-data");
-const reopenUserData = path.join(outputRoot, "reopen-user-data");
-const studyParent = path.join(outputRoot, "study");
-const studyPath = path.join(studyParent, "model-workbench.loci-study");
-const exportParent = path.join(outputRoot, "export");
-const exportPath = path.join(exportParent, "useful-model-result");
-const unseenPackage = path.join(outputRoot, "unseen-conv3x3-model");
-const screenshots = path.join(outputRoot, "screenshots");
-const reportPath = path.join(outputRoot, "qa-report.json");
-const failurePath = path.join(outputRoot, "qa-failure.json");
-
-function inside(parent, candidate) {
+export function inside(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return (
     relative === "" ||
@@ -107,23 +33,7 @@ function inside(parent, candidate) {
   );
 }
 
-assert.equal(
-  !inside(projectRoot, outputRoot) || inside(path.join(projectRoot, ".loci", "evidence"), outputRoot),
-  true,
-  "LOCI_QA_OUTPUT_ROOT must be outside tracked source or in ignored .loci/evidence.",
-);
-assert.equal(
-  inside(outputRoot, sourcePath),
-  false,
-  "The source fixture must be independent of QA output.",
-);
-assert.equal(
-  inside(outputRoot, usefulPackage),
-  false,
-  "The useful model package must be independent of QA output.",
-);
-
-async function plainFile(file, label, executable = false) {
+export async function plainFile(file, label, executable = false) {
   const value = await fs.lstat(file);
   assert.equal(value.isFile(), true, `${label} must be a plain file`);
   assert.equal(value.isSymbolicLink(), false, `${label} must not be a symlink`);
@@ -133,27 +43,27 @@ async function plainFile(file, label, executable = false) {
   return value;
 }
 
-async function executableFile(file, label) {
+export async function executableFile(file, label) {
   const value = await fs.stat(file);
   assert.equal(value.isFile(), true, `${label} must resolve to a file`);
   if (process.platform !== "win32") await fs.access(file, constants.X_OK);
   return value;
 }
 
-async function plainDirectory(directory, label) {
+export async function plainDirectory(directory, label) {
   const value = await fs.lstat(directory);
   assert.equal(value.isDirectory(), true, `${label} must be a directory`);
   assert.equal(value.isSymbolicLink(), false, `${label} must not be a symlink`);
   return value;
 }
 
-async function sha256(file) {
+export async function sha256(file) {
   const digest = createHash("sha256");
   for await (const chunk of createReadStream(file)) digest.update(chunk);
   return digest.digest("hex");
 }
 
-async function fileIdentity(file) {
+export async function fileIdentity(file) {
   const value = await fs.stat(file);
   return {
     sha256: await sha256(file),
@@ -162,7 +72,7 @@ async function fileIdentity(file) {
   };
 }
 
-async function packageIdentity(directory) {
+export async function packageIdentity(directory) {
   const names = (await fs.readdir(directory)).sort();
   const files = [];
   for (const name of names) {
@@ -176,10 +86,12 @@ async function packageIdentity(directory) {
     );
     files.push({ name, ...(await fileIdentity(file)) });
   }
-  return { files };
+  const digest = createHash("sha256");
+  for (const file of files) digest.update(`${file.name}\0${file.sha256}\n`);
+  return { files, package_sha256: digest.digest("hex") };
 }
 
-async function noUiError(page, action) {
+export async function noUiError(page, action) {
   const alert = page.locator(".research-alert[role=alert]");
   if (await alert.isVisible().catch(() => false)) {
     throw new Error(
@@ -188,13 +100,13 @@ async function noUiError(page, action) {
   }
 }
 
-async function visible(page, locator, label, timeout = 120_000) {
+export async function visible(page, locator, label, timeout = 120_000) {
   await locator.waitFor({ state: "visible", timeout });
   await noUiError(page, `waiting for ${label}`);
   return locator;
 }
 
-async function waitFor(page, read, predicate, label, timeout = 600_000) {
+export async function waitFor(page, read, predicate, label, timeout = 600_000) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
@@ -208,22 +120,22 @@ async function waitFor(page, read, predicate, label, timeout = 600_000) {
   );
 }
 
-async function screenshot(page, name) {
-  const destination = path.join(screenshots, `${name}.png`);
+export async function screenshot(page, name, screenshotsDir = defaultScreenshotsDir) {
+  const destination = path.join(screenshotsDir, `${name}.png`);
   await page.screenshot({ path: destination, fullPage: true });
   process.stdout.write(`Checkpoint: ${destination}\n`);
   return destination;
 }
 
-async function close(app) {
+export async function close(app) {
   const closed = app.waitForEvent("close", { timeout: 30_000 });
   await app.evaluate(({ app }) => app.quit());
   await closed;
 }
 
-async function installInitialDialogs(app) {
+async function installInitialDialogs(app, values) {
   await app.evaluate(
-    ({ dialog }, values) => {
+    ({ dialog }, v) => {
       globalThis.__lociModelQaDialogCalls = [];
       let modelPackage = 0;
       const record = (kind, title) =>
@@ -232,10 +144,10 @@ async function installInitialDialogs(app) {
         const title = args.at(-1)?.title;
         record("open", title);
         if (title === "Add microscopy or medical images") {
-          return { canceled: false, filePaths: [values.source] };
+          return { canceled: false, filePaths: [v.source] };
         }
         if (title === "Import a local model package") {
-          const selected = [values.usefulPackage, values.unseenPackage][
+          const selected = [v.usefulPackage, v.unseenPackage][
             modelPackage++
           ];
           if (!selected)
@@ -248,8 +160,8 @@ async function installInitialDialogs(app) {
         const title = args.at(-1)?.title;
         record("save", title);
         const exact = {
-          "Create research study": values.study,
-          "Export reviewed result bundle": values.exportPath,
+          "Create research study": v.study,
+          "Export reviewed result bundle": v.exportPath,
         };
         if (!(title in exact)) {
           throw new Error(`Unexpected save picker: ${String(title)}`);
@@ -261,17 +173,11 @@ async function installInitialDialogs(app) {
         checkboxChecked: false,
       });
     },
-    {
-      source: sourcePath,
-      usefulPackage,
-      unseenPackage,
-      study: studyPath,
-      exportPath,
-    },
+    values,
   );
 }
 
-async function installReopenDialog(app) {
+async function installReopenDialog(app, studyPath) {
   await app.evaluate(({ dialog }, study) => {
     globalThis.__lociModelQaDialogCalls = [];
     dialog.showOpenDialog = async (...args) => {
@@ -293,15 +199,17 @@ async function installReopenDialog(app) {
   }, studyPath);
 }
 
-async function dialogCalls(app) {
+export async function dialogCalls(app) {
   return app.evaluate(() => [...(globalThis.__lociModelQaDialogCalls ?? [])]);
 }
 
-async function launch(userDataPath, messages) {
+export async function launch(userDataPath, messages, options = {}) {
+  const executablePath = options.executablePath ?? defaultExecutablePath;
   const app = await electron.launch({
     executablePath,
     args: [`--user-data-dir=${userDataPath}`],
-    cwd: desktopRoot,
+    cwd: options.cwd ?? desktopRoot,
+    env: options.env,
     timeout: 120_000,
   });
   const page = await app.firstWindow();
@@ -312,11 +220,11 @@ async function launch(userDataPath, messages) {
   return { app, page };
 }
 
-async function openResearch(page) {
+export async function openResearch(page) {
   await page.locator("main.image-first-empty, main.image-first-workbench").waitFor();
 }
 
-async function selectModel(page, modelId) {
+export async function selectModel(page, modelId) {
   await page.getByLabel("Model package").selectOption(modelId);
   await page.getByLabel("Model input 1 source channel").selectOption("0");
   await page.getByLabel("Model scale mode").selectOption("source");
@@ -326,7 +234,7 @@ async function selectModel(page, modelId) {
   );
 }
 
-async function previewAndAdopt(page, priorIds, label) {
+export async function previewAndAdopt(page, priorIds, label, screenshotsDir = defaultScreenshotsDir) {
   await page
     .getByRole("button", { name: "Preview model overlay", exact: true })
     .click();
@@ -340,7 +248,7 @@ async function previewAndAdopt(page, priorIds, label) {
   const previewSha256 = await pending.getAttribute("data-model-preview-sha256");
   assert.match(previewId ?? "", /^[a-f0-9]{32}$/u, `${label} preview identity was not bound`);
   assert.match(previewSha256 ?? "", /^[a-f0-9]{64}$/u, `${label} preview fingerprint was not bound`);
-  await screenshot(page, `${label}-preview`);
+  await screenshot(page, `${label}-preview`, screenshotsDir);
   await page
     .getByRole("button", { name: "Save preview as result", exact: true })
     .click();
@@ -367,11 +275,11 @@ async function previewAndAdopt(page, priorIds, label) {
     page.locator(`.research-sources [data-result-id="${summary.id}"]`),
     `${label} history revision`,
   );
-  await screenshot(page, `${label}-adopted`);
+  await screenshot(page, `${label}-adopted`, screenshotsDir);
   return { snapshot, summary, record };
 }
 
-function exactNumerics(record) {
+export function exactNumerics(record) {
   return {
     id: record.result.id,
     revision_hash: record.result.revision_hash,
@@ -471,6 +379,105 @@ manifest = {
 (root / "loci-model.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 `;
 
+async function runLegacyResearchModelWorkbench() {
+const publicationReceipt = process.env.LOCI_QA_LEARNED_RECEIPT
+  ? JSON.parse(await fs.readFile(process.env.LOCI_QA_LEARNED_RECEIPT, "utf8")) : null;
+if (publicationReceipt) assert.equal(publicationReceipt.status, "passed");
+const publicationCase = publicationReceipt?.cases.find((item) => item.name === "onnx");
+const EXPECTED_SOURCE_SHA256 = publicationReceipt?.source.sha256 ??
+  "2b086faa8e3b55202ea40604da32aec01aa7e99c7a7df861d03e773430730539";
+const EXPECTED_MODEL = publicationReceipt ? {
+  id: publicationReceipt.package_identity.package.id,
+  version: publicationReceipt.package_identity.package.version,
+  package_sha256: publicationReceipt.package_identity.package.package_sha256,
+  metadata_sha256: publicationReceipt.package_identity.package.metadata_sha256,
+  model_sha256: publicationReceipt.package_identity.package.model.sha256,
+  reference_input_sha256: publicationReceipt.package_identity.package.reference.input.sha256,
+  reference_output_sha256: publicationReceipt.package_identity.package.reference.output.sha256,
+  result_arrays: Object.fromEntries(Object.entries(publicationCase.arrays).map(([name, value]) => [name, value.sha256])),
+} : {
+  id: "nuclei-segmentation-boundary-model",
+  version: "0.1.0-zenodo-v7",
+  package_sha256:
+    "94259d554d02f43c4d5fa116f0e9e647be4be5c7ed00fb7555b141a9e9f2937b",
+  metadata_sha256:
+    "dfde9bd3902187e53c537a10f94c93e67ebc3b11cc41ec40a1c3c4b4ef18c745",
+  model_sha256:
+    "df913b85947f5132bcdaf81d91af0963f60d44f4caf8a4fec672d96a2f327b44",
+  reference_input_sha256:
+    "c29bd6e16e3f7856217b407ba948222b1c2a0da41922a0f79297e25588614fe2",
+  reference_output_sha256:
+    "510181f38930e59e4fd8ecc03d6ea7c980eb6609759655f2d4a41fe36108d5f5",
+  result_arrays: {
+    image: "bd1676c1096983436be9d8e6627d3b18a74b6d69456528758c029c17d467185f",
+    labels: "49c5403d08909cf31473562a871ad3ed6fe7c85a998ed4ae00fa66c28c638ee2",
+    probabilities:
+      "7d7611de29733d5448c2cbab6faa5bb70816cc5f0a718301925c122fbc8d9f5e",
+  },
+};
+
+const appBundle = requiredPath("LOCI_PACKAGED_APP");
+const usefulPackage = requiredPath("LOCI_QA_MODEL_PACKAGE");
+const sourcePath = requiredPath("LOCI_QA_MODEL_SOURCE");
+const outputRoot = requiredPath("LOCI_QA_OUTPUT_ROOT");
+const packageBuilderPython = path.resolve(
+  process.env.LOCI_QA_PACKAGE_BUILDER_PYTHON ??
+    path.join(projectRoot, "engine", ".venv", "bin", "python"),
+);
+
+if (!["darwin", "win32"].includes(process.platform)) {
+  throw new Error(
+    "Packaged research-model QA supports macOS and Windows only.",
+  );
+}
+
+const executablePath =
+  process.platform === "darwin"
+    ? path.join(appBundle, "Contents", "MacOS", "Loci")
+    : path.join(appBundle, "Loci.exe");
+const workerPath =
+  process.platform === "darwin"
+    ? path.join(
+        appBundle,
+        "Contents",
+        "Resources",
+        "loci-engine",
+        "loci-engine",
+      )
+    : path.join(appBundle, "resources", "loci-engine", "loci-engine.exe");
+const appArchivePath =
+  process.platform === "darwin"
+    ? path.join(appBundle, "Contents", "Resources", "app.asar")
+    : path.join(appBundle, "resources", "app.asar");
+const userData = path.join(outputRoot, "user-data");
+const reopenUserData = path.join(outputRoot, "reopen-user-data");
+const studyParent = path.join(outputRoot, "study");
+const studyPath = path.join(studyParent, "model-workbench.loci-study");
+const exportParent = path.join(outputRoot, "export");
+const exportPath = path.join(exportParent, "useful-model-result");
+const unseenPackage = path.join(outputRoot, "unseen-conv3x3-model");
+const screenshots = path.join(outputRoot, "screenshots");
+const reportPath = path.join(outputRoot, "qa-report.json");
+const failurePath = path.join(outputRoot, "qa-failure.json");
+defaultExecutablePath = executablePath;
+defaultScreenshotsDir = screenshots;
+
+assert.equal(
+  !inside(projectRoot, outputRoot) || inside(path.join(projectRoot, ".loci", "evidence"), outputRoot),
+  true,
+  "LOCI_QA_OUTPUT_ROOT must be outside tracked source or in ignored .loci/evidence.",
+);
+assert.equal(
+  inside(outputRoot, sourcePath),
+  false,
+  "The source fixture must be independent of QA output.",
+);
+assert.equal(
+  inside(outputRoot, usefulPackage),
+  false,
+  "The useful model package must be independent of QA output.",
+);
+
 await Promise.all([
   plainDirectory(usefulPackage, "Useful model package"),
   plainFile(sourcePath, "Supplier reference source"),
@@ -516,7 +523,13 @@ const rendererMessages = [];
 const reopenRendererMessages = [];
 try {
   ({ app, page } = await launch(userData, rendererMessages));
-  await installInitialDialogs(app);
+  await installInitialDialogs(app, {
+    source: sourcePath,
+    usefulPackage,
+    unseenPackage,
+    study: studyPath,
+    exportPath,
+  });
   await openResearch(page);
 
   await createEmptyStudy(page);
@@ -526,7 +539,7 @@ try {
     "new research workspace",
   );
 
-  await page.getByRole("button", { name: "Open images", exact: true }).click();
+  await page.getByRole("button", { name: "Add images…", exact: true }).click();
   const importedSnapshot = await waitFor(
     page,
     () => page.evaluate(() => window.lociResearch.getSnapshot()),
@@ -841,7 +854,7 @@ try {
   page = undefined;
 
   ({ app, page } = await launch(reopenUserData, reopenRendererMessages));
-  await installReopenDialog(app);
+  await installReopenDialog(app, studyPath);
   await openResearch(page);
   await visible(
     page,
@@ -1009,4 +1022,13 @@ try {
   throw error;
 } finally {
   if (app) await app.close().catch(() => undefined);
+}
+}
+
+const isCliEntrypoint =
+  Boolean(process.argv[1]) &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isCliEntrypoint) {
+  await runLegacyResearchModelWorkbench();
 }

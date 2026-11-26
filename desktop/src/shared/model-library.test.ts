@@ -5,6 +5,7 @@ import {
   CELLPOSE_SAM_V2_SHA256,
   CELLPOSE_SAM_V2_SIZE_BYTES,
 } from "./model-registry";
+import { NUCLEI_MODEL_INSTALL } from "./nuclei-model-install";
 import {
   BIOIMAGEIO_NUCLEI_BOUNDARY_ADAPTED_PACKAGE_SHA256,
   BIOIMAGEIO_NUCLEI_BOUNDARY_WEIGHTS_ONNX_SHA256,
@@ -119,9 +120,23 @@ describe("curated model library catalog", () => {
     expect(onnx.artifact.digestBasis).toBe("loci-verified");
     expect(onnx.artifact.companionNote).toContain("BioImage.IO 0.4.4 multi-format");
     expect(onnx.artifact.companionNote).toContain(BIOIMAGEIO_NUCLEI_BOUNDARY_ADAPTED_PACKAGE_SHA256);
+    expect(onnx.artifact.companionNote).toContain(NUCLEI_MODEL_INSTALL.packageSha256);
     expect(onnx.artifact.companionNote).toMatch(/adapted ONNX-only package wrapper/i);
     expect(onnx.artifact.companionNote).toContain("docs/MODEL_PACKAGE_FORMAT.md");
     expect(onnx.summary).toMatch(/Loci-compatible ONNX-only package/i);
+    expect(onnx.catalogInstall).toBeDefined();
+    expect(Object.isFrozen(onnx.catalogInstall)).toBe(true);
+    expect(onnx.catalogInstall).toMatchObject({
+      packageVersion: "0.1.0-publication-20261015-r2",
+      downloadBytes: NUCLEI_MODEL_INSTALL.downloadBytes,
+      packageSha256: NUCLEI_MODEL_INSTALL.packageSha256,
+      workingBytes: NUCLEI_MODEL_INSTALL.workingBytes,
+    });
+    for (const other of MODEL_LIBRARY_ENTRIES) {
+      if (other.id !== "bioimageio-nuclei-boundary-onnx") {
+        expect(other.catalogInstall).toBeUndefined();
+      }
+    }
     expect(onnx.primaryLink.id).toBe("bioimageio-nuclei-boundary-zenodo");
     expect(onnx.primaryLink.url).toBe("https://doi.org/10.5281/zenodo.6647674");
     expect(onnx.citation.doi).toBe("10.1007/978-3-319-24574-4_28");

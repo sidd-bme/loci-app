@@ -400,12 +400,17 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
     if method == "research_import_model":
         from .research_models import import_model
 
-        exact_keys(params, {"project", "path", "working_bytes", "recovery_model_id"}, method)
+        exact_keys(
+            params,
+            {"project", "path", "working_bytes", "recovery_model_id", "expected_package_sha256"},
+            method,
+        )
         return import_model(
             _open(params["project"]),
             params["path"],
             params["working_bytes"],
             params.get("recovery_model_id"),
+            params.get("expected_package_sha256"),
         )
     if method == "research_create_example":
         exact_keys(params, {"path"}, method)

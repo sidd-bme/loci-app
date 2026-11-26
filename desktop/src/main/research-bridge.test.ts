@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   message: vi.fn(),
   openExternal: vi.fn(),
   prepareLegacy: vi.fn(),
+  prepareNuclei: vi.fn(),
   clients: [] as Array<{ request: ReturnType<typeof vi.fn>; cancelCurrent: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>; forceDispose: ReturnType<typeof vi.fn> }>,
 }));
@@ -45,9 +46,13 @@ vi.mock("./worker-client", () => ({
 vi.mock("./legacy-project-adapter", () => ({
   prepareLegacyProjectImport: (...args: unknown[]) => mocks.prepareLegacy(...args),
 }));
+vi.mock("./nuclei-model-download", () => ({
+  withNucleiModelPackage: (...args: unknown[]) => mocks.prepareNuclei(...args),
+}));
 
 import type { StatisticsFigureExportRequest } from "../shared/statistics-figure-contracts";
 import { ResearchBridge } from "./research-bridge";
+import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
 import type {
   ResearchJob,
   ResearchSnapshot,
@@ -319,6 +324,60 @@ describe("native research bridge", () => {
   afterEach(async () => {
     delete process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("uses the fixed nuclei package, reserves the current study through qualification, and drains on quit", async () => {
+    const project = path.join(root, "Fluorescence.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const directory = path.join(root, "private-model");
+    mocks.prepareNuclei.mockImplementationOnce((_root, _signal, adopt) => adopt(directory));
+    let finish!: (value: unknown) => void;
+    const qualification = new Promise((resolve) => { finish = resolve; });
+    mocks.clients[0].request.mockImplementationOnce(() => qualification);
+    const install = call("install-nuclei-model", NUCLEI_MODEL_INSTALL.workingBytes);
+    expect(mocks.clients[0].request).toHaveBeenCalledWith("research_import_model", {
+      project, path: directory, working_bytes: NUCLEI_MODEL_INSTALL.workingBytes,
+      expected_package_sha256: NUCLEI_MODEL_INSTALL.packageSha256,
+    }, 0);
+    expect(await call("cancel-nuclei-model-install")).toBe(false);
+    await expect(call("new-session")).rejects.toThrow("active study operation");
+    const quit = bridge.dispose();
+    expect(mocks.clients[0].dispose).not.toHaveBeenCalled();
+    finish({ model_id: "qualified" });
+    await expect(install).resolves.toEqual({ model_id: "qualified" });
+    await quit;
+    expect(mocks.clients[0].dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each(["cancel", "change study"])("does not adopt a late package after %s", async (action) => {
+    const project = path.join(root, "Original.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    let release!: () => void;
+    const network = new Promise<void>((resolve) => { release = resolve; });
+    let activeSignal: AbortSignal | undefined;
+    mocks.prepareNuclei.mockImplementationOnce(async (_root, signal, adopt) => {
+      activeSignal = signal;
+      await network;
+      return adopt(path.join(root, "late-package"));
+    });
+    const install = call("install-nuclei-model", NUCLEI_MODEL_INSTALL.workingBytes);
+    await expect(call("install-nuclei-model", NUCLEI_MODEL_INSTALL.workingBytes)).rejects.toThrow("active");
+    if (action === "cancel") expect(await call("cancel-nuclei-model-install")).toBe(true);
+    else await call("new-session");
+    expect(activeSignal?.aborted).toBe(true);
+    release();
+    await expect(install).rejects.toThrow("cancelled");
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_import_model")).toBe(false);
+  });
+
+  it("rejects renderer-supplied model paths, identities and invalid budgets before networking", async () => {
+    for (const args of [[NaN], [1], [2 ** 35], [NUCLEI_MODEL_INSTALL.workingBytes, "another-package"]]) {
+      await expect(call("install-nuclei-model", ...args)).rejects.toThrow("budget");
+    }
+    await expect(call("cancel-nuclei-model-install", "another-project")).rejects.toThrow("override");
+    expect(mocks.prepareNuclei).not.toHaveBeenCalled();
   });
 
   it("imports tissue files only from the two native pickers and exposes no file paths", async () => {

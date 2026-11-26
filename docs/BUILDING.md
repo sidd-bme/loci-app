@@ -364,6 +364,21 @@ file with `source_commit`, `executable_sha256`, `asar_sha256` and `worker_sha256
 This is automated synthetic software QA, including a simulated GUI review gate,
 and does not supply human scientific approval or biological qualification.
 
+## Verify a Model Zoo installation on fluorescence microscopy
+
+Run `node desktop/tests/bioimageio-nuclei-install.qa.mjs` against the packaged app.
+Set `LOCI_PACKAGED_APP`, a new `LOCI_QA_OUTPUT_ROOT`, `LOCI_QA_MODEL_SOURCE`
+(the BBBC039 A06 site 6 OME-TIFF), `LOCI_QA_MODEL_MASK` (its manual instance
+mask), `LOCI_QA_MODEL_PACKAGE` (the independent gallery R2 reference directory)
+and `LOCI_QA_PYTHON` (the engine environment). Use absolute paths.
+The first launch downloads the pinned publisher files when the test clicks
+**Install for this study**. Subsequent launches check inference, review, a label
+correction, export and cold reopen. The verifier compares the exported probabilities
+with ONNX Runtime and reconstructs object measurements from the original pixels.
+For process-wide offline testing, point `LOCI_QA_OFFLINE_EXECUTABLE` to a
+network-restricted launcher for the same app that permits local Playwright traffic.
+The receipt records which network restrictions were used. [BBBC039 reference data](https://bbbc.broadinstitute.org/BBBC039)
+
 ## Verify desktop recipe replay and standalone μSAM interchange
 
 From the repository root at the clean commit used to package the app, run

@@ -168,10 +168,18 @@ import {
   type ResearchCellposeBatchConfiguration,
 } from "./ResearchCellposePanel";
 import ModelLibraryDialog from "./ModelLibraryDialog";
+import {
+  NUCLEI_INSTALL_DOWNLOADING_STATUS,
+  NucleiModelInstallControl,
+  findInstalledNucleiModel,
+  type NucleiInstallState,
+  type NucleiModelInstallController,
+} from "./NucleiModelInstallControl";
 import type {
   ModelLibraryId,
   ModelLibraryWorkbenchRouteKind,
 } from "../shared/model-library";
+import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
 
 export type WorkbenchReturn = {
   target: { sourceId: string; sourceSha256: string } | null;
@@ -942,7 +950,12 @@ export default function ResearchWorkbench({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [models, setModels] = useState<ModelRecord[]>([]);
+  const [modelsLoadedScope, setModelsLoadedScope] = useState<string | null>(null);
   const [modelId, setModelId] = useState("");
+  const [localModelImporting, setLocalModelImporting] = useState(false);
+  const [nucleiInstall, setNucleiInstall] = useState<NucleiInstallState>({
+    phase: "idle",
+  });
   const [modelMapping, setModelMapping] = useState<
     Array<{
       model_input_index: number;
@@ -2218,6 +2231,108 @@ export default function ResearchWorkbench({
     (handoff.open ? handoff : labels).querySelector("summary")?.focus();
     setLabelDestination(null);
   }, [labelDestination, tab]);
+  const workbenchMountedRef = useRef(true);
+  useEffect(() => {
+    workbenchMountedRef.current = true;
+    return () => { workbenchMountedRef.current = false; };
+  }, []);
+  const liveModelUi = useRef({
+    api,
+    tab,
+    sourceKey: JSON.stringify([source?.id ?? null, source?.sha256 ?? null]),
+    modelId,
+    pendingModel,
+  });
+  liveModelUi.current = {
+    api,
+    tab,
+    sourceKey: JSON.stringify([source?.id ?? null, source?.sha256 ?? null]),
+    modelId,
+    pendingModel,
+  };
+  const modelsRefreshToken = useRef(0);
+  type NucleiInstallOp = {
+    epoch: number;
+    studyScope: string;
+    api: ResearchDesktopApi;
+    startedSourceKey: string;
+    cancelPending: boolean;
+  };
+  const nucleiInstallEpoch = useRef(0);
+  const nucleiInstallOp = useRef<NucleiInstallOp | null>(null);
+  const isCurrentNucleiOp = useCallback(
+    (op: NucleiInstallOp) =>
+      workbenchMountedRef.current &&
+      nucleiInstallOp.current === op &&
+      op.epoch === nucleiInstallEpoch.current &&
+      op.studyScope === currentStudyScope.current &&
+      op.api === liveModelUi.current.api,
+    [],
+  );
+  useEffect(() => {
+    modelsRefreshToken.current += 1;
+    nucleiInstallEpoch.current += 1;
+    nucleiInstallOp.current = null;
+    setModels([]);
+    setModelsLoadedScope(null);
+    setModelId("");
+    setModelMapping([]);
+    setPendingModel(null);
+    setNucleiInstall({ phase: "idle" });
+    return () => {
+      nucleiInstallEpoch.current += 1;
+      nucleiInstallOp.current = null;
+    };
+  }, [exportDraftStudy, api]);
+  const studyModels = useMemo(
+    () => (modelsLoadedScope === exportDraftStudy ? models : []),
+    [models, modelsLoadedScope, exportDraftStudy],
+  );
+  const installedNucleiMatch = useMemo(
+    () => findInstalledNucleiModel(studyModels),
+    [studyModels],
+  );
+  const nucleiAvailability: NucleiModelInstallController["availability"] =
+    modelsLoadedScope !== exportDraftStudy
+      ? "unknown"
+      : (installedNucleiMatch?.state ?? "not-installed");
+  const selectModelPackage = useCallback(
+    (id: string, list: readonly ModelRecord[]) => {
+      setModelId(id);
+      const item = list.find((model) => model.model_id === id);
+      if (item && findInstalledNucleiModel([item])?.state === "ready") {
+        setModelWorkingBytes((budget) => Math.max(budget, NUCLEI_MODEL_INSTALL.workingBytes));
+      }
+      const channels = (
+        (item?.package as Record<string, unknown> | undefined)?.input as
+          Record<string, unknown> | undefined
+      )?.channels;
+      const declaredChannels = Array.isArray(channels)
+        ? channels.map((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry))
+              return null;
+            const record = entry as Record<string, unknown>;
+            return typeof record.name === "string" &&
+              record.name.length > 0 &&
+              Number.isInteger(record.source_index) &&
+              Number(record.source_index) >= 0
+              ? record.name
+              : null;
+          })
+        : [];
+      setModelMapping(
+        declaredChannels.length > 0 &&
+          declaredChannels.every((name) => name !== null)
+          ? declaredChannels.map((name, index) => ({
+              model_input_index: index,
+              model_channel: name!,
+              source_channel: 0,
+            }))
+          : [],
+      );
+    },
+    [],
+  );
   const handleSelectModelLibraryRoute = (
     route: ModelLibraryWorkbenchRouteKind,
   ) => {
@@ -2227,29 +2342,199 @@ export default function ResearchWorkbench({
     if (route === "segment-cellpose-v2") {
       setSegmentationFamily("cellpose-sam-v2");
       openWorkbenchTab("Analyze");
-    } else if (
-      route === "labels-usam-handoff" ||
-      route === "labels-import"
-    ) {
+    } else if (route === "labels-usam-handoff" || route === "labels-import") {
       openWorkbenchTab("Analyze");
       setLabelDestination(route);
     } else if (route === "onnx-model-package") {
       openWorkbenchTab("Model");
+      if (installedNucleiMatch?.state === "ready") {
+        selectModelPackage(installedNucleiMatch.modelId, studyModels);
+      }
     } else if (route === "tissue-epidermis") {
       openWorkbenchTab("Tissue model");
     }
   };
-  const refreshModels = useCallback(async () => {
-    const output = await report(
-      () =>
-        api.execute("model_list", {}) as Promise<{ models?: ModelRecord[] }>,
-      "Could not load project-managed model packages.",
-    );
-    if (output) setModels(output.models ?? []);
-  }, [api, report]);
+  const refreshModels = useCallback(
+    async (
+      expectedStudyScope = currentStudyScope.current,
+    ): Promise<ModelRecord[] | null> => {
+      const token = ++modelsRefreshToken.current;
+      const usedApi = api;
+      const isCurrent = () =>
+        workbenchMountedRef.current &&
+        modelsRefreshToken.current === token &&
+        currentStudyScope.current === expectedStudyScope &&
+        liveModelUi.current.api === usedApi;
+      const output = await report(
+        () =>
+          usedApi.execute("model_list", {}) as Promise<{
+            models?: ModelRecord[];
+          }>,
+        "Could not load project-managed model packages.",
+        isCurrent,
+      );
+      if (!isCurrent() || !output) return null;
+      const nextModels = Array.isArray(output.models) ? output.models : [];
+      setModels(nextModels);
+      setModelsLoadedScope(expectedStudyScope);
+      return nextModels;
+    },
+    [api, report],
+  );
+  const hasLoadedStudy = Boolean(snapshot);
+  const modelLibraryOpen = modelLibraryState !== null;
   useEffect(() => {
-    if (presenting && tab === "Model") void refreshModels();
-  }, [presenting, tab, refreshModels]);
+    if (presenting && hasLoadedStudy && (tab === "Model" || modelLibraryOpen)) {
+      void refreshModels(exportDraftStudy);
+    }
+  }, [presenting, hasLoadedStudy, tab, modelLibraryOpen, exportDraftStudy, refreshModels]);
+  const startNucleiModelInstall = useCallback(() => {
+    if (
+      !api.installNucleiModel ||
+      !snapshot ||
+      nucleiInstallOp.current ||
+      busy !== null ||
+      documentSwitching ||
+      documentSwitch.current ||
+      localModelImporting ||
+      nucleiAvailability === "ready"
+    ) {
+      return;
+    }
+    const op: NucleiInstallOp = {
+      epoch: ++nucleiInstallEpoch.current,
+      studyScope: currentStudyScope.current,
+      api,
+      startedSourceKey: liveModelUi.current.sourceKey,
+      cancelPending: false,
+    };
+    nucleiInstallOp.current = op;
+    setNucleiInstall({
+      phase: "installing",
+      status: NUCLEI_INSTALL_DOWNLOADING_STATUS,
+    });
+
+    const settleIfReady = (nextModels: ModelRecord[] | null): boolean => {
+      const matched = nextModels ? findInstalledNucleiModel(nextModels) : null;
+      if (matched?.state !== "ready" || !nextModels) return false;
+      const ui = liveModelUi.current;
+      const sameSource = ui.sourceKey === op.startedSourceKey;
+      if (sameSource && ui.tab === "Model" && !ui.modelId && !ui.pendingModel) {
+        selectModelPackage(matched.modelId, nextModels);
+      }
+      setNucleiInstall({ phase: "idle" });
+      return true;
+    };
+
+    void (async () => {
+      try {
+        const outcome = await op.api.installNucleiModel!(
+          NUCLEI_MODEL_INSTALL.workingBytes,
+        );
+        if (!isCurrentNucleiOp(op)) return;
+        const nextModels = await refreshModels(op.studyScope);
+        if (!isCurrentNucleiOp(op)) return;
+        if (settleIfReady(nextModels)) return;
+        const cancelled =
+          op.cancelPending ||
+          outcome === null ||
+          Boolean(
+            outcome &&
+              typeof outcome === "object" &&
+              ((outcome as Record<string, unknown>).cancelled === true ||
+                (outcome as Record<string, unknown>).canceled === true),
+          );
+        setNucleiInstall(
+          cancelled
+            ? { phase: "cancelled" }
+            : {
+                phase: "failed",
+                error:
+                  "Installation completed, but the verified nuclei boundary package was not found in this study.",
+              },
+        );
+      } catch (caught) {
+        if (!isCurrentNucleiOp(op)) return;
+        const raw = caught instanceof Error ? caught.message : String(caught ?? "");
+        const cancelled =
+          /\bcancel(?:led|ed|lation)\b/i.test(raw) ||
+          (op.cancelPending && /\babort(?:ed)?\b/i.test(raw));
+        if (cancelled) {
+          const nextModels = await refreshModels(op.studyScope);
+          if (!isCurrentNucleiOp(op)) return;
+          if (!settleIfReady(nextModels)) {
+            setNucleiInstall({ phase: "cancelled" });
+          }
+          return;
+        }
+        setNucleiInstall({
+          phase: "failed",
+          error: message(caught, "Could not install the nuclei boundary ONNX model."),
+        });
+      } finally {
+        if (nucleiInstallOp.current === op) nucleiInstallOp.current = null;
+      }
+    })();
+  }, [
+    api,
+    snapshot,
+    busy,
+    documentSwitching,
+    localModelImporting,
+    nucleiAvailability,
+    isCurrentNucleiOp,
+    refreshModels,
+    selectModelPackage,
+  ]);
+  const cancelNucleiModelInstall = useCallback(() => {
+    const op = nucleiInstallOp.current;
+    if (
+      !op ||
+      !isCurrentNucleiOp(op) ||
+      op.cancelPending ||
+      !op.api.cancelNucleiModelInstall
+    ) {
+      return;
+    }
+    op.cancelPending = true;
+    setNucleiInstall({
+      phase: "cancelling",
+      status: "Requesting cancellation…",
+      cancelPending: true,
+    });
+    void op.api
+      .cancelNucleiModelInstall()
+      .then((cancelled) => {
+        if (!isCurrentNucleiOp(op)) return;
+        setNucleiInstall({
+          phase: "cancelling",
+          status: cancelled ? "Cancelling download…" : "Verification is finishing…",
+          cancelPending: true,
+        });
+      })
+      .catch((caught) => {
+        if (!isCurrentNucleiOp(op)) return;
+        op.cancelPending = false;
+        setNucleiInstall({
+          phase: "installing",
+          status: NUCLEI_INSTALL_DOWNLOADING_STATUS,
+        });
+        setError(message(caught, "Download cancellation could not be requested."));
+      });
+  }, [isCurrentNucleiOp]);
+  const nucleiInstallController: NucleiModelInstallController = {
+    supported: Boolean(api.installNucleiModel),
+    canCancel: Boolean(api.cancelNucleiModelInstall),
+    availability: hasLoadedStudy ? nucleiAvailability : "not-installed",
+    installedModelId: installedNucleiMatch?.modelId ?? null,
+    state: nucleiInstall,
+    busyBlocked: busy !== null || documentSwitching || localModelImporting,
+    unavailableReason: hasLoadedStudy
+      ? null
+      : "Open or create a study first to install this model into a study.",
+    onInstall: startNucleiModelInstall,
+    onCancel: cancelNucleiModelInstall,
+  };
   const modelRequest = useCallback(() => {
     if (!source) return null;
     const { c: _c, z_stop: _stop, ...modelSelection } = shownSelection;
@@ -4129,6 +4414,7 @@ export default function ResearchWorkbench({
                 ? (linkId) => api.openModelLibraryLink!(linkId)
                 : undefined
             }
+            nucleiInstall={nucleiInstallController}
             workbenchRouteUnavailableReason="Open an image first to configure this tool in the inspector."
             onSelectWorkbenchRoute={() => setModelLibraryState(null)}
           />
@@ -5383,17 +5669,27 @@ export default function ResearchWorkbench({
           <ModelPanel
             key={numberScope} numberKey={numberKey} configurationValid={configurationValid} onNumberValidity={(valid) => reportNumberValidity("model", valid)}
             api={api}
-            models={models}
+            models={studyModels}
+            nucleiInstall={nucleiInstallController}
+            importing={localModelImporting}
+            setImporting={setLocalModelImporting}
             onOpenMethods={() => openWorkbenchTab("Analyze")}
             onOpenModelLibrary={() =>
               setModelLibraryState({
                 initialModelId: "bioimageio-nuclei-boundary-onnx",
               })
             }
-            refreshModels={refreshModels}
+            refreshModels={async () => {
+              await refreshModels(exportDraftStudy);
+              setNucleiInstall((current) =>
+                current.phase === "failed" || current.phase === "cancelled"
+                  ? { phase: "idle" }
+                  : current,
+              );
+            }}
             report={report}
             modelId={modelId}
-            setModelId={setModelId}
+            onSelectModel={(id) => selectModelPackage(id, studyModels)}
             mapping={modelMapping}
             setMapping={setModelMapping}
             channelCount={dimensions.c}
@@ -5751,6 +6047,7 @@ export default function ResearchWorkbench({
               ? (linkId) => api.openModelLibraryLink!(linkId)
               : undefined
           }
+          nucleiInstall={nucleiInstallController}
           workbenchRouteUnavailableReason={
             source && dimensions
               ? null
@@ -6164,10 +6461,13 @@ function ModelPanel({
   source,
   onOpenMethods,
   models,
+  nucleiInstall,
+  importing,
+  setImporting,
   refreshModels,
   report,
   modelId,
-  setModelId,
+  onSelectModel,
   mapping,
   setMapping,
   channelCount,
@@ -6206,10 +6506,13 @@ function ModelPanel({
   onOpenMethods: () => void;
   onOpenModelLibrary?: () => void;
   models: ModelRecord[];
+  nucleiInstall: NucleiModelInstallController;
+  importing: boolean;
+  setImporting: (value: boolean) => void;
   refreshModels: () => Promise<void>;
   report: <T>(work: () => Promise<T>, fallback: string) => Promise<T | undefined>;
   modelId: string;
-  setModelId: (v: string) => void;
+  onSelectModel: (v: string) => void;
   mapping: Array<{
     model_input_index: number;
     model_channel: string;
@@ -6256,11 +6559,13 @@ function ModelPanel({
   busy: boolean;
 }) {
   const numbers = useNumericValidity(onNumberValidity);
-  const [importing, setImporting] = useState(false);
+  const nucleiInstallActive =
+    nucleiInstall.state.phase === "installing" ||
+    nucleiInstall.state.phase === "cancelling";
   const selected = models.find((item) => item.model_id === modelId);
   const recoverable = (selected?.availability as Record<string, unknown> | undefined)?.state === "reimport-required";
   const importPackage = async (recover = false) => {
-    if (!api.importModel || importing) return;
+    if (!api.importModel || importing || nucleiInstallActive) return;
     setImporting(true);
     try {
       await report(async () => {
@@ -6268,34 +6573,6 @@ function ModelPanel({
         await refreshModels();
       }, "Could not import the selected model package.");
     } finally { setImporting(false); }
-  };
-  const selectModel = (id: string) => {
-    setModelId(id);
-    const item = models.find((model) => model.model_id === id);
-    const channels = (
-      (item?.package as Record<string, unknown> | undefined)?.input as
-        Record<string, unknown> | undefined
-    )?.channels;
-    const declaredChannels = Array.isArray(channels)
-      ? channels.map((entry) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry))
-            return null;
-          const record = entry as Record<string, unknown>;
-          return typeof record.name === "string" && record.name.length > 0 &&
-            Number.isInteger(record.source_index) && Number(record.source_index) >= 0
-            ? record.name
-            : null;
-        })
-      : [];
-    setMapping(
-      declaredChannels.length > 0 && declaredChannels.every((name) => name !== null)
-        ? declaredChannels.map((name, index) => ({
-            model_input_index: index,
-            model_channel: name!,
-            source_channel: 0,
-          }))
-        : [],
-    );
   };
   const requirements = <details className="model-package-requirements"><summary>Package requirements</summary>
     <p>Model files and reference tensors must be supplied locally.</p>
@@ -6324,10 +6601,12 @@ function ModelPanel({
     <h2>No model packages in this study.</h2>
     <p>Import a local Loci-compatible ONNX package to use this tool.</p>
     <div className="research-actions">
-      {api.importModel && <button className="research-primary" disabled={busy || importing} onClick={() => void importPackage()}>Import model package…</button>}
+      {api.importModel && <button className="research-primary" disabled={busy || importing || nucleiInstallActive} onClick={() => void importPackage()}>Import model package…</button>}
       <button onClick={onOpenMethods}>Open Segment &amp; measure</button>
       {onOpenModelLibrary && <button type="button" onClick={onOpenModelLibrary}>Browse Model Zoo…</button>}
-    </div>{resources}{requirements}
+    </div>
+    <NucleiModelInstallControl surface="model-panel" install={nucleiInstall} />
+    {resources}{requirements}
   </section>;
   return (
     <div className="research-panel">
@@ -6335,7 +6614,7 @@ function ModelPanel({
       <div className="research-actions">
         {api.importModel && (
           <button
-            disabled={busy || importing}
+            disabled={busy || importing || nucleiInstallActive}
             onClick={() => void importPackage()}
           >
             Import model package…
@@ -6347,14 +6626,20 @@ function ModelPanel({
           </button>
         )}
       </div>
+      <NucleiModelInstallControl
+        surface="model-panel"
+        install={nucleiInstall}
+        selectedModelId={modelId}
+        onSelectInstalled={onSelectModel}
+      />
       {recoverable && <section className="research-prerequisite"><p>This model’s files are unavailable. Re-import the same package to restore it.</p>
-        {api.importModel && <button disabled={busy || importing} onClick={() => void importPackage(true)}>Re-import model package…</button>}</section>}
+        {api.importModel && <button disabled={busy || importing || nucleiInstallActive} onClick={() => void importPackage(true)}>Re-import model package…</button>}</section>}
       <label>
         Package{" "}
         <select
           aria-label="Model package"
           value={modelId}
-          onChange={(event) => selectModel(event.target.value)}
+          onChange={(event) => onSelectModel(event.target.value)}
         >
           <option value="">Select a package…</option>
           {models.map((item) => (
