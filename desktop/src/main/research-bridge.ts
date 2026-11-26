@@ -4,6 +4,8 @@ import type { ScientificExportPreview, ScientificExportReceipt } from "../shared
 import { app, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { openModelLibraryLink } from "./model-library-links";
+import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
+import { withNucleiModelPackage } from "./nuclei-model-download";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -317,6 +319,7 @@ export class ResearchBridge {
   private volumePreview: VolumePreviewOpening | null = null;
   private prioritizedVolumePreviewPath: string | null = null;
   private tissueSetup: TissueSetupOperation | null = null;
+  private nucleiInstall: { controller: AbortController; qualifying: boolean; finished: Promise<unknown> } | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
   private computeStudyBinding: string | null = null;
@@ -385,6 +388,7 @@ export class ResearchBridge {
     // Creating the initial managed study precedes preview launch. A later
     // document replacement revokes the bound opening immediately.
     if (this.volumePreview && this.volumePreview.epoch !== null) this.volumePreview.stop();
+    this.cancelNucleiModelInstall();
     this.project = project;
     this.sessionId = sessionId;
     this.vendorGrants.clear();
@@ -850,6 +854,49 @@ export class ResearchBridge {
     if (active.phase === "importing") return { cancelled: false, phase: "importing" };
     active.cancelled = true;
     return { cancelled: true, phase: active.phase };
+  }
+
+  private cancelNucleiModelInstall(): boolean {
+    const active = this.nucleiInstall;
+    if (!active || active.qualifying || active.controller.signal.aborted) return false;
+    active.controller.abort();
+    return true;
+  }
+
+  private async installNucleiModel(workingBytes: unknown): Promise<unknown> {
+    if (typeof workingBytes !== "number" || !Number.isSafeInteger(workingBytes) ||
+        workingBytes < 1024 ** 2 || workingBytes > 8 * 1024 ** 3)
+      throw new Error("Choose a model working-memory budget between 1 MiB and 8 GiB.");
+    if (this.nucleiInstall || this.running || this.switching || this.closing)
+      throw new Error("Finish or cancel the active study operation first.");
+    const project = this.requireProject(), epoch = this.viewDocumentEpoch;
+    const active = { controller: new AbortController(), qualifying: false, finished: Promise.resolve<unknown>(undefined) };
+    this.nucleiInstall = active;
+    try {
+      active.finished = withNucleiModelPackage(app.getPath("temp"), active.controller.signal, async (directory) => {
+        if (this.project !== project || this.viewDocumentEpoch !== epoch || this.switching ||
+            this.closing || active.controller.signal.aborted)
+          throw new Error("The study changed. Open the Model Zoo in the intended study.");
+        if (this.running) throw new Error("Finish the active study operation before installing the model.");
+        const reservation = { id: "qualify-nuclei-model", project };
+        active.qualifying = true;
+        this.running = reservation;
+        try {
+          return await this.worker.request("research_import_model", {
+            project, path: directory, working_bytes: workingBytes,
+            expected_package_sha256: NUCLEI_MODEL_INSTALL.packageSha256,
+          }, 0);
+        } finally {
+          if (this.running === reservation) this.running = null;
+        }
+      });
+      return await active.finished;
+    } catch (error) {
+      if (active.controller.signal.aborted) throw new Error("Model download cancelled.");
+      throw error;
+    } finally {
+      this.nucleiInstall = null;
+    }
   }
 
   private async importTissueModel(profileValue: unknown): Promise<ResearchTissueProfiles | null> {
@@ -2201,6 +2248,14 @@ export class ResearchBridge {
       }, 0);
     });
     handle("import", (kind) => this.addSources(kind));
+    handle("install-nuclei-model", async (workingBytes, ...extra) => {
+      if (extra.length) throw new Error("Choose a working-memory budget for the registered model.");
+      return this.installNucleiModel(workingBytes);
+    });
+    handle("cancel-nuclei-model-install", async (...args) => {
+      if (args.length) throw new Error("Cancel accepts no model or source override.");
+      return this.cancelNucleiModelInstall();
+    });
     handle("import-model", async (working_bytes, recovery_model_id) => {
       if (recovery_model_id !== undefined &&
           (typeof recovery_model_id !== "string" || !/^[a-f0-9]{32}$/.test(recovery_model_id)))
@@ -2595,6 +2650,10 @@ export class ResearchBridge {
     // The import may have been posted behind a read. Drain it explicitly rather
     // than relying on the worker's protection for its head-of-queue write.
     await this.directVolumeImport?.catch(() => undefined);
+    if (this.nucleiInstall) {
+      this.cancelNucleiModelInstall();
+      await this.nucleiInstall.finished.catch(() => undefined);
+    }
     const setup = this.tissueSetup;
     if (setup) {
       if (setup.phase !== "importing") setup.cancelled = true;
@@ -2614,6 +2673,7 @@ export class ResearchBridge {
 
   forceDispose(): void {
     this.closing = true;
+    this.cancelNucleiModelInstall();
     this.volumePreview?.stop();
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
     this.worker.forceDispose();

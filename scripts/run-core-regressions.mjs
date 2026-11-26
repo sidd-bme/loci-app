@@ -319,7 +319,7 @@ export async function runCoreRegressions(options, dependencies = {}) {
         name: "Python Engine Verification (Ruff lint & Pytest)",
         cwd: path.join(projectRoot, "engine"),
         command: "uv",
-        args: ["run", "--frozen", "--no-sync", "pytest", "--durations=15"],
+        args: ["run", "--frozen", "--no-sync", "python", "-m", "pytest", "--durations=15"],
         preCommands: [
           { command: "uv", args: ["run", "--frozen", "--no-sync", "ruff", "check", "."] },
         ],

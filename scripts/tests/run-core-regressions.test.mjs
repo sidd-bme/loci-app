@@ -98,7 +98,7 @@ for (const selected of ["desktop-checks", "engine-checks"]) {
     else {
       assert.deepEqual(executed.map(call => call.args), [
         ["run", "--frozen", "--no-sync", "ruff", "check", "."],
-        ["run", "--frozen", "--no-sync", "pytest", "--durations=15"],
+        ["run", "--frozen", "--no-sync", "python", "-m", "pytest", "--durations=15"],
       ]);
       assert.deepEqual(result.commands.map(command => command.phase), ["pre-command", "command"]);
       assert.deepEqual(result.commands.map(command => command.duration_ms), [7, 7]);

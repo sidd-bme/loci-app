@@ -109,7 +109,14 @@ def test_import_is_reference_qualified_project_managed_and_path_free(tmp_path):
     workbench = _workbench(tmp_path)
     package, _ = _native_package(tmp_path / "package")
 
-    imported = import_model(workbench, package, working_bytes=256 * 1024**2)
+    with pytest.raises(ValueError, match="selected registry entry"):
+        import_model(workbench, package, expected_package_sha256="0" * 64)
+    assert not (workbench.project.root / "models").exists()
+    assert not workbench.project.documents("model")
+    expected = model_packages.inspect_model_package(package).package_sha256
+    imported = import_model(
+        workbench, package, working_bytes=256 * 1024**2, expected_package_sha256=expected
+    )
     listed = execute_model(workbench, "model_list", {})
 
     assert imported == listed["models"][0]

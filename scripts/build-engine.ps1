@@ -58,8 +58,9 @@ try {
     # runtime modules and provider libraries. Avoid --collect-all because it
     # bundles thousands of upstream conformance fixtures and conversion tools.
     $PyInstallerArguments = @(
-        $UvRun + @("pyinstaller",
+        $UvRun + @("python", "-m", "PyInstaller",
         "--noconfirm", "--clean", "--onedir", "--name", "loci-engine",
+        "--paths", (Join-Path $EngineRoot "src"),
         "--distpath", (Join-Path $EngineRoot "dist"),
         "--workpath", (Join-Path $EngineRoot "build\pyinstaller"),
         "--specpath", (Join-Path $EngineRoot "build\pyinstaller"),

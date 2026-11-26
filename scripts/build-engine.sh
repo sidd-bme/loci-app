@@ -22,11 +22,12 @@ onnxruntime_root="$("${uv_run[@]}" python -c 'from importlib.util import find_sp
 # `--collect-all` here: it treats thousands of upstream backend conformance
 # fixtures and unrelated conversion tools as runtime data, bloating the signed
 # macOS bundle without supporting Loci inference.
-"${uv_run[@]}" pyinstaller \
+"${uv_run[@]}" python -m PyInstaller \
   --noconfirm \
   --clean \
   --onedir \
   --name loci-engine \
+  --paths "$engine_root/src" \
   --distpath "$engine_root/dist" \
   --workpath "$engine_root/build/pyinstaller" \
   --specpath "$engine_root/build/pyinstaller" \

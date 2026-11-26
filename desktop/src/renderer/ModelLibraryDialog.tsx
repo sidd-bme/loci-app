@@ -31,6 +31,10 @@ import {
   countModelZooEntries,
   filterModelZooEntries,
 } from "./model-zoo/search";
+import {
+  NucleiModelInstallControl,
+  type NucleiModelInstallController,
+} from "./NucleiModelInstallControl";
 import "./ModelLibraryDialog.css";
 
 export interface ModelLibraryDialogProps {
@@ -41,6 +45,7 @@ export interface ModelLibraryDialogProps {
     modelId: ModelLibraryId,
   ) => void;
   workbenchRouteUnavailableReason?: string | null;
+  nucleiInstall?: NucleiModelInstallController | null;
   initialModelId?: ModelLibraryId;
   reducedMotion?: boolean;
   /** Optional synthetic or custom example registry for unit testing. */
@@ -267,6 +272,7 @@ function ModelZooDetail({
   onOpenLink,
   onSelectWorkbenchRoute,
   workbenchRouteUnavailableReason,
+  nucleiInstall,
 }: {
   entry: Readonly<ModelLibraryEntry>;
   example: Readonly<ModelZooResolvedExample> | null;
@@ -277,6 +283,7 @@ function ModelZooDetail({
     modelId: ModelLibraryId,
   ) => void;
   workbenchRouteUnavailableReason?: string | null;
+  nucleiInstall?: NucleiModelInstallController | null;
 }): React.JSX.Element {
   const isLocal = entry.filterGroup === "local";
   const routeDisabled = Boolean(workbenchRouteUnavailableReason);
@@ -317,6 +324,13 @@ function ModelZooDetail({
         </div>
 
         <p className="model-zoo-detail__summary">{entry.summary}</p>
+
+        {entry.catalogInstall && nucleiInstall?.supported && (
+          <NucleiModelInstallControl
+            surface="model-zoo"
+            install={nucleiInstall}
+          />
+        )}
 
         <dl className="model-zoo-spec-list">
           <div>
@@ -605,6 +619,7 @@ export default function ModelLibraryDialog({
   onOpenLink,
   onSelectWorkbenchRoute,
   workbenchRouteUnavailableReason = null,
+  nucleiInstall = null,
   initialModelId,
   reducedMotion,
   examples = BUNDLED_MODEL_ZOO_EXAMPLES,
@@ -999,6 +1014,7 @@ export default function ModelLibraryDialog({
               onOpenLink={handleOpenLink}
               onSelectWorkbenchRoute={onSelectWorkbenchRoute}
               workbenchRouteUnavailableReason={workbenchRouteUnavailableReason}
+              nucleiInstall={nucleiInstall}
             />
           ) : (
             <>

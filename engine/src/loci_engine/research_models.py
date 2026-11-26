@@ -269,10 +269,13 @@ def import_model(
     path: str | Path,
     working_bytes: int = DEFAULT_WORKING_BYTES,
     recovery_model_id: str | None = None,
+    expected_package_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Qualify and atomically adopt one explicitly selected local package."""
     integer(working_bytes, "working_bytes", 1024**2, 8 * 1024**3)
     candidate = inspect_model_package(path)
+    if expected_package_sha256 is not None and candidate.package_sha256 != expected_package_sha256:
+        raise ValueError("Model package differs from the selected registry entry")
     candidate_id = _model_id(candidate)
     if recovery_model_id is not None and checked_id(recovery_model_id) != candidate_id:
         raise ValueError("Re-import must select the exact package declared by this model")

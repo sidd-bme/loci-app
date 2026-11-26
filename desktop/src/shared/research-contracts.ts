@@ -1069,6 +1069,9 @@ export interface ResearchDesktopApi {
   addSources(kind?: "files" | "dicom" | "ome_zarr"): Promise<ResearchSnapshot>;
   /** Opens a local package picker; package paths never cross the renderer boundary. */
   importModel?(workingBytes: number, recoveryModelId?: string): Promise<unknown>;
+  /** Explicitly fetch and qualify the gallery's pinned ONNX package in this study. */
+  installNucleiModel?(workingBytes: number): Promise<unknown>;
+  cancelNucleiModelInstall?(): Promise<boolean>;
   /** Main owns both file pickers. Renderer can supply only a registered profile. */
   importTissueModel?(profileId: "puma-tissue-cpu"): Promise<ResearchTissueProfiles | null>;
   getTissueModelImportStatus?(profileId: "puma-tissue-cpu"): Promise<ResearchTissueImportPhase>;

@@ -6,6 +6,7 @@ import {
   CELLPOSE_SAM_V2_SHA256,
   CELLPOSE_SAM_V2_SIZE_BYTES,
 } from "./model-registry";
+import { NUCLEI_MODEL_INSTALL } from "./nuclei-model-install";
 
 export type ModelLibraryId =
   | "cellpose-sam-v2"
@@ -117,6 +118,14 @@ export interface ModelLibraryArtifactIdentity {
   readonly runtimeRequirement: string;
 }
 
+export interface ModelLibraryCatalogInstall {
+  readonly packageVersion: string;
+  readonly originLabel: string;
+  readonly downloadBytes: number;
+  readonly packageSha256: string;
+  readonly workingBytes: number;
+}
+
 export interface ModelLibraryEntry {
   readonly id: ModelLibraryId;
   readonly title: string;
@@ -144,6 +153,7 @@ export interface ModelLibraryEntry {
     readonly actionLabel: string;
     readonly inspectorLocation: string;
   };
+  readonly catalogInstall?: ModelLibraryCatalogInstall;
   readonly artifact: ModelLibraryArtifactIdentity;
   readonly rights: ModelLibraryRightsSummary;
   readonly limitations: readonly string[];
@@ -625,7 +635,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
       "BioImage.IO 0.5 / loci.model-package/1",
     ],
     summary:
-      "Boundary-aware 2D U-Net for fluorescence nuclei on local CPU ONNX Runtime. Needs a Loci-compatible ONNX-only package (raw Zenodo 6647674 is multi-format BioImage.IO 0.4.4).",
+      "Find nuclei in a single fluorescence channel. Preview the outlines, correct touching objects and measure each nucleus against the original image.",
     cardSummary:
       "Maps nuclear interiors and boundaries in fluorescence images with a 2D U-Net.",
     publisherBadge: "Zenodo 6647674 · 0.4.4",
@@ -644,25 +654,33 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     taskSummary:
       "Executes static BCYX float32 tiled inference with halo cropping, overlays probability and candidate label boundaries in a non-adopted preview, and requires bit-exact preview reproduction on publication.",
     inputContract:
-      "Static BCYX float32 input ([1, 1, 256, 256] tiles with [16, 16] reflect halo) mapped to one explicit scalar fluorescence channel. Requires matching declared physical scale or an explicit scale-compatibility override declaration; RGB components are rejected as biological channels.",
+      "One scalar fluorescence channel at the model’s declared pixel scale. Calibrated sources require an explicit scale declaration.",
     lociPathway:
-      "Prepare or obtain a local Loci-compatible ONNX-only directory (loci-model.json or single-weight BioImage.IO 0.5 rdf.yaml per docs/MODEL_PACKAGE_FORMAT.md; raw Zenodo 6647674 is multi-format BioImage.IO 0.4.4 and is not directly importable), then import it in Analyze → Use a model, map the source channel and physical scale, compute a preview receipt, and adopt the verified result.",
+      "Choose the fluorescence channel in Analyze → Use a model. Check the preview before saving the result.",
     workbenchRoute: {
       kind: "onnx-model-package",
       actionLabel: "Open Use a model in Analyze",
       inspectorLocation: "Analyze → Use a model",
     },
+    catalogInstall: {
+      packageVersion: "0.1.0-publication-20261015-r2",
+      originLabel:
+        "BioImage.IO affable-shark v0 (hypha.aicell.io · original Zenodo 6647674)",
+      downloadBytes: NUCLEI_MODEL_INSTALL.downloadBytes,
+      packageSha256: NUCLEI_MODEL_INSTALL.packageSha256,
+      workingBytes: NUCLEI_MODEL_INSTALL.workingBytes,
+    },
     artifact: {
       artifactId: "nuclei-segmentation-boundary-model",
       fileName: "weights.onnx (Zenodo 6647674 BioImage.IO 0.4.4) → Loci ONNX-only package",
       version:
-        "Upstream Zenodo 6647674 (BioImage.IO 0.4.4, v0.1.0) · Loci-adapted package 0.1.0-zenodo-v7",
+        "Upstream Zenodo 6647674 (BioImage.IO 0.4.4, v0.1.0) · catalog adapter 0.1.0-publication-20261015-r2",
       sha256: BIOIMAGEIO_NUCLEI_BOUNDARY_WEIGHTS_ONNX_SHA256,
       digestBasis: "loci-verified",
       digestBasisLabel:
-        "Upstream Zenodo 6647674 weights.onnx SHA-256 (verified by Loci on adapted package import and before every CPU ONNX Runtime execution)",
+        "Upstream Zenodo 6647674 weights.onnx SHA-256 (verified by Loci on catalog install, local package import, and before every CPU ONNX Runtime execution)",
       sizeBytes: null,
-      companionNote: `Raw Zenodo record 6647674 is a BioImage.IO 0.4.4 multi-format archive (weights.onnx, weights.pt, weights-torchscript.pt) and requires Loci-compatible ONNX-only packaging (loci.model-package/1 loci-model.json or single-weight BioImage.IO 0.5 rdf.yaml; see docs/MODEL_PACKAGE_FORMAT.md) before import. Loci's tested adapted ONNX-only package wrapper (0.1.0-zenodo-v7, not the raw Zenodo record) had package SHA-256 ${BIOIMAGEIO_NUCLEI_BOUNDARY_ADAPTED_PACKAGE_SHA256}, metadata SHA-256 dfde9bd3902187e5…, reference input SHA-256 c29bd6e16e3f7856…, and reference output SHA-256 510181f38930e59e….`,
+      companionNote: `Raw Zenodo record 6647674 is a BioImage.IO 0.4.4 multi-format archive (weights.onnx, weights.pt, weights-torchscript.pt) and requires Loci-compatible ONNX-only packaging (loci.model-package/1 loci-model.json or single-weight BioImage.IO 0.5 rdf.yaml; see docs/MODEL_PACKAGE_FORMAT.md). Explicit user-click installation downloads the three pinned upstream files from the version-pinned BioImage.IO affable-shark v0 artifact (hypha.aicell.io; original Zenodo 6647674), verifies exact hashes, and installs the audited 0.1.0-publication-20261015-r2 adapted ONNX-only package wrapper (package SHA-256 ${NUCLEI_MODEL_INSTALL.packageSha256}) into the current study. Local directory import and recovery also remain available offline, including the legacy 0.1.0-zenodo-v7 adapted ONNX-only package wrapper (package SHA-256 ${BIOIMAGEIO_NUCLEI_BOUNDARY_ADAPTED_PACKAGE_SHA256}, metadata SHA-256 dfde9bd3902187e5…, reference input SHA-256 c29bd6e16e3f7856…, reference output SHA-256 510181f38930e59e…).`,
       runtimeRequirement:
         "Local engine optional ONNX extra (uv sync --extra onnx · onnxruntime CPUExecutionProvider, 2 GiB working budget)",
     },
