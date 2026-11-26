@@ -224,9 +224,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: engine/uv.lock
-      - name: Verify native derived-volume publication, rollback and reopen
+      - name: Verify native microscopy reads, derived-volume publication, rollback and reopen
         working-directory: engine
-        run: uv run --frozen --extra dev pytest -q tests/test_research_virtual_stain.py
+        run: uv run --frozen --extra dev pytest -q tests/test_native_image.py tests/test_research_virtual_stain.py
 
   package-windows:
     needs: [engine, desktop]
@@ -309,5 +309,6 @@ jobs:
           path: |
             ${{ runner.temp }}/loci-installed-qa/installer.json
             ${{ runner.temp }}/loci-installed-qa/*/journey.json
+            ${{ runner.temp }}/loci-installed-qa/*/failure.png
           if-no-files-found: warn
           retention-days: 7

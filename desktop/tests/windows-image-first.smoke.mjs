@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 
 import { _electron as electron } from "playwright";
 import { closeSettings, openSettings } from "./settings-qa-helpers.mjs";
-import { fileMenuAction, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, selectResultSection, selectWorkbenchTool, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -62,7 +62,9 @@ assert.equal(health.result?.status, "ready", "Packaged frozen worker health fail
 const discovery = JSON.parse((await run(worker, ["--cli", "discover"], { windowsHide: true })).stdout);
 assert.equal(discovery.schema, "loci.operations/v1", "Packaged frozen worker discovery contract failed.");
 
-let app;
+const exported = path.join(runRoot, "reviewed-export");
+let app, page, graphics;
+let stage = "launch";
 async function launch(profile) {
   app = await electron.launch({
     executablePath: executable,
@@ -70,7 +72,7 @@ async function launch(profile) {
     cwd: desktopRoot,
     timeout: 120_000,
   });
-  const page = await app.firstWindow();
+  page = await app.firstWindow();
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1100, height: 760 }));
   await app.evaluate(({ dialog }, values) => {
     dialog.showOpenDialog = async (...args) => {
@@ -79,13 +81,14 @@ async function launch(profile) {
       if (options?.title === "Open research study") return { canceled: false, filePaths: [values.study] };
       return { canceled: true, filePaths: [] };
     };
-    dialog.showSaveDialog = async (...args) => args.at(-1)?.title === "Save research study as"
-      ? { canceled: false, filePath: values.study } : { canceled: true, filePath: undefined };
+    dialog.showSaveDialog = async (...args) => {
+      const target = { "Save research study as": values.study, "Export reviewed result bundle": values.exported }[args.at(-1)?.title];
+      return { canceled: !target, filePath: target };
+    };
     dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
-  }, { source, study: studyPath });
+  }, { source, study: studyPath, exported });
 
   await page.locator("main.image-first-empty").waitFor({ state: "visible", timeout: 30_000 });
-  return page;
 }
 
 async function checkCell(page, snapshot) {
@@ -111,18 +114,20 @@ async function checkCell(page, snapshot) {
 }
 
 try {
-  let page = await launch(userData);
-  const graphics = await app.evaluate(async ({ app }) => {
+  await launch(userData);
+  graphics = await app.evaluate(async ({ app }) => {
     const info = await app.getGPUInfo("basic").catch(() => null);
     return { devices: info?.gpuDevice ?? null, features: app.getGPUFeatureStatus(),
       hardware_acceleration_enabled: app.isHardwareAccelerationEnabled() };
   });
+  stage = "import and render";
   await page.getByRole("button", { name: "Open images", exact: true }).click();
   await page.getByRole("main", { name: "Research workspace" }).waitFor({ state: "visible", timeout: 60_000 });
   const imported = await waitForSnapshot(page, s => s?.sources?.length === 1, "imported source");
   assert.equal(imported.sources[0].sha256, fixtureHash);
   await page.getByRole("button", { name: "Fit", exact: true }).click();
   await page.waitForFunction(() => Number(document.querySelector(".image-viewport")?.getAttribute("data-cache-bytes")) > 0);
+  stage = "analysis";
   await selectWorkbenchTool(page, "Analyze");
   if (isCell) {
     await page.getByRole("button", { name: "Whole image", exact: true }).click();
@@ -136,9 +141,43 @@ try {
   await page.getByRole("button", { name: "Run recipe" }).click();
   const analyzed = await waitForSnapshot(page, s => s?.results?.length === 1, "analysis", 120_000);
   const measurements = isCell ? await checkCell(page, analyzed) : null;
+  let exportCheck;
+  if (isCell) {
+    stage = "review and export";
+    await page.locator(`button[data-result-id="${analyzed.results[0].id}"]`).click();
+    await selectWorkbenchTool(page, "Info");
+    await selectResultSection(page, "Export");
+    const exportButton = page.getByRole("button", { name: "Export result", exact: true });
+    assert.equal(await exportButton.isEnabled(), false);
+    await selectResultSection(page, "Review");
+    await page.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+    await waitForSnapshot(page, s => s?.results?.[0]?.review?.disposition === "reviewed", "review");
+    await selectResultSection(page, "Export");
+    await exportButton.click();
+    const manifestPath = path.join(exported, "manifest.json");
+    const deadline = Date.now() + 60_000;
+    while (!(await fs.stat(manifestPath).catch(() => null))?.isFile()) {
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for reviewed export");
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    for (const member of manifest.files) {
+      assert.equal(path.basename(member.name), member.name);
+      assert.equal(await sha256(path.join(exported, member.name)), member.sha256);
+    }
+    const record = JSON.parse(await fs.readFile(path.join(exported, "result.json"), "utf8"));
+    assert.equal(record.result.revision_hash, analyzed.results[0].revision_hash);
+    assert.equal(record.review.disposition, "reviewed");
+    assert.equal(record.source.sha256, fixtureHash);
+    const python = path.resolve(desktopRoot, "../engine/.venv/Scripts/python.exe");
+    exportCheck = JSON.parse((await run(python, [path.join(import.meta.dirname, "windows-cell-fixture.py"),
+      "--verify-export", exported])).stdout);
+  }
+  stage = "save study";
   await fileMenuAction(page, "Save as study…");
   await page.locator(".session-save-state").filter({ hasText: /^Saved locally$/ }).waitFor();
   await fs.access(path.join(studyPath, "study.sqlite3"));
+  stage = "manual and settings";
   await page.keyboard.press("F1");
   await page.getByRole("dialog", { name: "User manual" }).waitFor({ state: "visible" });
   await page.getByLabel("Close user manual").click();
@@ -146,20 +185,33 @@ try {
   await closeSettings(settings, "Close settings");
   await app.close();
   app = undefined;
-  page = await launch(path.join(runRoot, "reopen-profile"));
+  stage = "cold reopen";
+  await launch(path.join(runRoot, "reopen-profile"));
   await fileMenuAction(page, "Open study");
   const reopened = await waitForSnapshot(page, s => s?.results?.length === 1, "cold reopen");
   assert.equal(reopened.sources[0].sha256, fixtureHash);
   assert.equal(reopened.results[0].id, analyzed.results[0].id);
   assert.equal(reopened.results[0].revision_hash, analyzed.results[0].revision_hash);
-  if (isCell) assert.deepEqual(await checkCell(page, reopened), measurements);
+  if (isCell) {
+    assert.equal(reopened.results[0].review?.disposition, "reviewed");
+    assert.deepEqual(await checkCell(page, reopened), measurements);
+  }
   const report = { status: "passed", bundle, identity, source_sha256: fixtureHash, graphics,
     fixture: isCell ? { original: "scikit-image data/cell.png", license: "CC0-1.0",
       original_sha256: "8d23a7fb81f7cc877cd09f330357fc7f595651306e84e17252f6e0a1b3f61515" } : undefined,
     inference_device: null, recipe: isCell ? "classical connected components" : "default",
-    measurements, reopened_result: reopened.results[0].id, worker_schema: discovery.schema };
+    measurements, export_check: exportCheck, reopened_result: reopened.results[0].id, worker_schema: discovery.schema };
   await fs.writeFile(path.join(runRoot, "journey.json"), JSON.stringify(report, null, 2));
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
+} catch (error) {
+  // Only the pinned public fixture is eligible for captured window contents.
+  if (isCell && page && !page.isClosed()) {
+    await page.screenshot({ path: path.join(runRoot, "failure.png"), timeout: 5000 }).catch(() => {});
+  }
+  await fs.writeFile(path.join(runRoot, "journey.json"), JSON.stringify({
+    status: "failed", stage, error: String(error), identity, source_sha256: fixtureHash, graphics,
+  }, null, 2));
+  throw error;
 } finally {
   if (app) await app.close();
 }

@@ -1044,6 +1044,24 @@ def test_session_rejects_source_identity_changes(tmp_path: Path, mutation: str) 
         session.read_region(NativeSelection(x=0, y=0, width=2, height=2))
 
 
+def test_batch_reader_binds_to_the_inspected_file_after_timestamp_change(tmp_path: Path) -> None:
+    path = tmp_path / "time-adjusted.tif"
+    pixels = _values((8, 8))
+    tifffile.imwrite(path, pixels)
+    # A restored acquisition time can precede the creation of the local copy.
+    os.utime(path, ns=(1_700_000_000_000_000_000,) * 2)
+    with NativeImageSession(path) as session:
+        with session.region_reader() as read:
+            region = read(NativeSelection(x=1, y=2, width=3, height=2))
+            np.testing.assert_array_equal(region.pixels, pixels[2:4, 1:4])
+        replacement = tmp_path / "other.tif"
+        replacement.write_bytes(path.read_bytes())
+        os.utime(replacement, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns))
+        replacement.replace(path)
+        with pytest.raises(NativeSourceChangedError), session.region_reader():
+            pytest.fail("a replacement with identical bytes and mtime must be detected")
+
+
 def test_session_strict_verification_detects_bytes_even_if_stat_identity_is_rebased(
     tmp_path: Path,
 ) -> None:

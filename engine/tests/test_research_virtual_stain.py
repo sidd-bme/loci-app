@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import json
 import os
@@ -199,24 +200,23 @@ def test_refuses_invalid_binding_before_inference(setup, fields):
         "nonfinite",
         "registration",
         "sidecar",
-        "race",
-        "empty-race",
     ],
 )
 def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
     wb, req, target, weights = setup
 
+    # An earlier source-read failure must not satisfy a later fault injection.
+    reached_fault = False
+
     def predict(phase, *_):
+        nonlocal reached_fault
+        reached_fault = failure in {"shape", "dtype", "nonfinite"}
         if failure == "shape":
             return phase[0], "2.13.0"
         if failure == "dtype":
             return phase.astype(np.int32), "2.13.0"
         if failure == "nonfinite":
             return np.full_like(phase, np.nan), "2.13.0"
-        if failure in {"race", "empty-race"}:
-            target.mkdir()
-        if failure == "race":
-            (target / "keep").write_text("original")
         return phase.copy(), "2.13.0"
 
     monkeypatch.setattr(stain, "_predict", predict)
@@ -232,6 +232,8 @@ def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
     elif failure in {"cancel", "changed"}:
 
         def interrupt(*_):
+            nonlocal reached_fault
+            reached_fault = True
             raise (
                 KeyboardInterrupt() if failure == "cancel" else NativeSourceChangedError("changed")
             )
@@ -244,6 +246,8 @@ def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
             guard = kwargs["publication_guard"]
 
             def change_before_commit():
+                nonlocal reached_fault
+                reached_fault = True
                 (target / stain.SIDECAR).write_text("changed")
                 guard()
 
@@ -253,15 +257,17 @@ def test_publication_refusal_and_cleanup(setup, failure, monkeypatch, tmp_path):
     elif failure == "registration":
 
         def reject(*_, **__):
+            nonlocal reached_fault
+            reached_fault = True
             raise ValueError("register failed")
 
         monkeypatch.setattr(wb.project, "register_source", reject)
     with pytest.raises((ValueError, OSError, KeyboardInterrupt, NativeSourceChangedError)):
         stain.run(wb, req, target, weights)
-    if failure in {"race", "existing"}:
+    if failure not in {"existing", "link", "parent-link"}:
+        assert reached_fault
+    if failure == "existing":
         assert (target / "keep").read_text() == "original"
-    elif failure == "empty-race":
-        assert target.is_dir() and not list(target.iterdir())
     elif failure == "link":
         assert target.is_symlink()
     else:
@@ -345,6 +351,31 @@ def test_windows_unicode_drive_path():
     validate_windows_path(PureWindowsPath(r"C:\Study Results\μm nuclei"))
 
 
+@pytest.mark.parametrize("populated", [False, True], ids=["empty", "populated"])
+def test_bundle_publish_refuses_intervening_directory(tmp_path, populated):
+    root = tmp_path.resolve()
+    project = ResearchProject.create(root / "test.loci-study", "virtual stain")
+    target = root / "derived"
+    with publication(project, target, ()) as bundle:
+        bundle.start()
+        with bundle.file(stain.IMAGE) as stream:
+            stream.write(b"staged")
+        # The picker destination was absent when the parent was pinned.
+        # Introduce the competing directory immediately before the real rename.
+        target.mkdir()
+        original = target.stat()
+        if populated:
+            (target / "keep").write_bytes(b"independent")
+        with pytest.raises(OSError) as refused:
+            bundle.publish()
+        assert refused.value.errno in {errno.EEXIST, errno.ENOTEMPTY}
+    assert os.path.samestat(original, target.stat())
+    assert {item.name for item in target.iterdir()} == ({"keep"} if populated else set())
+    if populated:
+        assert (target / "keep").read_bytes() == b"independent"
+    assert not list(root.glob(".loci-virtual-stain-*"))
+
+
 def test_rollback_preserves_unowned_artifacts(setup):
     wb, _, target, _ = setup
     with publication(wb.project, target, ()) as bundle:
@@ -354,14 +385,25 @@ def test_rollback_preserves_unowned_artifacts(setup):
         with bundle.file(stain.SIDECAR) as stream:
             stream.write(b"owned")
         stage = next(target.parent.glob(".loci-virtual-stain-*"))
-        (stage / stain.SIDECAR).rename(stage / "moved")
-        (stage / stain.SIDECAR).write_bytes(b"independent")
+        if os.name == "nt":
+            with pytest.raises(PermissionError) as denied:
+                (stage / stain.SIDECAR).rename(stage / "moved")
+            assert denied.value.winerror == 32  # ERROR_SHARING_VIOLATION
+            assert (stage / stain.SIDECAR).read_bytes() == b"owned"
+            independent = stage / "keep"
+        else:
+            (stage / stain.SIDECAR).rename(stage / "moved")
+            independent = stage / stain.SIDECAR
+        independent.write_bytes(b"independent")
         with pytest.raises(ValueError):
             bundle.verify({})
     assert not target.exists()
     assert not (stage / stain.IMAGE).exists()
-    assert (stage / stain.SIDECAR).read_bytes() == b"independent"
-    assert (stage / "moved").read_bytes() == b"owned"
+    assert independent.read_bytes() == b"independent"
+    if os.name == "nt":
+        assert list(stage.iterdir()) == [independent]
+    else:
+        assert (stage / "moved").read_bytes() == b"owned"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native junction and sharing semantics")
