@@ -1,4 +1,4 @@
-name: Repeat the build 76 Windows volume journey
+name: Verify build 76 Windows microscopy
 on:
   push:
     branches: [t3/verify-windows76-science-20261126]
@@ -82,20 +82,28 @@ jobs:
           if ((Get-FileHash (Join-Path $App 'Loci.exe')).Hash -ne $Journey.identity.executable_sha256 -or
               (Get-FileHash (Join-Path $Resources 'loci-engine/loci-engine.exe')).Hash -ne $Journey.identity.worker_sha256) { throw 'Installed and portable binary identities differ' }
           "LOCI_CANDIDATE_DIR=$App" >> $env:GITHUB_ENV
-      - name: Open the calibrated kidney stack in the ordinary 3D renderer
+      - name: Install the nuclei model and verify the reviewed fluorescence study
+        shell: pwsh
+        run: |
+          ./scripts/qa/windows76/run-windows-onnx-qa.ps1 -RepoRoot $PWD.Path -AppRoot $env:LOCI_CANDIDATE_DIR -WorkRoot "$env:RUNNER_TEMP/loci-onnx76"
+      - name: Open the calibrated kidney stack directly and from the 2D workbench
         if: ${{ !cancelled() && steps.candidate.outcome == 'success' }}
         shell: pwsh
         run: |
           $Source = Join-Path $env:RUNNER_TEMP 'kidney-source/Kidney fluorescence.ome.tiff'
           & ./engine/.venv/Scripts/python.exe scripts/qa/windows76/prepare-kidney.py --download --out $Source
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          node desktop/tests/volume-entry.qa.mjs --app $env:LOCI_CANDIDATE_DIR --out "$env:RUNNER_TEMP/loci-kidney76" --public-kidney --source $Source --timeout-ms 60000
+          node desktop/tests/volume-entry.qa.mjs --app $env:LOCI_CANDIDATE_DIR --out "$env:RUNNER_TEMP/loci-kidney76" --public-kidney --source $Source --route both --timeout-ms 60000
       - name: Retain numerical and graphics receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows76-volume-receipt
+          name: windows76-scientific-receipts
           path: |
+            ${{ runner.temp }}/loci-onnx76/package-identity.json
+            ${{ runner.temp }}/loci-onnx76/fixture/fixture-identity.json
+            ${{ runner.temp }}/loci-onnx76/qa/qa-report.json
+            ${{ runner.temp }}/loci-onnx76/qa/qa-failure.json
             ${{ runner.temp }}/loci-kidney76/*/report.json
             ${{ runner.temp }}/loci-kidney76/*/failure.png
           if-no-files-found: warn
