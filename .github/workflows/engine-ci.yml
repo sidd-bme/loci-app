@@ -229,7 +229,7 @@ jobs:
         run: uv run --frozen --extra dev pytest -q tests/test_native_image.py tests/test_research_virtual_stain.py
 
   package-windows:
-    needs: [engine, desktop, windows-storage]
+    needs: windows-storage
     runs-on: windows-2025
     timeout-minutes: 30
     steps:

@@ -262,10 +262,16 @@ before running. Fixtures, study, export and reports go in the chosen directory.
 ./tests/windows-installed-journey.ps1 -QualificationRoot C:\Loci-QA\run-01
 ```
 
-The report records the display adapter and driver, Electron graphics status, and
-the compute devices visible to the installed Cellpose runtime. The calibrated
-workflow uses classical connected components. A GPU inference claim requires
-a run that records both the selected device and the model output.
+The report records the display adapter and driver, Electron graphics status and
+the compute devices visible to the installed Cellpose runtime. The standard
+Windows package contains PyTorch `2.13.0+cpu`. Electron can use the graphics
+driver for viewing images. CUDA model inference needs a separately qualified
+runtime. The calibrated installer test uses classical connected components.
+
+Windows supports the reviewed result bundle and DynaCell's fixed local NTFS
+output. Full-resolution format conversion, advanced scientific data exports and
+preparing a µSAM handoff still require the directory operations available on
+macOS or Linux.
 
 ## Verification
 

@@ -19,6 +19,8 @@ if ($Drive.DriveType -notin @("Fixed", "Removable") -or (Test-Path -LiteralPath 
     throw "Choose a new qualification directory on a local drive."
 }
 $Install = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Loci"
+# Squirrel can retry extraction under CommonApplicationData when LocalAppData is unwritable.
+$FallbackInstall = Join-Path ([Environment]::GetFolderPath("CommonApplicationData")) ([Environment]::UserName + "\Loci")
 $Registration = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Loci"
 $App = (Resolve-Path "out/local-unsigned/Loci-win32-x64").Path
 $Checkout = (Resolve-Path "..").Path
@@ -69,6 +71,10 @@ function Get-ShortcutState {
 }
 
 function Assert-CleanProfile {
+    # In the bundled Squirrel eef37460, Setup stages Update.exe in SquirrelTemp,
+    # and UpdateManager derives the install parent from that executable's path.
+    if ($env:SQUIRREL_TEMP) { throw "SQUIRREL_TEMP overrides the per-user installation root. Run with this variable unset." }
+    if (Test-Path -LiteralPath $FallbackInstall) { throw "Existing Loci installation at Squirrel's fallback location." }
     foreach ($Hive in @("HKLM:", "HKCU:")) {
         foreach ($View in @("Software", "Software\WOW6432Node")) {
             if (Test-Path -LiteralPath "$Hive\$View\Microsoft\Windows\CurrentVersion\Uninstall\Loci") {
@@ -82,17 +88,28 @@ function Assert-CleanProfile {
     }
 }
 
+function Get-RegisteredUpdater {
+    $Entry = Get-ItemProperty -LiteralPath $Registration -Name @("InstallLocation", "UninstallString")
+    if ($Entry.InstallLocation -ne $Install) {
+        throw "Registered InstallLocation is outside the allowed per-user Loci directory."
+    }
+    $Command = [regex]::Match($Entry.UninstallString, '^"([^"]+)" --uninstall$')
+    $Registered = $Command.Groups[1].Value
+    if (-not $Command.Success -or $Registered -ne (Join-Path $Install "Update.exe")) {
+        throw "Unexpected per-user uninstall command."
+    }
+    if (-not (Test-Path -LiteralPath $Registered -PathType Leaf)) { throw "Registered updater is missing." }
+    return $Registered
+}
+
 function Get-InstallIdentity {
+    $Binary = Get-RegisteredUpdater
     if (((Get-Item -LiteralPath $Install -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -or
         @(Get-ChildItem -LiteralPath $Install -Force -Recurse -Attributes ReparsePoint).Count) {
         throw "Unexpected reparse point in installed payload."
     }
     $Versions = @(Get-ChildItem -LiteralPath $Install -Directory -Filter "app-*")
     if ($Versions.Count -ne 1) { throw "Expected one installed version" }
-    $ExpectedCommand = ('"{0}" --uninstall' -f $Updater)
-    if ((Get-ItemPropertyValue -LiteralPath $Registration -Name UninstallString) -ne $ExpectedCommand) {
-        throw "Unexpected per-user uninstall registration"
-    }
     $VersionRoot = $Versions[0].FullName
     foreach ($Member in @("Loci.exe", "resources/app.asar", "resources/loci-engine/loci-engine.exe")) {
         $Expected = Get-FileHash -LiteralPath (Join-Path $App $Member)
@@ -105,14 +122,15 @@ function Get-InstallIdentity {
     foreach ($Link in $Links) {
         if ($Link.target -ne (Join-Path $Install "Loci.exe")) { throw "Unowned shell shortcut: $($Link.path)" }
     }
-    [ordered]@{ version = $VersionRoot; updater = (Get-FileHash -LiteralPath $Updater).Hash; shortcuts = $Links }
+    [ordered]@{ version = $VersionRoot; updater_path = $Binary; updater = (Get-FileHash -LiteralPath $Binary).Hash; shortcuts = $Links }
 }
 
 function Save-Receipt {
     $Receipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Root "installer.json")
 }
 function Invoke-Installer([string]$File, [string[]]$Options) {
-    $Process = Start-Process -FilePath $File -ArgumentList $Options -PassThru -Wait
+    $Process = Start-Process -FilePath $File -ArgumentList $Options -PassThru
+    if (-not $Process.WaitForExit(300000)) { throw "Installer process exceeded five minutes. Inspect this run before retrying." }
     if ($Process.ExitCode -ne 0) { throw "$File exited with code $($Process.ExitCode)" }
 }
 
@@ -125,6 +143,7 @@ $Receipt = [ordered]@{
     setup_name = $Setup[0].Name
     setup_sha256 = (Get-FileHash -LiteralPath $Setup[0].FullName).Hash
     package_sha256 = (Get-FileHash -LiteralPath $Package[0].FullName).Hash
+    stage = "prepare fixture"
     installed_verified = $false
     app_passed = $false
     files_retired = $false
@@ -132,7 +151,7 @@ $Receipt = [ordered]@{
 Save-Receipt
 function Invoke-Journey {
     $Cache = (New-Item -ItemType Directory -Path (Join-Path $Root "cache")).FullName
-    foreach ($Key in @("TEMP", "TMP", "SQUIRREL_TEMP")) { [Environment]::SetEnvironmentVariable($Key, $Cache) }
+    foreach ($Key in @("TEMP", "TMP")) { [Environment]::SetEnvironmentVariable($Key, $Cache) }
     $env:XDG_CACHE_HOME = $Cache
     $env:PYTHONDONTWRITEBYTECODE = "1"
     $env:LOCI_QA_OUTPUT_ROOT = $Root
@@ -141,19 +160,24 @@ function Invoke-Journey {
     & ../engine/.venv/Scripts/python.exe tests/windows-cell-fixture.py $env:LOCI_QA_IMAGE
     if ($LASTEXITCODE -ne 0) { throw "Creating pinned offline microscopy input failed" }
 
+    $Receipt.stage = "clean profile and Setup"
     Assert-CleanProfile
     Invoke-Installer ($Setup[0].FullName) @("--silent")
     $Deadline = [DateTime]::UtcNow.AddMinutes(3)
-    while (-not (Test-Path -LiteralPath $Registration)) {
+    $Receipt.stage = "per-user registration"
+    # An elevated Setup can delegate to Explorer. Wait for both registry values.
+    while (-not ((Get-ItemPropertyValue -LiteralPath $Registration -Name InstallLocation -ErrorAction SilentlyContinue) -and
+        (Get-ItemPropertyValue -LiteralPath $Registration -Name UninstallString -ErrorAction SilentlyContinue))) {
         if ([DateTime]::UtcNow -ge $Deadline) { throw "Timed out waiting for per-user registration" }
         Start-Sleep -Milliseconds 500
     }
-    $Updater = Join-Path $Install "Update.exe"
+    $Receipt.stage = "installed identity"
     $Owned = Get-InstallIdentity
     $Marker = Join-Path $Install (".loci-qa-" + [guid]::NewGuid())
     New-Item -ItemType File -Path $Marker | Out-Null
     $env:LOCI_PACKAGED_APP = $Owned.version
     $Receipt.installed_verified = $true
+    $Receipt.stage = "installed app"
     $Receipt.installed = $Owned
     Save-Receipt
     try {
@@ -167,17 +191,19 @@ function Invoke-Journey {
         if (($Current | ConvertTo-Json -Depth 6) -cne ($Owned | ConvertTo-Json -Depth 6)) {
             throw "Installation or shell shortcuts changed during qualification. Skipping uninstall."
         }
-        Invoke-Installer $Updater @("--uninstall", "--silent")
+        $Receipt.stage = "uninstall"
+        Invoke-Installer $Current.updater_path @("--uninstall", "--silent")
         if ((Test-Path -LiteralPath (Join-Path $Install "Loci.exe")) -or (Test-Path -Path "$Install/app-*/Loci.exe") -or
             (Test-Path -LiteralPath $Registration) -or @(Get-ShortcutState).Count) {
             throw "Installed payload, registration or shell shortcut remains after uninstall"
         }
         $Receipt.files_retired = $true
+        $Receipt.stage = if ($Receipt.app_passed) { "complete" } else { "installed app" }
         Save-Receipt
     }
 }
 
-$EnvironmentKeys = @("TEMP", "TMP", "SQUIRREL_TEMP", "XDG_CACHE_HOME", "PYTHONDONTWRITEBYTECODE",
+$EnvironmentKeys = @("TEMP", "TMP", "XDG_CACHE_HOME", "PYTHONDONTWRITEBYTECODE",
     "LOCI_QA_OUTPUT_ROOT", "LOCI_QA_IMAGE", "LOCI_QA_CELL_ORACLE", "LOCI_PACKAGED_APP")
 $Previous = @{}
 foreach ($Key in $EnvironmentKeys) { $Previous[$Key] = [Environment]::GetEnvironmentVariable($Key) }
@@ -189,6 +215,22 @@ try {
     $Locked = $Lock.WaitOne(0)
     if (-not $Locked) { throw "Another qualification run owns this profile" }
     Invoke-Journey
+} catch {
+    $Failure = $_
+    $Location = Get-ItemPropertyValue -LiteralPath $Registration -Name InstallLocation -ErrorAction SilentlyContinue
+    $Receipt.failure = [ordered]@{
+        error_type = $Failure.Exception.GetType().Name
+        source_line = $Failure.InvocationInfo.ScriptLineNumber
+        expected_root_exists = Test-Path -LiteralPath $Install -PathType Container
+        expected_updater_exists = Test-Path -LiteralPath (Join-Path $Install "Update.exe") -PathType Leaf
+        registered_root = if (-not $Location) { "absent" } elseif ($Location -eq $Install) {
+            "per-user default"
+        } elseif ($Location -eq (Join-Path $Root "cache/Loci")) {
+            "qualification cache"
+        } elseif ($Location -eq $FallbackInstall) { "Squirrel fallback" } else { "outside allowlist" }
+    }
+    Save-Receipt
+    throw
 } finally {
     if ($Locked) { $Lock.ReleaseMutex() }
     $Lock.Dispose()
