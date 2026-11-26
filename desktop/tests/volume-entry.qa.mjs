@@ -35,7 +35,9 @@ const LAUNCH_BUTTONS = {
   zarr: "OME-Zarr store",
 };
 const PICKERS = {
-  direct: "Choose one image file or OME-Zarr store to open in 3D",
+  direct: process.platform === "darwin"
+    ? "Choose one image file or OME-Zarr store to open in 3D"
+    : "Choose one image file to open in 3D",
   file: "Add microscopy or medical images",
   zarr: "Select an OME-Zarr image directory",
 };
@@ -815,7 +817,7 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
       globalThis.__lociVolumeEntryPickers = [];
       dialog.showOpenDialog = async (...args) => {
         const { title, properties } = args.at(-1);
-        globalThis.__lociVolumeEntryPickers.push({ title, properties });
+        globalThis.__lociVolumeEntryPickers.push({ title, properties, matched: title === fixture.title });
         return title === fixture.title
           ? { canceled: false, filePaths: [fixture.source] }
           : { canceled: true, filePaths: [] };
@@ -969,8 +971,14 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
   } catch (error) {
     fail(error);
     if (fixture.publicKidney && page && !page.isClosed()) {
-      report.renderer_volume_status = await page.evaluate(() =>
-        document.querySelector(".raw-volume-status")?.textContent?.trim() ?? null).catch(() => null);
+      report.renderer_volume_status = await page.evaluate(() => ({
+        readout: document.querySelector(".raw-volume-status")?.textContent?.trim() ?? null,
+        alerts: Array.from(document.querySelectorAll('[role="alert"], .research-alert'))
+          .filter((node) => node.getClientRects().length).map((node) => node.textContent.trim()),
+        volume_present: Boolean(document.querySelector(".raw-volume")),
+        stage_canvases: document.querySelectorAll(".raw-volume-stage canvas").length,
+        mpr_canvases: document.querySelectorAll(".mpr-pane-slot canvas").length,
+      })).catch(() => null);
     }
     await page?.screenshot({ path: path.join(directory, "failure.png"), timeout: 5_000 }).catch(() => {});
   } finally {

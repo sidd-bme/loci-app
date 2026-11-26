@@ -97,5 +97,6 @@ jobs:
           name: windows76-volume-receipt
           path: |
             ${{ runner.temp }}/loci-kidney76/*/report.json
+            ${{ runner.temp }}/loci-kidney76/*/failure.png
           if-no-files-found: warn
           retention-days: 7
