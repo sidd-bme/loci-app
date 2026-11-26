@@ -280,3 +280,19 @@ jobs:
             desktop/out/local-unsigned/make/zip/win32/x64/
           if-no-files-found: error
           retention-days: 7
+      - name: Qualify clean per-user Setup, installed microscopy journey and uninstall
+        working-directory: desktop
+        shell: pwsh
+        env:
+          LOCI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: ./tests/windows-installed-journey.ps1
+      - name: Retain native installer and installed-app receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: loci-windows-x64-installed-journey
+          path: |
+            ${{ runner.temp }}/loci-installed-qa/installer.json
+            ${{ runner.temp }}/loci-installed-qa/*/journey.json
+          if-no-files-found: warn
+          retention-days: 7

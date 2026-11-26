@@ -236,9 +236,13 @@ for the exact artifact.
 OpenSlide 4.0.1.2 and its Python binding are LGPL-2.1. Their exact wheel licence
 files are included, but [OpenSlide's official Windows guidance](https://openslide.org/docs/windows/)
 also requires a binary distributor to provide corresponding source for OpenSlide and applicable
-dependencies. The matching 4.0.1.2 `-winbuild` source bundle and relinking
-review are therefore mandatory public-release inputs; the current unsigned
-qualification output is not approved for public distribution.
+dependencies. The [4.0.1.2 release](https://github.com/openslide/openslide-bin/releases/tag/v4.0.1.2)
+provides `openslide-bin-4.0.1.2.tar.gz` with its `bintool` build program,
+Windows cross file and dependency source trees. Match its SHA-256 to the
+`openslide-bin` source distribution in `engine/uv.lock`, and the bundled
+OpenSlide DLL to the locked `win_amd64` wheel. Include that source archive in
+the release assets and verify the shared library can be replaced. The source
+archive identity is also recorded in [the notices](../THIRD_PARTY_NOTICES.md).
 
 The `package-windows` GitHub Actions job performs the Windows build and worker
 checks on `windows-2025`. Before installer packaging, it also exercises Windows

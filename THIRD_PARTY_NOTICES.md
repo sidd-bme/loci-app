@@ -108,8 +108,12 @@ OpenSlide and its official Python binding are LGPL-2.1. The separately packaged
 OpenSlide shared library remains replaceable, but notices alone do not satisfy
 every distribution obligation. OpenSlide's official Windows guidance requires
 distributors of its binary builds to provide the corresponding source for
-OpenSlide and applicable dependencies; the exact 4.0.1.2 `-winbuild` source
-bundle is the upstream source counterpart. The local and CI Windows artifacts
+OpenSlide and applicable dependencies. For the locked 4.0.1.2 wheel, the
+publisher provides its build scripts, patched sources and dependency sources
+in [openslide-bin-4.0.1.2.tar.gz](https://github.com/openslide/openslide-bin/releases/download/v4.0.1.2/openslide-bin-4.0.1.2.tar.gz).
+Distribute this archive alongside the Windows installer. Its SHA-256 is
+`83c9a4a598f3a5fe1dea83e123745e48b94ce7eab99833f04902bdf4fa0af1db`.
+The local and CI Windows artifacts
 are explicitly unsigned qualification builds and are not approved for public
 distribution. A public release must add and verify that corresponding-source
 delivery, preserve relinking, and complete human licence review.
