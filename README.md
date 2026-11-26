@@ -7,7 +7,8 @@
 <p align="center"><strong>An open-source workbench for biomedical imaging.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/sidd-bme/loci-app/releases">Download for macOS</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/releases">Download for Apple silicon</a> ·
+  <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/BUILDING.md#local-windows-x64-qualification-package">Build and test on Windows x64</a> ·
   <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/INSTALLATION.md">Install</a> ·
   <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/README.md">Documentation</a> ·
   <a href="docs/MODEL_LIBRARY.md">Model Zoo</a> ·

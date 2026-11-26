@@ -82,6 +82,8 @@ const MAX_FOLDER_PATH_BYTES = 4 * 1024 * 1024;
 const VOLUME_PREVIEW_CHANNEL = "loci-research:volume-opening-preview";
 const VOLUME_PREVIEW_DELAY_MS = 250;
 const VOLUME_PREVIEW_HEAD_START_MS = 1_500;
+const dynacellPlatformSupported = process.platform === "darwin" || process.platform === "linux" ||
+  (process.platform === "win32" && process.arch === "x64");
 const VOLUME_PREVIEW_PRIORITY_MIN_BYTES = 1024 ** 3;
 const VOLUME_PREVIEW_TIMEOUT_MS = 15_000;
 const VOLUME_PREVIEW_RESPONSE_BYTES = 4 * Math.ceil(VOLUME_OPENING_PREVIEW_MAX_BYTES / 3) + 64 * 1024;
@@ -1760,13 +1762,13 @@ export class ResearchBridge {
     handle("recipe-resources", async () => recipeResources(totalmem()));
     handle("dynacell-status", async (...args) => {
       if (args.length) throw new Error("Choose the registered DynaCell model.");
-      if (process.platform === "win32") return "unsupported";
+      if (!dynacellPlatformSupported) return "unsupported";
       return this.dynacellInstall ? "installing" : this.dynacell.status();
     });
     handle("dynacell-install", async (source, ...extra) => {
       this.requireProject();
       if (extra.length || (source !== "local" && source !== "publisher")) throw new Error("Choose a DynaCell checkpoint source.");
-      if (process.platform === "win32") throw new Error("DynaCell needs a filesystem with atomic directory publication.");
+      if (!dynacellPlatformSupported) throw new Error("DynaCell needs a platform with atomic directory publication.");
       if (this.closing || this.dynacellInstall) throw new Error("Finish the current installation first.");
       const install = async () => {
         let file: string | undefined;
@@ -1792,14 +1794,15 @@ export class ResearchBridge {
     });
     handle("virtual-stain", async (request, ...extra) => {
       if (extra.length || !isVirtualStainRequest(request)) throw new Error("Confirm the reconstructed phase channel and source time point.");
-      if (process.platform === "win32") throw new Error("DynaCell needs a filesystem with atomic directory publication.");
+      if (!dynacellPlatformSupported) throw new Error("DynaCell needs a platform with atomic directory publication.");
       const project = this.requireProject();
       if (this.running || this.switching || this.closing) throw new Error("Finish the active study operation first.");
       this.running = { id: "virtual-stain", project };
       const run = async () => {
         const checkpoint = await this.dynacell.pathForRun();
         const picked = await dialog.showSaveDialog({
-          title: "Create a new folder for the virtual stain", defaultPath: "DynaCell nuclear prediction", buttonLabel: "Predict and add to study",
+          title: process.platform === "win32" ? "Create a virtual stain folder on a fixed local NTFS drive" : "Create a new folder for the virtual stain",
+          defaultPath: "DynaCell nuclear prediction", buttonLabel: "Predict and add to study",
         });
         if (picked.canceled || !picked.filePath || this.closing) return null;
         return this.worker.request("research_virtual_stain", { project, checkpoint, request, destination: picked.filePath }, 0);

@@ -1,0 +1,2 @@
+# The gallery binds these exact descriptor bytes to a verified model package.
+desktop/src/main/nuclei-model-package.json text eol=lf

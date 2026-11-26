@@ -213,8 +213,23 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  windows-storage:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: engine/uv.lock
+      - name: Verify native microscopy reads, derived-volume publication, rollback and reopen
+        working-directory: engine
+        run: uv run --frozen --extra dev pytest -q tests/test_native_image.py tests/test_research_virtual_stain.py
+
   package-windows:
-    needs: [engine, desktop]
+    needs: windows-storage
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -240,6 +255,9 @@ jobs:
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
+      - name: Check the pinned model descriptor on a Windows checkout
+        working-directory: desktop
+        run: npx --no-install vitest run src/main/nuclei-model-download.test.ts
       - name: Build unsigned Windows qualification installer and ZIP
         working-directory: desktop
         run: npm run make:windows:local
@@ -251,7 +269,7 @@ jobs:
           $Worker = Join-Path $App "resources/loci-engine/loci-engine.exe"
           $Notices = Join-Path $App "resources/notices"
           if (-not (Test-Path -LiteralPath $Worker -PathType Leaf)) { throw "Packaged worker is missing" }
-          foreach ($Name in @("LOCI_LICENSE", "LOCI_NOTICE", "THIRD_PARTY_NOTICES.md", "ELECTRON_LICENSE", "LICENSES.chromium.html")) {
+          foreach ($Name in @("LOCI_LICENSE", "LOCI_NOTICE", "THIRD_PARTY_NOTICES.md", "DYNACELL_NOTICE.txt", "FLATBUFFERS_25.12.19_LICENSE", "ELECTRON_LICENSE", "LICENSES.chromium.html")) {
             $Notice = Join-Path $Notices $Name
             if (-not (Test-Path -LiteralPath $Notice -PathType Leaf) -or (Get-Item $Notice).Length -eq 0) {
               throw "Packaged notice is missing or empty: $Name"
@@ -271,6 +289,13 @@ jobs:
           if ($Zip.Count -ne 1) { throw "Windows ZIP output is missing or ambiguous" }
           $Artifacts = @($Setup[0].FullName, $Packages[0].FullName, $Zip[0].FullName)
           Get-FileHash -Algorithm SHA256 -LiteralPath $Artifacts
+      - name: Verify tiled slide reads with the replaceable Windows OpenSlide library
+        shell: pwsh
+        run: |
+          $Worker = "desktop/out/local-unsigned/Loci-win32-x64/resources/loci-engine/loci-engine.exe"
+          & ./engine/.venv/Scripts/python.exe scripts/qa_windows_openslide.py --worker $Worker |
+            Tee-Object -FilePath "$env:RUNNER_TEMP/loci-windows-openslide.json"
+          if ($LASTEXITCODE -ne 0) { throw "OpenSlide replacement and pixel readback failed" }
       - name: Retain private unsigned qualification artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -279,4 +304,22 @@ jobs:
             desktop/out/local-unsigned/make/squirrel.windows/x64/
             desktop/out/local-unsigned/make/zip/win32/x64/
           if-no-files-found: error
+          retention-days: 7
+      - name: Qualify clean per-user Setup, installed microscopy journey and uninstall
+        working-directory: desktop
+        shell: pwsh
+        env:
+          LOCI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: ./tests/windows-installed-journey.ps1
+      - name: Retain native installer and installed-app receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: loci-windows-x64-installed-journey
+          path: |
+            ${{ runner.temp }}/loci-windows-openslide.json
+            ${{ runner.temp }}/loci-installed-qa/installer.json
+            ${{ runner.temp }}/loci-installed-qa/*/journey.json
+            ${{ runner.temp }}/loci-installed-qa/*/failure.png
+          if-no-files-found: warn
           retention-days: 7

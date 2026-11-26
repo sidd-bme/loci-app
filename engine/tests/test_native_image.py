@@ -1044,6 +1044,24 @@ def test_session_rejects_source_identity_changes(tmp_path: Path, mutation: str) 
         session.read_region(NativeSelection(x=0, y=0, width=2, height=2))
 
 
+def test_batch_reader_binds_to_the_inspected_file_after_timestamp_change(tmp_path: Path) -> None:
+    path = tmp_path / "time-adjusted.tif"
+    pixels = _values((8, 8))
+    tifffile.imwrite(path, pixels)
+    # A restored acquisition time can precede the creation of the local copy.
+    os.utime(path, ns=(1_700_000_000_000_000_000,) * 2)
+    with NativeImageSession(path) as session:
+        with session.region_reader() as read:
+            region = read(NativeSelection(x=1, y=2, width=3, height=2))
+            np.testing.assert_array_equal(region.pixels, pixels[2:4, 1:4])
+        replacement = tmp_path / "other.tif"
+        replacement.write_bytes(path.read_bytes())
+        os.utime(replacement, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns))
+        replacement.replace(path)
+        with pytest.raises(NativeSourceChangedError), session.region_reader():
+            pytest.fail("a replacement with identical bytes and mtime must be detected")
+
+
 def test_session_strict_verification_detects_bytes_even_if_stat_identity_is_rebased(
     tmp_path: Path,
 ) -> None:
@@ -1100,7 +1118,21 @@ def test_volume_reuses_one_tiff_for_context_and_focus(tmp_path, monkeypatch, com
         assert base64.b64decode(block["data_base64"]) == expected.astype("<u2").tobytes()
 
 
-def test_scoped_tiff_reader_refuses_replacement_and_closes_on_error(tmp_path, monkeypatch):
+def _change_open_tiff(path: Path, replacement: Path) -> None:
+    if os.name != "nt":
+        replacement.replace(path)
+        return
+    # The open TIFF denies delete sharing on Windows. Confirm that protection,
+    # then change the last-write time to exercise detection on the open file.
+    original = path.stat()
+    with pytest.raises(PermissionError) as refused:
+        replacement.replace(path)
+    assert refused.value.winerror in (5, 32)
+    assert os.path.samestat(original, path.stat())
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns - 5_000_000_000))
+
+
+def test_scoped_tiff_reader_refuses_source_change_and_closes_on_error(tmp_path, monkeypatch):
     path = tmp_path / "stack.tif"
     replacement = tmp_path / "different.tif"
     for target, offset in ((path, 0), (replacement, 1)):
@@ -1111,7 +1143,7 @@ def test_scoped_tiff_reader_refuses_replacement_and_closes_on_error(tmp_path, mo
         monkeypatch.setattr(tifffile, "TiffFile", lambda *args: opened)
         with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
             assert read_region(selection).pixels[0, 0] == 19
-            replacement.replace(path)
+            _change_open_tiff(path, replacement)
             read_region(selection)
         assert opened.filehandle.closed
 
@@ -1128,7 +1160,7 @@ def test_scoped_tiff_reader_expires_and_detects_late_replacement(tmp_path):
             read_region(selection)
         with pytest.raises(NativeSourceChangedError), session.region_reader() as read_region:
             assert read_region(selection).pixels[0, 0] == 19
-            replacement.replace(path)
+            _change_open_tiff(path, replacement)
 
 
 def test_scoped_tiff_reader_checks_open_descriptor(tmp_path, monkeypatch):

@@ -7,8 +7,6 @@ import math
 import os
 import platform
 import re
-import uuid
-from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -16,12 +14,12 @@ from xml.etree import ElementTree as ET
 import numpy as np
 import tifffile
 
-from .export import _NamedBinaryStream, _rename_noreplace
+from .export import _NamedBinaryStream
 from .file_fingerprint import _sha256_file_stable
 from .models import ENGINE_VERSION
 from .native_image import MAX_OME_XML_BYTES, NativeImageSession, NativeSelection
-from .research_data_export import _DIRECTORY_FLAGS, _capability, _destination, _verify_files
 from .research_project import SHA_PATTERN, canonical_json, checked_id
+from .virtual_stain_bundle import publication
 
 SCHEMA = "loci.dynacell-derived-source/v1"
 WEIGHTS_SHA256 = "58b222f92978b50647d547e5fd69edaafa2d2c5854fbc7f7324e9bcf8835051d"
@@ -368,14 +366,7 @@ def _infer(session, request, checkpoint):
     return phase, prediction, record
 
 
-def _file(stage_fd, name, owned):
-    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    descriptor = os.open(name, flags, 0o600, dir_fd=stage_fd)
-    owned[name] = os.fstat(descriptor)
-    return os.fdopen(descriptor, "w+b")
-
-
-def _write(stage_fd, phase, prediction, record, owned):
+def _write(bundle, phase, prediction, record):
     metadata = {
         "axes": "CZYX",
         "Description": canonical_json(record),
@@ -384,7 +375,7 @@ def _write(stage_fd, phase, prediction, record, owned):
     for axis, spacing in zip("ZYX", record["spacing_zyx_um"], strict=True):
         metadata["PhysicalSize" + axis] = spacing
         metadata["PhysicalSize" + axis + "Unit"] = "µm"
-    with _file(stage_fd, IMAGE, owned) as stream:
+    with bundle.file(IMAGE) as stream:
         tifffile.imwrite(
             _NamedBinaryStream(stream, IMAGE),
             (plane for volume in (prediction, phase) for plane in volume),
@@ -401,7 +392,7 @@ def _write(stage_fd, phase, prediction, record, owned):
         record = {**record, "artifact_sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
     data = _bytes(record)
     digest = hashlib.sha256(data).hexdigest()
-    with _file(stage_fd, SIDECAR, owned) as sidecar:
+    with bundle.file(SIDECAR) as sidecar:
         sidecar.write(data)
         sidecar.flush()
         os.fsync(sidecar.fileno())
@@ -409,7 +400,7 @@ def _write(stage_fd, phase, prediction, record, owned):
         IMAGE: {"sha256": record["artifact_sha256"], "size_bytes": size},
         SIDECAR: {"sha256": digest, "size_bytes": len(data)},
     }
-    _verify_files(stage_fd, files)
+    bundle.verify(files)
     return {"schema": SCHEMA, "record": record, "provenance_sha256": digest}, files
 
 
@@ -418,17 +409,9 @@ def run(workbench, request, destination, checkpoint):
     _hash(request["source_sha256"])
     if request["phase_confirmed"] is not True:
         raise ValueError("Confirm reconstructed Phase3D from healthy unperturbed iPSC")
-    _capability()
     project = workbench.project
-    target = _destination(project, destination)
+    target = Path(destination)
     weights = Path(checkpoint)
-    if (
-        not weights.is_absolute()
-        or weights.resolve(strict=True) != weights
-        or not weights.is_file()
-        or weights.stat().st_size != WEIGHTS_BYTES
-    ):
-        raise ValueError("Select the fixed DynaCell checkpoint")
     # The kernel verifies the digest of the same bytes it deserializes.
     source = project.source(request["source_id"])
     if (
@@ -439,30 +422,16 @@ def run(workbench, request, destination, checkpoint):
     ):
         raise ValueError("Select a registered native OME-TIFF matching this source fingerprint")
     path = Path(source["private_path"])
-    if path.resolve(strict=True) != path:
-        raise ValueError("Phase source location became linked")
-    parent_fd = os.open(target.parent, _DIRECTORY_FLAGS)
-    stage = ".loci-virtual-stain-" + uuid.uuid4().hex
-    location = stage
-    stage_fd = None
-    registered = False
-    owned = {}
-
-    def guard_directory():
+    with publication(project, target, (path, weights)) as bundle:
         if (
-            target.parent.resolve(strict=True) != target.parent
-            or not os.path.samestat(target.parent.lstat(), os.fstat(parent_fd))
-            or (
-                stage_fd is not None
-                and not os.path.samestat(
-                    os.fstat(stage_fd), os.stat(location, dir_fd=parent_fd, follow_symlinks=False)
-                )
-            )
+            not weights.is_absolute()
+            or weights.resolve(strict=True) != weights
+            or not weights.is_file()
+            or weights.stat().st_size != WEIGHTS_BYTES
         ):
-            raise ValueError("Virtual stain destination directory changed")
-
-    try:
-        guard_directory()
+            raise ValueError("Select the fixed DynaCell checkpoint")
+        if path.resolve(strict=True) != path:
+            raise ValueError("Phase source location became linked")
         series = source["metadata"]["selected_series"]
         if _sha256_file_stable(path, reject_symlink=True) != (
             source["sha256"],
@@ -474,22 +443,15 @@ def run(workbench, request, destination, checkpoint):
             if canonical_json(asdict(session.metadata)) != canonical_json(source["metadata"]):
                 raise ValueError("Registered native metadata differs from current Phase3D data")
             phase, prediction, record = _infer(session, request, weights)
-            guard_directory()
-            os.mkdir(stage, 0o700, dir_fd=parent_fd)
-            stage_fd = os.open(stage, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            derivation, files = _write(stage_fd, phase, prediction, record, owned)
-            os.fsync(stage_fd)
+            bundle.start()
+            derivation, files = _write(bundle, phase, prediction, record)
             session.verify_strict()
-            guard_directory()
-            _rename_noreplace(stage, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            location = target.name
-            os.fsync(parent_fd)
-            guard_directory()
+            bundle.publish()
 
             def verify_publication():
-                _verify_files(stage_fd, files)
+                bundle.verify(files)
                 session.validate_source()
-                guard_directory()
+                bundle.guard()
 
             image = target / IMAGE
             digest = derivation["record"]["artifact_sha256"]
@@ -505,25 +467,5 @@ def run(workbench, request, destination, checkpoint):
                     derivation=derivation,
                     publication_guard=verify_publication,
                 )
-                registered = True
+                bundle.registered = True
         return {"snapshot": workbench.snapshot(), "source": derived}
-    finally:
-        try:
-            if stage_fd is not None:
-                try:
-                    if not registered:
-                        for name, created in owned.items():
-                            with suppress(FileNotFoundError):
-                                current = os.stat(name, dir_fd=stage_fd, follow_symlinks=False)
-                                if os.path.samestat(created, current):
-                                    os.unlink(name, dir_fd=stage_fd)
-                        with suppress(FileNotFoundError):
-                            if not os.listdir(stage_fd) and os.path.samestat(
-                                os.fstat(stage_fd),
-                                os.stat(location, dir_fd=parent_fd, follow_symlinks=False),
-                            ):
-                                os.rmdir(location, dir_fd=parent_fd)
-                finally:
-                    os.close(stage_fd)
-        finally:
-            os.close(parent_fd)

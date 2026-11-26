@@ -36,6 +36,8 @@ type FailClosedOsxSignOptions = PackagerOsxSignOptions & {
 
 const configDirectory = path.dirname(fileURLToPath(import.meta.url));
 const productName = "Loci";
+const appIcon = path.resolve(configDirectory, "assets", "Loci");
+const windowsIcon = `${appIcon}.ico`;
 const defaultEngineResource = path.resolve(configDirectory, "..", "engine", "dist", "loci-engine");
 const sourceEngineResource = path.resolve(process.env.LOCI_ENGINE_RESOURCE ?? defaultEngineResource);
 const entitlementsDirectory = path.resolve(configDirectory, "assets", "entitlements");
@@ -427,9 +429,7 @@ const config: ForgeConfig = {
     appBundleId: "science.loci.desktop",
     appCategoryType: "public.app-category.education",
     executableName: "Loci",
-    // The current audited artwork has a macOS ICNS only. The unsigned Windows
-    // qualification package uses Electron's default icon until an ICO is added.
-    icon: packagingPlatform === "win32" ? undefined : path.resolve(configDirectory, "assets", "Loci"),
+    icon: packagingPlatform === "win32" ? windowsIcon : appIcon,
     name: productName,
     // CFBundleVersion is a numeric development counter; appVersion stays 0.2.0.
     buildVersion: developmentBuildConfig ? `${developmentBuildConfig.buildNumber}.0.0` : undefined,
@@ -451,6 +451,7 @@ const config: ForgeConfig = {
         name: "Loci",
         authors: "Loci contributors",
         description: "Local biological image viewing, segmentation, and counting for research labs",
+        setupIcon: windowsIcon,
         noMsi: true,
       },
       ["win32"],

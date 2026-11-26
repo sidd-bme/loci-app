@@ -182,6 +182,16 @@ test("the real resource hook writes development identity before signing and leav
       import {execFileSync} from 'node:child_process';
       process.argv.push('package', '--platform=win32');
       const {default: config} = await import(${JSON.stringify(forgeConfigUrl)});
+      const icon = config.packagerConfig.icon;
+      assert.equal(path.basename(icon), 'Loci.ico');
+      const iconBytes = fs.readFileSync(icon);
+      assert.equal(iconBytes.readUInt16LE(0), 0);
+      assert.equal(iconBytes.readUInt16LE(2), 1);
+      const sizes = Array.from({length: iconBytes.readUInt16LE(4)}, (_, i) => iconBytes[6 + 16 * i] || 256);
+      assert.ok([16, 32, 48, 256].every(size => sizes.includes(size)));
+      const installer = config.makers.find(maker => maker.name === 'squirrel');
+      await installer.prepareConfig('x64');
+      assert.equal(installer.config.setupIcon, icon);
       const buildPath = ${JSON.stringify(buildPath)};
       await config.packagerConfig.afterCopyExtraResources[0]({buildPath, platform: 'win32', arch: 'x64', electronVersion: '44.0.0'});
       const file = path.join(buildPath, 'resources', 'loci-build-identity.json');

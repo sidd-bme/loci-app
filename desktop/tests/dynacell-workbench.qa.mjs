@@ -1,5 +1,6 @@
 /**
- * Packaged macOS DynaCell journey. Run with Node 24 from an npm-provisioned checkout.
+ * Packaged macOS and Windows x64 DynaCell journey. Point LOCI_PACKAGED_APP at
+ * the .app bundle or the Windows directory containing Loci.exe.
  * Required absolute paths: LOCI_PACKAGED_APP, LOCI_QA_OUTPUT_ROOT (new directory),
  * LOCI_QA_MODEL_SOURCE (paired CZYX OME-TIFF), LOCI_QA_EXPECTED_PREDICTION
  * (independently computed ZYX .npy), LOCI_QA_PYTHON (NumPy and tifffile).
@@ -19,7 +20,9 @@ import { createEmptyStudy, fileMenuAction, sourceRowByName, waitForSnapshot } fr
 const PICKER_SOURCE = "Add microscopy or medical images";
 const PICKER_CREATE = "Create research study";
 const PICKER_CHECKPOINT = "Choose the DynaCell iPSC nuclear checkpoint";
-const PICKER_PREDICT = "Create a new folder for the virtual stain";
+const windows = process.platform === "win32";
+assert.ok(process.platform === "darwin" || (windows && process.arch === "x64"), "Use a supported packaged desktop");
+const PICKER_PREDICT = windows ? "Create a virtual stain folder on a fixed local NTFS drive" : "Create a new folder for the virtual stain";
 const PICKER_SAVE = "Save research study as";
 const PICKER_REOPEN = "Open research study";
 const SHA256 = /^[a-f0-9]{64}$/u;
@@ -37,10 +40,9 @@ const output = path.join(await fs.realpath(path.dirname(requestedOutput)), path.
 assert.ok(!inside(projectRoot, output) || inside(path.join(projectRoot, ".loci", "evidence"), output),
   "Use a fresh output directory outside the source tree or below .loci/evidence");
 assert.ok(!inside(await fs.realpath(bundle), output), "Keep QA output outside the packaged app");
-const contents = path.join(bundle, "Contents");
-const resources = path.join(contents, "Resources");
-const executablePath = path.join(contents, "MacOS", "Loci");
-const worker = path.join(resources, "loci-engine", "loci-engine");
+const resources = windows ? path.join(bundle, "resources") : path.join(bundle, "Contents", "Resources");
+const executablePath = windows ? path.join(bundle, "Loci.exe") : path.join(bundle, "Contents", "MacOS", "Loci");
+const worker = path.join(resources, "loci-engine", windows ? "loci-engine.exe" : "loci-engine");
 const archive = path.join(resources, "app.asar");
 const manifest = path.join(resources, "loci-build-identity.json");
 const initialStudy = path.join(output, "initial.loci-study");
@@ -52,6 +54,8 @@ const capture = process.env.LOCI_QA_SCREENSHOTS === "1";
 const privatePaths = [bundle, output, source, expected, checkpoint, python].filter(Boolean);
 const report = {
   schema: "loci.dynacell-workbench-packaged-qa/v1",
+  platform: process.platform,
+  architecture: process.arch,
   status: "running",
   stage: "preflight",
   started_at: new Date().toISOString(),
