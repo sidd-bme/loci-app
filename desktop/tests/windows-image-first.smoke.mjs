@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import os from "node:os";
@@ -43,30 +43,63 @@ const cellHash = "4ca900e6f671854437bdf57ed298aacd2b4e55205edcfe2a242fd5b08447e2
 if (process.env.LOCI_QA_CELL_ORACLE === "1") assert.equal(fixtureHash, cellHash);
 const isCell = fixtureHash === cellHash;
 const identity = { executable_sha256: await sha256(executable), worker_sha256: await sha256(worker) };
-const health = await new Promise((resolve, reject) => {
-  const child = spawn(worker, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-  let stdout = "", stderr = "";
-  child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  child.once("error", reject);
-  child.once("close", (code) => {
-    if (code !== 0) reject(new Error(`Frozen worker exited ${code}: ${stderr}`));
-    else {
-      try { resolve(JSON.parse(stdout)); } catch (error) { reject(error); }
-    }
-  });
-  child.stdin.end('{"id":"windows-smoke-health","method":"health","params":{}}\n');
-});
-assert.equal(health.result?.status, "ready", "Packaged frozen worker health failed.");
+async function workerStatus(method) {
+  const request = run(worker, [], { windowsHide: true, timeout: 30_000, env: {
+    ...process.env, LOCI_MODEL_HOME: path.join(runRoot, "models"), CELLPOSE_LOCAL_MODELS_PATH: path.join(runRoot, "models"),
+  } });
+  // Launch errors are delivered by execFile; an early exit can also close stdin.
+  request.child.stdin.on("error", () => {});
+  request.child.stdin.end(JSON.stringify({ id: method, method, params: {} }) + "\n");
+  const response = JSON.parse((await request).stdout);
+  assert.equal(response.id, method);
+  assert.ok(response.result);
+  return response.result;
+}
+const health = await workerStatus("health");
+assert.equal(health.status, "ready", "Packaged frozen worker health failed.");
 const discovery = JSON.parse((await run(worker, ["--cli", "discover"], { windowsHide: true })).stdout);
 assert.equal(discovery.schema, "loci.operations/v1", "Packaged frozen worker discovery contract failed.");
+
+async function queryWindowsHardware() {
+  const system32 = path.join(process.env.SystemRoot, "System32");
+  const powershell = path.join(system32, "WindowsPowerShell/v1.0/powershell.exe");
+  const options = { windowsHide: true, timeout: 8000 };
+  let controllers = null, nvidia = null;
+  try {
+    const query = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; " +
+      "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion)";
+    controllers = JSON.parse((await run(powershell, ["-NoProfile", "-NonInteractive", "-Command", query], options)).stdout.trim());
+  } catch { /* CIM can be unavailable in a restricted desktop session. */ }
+  for (const smi of [path.join(system32, "nvidia-smi.exe"),
+    path.join(process.env.ProgramFiles, "NVIDIA Corporation/NVSMI/nvidia-smi.exe")]) {
+    try {
+      const args = ["--query-gpu=name,driver_version,memory.total", "--format=csv,noheader,nounits"];
+      const { stdout } = await run(smi, args, options);
+      nvidia = stdout.trim().split(/\r?\n/).map(line => {
+        const [, name, driver, mib] = line.match(/^(.+),\s*([^,]+),\s*(\d+)$/);
+        return { name, driver, dedicated_memory_mib: Number(mib) };
+      });
+      break;
+    } catch { /* Optional vendor diagnostic. Never install a driver or tool. */ }
+  }
+  return { os_release: os.release(), arch: os.arch(), cpu_models: [...new Set(os.cpus().map(cpu => cpu.model))],
+    total_ram_bytes: os.totalmem(), windows_video_controllers: controllers, nvidia_smi: nvidia };
+}
+
+const hardware = await queryWindowsHardware().catch(() => null);
+const cellposeStatus = await workerStatus("cellpose_status").then(status => ({
+  package_version: status.package.installed_version,
+  devices: { cpu: status.devices.cpu, cuda: status.devices.cuda, mps: status.devices.mps },
+})).catch(() => null);
 
 const exported = path.join(runRoot, "reviewed-export");
 let app, page, graphics;
 let stage = "launch";
 async function launch(profile) {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
   app = await electron.launch({
+    env,
     executablePath: executable,
     args: ["--user-data-dir=" + profile],
     cwd: desktopRoot,
@@ -117,16 +150,37 @@ try {
   await launch(userData);
   graphics = await app.evaluate(async ({ app }) => {
     const info = await app.getGPUInfo("basic").catch(() => null);
-    return { devices: info?.gpuDevice ?? null, features: app.getGPUFeatureStatus(),
+    return { devices: info?.gpuDevice?.map(({ active, vendorId, deviceId, vendorString, deviceString }) =>
+      ({ active, vendorId, deviceId, vendorString, deviceString })) ?? null, features: app.getGPUFeatureStatus(),
       hardware_acceleration_enabled: app.isHardwareAccelerationEnabled() };
-  });
+  }).catch(() => null);
   stage = "import and render";
   await page.getByRole("button", { name: "Open images", exact: true }).click();
   await page.getByRole("main", { name: "Research workspace" }).waitFor({ state: "visible", timeout: 60_000 });
   const imported = await waitForSnapshot(page, s => s?.sources?.length === 1, "imported source");
   assert.equal(imported.sources[0].sha256, fixtureHash);
-  await page.getByRole("button", { name: "Fit", exact: true }).click();
+  await page.getByRole("button", { name: "Fit image", exact: true }).click();
   await page.waitForFunction(() => Number(document.querySelector(".image-viewport")?.getAttribute("data-cache-bytes")) > 0);
+  // Interior points on the pinned cell and its background, in native source pixels.
+  // Read the painted canvas through the viewer camera to catch a blank tile.
+  let displayedCell;
+  if (isCell) {
+    const samples = await page.waitForFunction(() => {
+      const viewport = document.querySelector(".image-viewport");
+      const canvas = viewport?.querySelector("canvas");
+      const camera = JSON.parse(viewport?.getAttribute("data-camera") ?? "null");
+      const context = canvas?.getContext("2d");
+      if (!camera || !context || !canvas.clientWidth || !canvas.clientHeight) return false;
+      const pixels = [[425, 375], [110, 300]].map(([x, y]) => {
+        const px = Math.floor(canvas.width / 2 + (x - camera.x) * camera.scale * canvas.width / canvas.clientWidth);
+        const py = Math.floor(canvas.height / 2 + (y - camera.y) * camera.scale * canvas.height / canvas.clientHeight);
+        return Array.from(context.getImageData(px, py, 1, 1).data);
+      });
+      return pixels.every(rgba => rgba[3] === 255) && pixels[0][0] > pixels[1][0] + 30 && pixels;
+    });
+    displayedCell = await samples.jsonValue();
+    await samples.dispose();
+  }
   stage = "analysis";
   await selectWorkbenchTool(page, "Analyze");
   if (isCell) {
@@ -196,11 +250,11 @@ try {
     assert.equal(reopened.results[0].review?.disposition, "reviewed");
     assert.deepEqual(await checkCell(page, reopened), measurements);
   }
-  const report = { status: "passed", bundle, identity, source_sha256: fixtureHash, graphics,
+  const report = { status: "passed", bundle, identity, source_sha256: fixtureHash, graphics, hardware, cellpose_status: cellposeStatus,
     fixture: isCell ? { original: "scikit-image data/cell.png", license: "CC0-1.0",
       original_sha256: "8d23a7fb81f7cc877cd09f330357fc7f595651306e84e17252f6e0a1b3f61515" } : undefined,
     inference_device: null, recipe: isCell ? "classical connected components" : "default",
-    measurements, export_check: exportCheck, reopened_result: reopened.results[0].id, worker_schema: discovery.schema };
+    measurements, displayed_cell_background_rgba: displayedCell, export_check: exportCheck, reopened_result: reopened.results[0].id, worker_schema: discovery.schema };
   await fs.writeFile(path.join(runRoot, "journey.json"), JSON.stringify(report, null, 2));
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 } catch (error) {
@@ -209,7 +263,7 @@ try {
     await page.screenshot({ path: path.join(runRoot, "failure.png"), timeout: 5000 }).catch(() => {});
   }
   await fs.writeFile(path.join(runRoot, "journey.json"), JSON.stringify({
-    status: "failed", stage, error: String(error), identity, source_sha256: fixtureHash, graphics,
+    status: "failed", stage, error: String(error), identity, source_sha256: fixtureHash, graphics, hardware, cellpose_status: cellposeStatus,
   }, null, 2));
   throw error;
 } finally {

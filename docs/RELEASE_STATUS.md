@@ -25,7 +25,8 @@ entry shows a native confocal input section. Each
 entry links to the publisher and opens its supported workflow. Cellpose-SAM v2,
 the BioImage.IO nuclei boundary model and the PUMA tissue profile use separately
 provisioned runtimes. DynaCell runs a local CPU prediction on calibrated
-WTC-11 iPSC phase volumes on macOS and Linux. PlantSeg and Mesmer join μSAM
+WTC-11 iPSC phase volumes on macOS, Linux, and fixed local NTFS drives on
+Windows x64. PlantSeg and Mesmer join μSAM
 and StarDist as workflows that import externally generated labels.
 The [Model Zoo guide](MODEL_LIBRARY.md) records checkpoint identities, source images and usage terms.
 

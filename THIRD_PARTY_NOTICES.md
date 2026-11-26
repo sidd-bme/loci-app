@@ -113,6 +113,9 @@ publisher provides its build scripts, patched sources and dependency sources
 in [openslide-bin-4.0.1.2.tar.gz](https://github.com/openslide/openslide-bin/releases/download/v4.0.1.2/openslide-bin-4.0.1.2.tar.gz).
 Distribute this archive alongside the Windows installer. Its SHA-256 is
 `83c9a4a598f3a5fe1dea83e123745e48b94ce7eab99833f04902bdf4fa0af1db`.
+Include the matching [OpenSlide Python 1.4.6 source distribution](https://pypi.org/project/openslide-python/1.4.6/#files)
+for the frozen binding. Its SHA-256 is
+`5df25a68507c7574b219b548f814b088ade8e04c36990c1472813ee16797bfb1`.
 The local and CI Windows artifacts
 are explicitly unsigned qualification builds and are not approved for public
 distribution. A public release must add and verify that corresponding-source

@@ -229,7 +229,7 @@ jobs:
         run: uv run --frozen --extra dev pytest -q tests/test_native_image.py tests/test_research_virtual_stain.py
 
   package-windows:
-    needs: [engine, desktop]
+    needs: [engine, desktop, windows-storage]
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -266,7 +266,7 @@ jobs:
           $Worker = Join-Path $App "resources/loci-engine/loci-engine.exe"
           $Notices = Join-Path $App "resources/notices"
           if (-not (Test-Path -LiteralPath $Worker -PathType Leaf)) { throw "Packaged worker is missing" }
-          foreach ($Name in @("LOCI_LICENSE", "LOCI_NOTICE", "THIRD_PARTY_NOTICES.md", "ELECTRON_LICENSE", "LICENSES.chromium.html")) {
+          foreach ($Name in @("LOCI_LICENSE", "LOCI_NOTICE", "THIRD_PARTY_NOTICES.md", "DYNACELL_NOTICE.txt", "FLATBUFFERS_25.12.19_LICENSE", "ELECTRON_LICENSE", "LICENSES.chromium.html")) {
             $Notice = Join-Path $Notices $Name
             if (-not (Test-Path -LiteralPath $Notice -PathType Leaf) -or (Get-Item $Notice).Length -eq 0) {
               throw "Packaged notice is missing or empty: $Name"
@@ -286,6 +286,13 @@ jobs:
           if ($Zip.Count -ne 1) { throw "Windows ZIP output is missing or ambiguous" }
           $Artifacts = @($Setup[0].FullName, $Packages[0].FullName, $Zip[0].FullName)
           Get-FileHash -Algorithm SHA256 -LiteralPath $Artifacts
+      - name: Verify tiled slide reads with the replaceable Windows OpenSlide library
+        shell: pwsh
+        run: |
+          $Worker = "desktop/out/local-unsigned/Loci-win32-x64/resources/loci-engine/loci-engine.exe"
+          & ./engine/.venv/Scripts/python.exe scripts/qa_windows_openslide.py --worker $Worker |
+            Tee-Object -FilePath "$env:RUNNER_TEMP/loci-windows-openslide.json"
+          if ($LASTEXITCODE -ne 0) { throw "OpenSlide replacement and pixel readback failed" }
       - name: Retain private unsigned qualification artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -307,6 +314,7 @@ jobs:
         with:
           name: loci-windows-x64-installed-journey
           path: |
+            ${{ runner.temp }}/loci-windows-openslide.json
             ${{ runner.temp }}/loci-installed-qa/installer.json
             ${{ runner.temp }}/loci-installed-qa/*/journey.json
             ${{ runner.temp }}/loci-installed-qa/*/failure.png

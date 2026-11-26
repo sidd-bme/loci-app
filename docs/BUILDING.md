@@ -219,7 +219,7 @@ portable ZIP is a qualification and troubleshooting companion, not a separate
 update protocol.
 
 The packager checks that both the source and copied worker are AMD64 PE files.
-The unpacked Windows app carries the same five top-level notice files under
+The unpacked Windows app carries the same seven top-level notice files under
 `resources/notices/` as the macOS app. Its frozen worker also retains the exact
 locked distribution metadata and licence payloads for SimpleITK, OpenSlide
 Python and binaries, Zarr, numcodecs, MCP, ONNX, ONNX Runtime, PyYAML, and
@@ -244,14 +244,28 @@ OpenSlide DLL to the locked `win_amd64` wheel. Include that source archive in
 the release assets and verify the shared library can be replaced. The source
 archive identity is also recorded in [the notices](../THIRD_PARTY_NOTICES.md).
 
-The `package-windows` GitHub Actions job performs the Windows build and worker
-checks on `windows-2025`. Before installer packaging, it also exercises Windows
-Job Object CPU termination and committed-memory denial in real child processes.
-It then retains the Setup/NuGet/RELEASES and ZIP outputs as a private seven-day
-workflow artifact. An actual successful native build with recorded artifact
-identity is required before claiming that the Windows package builds. A local
-build can supply that evidence while hosted Actions are excluded by the owner;
-configuration alone is insufficient.
+The Windows CI jobs run native TIFF, IMS and NTFS publication tests, freeze the
+worker, and exercise its Job Object resource limits. The installer journey
+checks the installed desktop and worker against the staged binaries, opens a
+calibrated CC0 phase image, samples the painted image, reviews the segmentation,
+and independently checks the exported labels and object measurements. It then
+reopens the study in a fresh profile and uninstalls the tested copy. The
+installer, ZIP and test receipts are retained as Actions artifacts for seven days.
+
+To run the same journey on a physical PC, build the package as above. In a
+non-elevated PowerShell 7 session, run the following from `desktop`, using a new
+directory on a local drive outside the checkout. Setup uses the current Windows
+account. The driver checks for an existing installation and conflicting shortcuts
+before running. Fixtures, study, export and reports go in the chosen directory.
+
+```powershell
+./tests/windows-installed-journey.ps1 -QualificationRoot C:\Loci-QA\run-01
+```
+
+The report records the display adapter and driver, Electron graphics status, and
+the compute devices visible to the installed Cellpose runtime. The calibrated
+workflow uses classical connected components. A GPU inference claim requires
+a run that records both the selected device and the model output.
 
 ## Verification
 
