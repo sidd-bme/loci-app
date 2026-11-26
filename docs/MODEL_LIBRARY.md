@@ -64,6 +64,12 @@ PUMA is a melanoma dataset and challenge. Loci's `puma-tissue-cpu` version `0.1.
 
 The displayed PUMA example uses a full 1024 × 1024 training tile from the authors' public dataset. Loci ran the registered weights on all nine overlapping windows with four mirror evaluations each. The overlay highlights the model's epidermis class. It illustrates the inference on this field and supplies no independent test of accuracy. [Source image and CC0 dedication](https://zenodo.org/records/15050523)
 
+## Inspect a 3D virtual stain
+
+DynaCell predicts fluorescence-like volumes from label-free microscopy. Its iPSC nucleus model runs externally in PyTorch. Open a calibrated OME-TIFF containing the input phase, predicted nuclear stain and measured nuclear fluorescence as three named channels. In **View → Display**, toggle the predicted and measured channels on the same Z plane. **3D volume** shows their spatial relationship. Each channel needs its own display range because the model predicts normalized values. [DynaCell study and model release](https://biohub.github.io/dynacell/)
+
+On the interior of one WTC-11 test field, the prediction correlated with measured nuclear fluorescence at Pearson *r* = 0.48. Predicting the field median gave a lower mean absolute error than the model. This example supports comparing spatial structure. Use the measured channel for fluorescence quantitation. The Allen Institute's terms apply to its microscopy images and derivatives. [Allen iPSC microscopy study](https://doi.org/10.1038/s41586-022-05553-z) · [Image use terms](https://www.allencell.org/terms-of-use.html)
+
 ## Reviewing study results
 
 Review a proposed result against the original image at the scale relevant to the research question. Author annotations, predicted labels, and a researcher's corrected revision have different provenance. Loci keeps the model and runtime identities and the review decision with the result. Weights, images and software each have their own licence. The example credit identifies the image terms. The model record gives the publisher's terms for the weights.
