@@ -19,12 +19,14 @@ With the supported Bio-Formats runtime you can also convert a CZI, LIF or ND2
 series, a C/Z/T range, or a cropped plane to OME-TIFF. The [converter guide](VENDOR_CONVERSION.md)
 covers the formats, bounds, channel order, plane timing and stage coordinates.
 
-**File → Model Zoo…** opens five microscopy profiles. Inspect credited microscopy
+**File → Model Zoo…** opens eight microscopy profiles. Inspect credited microscopy
 images and compare original pixels with four verified model outputs. The μSAM
 entry shows a native confocal input section. Each
 entry links to the publisher and opens its supported workflow. Cellpose-SAM v2,
 the BioImage.IO nuclei boundary model and the PUMA tissue profile use separately
-provisioned runtimes. μSAM and StarDist use externally generated labels.
+provisioned runtimes. DynaCell runs a local CPU prediction on calibrated
+WTC-11 iPSC phase volumes on macOS and Linux. PlantSeg and Mesmer join μSAM
+and StarDist as workflows that import externally generated labels.
 The [Model Zoo guide](MODEL_LIBRARY.md) records checkpoint identities, source images and usage terms.
 
 **Analyze → Preprocess** presents the recipe as ordered, editable steps. Choose

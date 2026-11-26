@@ -185,6 +185,8 @@ describe("Model Zoo search and filter helpers", () => {
       "micro-sam-vit-b-lm",
       "stardist-2d-versatile-fluo",
       "bioimageio-nuclei-boundary-onnx",
+      "mesmer-multiplex-tissue",
+      "dynacell-ipsc-nucleus",
     ]);
 
     const nucleiLocal = filterModelZooEntries(
@@ -194,10 +196,11 @@ describe("Model Zoo search and filter helpers", () => {
     );
     expect(nucleiLocal.map((entry) => entry.id)).toEqual([
       "bioimageio-nuclei-boundary-onnx",
+      "dynacell-ipsc-nucleus",
     ]);
 
     const counts = countModelZooEntries(MODEL_LIBRARY_ENTRIES, "nuclei");
-    expect(counts).toEqual({ all: 3, local: 1, external: 2 });
+    expect(counts).toEqual({ all: 5, local: 2, external: 3 });
 
     expect(
       filterModelZooEntries(MODEL_LIBRARY_ENTRIES, "all", "no-such-stain-999"),

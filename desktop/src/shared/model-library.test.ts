@@ -36,6 +36,9 @@ describe("curated model library catalog", () => {
       "stardist-2d-versatile-fluo",
       "bioimageio-nuclei-boundary-onnx",
       "puma-tissue-cpu",
+      "plantseg-ovules-ds1x",
+      "mesmer-multiplex-tissue",
+      "dynacell-ipsc-nucleus",
     ]);
     for (const entry of MODEL_LIBRARY_ENTRIES) {
       expect(Object.isFrozen(entry)).toBe(true);
@@ -177,6 +180,26 @@ describe("curated model library catalog", () => {
     expect(puma.rights.commercialUse).toMatch(/separate human review required/i);
   });
 
+  it("pins the DynaCell install identity and distinguishes the two external publisher checksums", () => {
+    const entry = (id: string) => MODEL_LIBRARY_ENTRIES.find((model) => model.id === id)!;
+    expect(entry("dynacell-ipsc-nucleus").artifact).toMatchObject({
+      fileName: "epoch=80-step=25272.ckpt",
+      sizeBytes: 386_093_992,
+      sha256: "58b222f92978b50647d547e5fd69edaafa2d2c5854fbc7f7324e9bcf8835051d",
+    });
+    expect(entry("dynacell-ipsc-nucleus").citation.publicationStatus).toBe("arXiv preprint");
+    expect(entry("plantseg-ovules-ds1x").artifact).toMatchObject({
+      sha256: "9fd5bdb05f01b6eb284c2aac278570a5563dab5c2356d044a95e4c2df179d308",
+      digestBasis: "loci-verified",
+      digestBasisLabel: expect.stringContaining("1f63b96697b968f5e8085ca454b5498c"),
+    });
+    expect(entry("mesmer-multiplex-tissue").artifact).toMatchObject({
+      sha256: null,
+      digestBasis: "publisher-reported",
+      digestBasisLabel: expect.stringContaining("a1dfbce2594f927b9112f23a0a1739e0"),
+    });
+  });
+
   it("distinguishes native built-in baselines, optional local profiles, and external label workflows", () => {
     expect(MODEL_LIBRARY_NATIVE_BASELINES.map((item) => item.id)).toEqual([
       "classical-threshold-watershed",
@@ -193,10 +216,13 @@ describe("curated model library catalog", () => {
       "cellpose-sam-v2",
       "bioimageio-nuclei-boundary-onnx",
       "puma-tissue-cpu",
+      "dynacell-ipsc-nucleus",
     ]);
     expect(externalEntries.map((entry) => entry.id)).toEqual([
       "micro-sam-vit-b-lm",
       "stardist-2d-versatile-fluo",
+      "plantseg-ovules-ds1x",
+      "mesmer-multiplex-tissue",
     ]);
   });
 

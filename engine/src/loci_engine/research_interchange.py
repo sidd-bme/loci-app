@@ -906,6 +906,11 @@ def _validate_source(record: Any, expected_id: str) -> dict[str, Any]:
         from .research_vendor import validate_derivation
 
         validate_derivation(record["derivation"], record["sha256"], record["metadata"])
+        if (
+            record["derivation"].get("schema") == "loci.dynacell-derived-source/v1"
+            and record.get("source_kind") != "native"
+        ):
+            raise ValueError("Virtual stain derivation requires a native source")
     metadata_identity = record["metadata"].get("sha256")
     if metadata_identity is not None and metadata_identity != record["sha256"]:
         raise ValueError("Interchanged source metadata fingerprint is inconsistent")
@@ -1616,6 +1621,13 @@ def import_project(
             from .source_browser_location import validate_browser_roots
 
             validate_browser_roots(sources)
+            for source in sources:
+                derivation = source.get("derivation", {})
+                if derivation.get("schema") == "loci.dynacell-derived-source/v1":
+                    from .research_virtual_stain import validate_origin
+
+                    record = derivation["record"]
+                    validate_origin(record, source_by_id.get(record["source_id"]))
             referenced_artifacts: dict[str, dict[str, Any]] = {}
             for result in results:
                 source = source_by_id.get(result["source_id"])
@@ -1971,6 +1983,9 @@ def relink_interchanged_source(
         raise ValueError(
             "Relink rejected: inspected shape, calibration, or metadata differs from the study"
         )
+    from .research_project import _virtual_stain_binding
+
+    _virtual_stain_binding(source, private.get("private_path"))
     source.pop("locator_state", None)
     source.pop("relink_hint", None)
     source.update(private, relinked_at=timestamp())

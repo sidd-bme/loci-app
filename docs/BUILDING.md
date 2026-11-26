@@ -379,6 +379,18 @@ For process-wide offline testing, point `LOCI_QA_OFFLINE_EXECUTABLE` to a
 network-restricted launcher for the same app that permits local Playwright traffic.
 The receipt records which network restrictions were used. [BBBC039 reference data](https://bbbc.broadinstitute.org/BBBC039)
 
+## Verify virtual nuclear staining on a paired iPSC field
+
+Run `node desktop/tests/dynacell-workbench.qa.mjs` with absolute paths in
+`LOCI_PACKAGED_APP`, `LOCI_QA_OUTPUT_ROOT` (a new directory), `LOCI_QA_PYTHON`,
+`LOCI_QA_MODEL_SOURCE` (the calibrated 40 × 512 × 512 Phase3D and Nuclei pair)
+and `LOCI_QA_EXPECTED_PREDICTION` (independent upstream float32 ZYX NPY).
+Set `LOCI_QA_SOURCE_COMMIT` to the packaged revision. The journey installs
+from Biohub through Model Zoo. To exercise offline checkpoint import, also
+set `LOCI_QA_DYNACELL_CHECKPOINT` to the verified local file. Both routes
+check the full prediction, the unchanged phase channel, and reopening the saved
+result in a fresh profile without weights. [iPSC microscopy archive](https://biohub.github.io/dynacell/)
+
 ## Verify desktop recipe replay and standalone μSAM interchange
 
 From the repository root at the clean commit used to package the app, run

@@ -62,18 +62,12 @@ export default function ModelZooComparison({
       >
         <div className="model-zoo-detail-stage__viewport model-zoo-detail-stage__viewport--empty">
           <div className="model-zoo-stage-empty" role="status">
-            <strong>Reference imagery not bundled in this checkout</strong>
+            <strong>No bundled example</strong>
             <span>
               {entry.target} · {entry.modalitySummary}
             </span>
           </div>
         </div>
-        <figcaption className="model-zoo-detail-stage__caption">
-          <span>
-            Bundled local reference imagery is added separately under the Model Zoo
-            asset contract.
-          </span>
-        </figcaption>
       </figure>
     );
   }

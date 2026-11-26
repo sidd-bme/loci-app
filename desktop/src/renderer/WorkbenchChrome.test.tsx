@@ -389,7 +389,8 @@ describe("workbench tool selector", () => {
     expect(input).toHaveValue("");
     expect(input).toHaveFocus();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option")).toHaveLength(22);
+    expect(screen.getAllByRole("option")).toHaveLength(23);
+    expect(screen.getByRole("option", { name: "Virtual nuclear stain" })).toBeVisible();
     expect(screen.getByRole("option", { name: "Epidermis model" })).toBeEnabled();
     expect(screen.getByRole("option", { name: "Nuclear & cell shape" })).toBeEnabled();
     expect(screen.getByRole("option", { name: "Wound closure" })).toBeEnabled();

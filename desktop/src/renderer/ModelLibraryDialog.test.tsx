@@ -227,7 +227,7 @@ describe("Model Zoo dialog", () => {
     // No nested buttons anywhere
     expect(dialog.querySelectorAll("button button")).toHaveLength(0);
 
-    // All 5 curated registry models are shown with PUMA's verified title
+    // Existing gallery models keep their titles
     expect(screen.getByRole("heading", { name: "Cellpose-SAM v2" })).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "μSAM Light Microscopy Generalist" }),
@@ -315,7 +315,7 @@ describe("Model Zoo dialog", () => {
     expect(stardistCard).toHaveAttribute("data-example-kind", "unavailable");
     expect(within(stardistCard).queryByRole("img")).toBeNull();
     expect(
-      within(stardistCard).getByText(/reference imagery pending/i),
+      within(stardistCard).getByText(/no bundled example/i),
     ).toBeInTheDocument();
     expect(
       stardistCard.querySelector(".model-zoo-card__layer-toggle"),
@@ -327,6 +327,22 @@ describe("Model Zoo dialog", () => {
     expect(
       within(usamCard).getByText(/example image failed to decode/i),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["ovule confocal", "PlantSeg · Arabidopsis ovules", "Open volume label importer", "labels-import", "plantseg-ovules-ds1x"],
+    ["multiplex tissue", "Mesmer · multiplex tissue", "Open plane label importer", "labels-import", "mesmer-multiplex-tissue"],
+    ["Phase3D", "DynaCell · iPSC nuclear virtual stain", "Open virtual stain control", "virtual-stain", "dynacell-ipsc-nucleus"],
+  ])("opens the published workflow for %s from a text-only card", (query, title, action, route, modelId) => {
+    const selectRoute = vi.fn();
+    const openLink = vi.fn();
+    render(<ModelLibraryDialog onClose={vi.fn()} onOpenLink={openLink} onSelectWorkbenchRoute={selectRoute} />);
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: query } });
+    fireEvent.click(screen.getByRole("button", { name: title }));
+    expect(screen.queryByRole("slider")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    expect(selectRoute).toHaveBeenCalledExactlyOnceWith(route, modelId);
+    expect(openLink).not.toHaveBeenCalled();
   });
 
   it("supports search, empty-state feedback, Escape-to-clear search, and All/Local/External keyboard filtering", () => {
@@ -350,7 +366,7 @@ describe("Model Zoo dialog", () => {
     expect(
       screen.queryByRole("heading", { name: "Cellpose-SAM v2" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(/showing 1 of 5/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/showing 1 of 8/i);
 
     // Non-matching search shows explicit empty state with reset action
     fireEvent.change(search, { target: { value: "unmatched-modality-777" } });

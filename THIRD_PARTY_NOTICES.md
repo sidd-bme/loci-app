@@ -53,6 +53,10 @@ artifact identity, upstream source and qualification scope.
 | tqdm | MPL-2.0 and MIT |
 | PyInstaller bootloader | GPL-2.0-or-later with the PyInstaller exception permitting distribution of non-free programs |
 
+## DynaCell integration
+
+The optional DynaCell iPSC virtual stain includes a fixed implementation adapted from Biohub's VisCy under BSD-3-Clause. See [DynaCell attribution](engine/src/loci_engine/dynacell_NOTICE.txt). The Biohub checkpoint is obtained separately. Allen Institute microscopy used for local comparisons is subject to the [Allen Institute terms](https://www.allencell.org/terms-of-use.html).
+
 ## Cellpose integration
 
 | Component | Version or artifact | Declaration and boundary |

@@ -399,6 +399,7 @@ function hardenPackagedResources({ buildPath, platform, arch }: HookFunctionArgs
       [path.resolve(configDirectory, "..", "LICENSE"), "LOCI_LICENSE"],
       [path.resolve(configDirectory, "..", "NOTICE"), "LOCI_NOTICE"],
       [path.resolve(configDirectory, "..", "THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
+      [path.resolve(configDirectory, "..", "engine", "src", "loci_engine", "dynacell_NOTICE.txt"), "DYNACELL_NOTICE.txt"],
       [path.resolve(configDirectory, "..", "scripts", "upstream_licences", "flatbuffers-25.12.19", "LICENSE"), "FLATBUFFERS_25.12.19_LICENSE"],
       [path.join(buildPath, "LICENSE"), "ELECTRON_LICENSE"],
       [path.join(buildPath, "LICENSES.chromium.html"), "LICENSES.chromium.html"],
