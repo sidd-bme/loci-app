@@ -52,6 +52,7 @@ EXPECTED_LOCKS = (
     "modeling/uv.lock",
 )
 REQUIRED_NOTICES = (
+    "DYNACELL_NOTICE.txt",
     "ELECTRON_LICENSE",
     "LICENSES.chromium.html",
     "LOCI_LICENSE",

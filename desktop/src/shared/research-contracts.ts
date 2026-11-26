@@ -1001,6 +1001,10 @@ export interface ResearchTissueImportPhase {
 }
 
 export interface ResearchDesktopApi {
+  dynacellStatus?(): Promise<import("./dynacell").VirtualStainInstallState>;
+  installDynacell?(source: "publisher" | "local"): Promise<boolean>;
+  cancelDynacellInstall?(): Promise<boolean>;
+  runVirtualStain?(request: import("./dynacell").VirtualStainRequest): Promise<{ snapshot: ResearchSnapshot; source: ResearchSource } | null>;
   /** Application-private targets; paths and credentials are never returned. */
   computeTargets?(operation: "list" | "import_ssh" | "save" | "test" | "resources" | "remember" | "use" | "forget",
     request: Record<string, unknown>): Promise<unknown>;

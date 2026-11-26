@@ -85,6 +85,21 @@ def checked_text(value: Any, name: str, maximum: int = 256, *, empty: bool = Fal
     return value
 
 
+def _virtual_stain_binding(record, path=None):
+    derivation = record.get("derivation")
+    if (
+        isinstance(derivation, dict)
+        and derivation.get("schema") == "loci.dynacell-derived-source/v1"
+    ):
+        from .research_virtual_stain import validate_derivation, verify_embedded_record
+
+        if record.get("source_kind") != "native":
+            raise ValueError("Virtual stain derivation requires a native source")
+        validate_derivation(derivation, record["sha256"], record["metadata"])
+        if path is not None:
+            verify_embedded_record(path, derivation["record"])
+
+
 def validate_source_calibration(
     record: dict[str, Any], current_metadata: dict[str, Any] | None = None
 ) -> None:
@@ -308,6 +323,7 @@ class ResearchProject:
         source_kind: str = "native",
         derivation: dict[str, Any] | None = None,
         relative_path: str | None = None,
+        publication_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Caller inspected pixels; registration independently verifies the source."""
         source = Path(path)
@@ -328,6 +344,16 @@ class ResearchProject:
             from .research_vendor import validate_derivation
 
             derivation = validate_derivation(derivation, fingerprint, metadata)
+            if derivation.get("schema") == "loci.dynacell-derived-source/v1":
+                from .research_virtual_stain import validate_origin, verify_embedded_record
+
+                if source_kind != "native":
+                    raise ValueError("Virtual stain derivation requires a native source")
+
+                validate_origin(
+                    derivation["record"], self.source(derivation["record"]["source_id"])
+                )
+                verify_embedded_record(source, derivation["record"])
         display_name = checked_text(name or source.name, "Source name")
         with self.connection() as connection:
             for row in connection.execute("SELECT record FROM sources"):
@@ -340,6 +366,8 @@ class ResearchProject:
                     if existing.get("derivation") != derivation:
                         raise ValueError("Registered source has a different conversion derivation")
                     validate_source_calibration(existing, metadata)
+                    if publication_guard:
+                        publication_guard()
                     return self.public_source(existing)
             record = {
                 "id": uuid.uuid4().hex,
@@ -359,12 +387,15 @@ class ResearchProject:
             connection.execute(
                 "INSERT INTO sources VALUES(?,?)", (record["id"], canonical_json(record))
             )
+            if publication_guard:
+                publication_guard()
         return self.public_source(record)
 
     @staticmethod
     def public_source(record: dict[str, Any]) -> dict[str, Any]:
         from .source_browser_location import browser_location_for_source
 
+        _virtual_stain_binding(record)
         public = {
             key: value
             for key, value in record.items()
@@ -519,6 +550,7 @@ class ResearchProject:
         if row is None:
             raise ValueError("Source is not registered in this study")
         record = parse_json(row[0])
+        _virtual_stain_binding(record)
         if verify:
             validate_source_calibration(record)
             if record.get("locator_state") == "relink-required":
@@ -569,6 +601,7 @@ class ResearchProject:
                     check=check,
                 ) as session:
                     validate_source_calibration(record, asdict(session.metadata))
+                    _virtual_stain_binding(record, record["private_path"])
         return record
 
     def list_sources(self) -> list[dict[str, Any]]:
@@ -616,6 +649,7 @@ class ResearchProject:
             updated = {"private_path": str(path.resolve(strict=True))}
         if actual != source["sha256"] or size != source["size_bytes"]:
             raise ValueError("Relink rejected: selected bytes do not exactly match the source")
+        _virtual_stain_binding(source, path)
         source.update(updated)
         source.pop("locator_state", None)
         source["relinked_at"] = timestamp()

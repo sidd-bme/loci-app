@@ -44,6 +44,7 @@ export type WorkerInvalidationListener = (event: WorkerInvalidationEvent) => voi
 // be allowed to finish so they cannot leave an unrecorded or incomplete batch.
 const CANCELLABLE_METHODS = new Set(["segment", "research_run", "research_data_export_plan"]);
 const DURABLE_METHODS = new Set([
+  "research_virtual_stain",
   "research_vendor_convert",
   "research_image_convert",
   "research_agent_access",

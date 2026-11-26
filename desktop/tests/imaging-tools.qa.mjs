@@ -349,7 +349,7 @@ async function auditModelLibrary() {
   assert.equal(await zoo.locator("button button").count(), 0, "Model Zoo must not nest buttons");
 
   const cards = zoo.locator("article.model-zoo-card");
-  assert.equal(await cards.count(), 5, "Model Zoo must render all five curated registry entries");
+  assert.equal(await cards.count(), 8, "Model Zoo must render all eight curated registry entries");
 
   // Verify equal-height rows, image-first media proportion, and true decoding of every bundled specimen image
   const layoutSummary = await zoo.evaluate((root) => {
@@ -380,7 +380,7 @@ async function auditModelLibrary() {
   // Every bundled <img> must decode cleanly from local assets (zero HTTP(S) network egress)
   const cardImages = zoo.locator("article.model-zoo-card img.model-zoo-card__img");
   const cardImageCount = await cardImages.count();
-  assert.equal(cardImageCount, 5, "Every catalog entry needs a local microscopy example");
+  assert.equal(cardImageCount, 5, "All five credited microscopy examples must remain available");
   const decodedCards = [];
   for (let index = 0; index < cardImageCount; index++) {
     const info = await sampleDecodedImage(cardImages.nth(index));
@@ -444,11 +444,11 @@ async function auditModelLibrary() {
   const allFilter = filterGroup.getByRole("radio", { name: /^All/u });
   await allFilter.focus();
   await page.keyboard.press("ArrowRight");
-  assert.equal(await cards.count(), 3, "Local filter must show the three optional local entries");
+  assert.equal(await cards.count(), 4, "Local filter must show the four optional local entries");
   await page.keyboard.press("ArrowRight");
-  assert.equal(await cards.count(), 2, "External filter must show the two external entries");
+  assert.equal(await cards.count(), 4, "External filter must show the four external entries");
   await page.keyboard.press("Home");
-  assert.equal(await cards.count(), 5, "Home key must return to All models");
+  assert.equal(await cards.count(), 8, "Home key must return to All models");
 
   // Select the paired model to verify contextual detail, aligned pixel space, and keyboard comparison slider
   const pairedTrigger = pairedCard.locator("button.model-zoo-card__select");

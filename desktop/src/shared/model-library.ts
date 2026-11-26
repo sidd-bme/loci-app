@@ -7,8 +7,12 @@ import {
   CELLPOSE_SAM_V2_SIZE_BYTES,
 } from "./model-registry";
 import { NUCLEI_MODEL_INSTALL } from "./nuclei-model-install";
+import { DYNACELL_NUCLEUS } from "./dynacell";
 
 export type ModelLibraryId =
+  | "plantseg-ovules-ds1x"
+  | "mesmer-multiplex-tissue"
+  | "dynacell-ipsc-nucleus"
   | "cellpose-sam-v2"
   | "micro-sam-vit-b-lm"
   | "stardist-2d-versatile-fluo"
@@ -16,6 +20,16 @@ export type ModelLibraryId =
   | "puma-tissue-cpu";
 
 export type ModelLibraryLinkId =
+  | "plantseg-record"
+  | "plantseg-registry"
+  | "plantseg-paper"
+  | "mesmer-guide"
+  | "mesmer-registry"
+  | "mesmer-paper"
+  | "dynacell-project"
+  | "dynacell-checkpoint"
+  | "dynacell-paper"
+  | "allen-terms"
   | "cellpose-sam-v2-checkpoint"
   | "cellpose-sam-v1-checkpoint"
   | "cellpose-github-repo"
@@ -48,6 +62,7 @@ export type ModelLibraryLinkId =
 export type ModelLibraryFilterGroup = "all" | "local" | "external";
 
 export type ModelLibraryExecutionMode =
+  | "optional-local-virtual-stain"
   | "optional-local-profile"
   | "external-native-handoff"
   | "external-label-return"
@@ -62,6 +77,7 @@ export type ModelLibraryVerificationKind =
   | "unvalidated-candidate-files-verified";
 
 export type ModelLibraryWorkbenchRouteKind =
+  | "virtual-stain"
   | "segment-cellpose-v2"
   | "labels-usam-handoff"
   | "labels-import"
@@ -69,6 +85,7 @@ export type ModelLibraryWorkbenchRouteKind =
   | "tissue-epidermis";
 
 export type ModelLibraryPublicationStatus =
+  | "arXiv preprint"
   | "Peer-reviewed journal article"
   | "Peer-reviewed conference paper"
   | "bioRxiv preprint (not peer-reviewed)"
@@ -193,6 +210,10 @@ export const PUMA_ORIGINAL_FOLD4_CHECKPOINT_SHA256 =
   "938fea9f4c41a798cf0d92a6a98cb4de1fcee9342cd3bbf7d56bb5c036505faa" as const;
 
 const ALLOWED_EXTERNAL_HOSTS = new Set([
+  "deepcell.readthedocs.io",
+  "biohub.github.io",
+  "dynacell.s3.us-west-2.amazonaws.com",
+  "www.allencell.org",
   "huggingface.co",
   "github.com",
   "doi.org",
@@ -214,6 +235,16 @@ function deepFreeze<T>(value: T): Readonly<T> {
 
 export const MODEL_LIBRARY_OFFICIAL_LINKS: Readonly<Record<ModelLibraryLinkId, string>> =
   deepFreeze({
+    "plantseg-record": "https://zenodo.org/records/7772553",
+    "plantseg-registry": "https://github.com/kreshuklab/plant-seg/blob/9d748063cc9de8d8025aaf691a11483b94a5894c/plantseg/resources/models_zoo.yaml",
+    "plantseg-paper": "https://doi.org/10.7554/eLife.57613",
+    "mesmer-guide": "https://deepcell.readthedocs.io/en/master/app-gallery/mesmer.html",
+    "mesmer-registry": "https://github.com/vanvalenlab/deepcell-tf/blob/eb3d61975549f75ac52561fbaa9215134a39e3f1/deepcell/applications/mesmer.py",
+    "mesmer-paper": "https://doi.org/10.1038/s41587-021-01094-0",
+    "dynacell-project": "https://biohub.github.io/dynacell/",
+    "dynacell-checkpoint": DYNACELL_NUCLEUS.url,
+    "dynacell-paper": "https://doi.org/10.48550/arXiv.2611.02324",
+    "allen-terms": "https://www.allencell.org/terms-of-use.html",
     "cellpose-sam-v2-checkpoint": `https://huggingface.co/mouseland/cellpose-sam/blob/${CELLPOSE_MODEL_REVISION}/cpsam_v2`,
     "cellpose-sam-v1-checkpoint": `https://huggingface.co/mouseland/cellpose-sam/blob/${CELLPOSE_MODEL_REVISION}/cpsam`,
     "cellpose-github-repo": "https://github.com/MouseLand/cellpose",
@@ -845,6 +876,187 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
         "doi.org",
       ),
       linkDescriptor("puma-paper", "GigaScience 2025 (DOI)", "paper", "doi.org"),
+    ],
+  },
+  {
+    id: "plantseg-ovules-ds1x",
+    title: "PlantSeg · Arabidopsis ovules",
+    subtitle: "Confocal cell-wall boundaries and 3D cell instances",
+    filterGroup: "external",
+    executionMode: "external-label-return",
+    executionBadge: "External · ZYX label TIFF",
+    executionShortLabel: "External · volume labels",
+    verificationKind: "external-unverified-grid-checked",
+    verificationBadge: "External prediction · grid checked on import",
+    verificationDetail: "Loci checks label geometry and integer IDs. Inspect alignment throughout the volume.",
+    target: "Cells in fixed Arabidopsis ovules",
+    modalitySummary: "3D confocal cell-wall fluorescence",
+    taskLabel: "3D cell segmentation",
+    modalityTags: ["plant tissue", "confocal", "cell wall", "ZYX"],
+    summary: "The ds1x network predicts cell walls in an ovule stack. Watershed and graph partitioning, such as Multicut or GASP, produce the cell IDs for import.",
+    cardSummary: "Separate individual plant cells in a confocal cell-wall volume.",
+    publisherBadge: "Zenodo · 7772553",
+    searchTerms: ["plantseg", "arabidopsis", "ovule", "3D U-Net", "Multicut", "GASP", "watershed"],
+    taskSummary: "Partition a 3D boundary probability volume into labeled cells.",
+    inputContract: "One scalar confocal ZYX stack. Training spacing was 0.235 × 0.075 × 0.075 µm (ZYX). Use the full native XY grid at one T/C and a matching Z range of at least two planes.",
+    lociPathway: "Return the final cell IDs on the original grid as a single-series, single-level TIFF with declared ZYX axes, one unsigned scalar YX page per Z, Orientation 1 and zero background. Select the matching source volume, review the middle-plane preview and confirm alignment across Z.",
+    workbenchRoute: {
+      kind: "labels-import",
+      actionLabel: "Open volume label importer",
+      inspectorLocation: "Analyze → Segment & measure → Import existing labels",
+    },
+    artifact: {
+      artifactId: "confocal_3D_unet_ovules_ds1x",
+      fileName: "unet3d-arabidopsis-ovules-confocal-ds1x.pytorch",
+      version: "Zenodo v2 · record 7772553 · ds1x",
+      sha256: "9fd5bdb05f01b6eb284c2aac278570a5563dab5c2356d044a95e4c2df179d308",
+      digestBasis: "loci-verified",
+      digestBasisLabel: "Loci verified the checkpoint SHA-256 and Zenodo MD5 1f63b96697b968f5e8085ca454b5498c in a held-out ovule run. Review alignment when importing your own labels.",
+      sizeBytes: 16_345_313,
+      runtimeRequirement: "External PlantSeg with the ds1x checkpoint and corresponding model configuration",
+    },
+    rights: {
+      codeLicense: "MIT (PlantSeg)",
+      weightsLicense: "CC BY 4.0 (Zenodo record 7772553)",
+      trainingDataLineage: "Arabidopsis ovule confocal stacks, BioImage Archive S-BIAD1392. The archive applies EMBL-EBI Terms of Use where an accession lists no separate licence.",
+      redistribution: "External weights, attribution required. Training images excluded.",
+      commercialUse: "Weight reuse requires attribution. Assess dataset rights separately.",
+    },
+    limitations: [
+      "Different voxel spacing or faint cell walls can change split and merge errors. Check interior and peripheral cells on representative stacks.",
+      "Boundary probabilities are floating-point predictions. Import only the final instance IDs as uint8, uint16 or uint32, preserving every ID.",
+    ],
+    citation: {
+      authors: "Wolny, A., Cerrone, L. et al.", year: 2020,
+      title: "Accurate and versatile 3D segmentation of plant tissues at cellular resolution",
+      venue: "eLife 9, e57613", publicationStatus: "Peer-reviewed journal article",
+      doi: "10.7554/eLife.57613", linkId: "plantseg-paper",
+    },
+    primaryLink: linkDescriptor("plantseg-record", "ds1x checkpoint and training configuration", "catalog", "zenodo.org"),
+    secondaryLinks: [
+      linkDescriptor("plantseg-registry", "PlantSeg model registry", "repository", "github.com"),
+      linkDescriptor("plantseg-paper", "PlantSeg methods and benchmarks", "paper", "doi.org"),
+    ],
+  },
+  {
+    id: "mesmer-multiplex-tissue",
+    title: "Mesmer · multiplex tissue",
+    subtitle: "Whole-cell or nuclear instance labels from two aligned markers",
+    filterGroup: "external",
+    executionMode: "external-label-return",
+    executionBadge: "External · YX label TIFF",
+    executionShortLabel: "External · plane labels",
+    verificationKind: "external-unverified-grid-checked",
+    verificationBadge: "External prediction · grid checked on import",
+    verificationDetail: "Loci checks the returned native plane. External segmentation settings and accuracy require review.",
+    target: "Whole cells or nuclei in tissue sections",
+    modalitySummary: "2D multiplex tissue imaging",
+    taskLabel: "2D instance segmentation",
+    modalityTags: ["multiplex immunofluorescence", "nuclear marker", "membrane marker"],
+    summary: "Mesmer uses two aligned markers to estimate cell or nuclear boundaries in tissue sections. Choose a single compartment for each return.",
+    cardSummary: "Outline whole cells or nuclei in multiplex tissue sections.",
+    publisherBadge: "DeepCell · model 9",
+    searchTerms: ["Mesmer", "TissueNet", "PanopticNet", "DAPI", "membrane", "cytoplasm"],
+    taskSummary: "Predict cell interiors and centers, then use watershed to assign instance IDs.",
+    inputContract: "Use one full native plane with two registered scalar channels in nuclear then membrane/cytoplasmic order. Supply the acquisition’s isotropic XY microns per pixel (training used 0.5 µm/pixel).",
+    lociPathway: "In DeepCell, run Mesmer.predict with image_mpp and compartment='whole-cell' or 'nuclear'. Export one batch item and one compartment as a single-page scalar unsigned YX TIFF on the original grid (Orientation 1, zero background). In Loci select the matching T/Z and raw measurement channel, review the overlay and confirm.",
+    workbenchRoute: {
+      kind: "labels-import",
+      actionLabel: "Open plane label importer",
+      inspectorLocation: "Analyze → Segment & measure → Import existing labels",
+    },
+    artifact: {
+      artifactId: "models/MultiplexSegmentation-9.tar.gz",
+      fileName: "MultiplexSegmentation-9.tar.gz",
+      version: "Model 9 · deepcell-tf 0.12.10",
+      sha256: null,
+      digestBasis: "publisher-reported",
+      digestBasisLabel: "DeepCell 0.12.10 pins archive MD5 a1dfbce2594f927b9112f23a0a1739e0. External weights were not checked by Loci.",
+      sizeBytes: null,
+      runtimeRequirement: "External DeepCell/TensorFlow. Initial weight acquisition requires DeepCell access in that environment.",
+    },
+    rights: {
+      codeLicense: "Modified Apache 2.0 · non-commercial academic use",
+      weightsLicense: "DeepCell modified Apache licence · non-commercial academic use",
+      trainingDataLineage: "TissueNet · modified Apache licence for non-commercial academic use",
+      redistribution: "Weights and training images excluded from Loci.",
+      commercialUse: "Separate permission from the rights holder required.",
+    },
+    limitations: [
+      "Low signal, heterogeneous staining and defocus contributed to errors in the published evaluation. Inspect boundaries on your tissue and marker panel.",
+      "Return a single compartment with uint8, uint16 or uint32 IDs that fit without truncation. A merged RGB image or a multi-compartment stack cannot be adopted as plane labels.",
+    ],
+    citation: {
+      authors: "Greenwald, N. F. et al.", year: 2022,
+      title: "Whole-cell segmentation of tissue images with human-level performance using large-scale data annotation and deep learning",
+      venue: "Nature Biotechnology 40, 555–565", publicationStatus: "Peer-reviewed journal article",
+      doi: "10.1038/s41587-021-01094-0", linkId: "mesmer-paper",
+    },
+    primaryLink: linkDescriptor("mesmer-guide", "Obtain weights and run Mesmer", "catalog", "deepcell.readthedocs.io"),
+    secondaryLinks: [
+      linkDescriptor("mesmer-registry", "Versioned DeepCell artifact key and digest", "repository", "github.com"),
+      linkDescriptor("mesmer-paper", "Mesmer methods and tissue benchmarks", "paper", "doi.org"),
+    ],
+  },
+  {
+    id: "dynacell-ipsc-nucleus",
+    title: "DynaCell · iPSC nuclear virtual stain",
+    subtitle: "Reconstructed Phase3D to normalized predicted nuclear signal",
+    filterGroup: "local",
+    executionMode: "optional-local-virtual-stain",
+    executionBadge: "Optional local · CPU",
+    executionShortLabel: "Local · virtual stain",
+    verificationKind: "unvalidated-checkpoint-hash-verified",
+    verificationBadge: "Pinned checkpoint · research prediction",
+    verificationDetail: "Checkpoint identity is pinned. Acquisition-specific fidelity requires comparison with measured fluorescence.",
+    target: "Nuclei in unperturbed healthy human WTC-11 iPSCs",
+    modalitySummary: "Reconstructed 3D quantitative phase",
+    taskLabel: "3D virtual staining",
+    modalityTags: ["label-free microscopy", "Phase3D", "WTC-11"],
+    summary: "Predict a normalized nuclear signal from reconstructed Phase3D in unperturbed healthy human WTC-11 iPSCs. Compare the derived volume with measured nuclear fluorescence where available.",
+    cardSummary: "Predict normalized nuclear signal from a WTC-11 iPSC phase volume.",
+    publisherBadge: "DynaCell · v1",
+    searchTerms: ["virtual staining", "Phase3D", "nuclei", "label-free", "UNeXt2"],
+    taskSummary: "Predict a continuous nuclear signal on a 3D voxel grid.",
+    inputContract: "A scalar float32 OME-TIFF of reconstructed Phase3D from unperturbed WTC-11 iPSCs. Select one time point, 15–40 Z sections of 512 × 512 pixels, sampled at 0.290 µm in Z and 0.108 µm in X and Y.",
+    lociPathway: "Open the virtual stain control, provision the pinned weights and select the reconstructed phase volume for local CPU prediction.",
+    workbenchRoute: {
+      kind: "virtual-stain",
+      actionLabel: "Open virtual stain control",
+      inspectorLocation: "Analyze → Virtual nuclear stain",
+    },
+    artifact: {
+      artifactId: "ipsc/nucleus/unext2",
+      fileName: "epoch=80-step=25272.ckpt",
+      version: "DynaCell v1 · iPSC nucleus UNeXt2 · epoch 80, step 25272",
+      sha256: DYNACELL_NUCLEUS.sha256,
+      digestBasis: "loci-verified",
+      digestBasisLabel: "SHA-256 pinned in the Loci install profile for the upstream checkpoint.",
+      sizeBytes: DYNACELL_NUCLEUS.sizeBytes,
+      runtimeRequirement: "Optional installed weights and local CPU runtime",
+    },
+    rights: {
+      codeLicense: "BSD-3-Clause (upstream)",
+      weightsLicense: "BSD-3-Clause (upstream DynaCell weights)",
+      trainingDataLineage: "WTC-11 microscopy from the Allen Institute. Allen image and derivative terms apply.",
+      redistribution: "Weights provisioned separately. Allen fixture images excluded.",
+      commercialUse: "Review the Allen data terms separately from the BSD model licence.",
+    },
+    limitations: [
+      "Output is a normalized prediction. Use measured fluorescence for intensity quantitation.",
+      "Interior Pearson r ranged from 0.48 to 0.77 across four publisher test fields. The median baseline had lower absolute error on one field. Bright nuclear signal was systematically underestimated in three further-field checks.",
+    ],
+    citation: {
+      authors: "Kalinin, A. A., Zheng, D., Theodoro, T. M. et al.", year: 2026,
+      title: "The DynaCell Evaluation Suite for Dynamic 3D Virtual Staining of Live Cells",
+      venue: "arXiv:2611.02324, November 2026", publicationStatus: "arXiv preprint",
+      doi: "10.48550/arXiv.2611.02324", linkId: "dynacell-paper",
+    },
+    primaryLink: linkDescriptor("dynacell-project", "DynaCell model release", "catalog", "biohub.github.io"),
+    secondaryLinks: [
+      linkDescriptor("dynacell-checkpoint", "iPSC nucleus checkpoint (386 MB)", "download", "dynacell.s3.us-west-2.amazonaws.com"),
+      linkDescriptor("dynacell-paper", "November 2026 preprint", "paper", "doi.org"),
+      linkDescriptor("allen-terms", "Allen Institute image terms", "catalog", "www.allencell.org"),
     ],
   },
 ]);

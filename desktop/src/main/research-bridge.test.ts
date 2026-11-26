@@ -53,6 +53,7 @@ vi.mock("./nuclei-model-download", () => ({
 import type { StatisticsFigureExportRequest } from "../shared/statistics-figure-contracts";
 import { ResearchBridge } from "./research-bridge";
 import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
+import { DYNACELL_NUCLEUS } from "../shared/dynacell";
 import type {
   ResearchJob,
   ResearchSnapshot,
@@ -324,6 +325,33 @@ describe("native research bridge", () => {
   afterEach(async () => {
     delete process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("binds virtual staining to the native output picker and rejects renderer path arguments", async () => {
+    const project = path.join(root, "Phase.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const request = { source_id: "a".repeat(32), source_sha256: sha, timepoint: 0, channel: 1, phase_confirmed: true };
+    await expect(call("virtual-stain", { ...request, checkpoint: "/from-renderer" })).rejects.toThrow(/Confirm/);
+    await expect(call("virtual-stain", { ...request, phase_confirmed: false })).rejects.toThrow(/Confirm/);
+    if (process.platform === "win32") {
+      expect(await call("dynacell-status")).toBe("unsupported");
+      await expect(call("virtual-stain", request)).rejects.toThrow(/atomic directory publication/);
+      expect(mocks.request.mock.calls.some(([method]) => method === "research_virtual_stain")).toBe(false);
+      return;
+    }
+    const directory = path.join(await fs.realpath(root), "dynacell-ipsc-nucleus");
+    await fs.mkdir(directory, { mode: 0o700 });
+    const checkpoint = path.join(directory, "nucleus.ckpt");
+    await fs.writeFile(checkpoint, "");
+    await fs.truncate(checkpoint, DYNACELL_NUCLEUS.sizeBytes);
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("virtual-stain", request)).toBeNull();
+    expect(mocks.request.mock.calls.some(([method]) => method === "research_virtual_stain")).toBe(false);
+    const destination = path.join(root, "Derived");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    await call("virtual-stain", request);
+    expect(mocks.request).toHaveBeenCalledWith("research_virtual_stain", { project, checkpoint, request, destination }, 0);
   });
 
   it("uses the fixed nuclei package, reserves the current study through qualification, and drains on quit", async () => {

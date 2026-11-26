@@ -6,6 +6,8 @@ import type { IpcMainInvokeEvent } from "electron";
 import { openModelLibraryLink } from "./model-library-links";
 import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
 import { withNucleiModelPackage } from "./nuclei-model-download";
+import { DynacellCheckpoint } from "./dynacell-checkpoint";
+import { isVirtualStainRequest } from "../shared/dynacell";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -320,6 +322,9 @@ export class ResearchBridge {
   private prioritizedVolumePreviewPath: string | null = null;
   private tissueSetup: TissueSetupOperation | null = null;
   private nucleiInstall: { controller: AbortController; qualifying: boolean; finished: Promise<unknown> } | null = null;
+  private readonly dynacell = new DynacellCheckpoint(() => app.getPath("userData"));
+  private dynacellInstall: Promise<boolean> | null = null;
+  private virtualStainRun: Promise<unknown> | null = null;
   private dataExportActive: { key: string; project: string; stage: "plan" | "export"; cancelled: boolean; jobId?: string; finished: Promise<void>; finish: () => void } | null = null;
   private viewDocumentEpoch = 0;
   private computeStudyBinding: string | null = null;
@@ -1753,6 +1758,56 @@ export class ResearchBridge {
     const handle = (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
       handleFromFrame(name, (_event, ...args) => operation(...args));
     handle("recipe-resources", async () => recipeResources(totalmem()));
+    handle("dynacell-status", async (...args) => {
+      if (args.length) throw new Error("Choose the registered DynaCell model.");
+      if (process.platform === "win32") return "unsupported";
+      return this.dynacellInstall ? "installing" : this.dynacell.status();
+    });
+    handle("dynacell-install", async (source, ...extra) => {
+      this.requireProject();
+      if (extra.length || (source !== "local" && source !== "publisher")) throw new Error("Choose a DynaCell checkpoint source.");
+      if (process.platform === "win32") throw new Error("DynaCell needs a filesystem with atomic directory publication.");
+      if (this.closing || this.dynacellInstall) throw new Error("Finish the current installation first.");
+      const install = async () => {
+        let file: string | undefined;
+        if (source === "local") {
+          const selection = await dialog.showOpenDialog({
+            title: "Choose the DynaCell iPSC nuclear checkpoint", properties: ["openFile"],
+            filters: [{ name: "UNeXt2 checkpoint", extensions: ["ckpt"] }],
+          });
+          if (selection.canceled || !selection.filePaths[0]) return false;
+          file = selection.filePaths[0];
+        }
+        if (this.closing) return false;
+        await this.dynacell.install(file);
+        return true;
+      };
+      this.dynacellInstall = install();
+      try { return await this.dynacellInstall; }
+      finally { this.dynacellInstall = null; }
+    });
+    handle("dynacell-cancel-install", async (...args) => {
+      if (args.length) throw new Error("Choose the registered DynaCell model.");
+      return this.dynacell.cancel();
+    });
+    handle("virtual-stain", async (request, ...extra) => {
+      if (extra.length || !isVirtualStainRequest(request)) throw new Error("Confirm the reconstructed phase channel and source time point.");
+      if (process.platform === "win32") throw new Error("DynaCell needs a filesystem with atomic directory publication.");
+      const project = this.requireProject();
+      if (this.running || this.switching || this.closing) throw new Error("Finish the active study operation first.");
+      this.running = { id: "virtual-stain", project };
+      const run = async () => {
+        const checkpoint = await this.dynacell.pathForRun();
+        const picked = await dialog.showSaveDialog({
+          title: "Create a new folder for the virtual stain", defaultPath: "DynaCell nuclear prediction", buttonLabel: "Predict and add to study",
+        });
+        if (picked.canceled || !picked.filePath || this.closing) return null;
+        return this.worker.request("research_virtual_stain", { project, checkpoint, request, destination: picked.filePath }, 0);
+      };
+      this.virtualStainRun = run();
+      try { return await this.virtualStainRun; }
+      finally { this.running = null; this.virtualStainRun = null; }
+    });
     handle("model-library-link", async (...args) => {
       if (args.length !== 1) throw new Error("Choose a registered official model-library source.");
       await openModelLibraryLink(args[0], (url) => shell.openExternal(url));
@@ -2647,6 +2702,11 @@ export class ResearchBridge {
     this.closing = true;
     this.volumePreview?.stop();
     this.viewerQueue.cancelPending(new Error("Loci is closing."));
+    if (this.dynacellInstall) {
+      this.dynacell.cancel();
+      await this.dynacellInstall.catch(() => undefined);
+    }
+    if (this.virtualStainRun) await this.virtualStainRun.catch(() => undefined);
     // The import may have been posted behind a read. Drain it explicitly rather
     // than relying on the worker's protection for its head-of-queue write.
     await this.directVolumeImport?.catch(() => undefined);
@@ -2673,6 +2733,7 @@ export class ResearchBridge {
 
   forceDispose(): void {
     this.closing = true;
+    this.dynacell.cancel();
     this.cancelNucleiModelInstall();
     this.volumePreview?.stop();
     this.viewerQueue.cancelPending(new Error("Loci is closing."));

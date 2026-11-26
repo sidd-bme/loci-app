@@ -1,6 +1,6 @@
 # Model Zoo
 
-Open **File → Model Zoo…** to browse microscopy segmentation models. Search by model, biological target or modality. **Local** shows profiles you can provision in Loci. **External** shows methods whose labels you can bring back to the workbench.
+Open **File → Model Zoo…** to browse microscopy models for segmentation and virtual staining. Search by model, biological target or modality. **Local** shows profiles you can provision in Loci. **External** shows methods whose labels you can bring back to the workbench.
 
 ## Inspect an example
 
@@ -27,6 +27,9 @@ These examples document what each run produced on one field. Accuracy on a new s
 | StarDist Versatile Fluorescence Nuclei | Predicts radial distances to the nuclear boundary and assembles star-convex polygons in 2D fluorescence images. | **Analyze → Segment & measure → Import existing labels** |
 | BioImage.IO 2D Nuclei Boundary ONNX | Predicts foreground and boundary probabilities in fluorescence images. Postprocessing separates nuclear instances. | **Analyze → Use a model** |
 | PUMA tissue nnU-Net · fold 4 | Segments tissue compartments in melanoma H&E. Loci surfaces the predicted epidermis from the six-class tissue output. | **Analyze → Epidermis model** |
+| PlantSeg · Arabidopsis ovules | Separates 3D cells in confocal cell-wall stacks. | **Import existing labels**, native ZYX volume |
+| Mesmer · multiplex tissue | Outlines cells or nuclei using paired markers. | **Import existing labels**, native YX plane |
+| DynaCell · iPSC nuclear virtual stain | Predicts normalized nuclear signal from reconstructed Phase3D. | **Open virtual stain control**, optional local CPU |
 
 For an offline method with no learned weights, **Analyze → Segment & measure** includes classical thresholding, connected components and watershed.
 
@@ -64,11 +67,31 @@ PUMA is a melanoma dataset and challenge. Loci's `puma-tissue-cpu` version `0.1.
 
 The displayed PUMA example uses a full 1024 × 1024 training tile from the authors' public dataset. Loci ran the registered weights on all nine overlapping windows with four mirror evaluations each. The overlay highlights the model's epidermis class. It illustrates the inference on this field and supplies no independent test of accuracy. [Source image and CC0 dedication](https://zenodo.org/records/15050523)
 
+### PlantSeg · Arabidopsis ovules
+
+In PlantSeg, choose `confocal_3D_unet_ovules_ds1x` for confocal cell-wall stacks acquired near the training spacing of 0.235 × 0.075 × 0.075 µm (ZYX). The network predicts wall probabilities. Follow boundary prediction with watershed and graph partitioning such as Multicut or GASP. Export the final instance IDs on the original source grid. Zenodo record 7772553 supplies the checkpoint and configuration and declares CC BY 4.0. PlantSeg code is MIT. The authors also deposited the ovule images and masks in BioImage Archive accession S-BIAD1392. Its record lists no separate licence, so the archive points users to EMBL-EBI Terms of Use. [Versioned checkpoint and file checksums](https://zenodo.org/records/7772553) · [Ovule data record](https://www.ebi.ac.uk/biostudies/bioimages/studies/S-BIAD1392) · [Archive licence FAQ](https://www.ebi.ac.uk/bioimage-archive/help-faq/) · [PlantSeg methods and resolution experiments](https://doi.org/10.7554/eLife.57613)
+
+Choose the same scalar source, time, channel and half-open Z range in Loci. Use a single-series TIFF with explicit ZYX axes, one unsigned scalar YX page per plane, Orientation 1, zero background and every original ID preserved. Explicit calibration must match the source. Check peripheral walls and adjacent cells at multiple depths before adoption. The importer previews the middle XY plane. [External label profiles](EXTERNAL_LABELS.md)
+
+On a held-out 48 × 96 × 96 crop from ovule N590, Loci preserved all 442,368 imported label voxels and the raw-channel measurements for all 38 predicted cells. With Multicut, 18 of 24 reference cells matched at IoU ≥ 0.50 (object F1 0.581). All six missed references touched a crop face. This check covers one crop, with limited evidence for whole-ovule accuracy. [Publisher benchmark data for Figure 3](https://cdn.elifesciences.org/articles/57613/elife-57613-fig3-data1-v2.zip)
+
+### Mesmer · multiplex tissue
+
+Use DeepCell 0.12.10 externally with the model-9 archive. Supply one batch item with two native channels in nuclear, then membrane/cytoplasm order. Pass the measured XY microns per pixel to `Mesmer().predict` and select `whole-cell` or `nuclear`. Save the returned `[0, :, :, 0]` plane as uint32 after checking IDs are nonnegative and fit. Use a single-page scalar YX TIFF, Orientation 1, with zero background. Select the corresponding native T/Z and raw measurement channel in Loci. Inspect weakly stained and out-of-focus regions before confirming alignment. [Publisher tutorial](https://deepcell.readthedocs.io/en/master/app-gallery/mesmer.html) · [Peer-reviewed evaluation](https://doi.org/10.1038/s41587-021-01094-0)
+
+DeepCell pins `MultiplexSegmentation-9.tar.gz` by MD5 in the application registry. Weight acquisition requires the publisher’s account in the external environment. The code, pretrained weights and TissueNet training data have modified Apache terms limited to non-commercial academic use. [Versioned registry](https://github.com/vanvalenlab/deepcell-tf/blob/eb3d61975549f75ac52561fbaa9215134a39e3f1/deepcell/applications/mesmer.py) · [Model and dataset terms](https://deepcell.readthedocs.io/en/master/API-key.html)
+
 ## Inspect a 3D virtual stain
 
-DynaCell predicts fluorescence-like volumes from label-free microscopy. Its iPSC nucleus model runs externally in PyTorch. Open a calibrated OME-TIFF containing the input phase, predicted nuclear stain and measured nuclear fluorescence as three named channels. In **View → Display**, toggle the predicted and measured channels on the same Z plane. **3D volume** shows their spatial relationship. Each channel needs its own display range because the model predicts normalized values. [DynaCell study and model release](https://biohub.github.io/dynacell/)
+Select **DynaCell · iPSC nuclear virtual stain → Open virtual stain control**. Choose **Install from Biohub** or **Import checkpoint…** once per application profile. Loci verifies the 368 MiB checkpoint and runs it locally on CPU. The checkpoint and the upstream VisCy code carry BSD-3-Clause terms. [November 2026 preprint](https://doi.org/10.48550/arXiv.2611.02324)
 
-On the interior of one WTC-11 test field, the prediction correlated with measured nuclear fluorescence at Pearson *r* = 0.48. Predicting the field median gave a lower mean absolute error than the model. This example supports comparing spatial structure. Use the measured channel for fluorescence quantitation. The Allen Institute's terms apply to its microscopy images and derivatives. [Allen iPSC microscopy study](https://doi.org/10.1038/s41586-022-05553-z) · [Image use terms](https://www.allencell.org/terms-of-use.html)
+Open a calibrated scalar OME-TIFF of unperturbed WTC-11 iPSCs with the float32 channel named **Phase3D**. This profile accepts reconstructed phase on the native 512 × 512 grid with 15–40 Z sections, 0.290 µm Z and 0.108 µm XY spacing, and a local axis-aligned origin. Select the time point and confirm the channel. **Predict nuclear stain…** creates a new folder with a two-channel OME-TIFF and a provenance record, then opens the predicted volume in the study. Channel 1 shows normalized predicted nuclear signal. Channel 2 preserves the original phase. The record identifies the source, model, runtime, and normalization statistics for the entire selected field. Keep this folder with the study. Local prediction requires atomic directory publication on macOS or Linux. The exported OME-TIFF can be inspected independently. [DynaCell study and model release](https://biohub.github.io/dynacell/)
+
+On matched interiors from four WTC-11 test fields, predicted and measured nuclear signal correlated at Pearson *r* = 0.48–0.77. The model had lower mean absolute error than a field-median prediction on three of the four fields. On the three additional fields, it underestimated 99–100% of the scored voxels at or above the field’s 99th fluorescence percentile. These observations support inspecting spatial structure in this cell line. Use measured fluorescence for intensity quantitation. The Allen Institute's terms apply to its microscopy images and derivatives. [Allen iPSC microscopy study](https://pubmed.ncbi.nlm.nih.gov/36599983/) · [Image use terms](https://www.allencell.org/terms-of-use.html)
+
+## Candidate for future tracking support
+
+OrganoidTracker 2.0 assigns error probabilities to lineage features in time-lapse data. Evaluating it for Loci would require a time-indexed result that retains detections, parent/daughter links and their uncertainty. A single ZYX label volume represents spatial objects only. The catalog currently offers no tracking action for this candidate. [Published organoid tracking evaluation](https://doi.org/10.1038/s41592-025-02845-6)
 
 ## Reviewing study results
 

@@ -20,6 +20,10 @@ def validate_derivation(
     value: Any, source_sha256: str, metadata: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Validate receipt identities; upstream biological meaning is not inferred."""
+    if isinstance(value, dict) and value.get("schema") == "loci.dynacell-derived-source/v1":
+        from .research_virtual_stain import validate_derivation as validate_virtual_stain
+
+        return validate_virtual_stain(value, source_sha256, metadata)
     exact_keys(value, {"schema", "receipt", "record"}, "vendor source derivation")
     if value.get("schema") != "loci.vendor-derived-source/v1":
         raise ValueError("Unsupported derived vendor-source receipt")

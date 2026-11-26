@@ -12,7 +12,7 @@ import {
 describe("main-process fixed-ID model library link dispatcher", () => {
   it("opens each registered fixed-ID link with its exact pinned HTTPS URL", async () => {
     const keys = Object.keys(MODEL_LIBRARY_OFFICIAL_LINKS) as ModelLibraryLinkId[];
-    expect(keys.length).toBe(28);
+    expect(keys.length).toBe(38);
     expect(MODEL_LIBRARY_OFFICIAL_LINKS["cellpose-github-repo"]).toBe(
       "https://github.com/MouseLand/cellpose",
     );

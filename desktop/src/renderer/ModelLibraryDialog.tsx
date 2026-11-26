@@ -181,7 +181,7 @@ function ModelZooCard({
             <span className="model-zoo-card__media-empty-title">
               {mediaError
                 ? "Example image failed to decode"
-                : "Reference imagery pending"}
+                : "No bundled example"}
             </span>
             <span className="model-zoo-card__media-empty-meta">
               {entry.taskLabel}
@@ -497,7 +497,7 @@ function ModelZooDetail({
                     {entry.artifact.sha256 ? (
                       <code>{entry.artifact.sha256}</code>
                     ) : (
-                      "User-supplied external runtime checkpoint"
+                      "No SHA-256 recorded"
                     )}
                   </dd>
                 </div>

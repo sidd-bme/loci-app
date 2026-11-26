@@ -168,6 +168,7 @@ import {
   type ResearchCellposeBatchConfiguration,
 } from "./ResearchCellposePanel";
 import ModelLibraryDialog from "./ModelLibraryDialog";
+import { VirtualStainPanel } from "./VirtualStainPanel";
 import {
   NUCLEI_INSTALL_DOWNLOADING_STATUS,
   NucleiModelInstallControl,
@@ -2352,6 +2353,8 @@ export default function ResearchWorkbench({
       }
     } else if (route === "tissue-epidermis") {
       openWorkbenchTab("Tissue model");
+    } else if (route === "virtual-stain") {
+      openWorkbenchTab("Virtual stain");
     }
   };
   const refreshModels = useCallback(
@@ -5664,6 +5667,25 @@ export default function ResearchWorkbench({
               );
             }}
           />
+        )}
+        {source && dimensions && tab === "Virtual stain" && (
+          <VirtualStainPanel key={numberScope} api={api} source={source} timepoint={shownSelection.t}
+            busy={busy !== null || documentSwitching}
+            onRun={async request => {
+              if (!api.runVirtualStain) return;
+              const scope = currentStudyScope.current, intent = largeNavigationIntent.current;
+              setBusy("predicting nuclear stain");
+              try {
+                const receipt = await report(() => api.runVirtualStain!(request), "The nuclear stain could not be predicted.");
+                if (!receipt || currentStudyScope.current !== scope || documentSwitch.current ||
+                    receipt.snapshot.project.project_id !== snapshot.project.project_id) return;
+                if (intent === largeNavigationIntent.current && liveModelUi.current.tab === "Virtual stain" &&
+                    liveModelUi.current.sourceKey === JSON.stringify([request.source_id, request.source_sha256])) {
+                  adopt(receipt.snapshot, receipt.source.id);
+                  void openWorkbenchTab("Display");
+                } else setSnapshot(receipt.snapshot);
+              } finally { setBusy(current => current === "predicting nuclear stain" ? null : current); }
+            }} />
         )}
         {source && dimensions && tab === "Model" && (
           <ModelPanel

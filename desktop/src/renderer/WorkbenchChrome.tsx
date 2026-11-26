@@ -20,7 +20,7 @@ import BrandMark from "./BrandMark";
 import "./WorkbenchChrome.css";
 
 export type WorkbenchTab = "Display" | "Annotate" | "Epidermis" | "Process" | "Analyze" | "Workflow" | "Quantify" | "Density" | "Population" | "Correction" |
-  "Temporal" | "Wound" | "Morphology" | "Tissue model" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
+  "Temporal" | "Wound" | "Morphology" | "Tissue model" | "Virtual stain" | "Registration" | "Agent" | "Remote" | "Model" | "Study" | "Portability" | "Vendor import" | "Info";
 const GROUPS = ["View", "Annotate", "Analyze", "Results"] as const;
 type Group = typeof GROUPS[number];
 const tabId = (tab: WorkbenchTab) => tab.replaceAll(" ", "-");
@@ -36,6 +36,7 @@ const TOOLS: Array<{ tab: WorkbenchTab; label: string; group: Group; advanced?: 
   { tab: "Process", label: "Preprocess", group: "Analyze" },
   { tab: "Workflow", label: "Workflow builder", group: "Analyze", keywords: "pipeline automation nodes batch recipe" },
   { tab: "Model", label: "Use a model", group: "Analyze" },
+  { tab: "Virtual stain", label: "Virtual nuclear stain", group: "Analyze", keywords: "DynaCell iPSC reconstructed phase 3D prediction" },
   { tab: "Tissue model", label: "Epidermis model", group: "Analyze", keywords: "PUMA tissue histology H&E hematoxylin eosin epidermis compartment mask" },
   { tab: "Quantify", label: "Fluorescence & field assay", group: "Analyze", keywords: "fluorescence signal nuclei background intensity puncta association perinuclear nuclear ring enrichment" },
   { tab: "Morphology", label: "Nuclear & cell shape", group: "Analyze", keywords: "morphology morphometrics circularity eccentricity elongation surface perimeter sphericity organoid" },
@@ -60,6 +61,7 @@ const TOOL_HELP: Record<WorkbenchTab, string> = {
   Analyze: "Choose a method, preview its settings, and create objects with measurements.",
   Process: "Build an ordered preprocessing recipe and preview its effect on a declared region.",
   Model: "Run an explicitly provisioned model with its recorded runtime, settings and validation limits.",
+  "Virtual stain": "Predict nuclear structure from a reconstructed phase stack of healthy human iPS cells.",
   "Tissue model": "Import exact PUMA files, declare H&E preparation, preview epidermis and inspect original predictions separately from compartment edits.",
   Quantify: "Measure regional fluorescence, puncta and channel association in declared scalar channels.",
   Morphology: "Add digital shape measurements to exact saved 2D or 3D object masks, then inspect linked objects and distributions.",

@@ -338,6 +338,10 @@ const researchApi: ResearchDesktopApi = {
   importModel: (workingBytes, recoveryModelId) =>
     ipcRenderer.invoke("loci-research:import-model", workingBytes, recoveryModelId),
   installNucleiModel: (workingBytes) => ipcRenderer.invoke("loci-research:install-nuclei-model", workingBytes),
+  dynacellStatus: () => ipcRenderer.invoke("loci-research:dynacell-status"),
+  installDynacell: (source) => ipcRenderer.invoke("loci-research:dynacell-install", source),
+  cancelDynacellInstall: () => ipcRenderer.invoke("loci-research:dynacell-cancel-install"),
+  runVirtualStain: (request) => ipcRenderer.invoke("loci-research:virtual-stain", request),
   cancelNucleiModelInstall: () => ipcRenderer.invoke("loci-research:cancel-nuclei-model-install"),
   importTissueModel: (profileId) => ipcRenderer.invoke("loci-research:import-tissue-model", profileId),
   getTissueModelImportStatus: (profileId) => ipcRenderer.invoke("loci-research:tissue-model-import-status", profileId),

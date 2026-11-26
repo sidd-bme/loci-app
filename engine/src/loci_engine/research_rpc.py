@@ -318,6 +318,14 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
         exact_keys(params, {"project", "destination"}, method)
         project = clone_study(_open(params["project"]).project, params["destination"])
         return _open(str(project.root)).snapshot()
+    if method == "research_virtual_stain":
+        from .research_virtual_stain import run
+
+        if set(params) != {"project", "request", "destination", "checkpoint"}:
+            raise ValueError("Incomplete or unknown desktop virtual stain parameters")
+        return run(
+            _open(params["project"]), params["request"], params["destination"], params["checkpoint"]
+        )
     if method == "research_vendor_inspect":
         from .vendor_conversion import inspect_vendor
 
