@@ -663,7 +663,8 @@ try {
       .filter({ hasText: "Reference check passed." }),
     "visible useful model qualification",
   );
-  const modelTechnical = page.locator(".research-model-records details.research-technical-record");
+  const modelTechnical = page.locator(".research-model-records details.research-technical-record")
+    .filter({ has: page.getByText("Technical record", { exact: true }) });
   assert.equal(await modelTechnical.getAttribute("open"), null);
   await modelTechnical.locator(":scope > summary").click();
   await visible(
