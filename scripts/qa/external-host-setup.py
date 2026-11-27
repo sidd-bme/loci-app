@@ -110,6 +110,12 @@ def antigravity_command(executable, model, bundle, access, prompt, output, env):
     config = json.loads((bundle / access["antigravity_config_filename"]).read_text())
     (server,) = config["mcpServers"]
     manifest = bundle / access["antigravity_plugin_filename"]
+    discovery = Path(env["HOME"]) / ".gemini/antigravity-cli/mcp" / server
+    readable = {
+        manifest.parent / "skills/loci-analysis/SKILL.md",
+        discovery / "instructions.md",
+        *(discovery / f"{tool}.json" for tool in TOOLS),
+    }
     require(
         run_command(
             [executable, "plugin", "validate", "--strict", "--json", manifest.parent],
@@ -122,12 +128,15 @@ def antigravity_command(executable, model, bundle, access, prompt, output, env):
         "Antigravity rejected the generated plugin",
     )
     settings = {
+        "useG1Credits": False,
         "permissions": {
-            "allow": [f"mcp({server}/{tool})" for tool in TOOLS],
+            "allow": [
+                *(f"mcp({server}/{tool})" for tool in TOOLS),
+                *(f"read_file({path})" for path in sorted(readable)),
+            ],
             "deny": [
                 "command(*)",
                 "unsandboxed(*)",
-                "read_file(*)",
                 "write_file(*)",
                 "read_url(*)",
                 "execute_url(*)",
@@ -142,7 +151,7 @@ def antigravity_command(executable, model, bundle, access, prompt, output, env):
             "--model",
             model,
             "--mode",
-            "plan",
+            "accept-edits",
             "--sandbox",
             "--settings",
             json.dumps(settings),
@@ -153,6 +162,7 @@ def antigravity_command(executable, model, bundle, access, prompt, output, env):
             "--print",
             prompt,
         ],
+        readable,
     )
 
 
@@ -190,7 +200,7 @@ def codex_command(executable, model, bundle, access, prompt):
     return workspace, server, [*command, prompt]
 
 
-def host_calls(path, client, server):
+def host_calls(path, client, server, *, readable=()):
     """Track completed tool steps from the real CLI log, independent of prose."""
     calls = []
     for line in path.read_text().splitlines():
@@ -222,6 +232,24 @@ def host_calls(path, client, server):
                 continue
             info = step.get("tool_info") or {}
             parameters = info.get("parameters") or {}
+            if step.get("tool_name") == "update_steps":
+                # Antigravity keeps an internal conversation checklist during execution.
+                require(
+                    set(parameters) == {"steps"}
+                    and isinstance(parameters["steps"], list)
+                    and not info.get("error"),
+                    "Unexpected Antigravity checklist event",
+                )
+                continue
+            if step.get("tool_name") == "read_file":
+                target = parameters.get("Path")
+                require(
+                    isinstance(target, str)
+                    and Path(target) in readable
+                    and not info.get("error"),
+                    "Antigravity read outside the generated skill and MCP discovery files",
+                )
+                continue
             tool = parameters.get("ToolName")
             require(
                 step.get("tool_name") == "call_mcp_tool"
@@ -362,8 +390,15 @@ def main():
     verification = access["verification_prompt"]
     approved = json.loads((bundle / "approved-request.json").read_text())
     prompt = (
-        "This is a synthetic engineering fixture. Use serial Loci MCP calls only: no shell, "
-        "file, web or other tools. "
+        "This is a synthetic engineering fixture. Execute the steps now and return observed "
+        "results. Use serial Loci MCP calls. "
+        + (
+            "For tool discovery you may read the generated Loci skill and this server's "
+            "discovery catalog or instructions if needed. "
+            if args.client == "antigravity"
+            else ""
+        )
+        + "Use no shell, web, or other file tools. "
         + verification.split(" Use MCP only.")[0]
         + " Once verified, call submit_recipe with the exact Arguments object below. "
         "Poll job_status until succeeded and owned_worker_active is false, then report the job "
@@ -391,8 +426,9 @@ def main():
             text=True,
             timeout=15,
         ).strip()
+        readable = ()
         if args.client == "antigravity":
-            workspace, server, argv = antigravity_command(
+            workspace, server, argv, readable = antigravity_command(
                 executable, args.model, bundle, access, prompt, output, env
             )
         else:
@@ -404,7 +440,7 @@ def main():
         )
         transcript = output / "host.stdout"
         receipt["transcript_sha256"] = digest(transcript)
-        calls = host_calls(transcript, args.client, server)
+        calls = host_calls(transcript, args.client, server, readable=readable)
         receipt["mcp_calls"] = [name for name, _ in calls]
         require(
             receipt["exit_code"] == 0,

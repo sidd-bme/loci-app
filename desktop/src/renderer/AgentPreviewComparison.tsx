@@ -71,6 +71,10 @@ function PreviewImage({ value, label }: { value: unknown; label: string }): Reac
 
 function selectionFor(cell: PreviewCell): RecordValue | null {
   const selection = record(cell.receipt?.selection) ?? record(record(cell.value.provenance)?.selection) ?? record(cell.value.selection);
+  return checkedSelection(selection);
+}
+
+function checkedSelection(selection: RecordValue | null): RecordValue | null {
   if (!selection || !["x", "y", "width", "height", "c", "t", "z", "level"].every((key) =>
     Number.isSafeInteger(selection[key]) && Number(selection[key]) >= (key === "width" || key === "height" ? 1 : 0)) ||
     (selection.z_stop !== undefined && (!Number.isSafeInteger(selection.z_stop) || Number(selection.z_stop) <= Number(selection.z)))) return null;
@@ -145,6 +149,10 @@ function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPr
   const receipt = record(preview.output.preview);
   const source = record(receipt?.source);
   const display = record(source?.display);
+  const mapping = source?.channel_mapping;
+  const inputChannel = Array.isArray(mapping) && mapping.length === 1 ? record(mapping[0])?.source_channel : undefined;
+  const region = checkedSelection({ ...record(source?.selection), c: inputChannel });
+  const count = record(receipt?.output)?.object_count;
   const digest = display?.png_sha256;
   const data = cellsFor(preview).length === 1 && preview.output.adopted === false &&
     receipt?.schema === "loci.model-preview/v1" && text(receipt.id) && text(receipt.preview_sha256) && hash.test(receipt.preview_sha256) &&
@@ -177,7 +185,7 @@ function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPr
     return () => { active = false; };
   }, [data, digest]);
   const bound = approval && matchesModelApproval(preview, approval) && !expired;
-  const canInspect = Boolean(bound && verified && painted && !failed && onDecision);
+  const canInspect = Boolean(bound && region && verified && painted && !failed && onDecision);
   const decide = async (allow: boolean) => {
     if (savingRef.current || !approval || !onDecision || (allow && (!canInspect || !checked || Date.parse(approval.expires_at) <= Date.now()))) return;
     savingRef.current = true;
@@ -201,10 +209,13 @@ function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPr
                 image.getBoundingClientRect().width > 0 && image.getBoundingClientRect().height > 0) setPainted(true);
           }));
         }} />
-      <figcaption>Colored fills mark predicted objects. Green outlines show their boundaries.</figcaption>
+      <figcaption>{Number.isSafeInteger(count) && Number(count) >= 0 ? `${count} predicted objects` : "Predicted objects"} · green outlines</figcaption>
     </figure></div> : <p role="status">{data && !failed ? "Verifying model preview…" : "The exact source-bound model preview is unavailable."}</p>}
-    {source && <Scope cell={{ value: source, receipt: null, label: "" }} />}
-    {approval && <p>{approval.summary}</p>}
+    {region ? <p className="agent-preview-scope">
+      {String(region.width)} × {String(region.height)} px at ({String(region.x)}, {String(region.y)}) ·
+      {" "}Input C {String(region.c)} · Z {String(region.z)} · T {String(region.t)} (zero-based)
+      {Number(region.level) > 0 && ` · Level ${region.level}`}
+    </p> : <p className="agent-preview-scope">The source region or model input channel could not be verified.</p>}
     {approval && <div className="agent-preview-toolbar">
       <label><input type="checkbox" disabled={!canInspect || saving} checked={checked}
         onChange={event => setChecked(event.target.checked)} />I inspected this model preview</label>

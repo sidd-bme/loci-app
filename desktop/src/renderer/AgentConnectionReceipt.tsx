@@ -44,21 +44,25 @@ export function AgentConnectionReceipt({ receipt, sessions, client, onCheck, onR
         <p>{workspace ? <>Open <code>{workspace}</code> as a project in {client === "antigravity" ? "Antigravity" : "Codex"}, trust the workspace and start a new chat.</> :
           client === "claude" ? <>Add the <code>loci-research</code> entry from <code>mcp-config.json</code> in Claude Desktop’s developer settings, then restart Claude.</> :
           <>Follow <code>README.txt</code> in the setup folder to connect Codex, then start a new chat.</>}</p>}
-      {!connected && <label>First prompt<textarea className="research-agent-prompt" rows={3} readOnly value={prompt} /></label>}
       <div className="research-agent-buttons">
-        {!connected && <button onClick={() => void perform(async () => { await navigator.clipboard.writeText(prompt); setCopied(true); }, "Select and copy the prompt above.")}>{copied ? "Prompt copied" : "Copy prompt"}</button>}
+        {!connected && <button className="research-primary" onClick={() => void perform(async () => { await navigator.clipboard.writeText(prompt); setCopied(true); }, "Open View first prompt to copy it manually.")}>{copied ? "Prompt copied" : "Copy prompt"}</button>}
         {connected && onOpenWorkspace && <button onClick={onOpenWorkspace}>View agent workspace</button>}
         {!connected && onCheck && <button disabled={checking} onClick={() => void perform(async () => {
           setChecking(true);
           try { await onCheck(); setChecked(true); } finally { setChecking(false); }
         }, "Could not check this connection.")}>{checking ? "Checking connection…" : "Check connection"}</button>}
       </div>
+      {!connected && <details><summary>View first prompt</summary>
+        <textarea aria-label="First prompt" className="research-agent-prompt" rows={3} readOnly value={prompt} />
+      </details>}
       {checked && !connected && <p role="status">No active session for this setup. Send the first prompt in your assistant.</p>}
     </>}
+    <div className="research-agent-buttons">
     {onReveal && <button onClick={() => void perform(() => onReveal(receipt.policy_sha256), "Could not show the setup folder.")}>Show setup folder</button>}
     {!connected && !policy?.revoked && workspace && onCopyLaunch && <button onClick={() => void perform(async () => {
       await onCopyLaunch(receipt.policy_sha256); setLaunchCopied(true);
     }, "Could not copy the command.")}>{launchCopied ? "Command copied" : "Copy terminal command"}</button>}
+    </div>
     {error && <p role="alert">{error}</p>}
     <details><summary>Connection record</summary><dl className="research-kv">
       <div><dt>Policy file</dt><dd>{receipt.policy_filename}</dd></div>

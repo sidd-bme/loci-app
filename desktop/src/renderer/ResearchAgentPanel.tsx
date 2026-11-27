@@ -489,6 +489,7 @@ export function ResearchAgentPanel({
     }
   };
 
+  const GrantSettings = receipt ? "details" : "div";
   return (
     <div className="research-panel research-agent">
       <h2>Connect an assistant</h2>
@@ -505,6 +506,8 @@ export function ResearchAgentPanel({
       </button>}
       {receipt && <AgentConnectionReceipt key={receipt.policy_sha256} receipt={receipt} sessions={agentSessions}
         client={client} onCheck={onCheckConnection} onReveal={api.revealAgentSetup} onCopyLaunch={api.copyAgentLaunch} onOpenWorkspace={onOpenWorkspace} />}
+      <GrantSettings key={receipt?.policy_sha256 ?? "new-grant"} className="research-agent-grant-settings">
+      {receipt && <summary>Create another grant</summary>}
       <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
         <option value="custom">Custom permissions</option><option value="inspect">Inspect</option>
         <option value="analyze" disabled={!actionChoices.length}>Analyze</option><option value="full" disabled={!actionChoices.length}>Full study</option>
@@ -718,6 +721,7 @@ export function ResearchAgentPanel({
       {!api.createAgentAccess && <p role="alert">This desktop build does not provide the native policy-bundle creator.</p>}
       <details><summary>Access and review</summary><p>Choose a new access-bundle folder in the next dialog.
         Exports require review of the exact result revision. {allowReview ? "This grant permits agent review." : "Review stays with the researcher."} The built-in recipe runs locally on CPU.</p></details>
+      </GrantSettings>
 
       {imageTools?.(false)}
       </>}

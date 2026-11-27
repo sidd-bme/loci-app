@@ -19,6 +19,13 @@ const binding = ({ id, revision_hash }) => ({ result_id: id, revision_hash });
 const execute = (page, operation, request = {}) =>
   page.evaluate(({ operation, request }) => window.lociResearch.execute(operation, request), { operation, request });
 
+export function assertPolicyRefusal(reply) {
+  assert.equal(reply.is_error, true);
+  assert.ok(reply.content.some((part) => part.type === "text" &&
+    part.text.endsWith("The operation, source scope, disclosure or resource limit is not authorized by the active policy.")),
+  "Expected the public MCP authorization error");
+}
+
 export async function comparisonPreflight() {
   if (!process.env.LOCI_QA_ONNX_PACKAGE) return null;
   const directory = await fs.realpath(requiredPath("LOCI_QA_ONNX_PACKAGE"));
@@ -85,20 +92,27 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
   assert.equal(registered.agent_execution.adoption_requires_human_visual_review, true);
   const request = comparisonRequest(source.id, approvedSelection, model);
   const ungrantedChannel = { ...request, channel_mapping: [{ ...request.channel_mapping[0], source_channel: 1 }] };
+  const beforeRefusal = await snapshot();
   const refusal = await sdk.callResponse("submit_action", {
     operation: "model_preview", request: ungrantedChannel, request_key: "onnx-ungranted-channel",
   }, true);
-  assert.match(JSON.stringify(refusal.content), /channel.*outside.*grant/i);
-  assert.ok(!(await snapshot()).jobs.some((job) => job.operation === "model_preview"));
+  assertPolicyRefusal(refusal);
+  const afterRefusal = await snapshot();
+  assert.deepEqual(afterRefusal.jobs.map(({ id }) => id), beforeRefusal.jobs.map(({ id }) => id));
+  assert.deepEqual(afterRefusal.agent_sessions.approvals.map(({ id }) => id),
+    beforeRefusal.agent_sessions.approvals.map(({ id }) => id));
   const previewJob = await submitAction("model_preview", request, "onnx-preview");
   assert.deepEqual(previewJob.result_ids, [], "Preview published a durable result");
   const reply = await sdk.callResponse("inspect_action", { operation: "task_preview_get", request: { job_id: previewJob.id } });
   const cached = reply.structured_content.preview;
   const preview = cached.output.preview;
   const image = reply.structured_content.image_transport.images.find((part) => part.json_pointer === "/preview/output/overlay_png");
+  assert.ok(image, "MCP must deliver a native image block for the retained overlay");
   assert.equal(reply.content[image.content_index].type, "image");
   assert.equal(reply.content[image.content_index].sha256, image.sha256);
   assert.equal(cached.source_sha256, source.sha256);
+  assert.equal(cached.job_id, previewJob.id);
+  assert.equal(cached.operation, "model_preview");
   assert.equal(cached.adopted, false);
   assert.equal(preview.package.package_sha256, packageSha);
   assert.equal(preview.source.id, source.id);
@@ -106,9 +120,11 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
   assert.equal(preview.source.display.png_sha256, image.sha256);
   const previewBinding = { preview_id: preview.id, preview_sha256: preview.preview_sha256 };
   const adoption = await submitAction("model_run", previewBinding, "onnx-adopt", async ({ card, originalApprove, pending }) => {
+    assert.equal(pending.explicit_approval_required, true);
     assert.equal(pending.parameters_summary.preview_job_id, previewJob.id);
     assert.equal(pending.parameters_summary.preview_id, preview.id);
     assert.equal(pending.parameters_summary.preview_sha256, preview.preview_sha256);
+    assert.equal(pending.parameters_summary.png_sha256, image.sha256);
     assert.equal(pending.parameters_summary.review_requirement, "visual-preview-inspection-required");
     if (await originalApprove.count()) assert.equal(await originalApprove.isDisabled(), true, "Adoption allowed before visual inspection");
     await card.getByRole("button", { name: "Inspect model preview", exact: true }).click();
@@ -121,6 +137,10 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
       return url?.startsWith("data:image/png;base64,") && hashText(Buffer.from(url.split(",", 2)[1], "base64"));
     }, (sha) => sha === image.sha256, "exact retained preview in the image stage", 15_000);
     assert.equal(displayedSha, image.sha256);
+    const region = preview.source.selection;
+    const channel = preview.source.channel_mapping[0].source_channel;
+    await displayedPreview.getByText(`${region.width} × ${region.height} px at (${region.x}, ${region.y}) · Input C ${channel} · Z ${region.z} · T ${region.t} (zero-based)`, { exact: true }).waitFor();
+    await displayedPreview.getByText(`${preview.output.object_count} predicted objects · green outlines`, { exact: true }).waitFor();
     await checkpoint("model-04-exact-preview-rendered");
     const confirm = displayedPreview.getByRole("checkbox", { name: "I inspected this model preview", exact: true });
     const approve = displayedPreview.getByRole("button", { name: "Approve submit_action", exact: true });
@@ -135,6 +155,7 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
   const retained = await sdk.call("result", { result_id: id, limit: 1 });
   assert.equal(result.kind, "model-segmentation");
   assert.equal(result.source_sha256, source.sha256);
+  assert.deepEqual(result.selection, { ...request.selection, c: 0 });
   assert.equal(retained.result.revision_hash, result.revision_hash);
   assert.equal(retained.result.review, null);
   assert.deepEqual((await sdk.call("review_history", { result_id: id })).events, []);
@@ -145,7 +166,7 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
   const evidence = await record("verified-onnx-adoption.json", {
     source_sha256: source.sha256,
     model: { id: model.model_id, package_sha256: packageSha, runtime: registered.agent_execution.runtime_policy_identity },
-    scope: request, ungranted_channel: { channel: 1, rejected: true, job_created: false },
+    scope: request, ungranted_channel: { channel: 1, rejected: true, job_created: false, approval_created: false },
     preview: { job_id: previewJob.id, ...previewBinding, image_sha256: image.sha256, output_sha256: cached.output_sha256 },
     adoption: { job_id: adoption.id, ...binding(result), labels_sha256: result.arrays.labels.sha256,
       objects: retained.total_rows, scientific_review: retained.result.review },

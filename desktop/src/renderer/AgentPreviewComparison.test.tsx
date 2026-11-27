@@ -27,7 +27,8 @@ describe("AgentPreviewComparison", () => {
     try {
       const digest = createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex");
       const receipt = { schema: "loci.model-preview/v1", id: "preview-a", preview_sha256: "7".repeat(64),
-        source: { id: sourceId, sha256: sourceHash, display: { png_sha256: digest } } };
+        source: { id: sourceId, sha256: sourceHash, selection: { x: 7, y: 11, width: 696, height: 520, z: 2, t: 4, level: 0 },
+          channel_mapping: [{source_channel: 3}], display: { png_sha256: digest } }, output: { object_count: 66 } };
       const model = preview({ operation: "model_preview", output: { adopted: false, overlay_png: png, preview: receipt } });
       const approval = { ...wire.approvals[0], operation: "submit_action", action_name: "model_run", state: "pending",
         source_id: sourceId, source_sha256: sourceHash, expires_at: new Date(Date.now() + 60000).toISOString(),
@@ -38,6 +39,8 @@ describe("AgentPreviewComparison", () => {
       const check = () => screen.getByRole("checkbox", { name: "I inspected this model preview" });
       const allow = () => screen.getByRole("button", { name: "Approve submit_action" });
       const image = await screen.findByRole("img", { name: "Source with predicted model labels" });
+      expect(screen.getByText("66 predicted objects · green outlines")).toBeVisible();
+      expect(screen.getByText("696 × 520 px at (7, 11) · Input C 3 · Z 2 · T 4 (zero-based)")).toBeVisible();
       expect(check()).toBeDisabled();
       Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1 }, naturalHeight: { value: 1 } });
       vi.spyOn(image, "getBoundingClientRect").mockReturnValue({ width: 48, height: 48 } as DOMRect);
@@ -51,6 +54,10 @@ describe("AgentPreviewComparison", () => {
       view.rerender(<AgentPreviewComparison {...props} approval={{ ...approval, id: "another-request" }} />);
       expect(check()).not.toBeChecked();
       expect(allow()).toBeDisabled();
+      view.rerender(<AgentPreviewComparison {...props} preview={{ ...model, output_sha256: "8".repeat(64),
+        output: { ...model.output, preview: { ...receipt, source: { ...receipt.source, channel_mapping: [] } } } }} />);
+      expect(screen.getByText(/source region or model input channel could not be verified/)).toBeVisible();
+      expect(check()).toBeDisabled();
       view.rerender(<AgentPreviewComparison {...props} preview={{ ...model, output_sha256: "9".repeat(64),
         output: { ...model.output, preview: { ...receipt, source: { ...receipt.source, display: { png_sha256: sourceHash } } } } }} />);
       await screen.findByText("The exact source-bound model preview is unavailable.");

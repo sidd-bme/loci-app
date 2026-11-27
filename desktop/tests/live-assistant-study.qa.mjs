@@ -21,7 +21,7 @@ import { _electron as electron } from "playwright";
 import { close, executableFile, noUiError, plainFile, projectRoot, requiredPath, run, sha256 } from "./research-model-workbench.qa.mjs";
 import { selectResultSection, selectWorkbenchTool, setSelectionField, sourceRowByName, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 import {
-  compareSavedMethods, comparisonPreflight, comparisonRequest, importComparisonModel, inspectSavedDifferences, modelPickerTitle,
+  assertPolicyRefusal, compareSavedMethods, comparisonPreflight, comparisonRequest, importComparisonModel, inspectSavedDifferences, modelPickerTitle,
   runScopedModel, verifyComparisonPackage,
 } from "./live-assistant-comparison.qa.mjs";
 
@@ -333,7 +333,7 @@ async function journey(config) {
         operation: "model_preview", request: comparisonRequest(source.id, ungranted.selection, installedModel),
         request_key: "onnx-without-native-grant",
       }, true);
-      assert.match(JSON.stringify(refusal.content), /grant|policy|permitted|scope/i);
+      assertPolicyRefusal(refusal);
       const denied = await snapshot();
       assert.deepEqual(denied.jobs, []);
       assert.deepEqual(denied.agent_sessions.approvals, []);
@@ -343,6 +343,7 @@ async function journey(config) {
       };
       await sdk.close();
       sdk = null;
+      await panel.getByText("Create another grant", { exact: true }).click();
       await grantModel.check();
     }
     await panel.getByLabel("Exact recipe validation", { exact: true }).waitFor();
@@ -377,7 +378,10 @@ async function journey(config) {
       configFile], { timeout: 15_000 })).stdout) : (await json(configFile)).mcpServers;
     assert.deepEqual(Object.keys(mcpServers), [serverId]);
     assert.deepEqual(mcpServers[serverId], { command: config.worker, args: ["--cli", "mcp", "--policy", policyPath] });
+    const promptDetails = setup.getByText("View first prompt", { exact: true });
+    await promptDetails.click();
     const prompt = await setup.getByRole("textbox", { name: "First prompt", exact: true }).inputValue();
+    await promptDetails.click();
     assert.ok(prompt.includes(serverId) && prompt.includes(policySha) && prompt.includes(source.id));
     const readme = await fs.readFile(path.join(access, "README.txt"), "utf8");
     assert.ok(readme.includes(prompt), "The prompt must match the selected host's instructions");
@@ -514,12 +518,21 @@ async function journey(config) {
         const durableJob = actual.jobs.find((item) => item.id === job.id);
         const consumed = actual.agent_sessions.approvals.find((item) => item.id === pending.id);
         assert.equal(durableJob.owner.session_id, session.session_id);
+        assert.equal(durableJob.operation, operation);
+        assert.equal(durableJob.state, "succeeded");
         assert.equal(consumed.state, "consumed");
         assert.equal(consumed.decided_by, "human");
+        if (operation === "model_run") assert.deepEqual(consumed.inspected_preview, {
+          preview_id: request.preview_id,
+          preview_sha256: request.preview_sha256,
+          preview_job_id: pending.parameters_summary.preview_job_id,
+          png_sha256: pending.parameters_summary.png_sha256,
+        });
         await record(`model-approval-${operation}-consumed.json`, {
           id: pending.id, action_name: operation, policy_sha256: pending.policy_sha256, session_id: pending.session_id,
           request_hash: pending.request_hash, source_id: pending.source_id, source_sha256: pending.source_sha256,
           state: consumed.state, decided_by: consumed.decided_by, job_id: job.id,
+          ...(consumed.inspected_preview ? { inspected_preview: consumed.inspected_preview } : {}),
         });
         return completed;
       };

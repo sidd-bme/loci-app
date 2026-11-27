@@ -120,7 +120,8 @@ function harness() {
         source_id: ID_A, source_sha256: SHA_A, request_sha256: current.jobs[0].request_hash, output_sha256: "4".repeat(64), adopted: false,
         created_at: "2026-10-27T00:02:00Z", output: { adopted: false, overlay_png: png, preview: {
           schema: "loci.model-preview/v1", id: "preview-a", preview_sha256: "3".repeat(64), source: { id: ID_A, sha256: SHA_A,
-            selection, display: { png_sha256: createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex") } } } } } });
+            selection, channel_mapping: [{ source_channel: selection.c }],
+            display: { png_sha256: createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex") } } } } } });
     },
     completePreview() {
       const preview: SharedTaskPreview = { schema: "loci.task-preview/v1", job_id: "9".repeat(32), operation: "workflow_preview",

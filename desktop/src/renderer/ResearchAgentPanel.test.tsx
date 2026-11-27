@@ -754,7 +754,14 @@ it("grants the selected Antigravity workspace without changing its permission se
   const connection = await screen.findByLabelText("Created agent access receipt");
   expect(create).toHaveBeenCalledWith(expect.objectContaining({ client: "antigravity", allow_run: false, disclosures: [] }));
   expect(within(connection).getByRole("heading")).toHaveTextContent("Waiting for your assistant");
-  expect(within(connection).getByLabelText("First prompt")).toHaveValue(minimal.verification_prompt);
+  const firstPrompt = within(connection).getByLabelText("First prompt");
+  expect(firstPrompt).toHaveValue(minimal.verification_prompt);
+  expect(firstPrompt).not.toBeVisible();
+  fireEvent.click(within(connection).getByText("View first prompt"));
+  expect(firstPrompt).toBeVisible();
+  expect(screen.getByLabelText("Assistant access level")).not.toBeVisible();
+  fireEvent.click(screen.getByText("Create another grant"));
+  expect(screen.getByLabelText("Assistant access level")).toBeVisible();
 });
 
 it("uses the live session's declared client, exact study and grant when checking a connection", async () => {
