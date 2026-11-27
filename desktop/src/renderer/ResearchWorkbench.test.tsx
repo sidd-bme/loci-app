@@ -28,6 +28,7 @@ import type {
 } from "../shared/research-contracts";
 
 import type { IntensityReport, SampleSheetPreview } from "../shared/intensity-contracts";
+import type { OrganoidGraph } from "../shared/organoidtracker";
 import type { ScientificExportRequest, ScientificExportPreview } from "../shared/scientific-export-contracts";
 
 let canvasContext: Record<string, ReturnType<typeof vi.fn>>;
@@ -1686,6 +1687,70 @@ describe("ResearchWorkbench", () => {
     await waitFor(() => expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThan(previousCacheBytes));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(viewer).toHaveAttribute("data-camera", previousCamera);
+  });
+
+  it("drains display writes and pauses refinement for the OrganoidTracker graph import", async () => {
+    const active = structuredClone(snapshot);
+    active.results = [];
+    const source = active.sources[0];
+    source.source_kind = "native";
+    source.metadata.dimensions!.t = 2;
+    source.metadata.levels![0].dimensions.t = 2;
+    source.metadata.physical_calibration = { unit: "µm", spacing: [2, 0.5, 0.25] };
+    source.metadata.timing = { source: "ome-time-increment", uniform_interval: 30, interval_unit: "s" };
+    const graph: OrganoidGraph = {
+      id: "c".repeat(32), graph_sha256: "c".repeat(64), file_sha256: "d".repeat(64),
+      source_id: source.id, source_sha256: source.sha256, first: 0, origin: "model-output",
+      spacing_xyz_um: [0.25, 0.5, 2], interval_s: 30,
+      nodes: [[0, 4, 3, 1], [1, 5, 4, 2]], edges: [[0, 1, 0.72, 0.9]],
+    };
+    let finishImport!: (graph: OrganoidGraph) => void;
+    let finishViewWrite!: () => void;
+    let rejectRefinement!: (error: Error) => void;
+    let importPending = false;
+    const duringImport: string[] = [];
+    const importOrganoidGraph = vi.fn(() => new Promise<OrganoidGraph>(resolve => {
+      importPending = true;
+      finishImport = value => { importPending = false; resolve(value); };
+    }));
+    const desktop = api({ getSnapshot: vi.fn().mockResolvedValue(active), importOrganoidGraph });
+    const execute = desktop.execute;
+    desktop.execute = vi.fn(async (operation, request, options) => {
+      if (importPending) {
+        duringImport.push(operation);
+        throw new Error("Wait for the study to finish opening.");
+      }
+      if (operation === "viewer_tile" && !request.overview && !rejectRefinement) {
+        return new Promise((_, reject) => { rejectRefinement = reject; });
+      }
+      if (operation === "save_source_view" && !finishViewWrite) {
+        return new Promise(resolve => { finishViewWrite = () => resolve(execute(operation, request, options)); });
+      }
+      return execute(operation, request, options);
+    });
+    render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
+    const main = await screen.findByRole("main", { name: "Research workspace" });
+    const viewer = await screen.findByLabelText("Image viewer: Specimen");
+    await waitFor(() => expect(rejectRefinement).toBeTypeOf("function"));
+    await openTool("Analyze", "Temporal");
+    const panel = within(screen.getByRole("region", { name: "OrganoidTracker lineage" }));
+    fireEvent.change(panel.getByLabelText(/time point at the first image frame/), { target: { value: "0" } });
+    fireEvent.change(panel.getByLabelText("Graph origin"), { target: { value: "model-output" } });
+    fireEvent.click(panel.getByRole("checkbox"));
+    fireEvent.click(panel.getByRole("button", { name: "Choose .aut graph…" }));
+    expect(main).toHaveAttribute("inert");
+    expect(importOrganoidGraph).not.toHaveBeenCalled();
+    await waitFor(() => expect(finishViewWrite).toBeTypeOf("function"));
+    await act(async () => { finishViewWrite(); });
+    expect(importOrganoidGraph).toHaveBeenCalledExactlyOnceWith({ id: source.id, sha256: source.sha256 }, 0, "model-output");
+    await act(async () => { rejectRefinement(new Error("Wait for the study to finish opening.")); });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(duringImport).toEqual([]);
+    await act(async () => { finishImport(graph); });
+    expect(main).not.toHaveAttribute("inert");
+    expect(panel.getByText("2 positions · 1 links · 0 branch parents")).toBeVisible();
+    expect(panel.getByRole("button", { name: "View later source plane" })).toBeEnabled();
+    expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
   });
 
   it.each(["success", "cancel", "error"] as const)(

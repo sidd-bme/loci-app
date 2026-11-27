@@ -506,7 +506,7 @@ export function ResearchAgentPanel({
       </button>}
       {receipt && <AgentConnectionReceipt key={receipt.policy_sha256} receipt={receipt} sessions={agentSessions}
         client={client} onCheck={onCheckConnection} onReveal={api.revealAgentSetup} onCopyLaunch={api.copyAgentLaunch} onOpenWorkspace={onOpenWorkspace} />}
-      <GrantSettings key={receipt?.policy_sha256 ?? "new-grant"} className="research-agent-grant-settings">
+      <GrantSettings key={receipt ? `settings-${receipt.policy_sha256}` : "new-grant"} className="research-agent-grant-settings">
       {receipt && <summary>Create another grant</summary>}
       <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
         <option value="custom">Custom permissions</option><option value="inspect">Inspect</option>

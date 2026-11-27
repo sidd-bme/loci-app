@@ -746,12 +746,14 @@ it("grants the selected Antigravity workspace without changing its permission se
     antigravity_workspace: "antigravity-workspace", antigravity_config_filename: "antigravity-workspace/.agents/mcp_config.json",
     verification_prompt: "Use this Loci workspace to inspect the selected source." };
   const create = vi.fn().mockResolvedValue(minimal);
-  renderPanel(bridge(vi.fn().mockResolvedValue(validation), create));
+  const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue(validation), create));
   fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "antigravity" } });
   fireEvent.click(screen.getByRole("button", { name: "Validate exact scope and recipe" }));
   await screen.findByLabelText("Exact recipe validation");
   fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
   const connection = await screen.findByLabelText("Created agent access receipt");
+  for (const busy of [true, false]) rerender(<ResearchAgentPanel {...props} busy={busy} />);
+  expect(screen.getAllByLabelText("Created agent access receipt")).toHaveLength(1);
   expect(create).toHaveBeenCalledWith(expect.objectContaining({ client: "antigravity", allow_run: false, disclosures: [] }));
   expect(within(connection).getByRole("heading")).toHaveTextContent("Waiting for your assistant");
   const firstPrompt = within(connection).getByLabelText("First prompt");

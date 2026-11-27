@@ -1296,6 +1296,8 @@ export default function ResearchWorkbench({
     // caller has already captured the source/plane and navigation intent.
     ...(desktopApi.labelsImportPreview ? { labelsImportPreview: (request) =>
       switchDocument(() => desktopApi.labelsImportPreview!(request), false, { preserveNavigationIntent: true }) } : {}),
+    ...(desktopApi.importOrganoidGraph ? { importOrganoidGraph: (binding, first, origin) =>
+      switchDocument(() => desktopApi.importOrganoidGraph!(binding, first, origin), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.convertStudyImage ? { convertStudyImage: (request) =>
       switchDocument(() => desktopApi.convertStudyImage!(request), false, { preserveNavigationIntent: true }) } : {}),
     ...(desktopApi.exportUsamHandoff ? { exportUsamHandoff: (request) =>
