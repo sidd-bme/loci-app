@@ -136,11 +136,11 @@ async function journey() {
       const panel = workspace.getByRole("region", { name: "OrganoidTracker lineage", exact: true });
       if (importing) {
         await panel.getByLabel("Upstream time point at the first image frame", { exact: true }).fill(String(FIRST));
-        await panel.getByLabel("Graph origin", { exact: true }).selectOption("model-output");
+        await panel.getByLabel(/^Graph origin\b/).selectOption("model-output");
         await panel.getByRole("checkbox", { name: "These are selected tracks for this image series, frame numbering and native pixel grid.", exact: true }).check();
         await panel.getByRole("button", { name: "Choose .aut graph…", exact: true }).click();
       } else {
-        await panel.getByLabel("Saved graph", { exact: true }).selectOption(pinned.graph_id, { timeout: 120_000 });
+        await panel.getByLabel(/^Saved graph\b/).selectOption(pinned.graph_id, { timeout: 120_000 });
         await panel.getByRole("button", { name: "Inspect saved graph", exact: true }).click();
       }
       await waitFor(page, async () => {
@@ -159,7 +159,7 @@ async function journey() {
       else assert.deepEqual(binding, pinned);
 
       stage = `${phase}: verify and locate link`;
-      const filter = panel.getByLabel("Inspect links", { exact: true });
+      const filter = panel.getByLabel(/^Inspect links\b/);
       await filter.selectOption("branches");
       await panel.getByText(/^Link 1 of 96 ·/).waitFor();
       await filter.selectOption("low");
