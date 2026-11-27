@@ -148,8 +148,10 @@ async function journey() {
         if (await alert.isVisible()) throw new Error(await alert.innerText());
         return panel.getByText("6802 positions · 6665 links · 48 branch parents", { exact: true }).isVisible();
       }, Boolean, "publisher graph counts", 120_000);
-      await panel.getByText("Graph identity", { exact: true }).click();
+      const graphIdentity = panel.getByText("Graph identity", { exact: true });
+      await graphIdentity.click();
       const binding = JSON.parse(await panel.locator("details pre").innerText());
+      await graphIdentity.click();
       assert.equal(binding.source_id, image.id);
       assert.equal(binding.source_sha256, image.sha256);
       assert.match(binding.graph_sha256, /^[a-f0-9]{64}$/u);
@@ -163,7 +165,12 @@ async function journey() {
       await filter.selectOption("branches");
       await panel.getByText(/^Link 1 of 96 ·/).waitFor();
       await filter.selectOption("low");
-      await panel.getByText(`Link 1 of 81 · Reported link probability ${firstLink.link_probability ?? "unavailable"} · Marginal probability ${firstLink.marginal_probability}`, { exact: true }).waitFor();
+      const link = panel.getByText("Link 1 of 81 · Reported link probability 0.2162 · Marginal probability 0.7576", { exact: true });
+      await link.waitFor();
+      const reported = link.getByTitle(`Reported link probability (full precision): ${firstLink.link_probability}`, { exact: true });
+      const marginal = link.getByTitle(`Marginal probability (full precision): ${firstLink.marginal_probability}`, { exact: true });
+      assert.equal(await reported.evaluate(element => element.value), String(firstLink.link_probability));
+      assert.equal(await marginal.evaluate(element => element.value), String(firstLink.marginal_probability));
       for (const [direction, node] of [["From", earlier], ["To", endpoint]]) {
         const t = node._time_point_number;
         const { x, y, z } = node;

@@ -582,6 +582,7 @@ async function journey(config) {
     if (await drawer.isVisible()) await closeDrawer();
     await page.waitForFunction((id) => document.querySelector(`.research-sources [data-result-id="${id}"]`)
       ?.getAttribute("aria-pressed") === "true", evidenceResult.id);
+    if (!comparison) await selectWorkbenchTool(page, "Info");
     await selectResultSection(page, "Review");
     await checkpoint("07-exact-result-review");
     if (comparison) {

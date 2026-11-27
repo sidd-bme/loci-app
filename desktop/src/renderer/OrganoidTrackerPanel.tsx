@@ -2,6 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import type { ResearchDesktopApi, ResearchSource } from "../shared/research-contracts";
 import type { OrganoidGraph, OrganoidNode } from "../shared/organoidtracker";
 
+function probabilityValue(value: number | null, label: string) {
+  if (value === null) return "unavailable";
+  const exact = Object.is(value, -0) ? "-0" : String(value);
+  return <data value={exact} title={`${label} (full precision): ${exact}`}>{Number(value.toPrecision(4))}</data>;
+}
+
 export function OrganoidTrackerPanel({ api, source, busy, canNavigate, onPlane, onClearFocus }: {
   api: ResearchDesktopApi;
   source: ResearchSource;
@@ -95,7 +101,7 @@ export function OrganoidTrackerPanel({ api, source, busy, canNavigate, onPlane, 
       </select></label>
       {!canNavigate && <p>Open the source in the 2D viewer to locate individual positions.</p>}
       {edge ? <>
-        <p>Link {index + 1} of {edges.length} · Reported link probability {edge[2] ?? "unavailable"} · Marginal probability {edge[3] ?? "unavailable"}</p>
+        <p>Link {index + 1} of {edges.length} · Reported link probability {probabilityValue(edge[2], "Reported link probability")} · Marginal probability {probabilityValue(edge[3], "Marginal probability")}</p>
         {[edge[0], edge[1]].map((id, i) => {
           const node = graph.nodes[id], t = node[0] - graph.first;
           return <div key={id}><p>{i === 0 ? "From" : "To"} upstream time {node[0]} · {t * graph.interval_s} s · XYZ {node.slice(1).join(", ")} px
