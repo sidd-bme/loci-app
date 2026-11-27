@@ -22,9 +22,9 @@ The two workbench screenshots were captured in Loci build 77 on macOS. Both use 
 
 ## October 2026 showcase
 
-The October 2026 homepage featured the [74-second Loci film and its credits](launch-credits.md),
-alongside application captures. The film is an edited tour, combining native
-views with arranged analysis graphics and recorded command-line output.
+The October 2026 homepage featured a 74-second launch film alongside application
+captures. The tour combines native views, arranged analysis graphics and recorded
+command-line output. [Watch the October film](https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3) · [Launch film credits](launch-credits.md)
 
 - `histology-current.png`: native CMU-1 view; OpenSlide test data, CC0.
 - `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
