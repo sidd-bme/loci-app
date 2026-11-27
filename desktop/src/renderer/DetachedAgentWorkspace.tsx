@@ -120,8 +120,8 @@ export function DetachedAgentWorkspace({ api }: { api: AgentWorkspaceApi }): Rea
       if (alive.current) setCommandBusy(false);
     }
   };
-  const navigate = (intent: AgentWorkspaceNavigationRequest["intent"], target?: ResearchAgentTargetReference) => {
-    void command(binding => api.navigate(binding, { requestId: crypto.randomUUID(), intent, ...(target ? { target } : {}) }),
+  const navigate = (intent: AgentWorkspaceNavigationRequest["intent"], target?: ResearchAgentTargetReference, approvalId?: string) => {
+    void command(binding => api.navigate(binding, { requestId: crypto.randomUUID(), intent, ...(approvalId ? { approvalId } : {}), ...(target ? { target } : {}) }),
       intent === "configure-access" ? "Opening access settings in the workspace…" : "Opening recorded evidence in the workspace…",
       intent === "configure-access" ? "Opened access settings in the workspace." : "Opened recorded evidence in the workspace.");
   };
@@ -157,6 +157,6 @@ export function DetachedAgentWorkspace({ api }: { api: AgentWorkspaceApi }): Rea
       currentTargets={state.currentTargets} inspectablePreviewJobIds={state.inspectablePreviewJobIds}
       onOpenSource={target => navigate("open-source", target)} onOpenResult={target => navigate("open-result", target)}
       onReviewResult={target => navigate("review-result", target)} onOpenJob={target => navigate("open-job", target)}
-      onOpenWorkflow={target => navigate("open-workflow", target)} onInspectPreview={target => navigate("inspect-preview", target)} />
+      onOpenWorkflow={target => navigate("open-workflow", target)} onInspectPreview={(target, approvalId) => navigate("inspect-preview", target, approvalId)} />
   </main>;
 }

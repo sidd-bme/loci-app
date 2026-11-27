@@ -91,6 +91,14 @@ REFERENCE_RULES = {
     ),
     "interpretation": "User-declared reference, not biological ground truth or human approval",
 }
+SELECTION_KEYS = {"x", "y", "width", "height", "c", "z", "t", "level"}
+MODEL_SELECTION_KEYS = {"x", "y", "width", "height", "z", "t", "level"}
+CHANNEL_MAPPING_KEYS = {
+    "model_input_index",
+    "model_channel",
+    "package_source_slot",
+    "source_channel",
+}
 
 
 def _same(a, b):
@@ -157,6 +165,78 @@ def _descriptor(value, *, labels=False):
         raise ValueError("Annotation artifact size disagrees with its scalar grid")
 
 
+def _model_primary_channel(record):
+    """Derive a single source channel ONLY from a verified single-input model mapping."""
+    p = record.get("provenance", {})
+    mapping = p.get("channel_mapping")
+    if not isinstance(mapping, list) or len(mapping) != 1:
+        raise ValueError(
+            "Annotation agreement requires one explicit single-channel input; "
+            "multi-channel or unmapped model selections cannot infer one source channel"
+        )
+    entry = mapping[0]
+    if not isinstance(entry, dict):
+        raise ValueError("Model channel mapping entry is invalid")
+    _exact(entry, CHANNEL_MAPPING_KEYS, "model channel mapping")
+    if (
+        type(entry["model_input_index"]) is not int
+        or entry["model_input_index"] != 0
+        or type(entry["package_source_slot"]) is not int
+        or entry["package_source_slot"] != 0
+        or not isinstance(entry["model_channel"], str)
+        or not entry["model_channel"].strip()
+    ):
+        raise ValueError("Model channel mapping does not identify one primary scalar input")
+    source_channel = integer(entry["source_channel"], "model source channel", 0, 255)
+    model = p.get("model")
+    if not isinstance(model, dict) or not isinstance(model.get("input"), dict):
+        raise ValueError("Model provenance is missing its declared input channel contract")
+    model_input = model["input"]
+    channels = model_input.get("channels")
+    if not isinstance(channels, list) or len(channels) != 1 or not isinstance(channels[0], dict):
+        raise ValueError("Model input contract must declare exactly one scalar biological channel")
+    declared = channels[0]
+    if (
+        declared.get("name") != entry["model_channel"]
+        or type(declared.get("source_index")) is not int
+        or declared.get("source_index") != entry["package_source_slot"]
+    ):
+        raise ValueError("Model channel mapping disagrees with the certified model input contract")
+    input_shape = model_input.get("shape")
+    if input_shape is not None and (
+        not isinstance(input_shape, list)
+        or len(input_shape) != 4
+        or type(input_shape[1]) is not int
+        or input_shape[1] != 1
+    ):
+        raise ValueError("Model input tensor shape must declare one scalar channel")
+    return source_channel
+
+
+def _resolved_selection(record, *, derivative=False):
+    """Return a canonical 8-key selection without mutating the immutable record."""
+    p = record.get("provenance", {})
+    selection = p.get("selection")
+    if not isinstance(selection, dict):
+        raise ValueError("Annotation selection is missing")
+    is_derivative = derivative or record.get("kind") in {KIND, REFERENCE_KIND}
+    if "c" in selection or is_derivative:
+        _exact(selection, SELECTION_KEYS, "annotation selection")
+        resolved = dict(selection)
+        if not is_derivative and "channel_mapping" in p:
+            mapped_channel = _model_primary_channel(record)
+            if resolved["c"] != mapped_channel:
+                raise ValueError("Selection channel disagrees with the model channel mapping")
+    else:
+        if record.get("kind") not in {"model-segmentation", "corrected-labels"}:
+            _exact(selection, SELECTION_KEYS, "annotation selection")
+        _exact(selection, MODEL_SELECTION_KEYS, "annotation selection")
+        resolved = {**selection, "c": _model_primary_channel(record)}
+    for key, value in resolved.items():
+        integer(value, f"selection {key}", 1 if key in {"width", "height"} else 0, 2**31 - 1)
+    return resolved
+
+
 def _base(record, *, hashed=True, derivative=False):
     if not isinstance(record, dict) or record.get("schema") != "loci.research-result/v1":
         raise ValueError("Annotation agreement requires bounded immutable result arrays")
@@ -187,10 +267,7 @@ def _base(record, *, hashed=True, derivative=False):
     shape = arrays["labels"]["shape"]
     if any(arrays[name]["shape"] != shape for name in required):
         raise ValueError("Annotation image and label grids differ")
-    selection = p.get("selection")
-    _exact(selection, {"x", "y", "width", "height", "c", "z", "t", "level"}, "annotation selection")
-    for key, value in selection.items():
-        integer(value, f"selection {key}", 1 if key in {"width", "height"} else 0, 2**31 - 1)
+    selection = _resolved_selection(record, derivative=derivative)
     if selection["level"] != 0 or shape != [selection["height"], selection["width"]]:
         raise ValueError("Annotation agreement requires the exact level-zero single-plane crop")
     return geometry
@@ -241,7 +318,9 @@ def validate_source(result, source):
     """Pure saved-source scope check; no decoder or access to current annotation history."""
     from .research_morphometrics import validate_source as validate_source_scope
 
-    validate_source_scope(result, source)
+    selection = _resolved_selection(result)
+    scoped_result = {**result, "provenance": {**result["provenance"], "selection": selection}}
+    validate_source_scope(scoped_result, source)
     if source.get("source_kind") == "native":
         from .native_image import (
             NativeDimensions,
@@ -258,7 +337,6 @@ def validate_source(result, source):
             calibration=PhysicalCalibration(**calibration) if calibration is not None else None,
             origin_xyz=saved.get("origin_xyz"),
         )
-        selection = result["provenance"]["selection"]
         expected = native_geometry((level,), selection, False)
         if not _same(expected.to_dict(), result["provenance"]["geometry"]):
             raise ValueError("Annotation geometry differs from registered native calibration")
@@ -309,7 +387,7 @@ def _planar_geometry(workbench, source, selection):
 def _source_geometry(workbench, record):
     source = workbench.project.source(record["source_id"], verify=True)
     validate_source(record, source)
-    selection = record["provenance"]["selection"]
+    selection = _resolved_selection(record)
     if not _same(workbench.selection(source["id"], selection), selection):
         raise ValueError("Annotation source selection changed during resolution")
     geometry = _planar_geometry(workbench, source, selection)
@@ -321,10 +399,8 @@ def _source_geometry(workbench, record):
 def _aligned(parent, reference):
     if (
         any(parent[k] != reference[k] for k in ("source_id", "source_sha256"))
-        or any(
-            not _same(parent["provenance"].get(k), reference["provenance"].get(k))
-            for k in ("selection", "geometry")
-        )
+        or not _same(_resolved_selection(parent), _resolved_selection(reference))
+        or not _same(parent["provenance"].get("geometry"), reference["provenance"].get("geometry"))
         or parent["arrays"]["labels"]["shape"] != reference["arrays"]["labels"]["shape"]
     ):
         raise ValueError(
@@ -441,7 +517,7 @@ def validate_reference_request(workbench, request, *, check=None):
         "annotations": selected,
         "document": data,
         "source_planar_geometry": _planar_geometry(
-            workbench, source, {**parent["provenance"]["selection"], "x": 0, "y": 0}
+            workbench, source, {**_resolved_selection(parent), "x": 0, "y": 0}
         ).to_dict(),
         "resource_estimate": resources,
     }
@@ -546,8 +622,9 @@ def _check_job(workbench, request, source_id, job_id, operation, publication_gua
 def _provenance(parent, request, runtime):
     p = parent["provenance"]
     provenance = {
-        k: copy.deepcopy(p[k]) for k in ("geometry", "selection", "channel_metadata") if k in p
+        k: copy.deepcopy(p[k]) for k in ("geometry", "channel_metadata") if k in p
     }
+    provenance["selection"] = copy.deepcopy(_resolved_selection(parent))
     provenance.update(
         parent_result=_binding(parent),
         accepted_request=copy.deepcopy(request),
@@ -941,7 +1018,8 @@ def validate_parents(result, results):
     _parent(parent, None if result["kind"] == REFERENCE_KIND else request["semantics"])
     if (
         any(result[k] != parent[k] for k in ("source_id", "source_sha256"))
-        or any(not _same(p[k], parent["provenance"][k]) for k in ("selection", "geometry"))
+        or not _same(_resolved_selection(result), _resolved_selection(parent))
+        or not _same(p["geometry"], parent["provenance"]["geometry"])
         or result["arrays"]["image"] != parent["arrays"]["image"]
     ):
         raise ValueError("Annotation source/image/grid differs from its exact parent")
@@ -1077,7 +1155,7 @@ def validate_arrays(result, arrays, parents=None, *, check=None, working_bytes=N
         check()
 
 
-def validate_project_arrays(project, result, *, arrays=None, check=None, working_bytes=None):
+def _validated_project_arrays(project, result, *, arrays=None, check=None, working_bytes=None):
     validate_record(result)
     project_parents(project, result, check=check)
     budget = min(
@@ -1105,6 +1183,49 @@ def validate_project_arrays(project, result, *, arrays=None, check=None, working
                 check()
             arrays[name] = project.load_array(descriptor)
     validate_arrays(result, arrays, check=check, working_bytes=budget)
+    return arrays
+
+
+def validate_project_arrays(project, result, *, arrays=None, check=None, working_bytes=None):
+    _validated_project_arrays(
+        project, result, arrays=arrays, check=check, working_bytes=working_bytes
+    )
+
+
+def _locate_label(result, array, role, label):
+    ys, xs = np.nonzero(array == np.uint32(label))
+    if not len(ys):
+        raise ValueError("The selected object label does not belong to this agreement revision")
+    centroid_y = float(ys.mean())
+    centroid_x = float(xs.mean())
+    distances = np.square(ys.astype(np.float64) - centroid_y) + np.square(
+        xs.astype(np.float64) - centroid_x
+    )
+    best = int(np.argmin(distances))
+    point_index = [int(ys[best]), int(xs[best])]
+    bbox_start = [int(ys.min()), int(xs.min())]
+    bbox_stop_exclusive = [int(ys.max()) + 1, int(xs.max()) + 1]
+    selection = result["provenance"]["selection"]
+    geometry = _geometry(result["provenance"]["geometry"])
+    world = geometry.world(np.array([point_index], dtype=np.float64))[0].tolist()
+    return {
+        **_binding(result),
+        "table": "locate",
+        "role": role,
+        "target": copy.deepcopy(result["provenance"]["annotation_evaluation"]["inputs"][role]),
+        "label": label,
+        "point_index": point_index,
+        "centroid_index": [centroid_y, centroid_x],
+        "bbox_start": bbox_start,
+        "bbox_stop_exclusive": bbox_stop_exclusive,
+        "pixel_count": int(len(ys)),
+        "source_point_xy": [selection["x"] + point_index[1], selection["y"] + point_index[0]],
+        "source_centroid_xy": [selection["x"] + centroid_x, selection["y"] + centroid_y],
+        "world_point_xyz": [float(v) for v in world],
+        "distance_unit": geometry.unit,
+        "selection": copy.deepcopy(selection),
+        "geometry": copy.deepcopy(result["provenance"]["geometry"]),
+    }
 
 
 def _summary(record):
@@ -1141,24 +1262,50 @@ def public_summary(result):
     return {}
 
 
-def report_get(workbench, request, *, check=None):
-    """Bounded report paging; no source decoder, current annotation access or path payloads."""
+def report_get(workbench, request, *, check=None, working_bytes=None):
+    """Bounded report paging and exact object location; no source decoder or path payloads."""
     exact_keys(
         request,
-        {"result_id", "revision_hash", "table", "threshold_index", "offset", "limit"},
+        {
+            "result_id",
+            "revision_hash",
+            "table",
+            "threshold_index",
+            "offset",
+            "limit",
+            "role",
+            "label",
+        },
         "annotation report query",
     )
     _binding_value({k: request.get(k) for k in ("result_id", "revision_hash")})
-    result = workbench.project.result(request["result_id"])
+    result = workbench.project.result(
+        request["result_id"], check=check, verify_scientific_arrays=False
+    )
     if result["kind"] != KIND or result["revision_hash"] != request["revision_hash"]:
         raise ValueError("Select the exact saved annotation-agreement revision")
-    validate_project_arrays(workbench.project, result, check=check)
+    arrays = _validated_project_arrays(
+        workbench.project, result, check=check, working_bytes=working_bytes
+    )
     record = result["provenance"]["annotation_evaluation"]
     table = request.get("table", "summary")
     if table == "summary":
         if set(request) - {"result_id", "revision_hash", "table"}:
             raise ValueError("Summary queries do not accept table pagination")
         return {**_binding(result), "annotation_evaluation": _summary(record)}
+    if table == "locate":
+        if set(request) - {"result_id", "revision_hash", "table", "role", "label"}:
+            raise ValueError("Object location queries accept only role and label")
+        if record["metrics"]["instances"] is None:
+            raise ValueError("Object location requires an instance annotation agreement")
+        role = request.get("role")
+        if role not in {"prediction", "reference"}:
+            raise ValueError("Choose prediction or reference role to locate an object")
+        label = integer(request.get("label"), "object label", 1, 0xFFFFFFFF)
+        array = arrays["labels"] if role == "prediction" else arrays["reference_labels"]
+        return _locate_label(result, array, role, label)
+    if set(request) & {"role", "label"}:
+        raise ValueError("Table queries do not accept object location parameters")
     if (
         table not in {"matches", "unmatched_reference", "unmatched_prediction"}
         or record["metrics"]["instances"] is None

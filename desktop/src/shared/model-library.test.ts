@@ -39,6 +39,8 @@ describe("curated model library catalog", () => {
       "plantseg-ovules-ds1x",
       "mesmer-multiplex-tissue",
       "dynacell-ipsc-nucleus",
+      "care-planaria-3d",
+      "organoidtracker-2",
     ]);
     for (const entry of MODEL_LIBRARY_ENTRIES) {
       expect(Object.isFrozen(entry)).toBe(true);
@@ -200,7 +202,7 @@ describe("curated model library catalog", () => {
     });
   });
 
-  it("distinguishes native built-in baselines, optional local profiles, and external label workflows", () => {
+  it("distinguishes native built-in baselines, optional local profiles, and external workflows", () => {
     expect(MODEL_LIBRARY_NATIVE_BASELINES.map((item) => item.id)).toEqual([
       "classical-threshold-watershed",
       "loci-classical",
@@ -223,7 +225,32 @@ describe("curated model library catalog", () => {
       "stardist-2d-versatile-fluo",
       "plantseg-ovules-ds1x",
       "mesmer-multiplex-tissue",
+      "care-planaria-3d",
+      "organoidtracker-2",
     ]);
+  });
+
+  it("records external restoration and lineage imports independently of local inference", () => {
+    const care = MODEL_LIBRARY_ENTRIES.find((entry) => entry.id === "care-planaria-3d")!;
+    expect(care).toMatchObject({
+      taskCategory: "restore",
+      executionMode: "external-restored-volume",
+      artifact: { sha256: null, digestBasis: "external-unverified" },
+      rights: {
+        weightsLicense: expect.stringContaining("no separate checkpoint licence"),
+        trainingDataLineage: expect.stringContaining("CC0 1.0"),
+      },
+      workbenchRoute: { kind: "open-restored-volume" },
+    });
+    const tracker = MODEL_LIBRARY_ENTRIES.find((entry) => entry.id === "organoidtracker-2")!;
+    expect(tracker).toMatchObject({
+      taskCategory: "track",
+      executionMode: "external-tracking-graph",
+      inputContract: expect.stringContaining("D3 nodes and links"),
+      verificationDetail: expect.stringContaining("link probability and marginal probability as separate optional values"),
+      artifact: { sha256: null, digestBasis: "publisher-reported" },
+      workbenchRoute: { kind: "temporal-tracking" },
+    });
   });
 
   it("maps every primary, secondary, and citation link ID to an approved HTTPS URL", () => {

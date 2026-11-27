@@ -289,6 +289,7 @@ try {
   const humanDestination = path.join(output, 'human.loci-vision');
   await app.evaluate(({ dialog }, destination) => { dialog.showSaveDialog = async (options) => { if (options.title !== 'Export image for a vision assistant') throw new Error('Unexpected vision picker'); return { canceled: false, filePath: destination }; }; }, humanDestination);
   await selectWorkbenchTool(page, 'Agent');
+  await panel.getByLabel('Assistant client', { exact: true }).selectOption('web');
   await vision.getByRole('button', { name: 'Export vision handoff', exact: true }).click();
   await vision.getByText(/^Saved human\.loci-vision/).waitFor();
   await verifyHandoff(humanDestination, source);
@@ -304,6 +305,7 @@ try {
     await page.waitForFunction(theme => document.documentElement.dataset.theme === theme, theme);
     for (const surface of ['vision', 'connection']) {
       await selectWorkbenchTool(page, 'Agent');
+      await panel.getByLabel('Assistant client', { exact: true }).selectOption(surface === 'vision' ? 'web' : 'codex');
       if (surface === 'connection') await configureScope();
       const target = surface === 'vision' ? vision : panel;
       await target.scrollIntoViewIfNeeded();
@@ -322,6 +324,7 @@ try {
   // Decisions here describe a numerical synthetic-fixture check, never biology.
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 960 }));
   await selectWorkbenchTool(page, 'Agent');
+  await panel.getByLabel('Assistant client', { exact: true }).selectOption('codex');
   await panel.getByLabel('Assistant access level', { exact: true }).selectOption('full');
   const fullAccess = path.join(output, 'access-full');
   await app.evaluate(({ dialog }, paths) => {

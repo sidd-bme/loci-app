@@ -149,6 +149,11 @@ def authorize_action(
         raise ValueError("Action request is missing required fields from its schema")
     from .agent_shared_workflows import SHARED_ACTIONS, authorize_shared_action
 
+    if operation == "organoidtracker_links":
+        from .organoidtracker_actions import authorized_graph
+
+        _schema_check(request, contract)
+        authorized_graph(policy, workbench.project, request)
     if operation in SHARED_ACTIONS:
         _schema_check(request, contract)
         authorize_shared_action(agent, workbench, operation, request)
@@ -168,6 +173,7 @@ def authorize_action(
             raise ValueError("Action requires an exact result binding")
         if operation in {
             "annotation_evaluation_run",
+            "annotation_evaluation_get",
             "annotation_reference_run",
             "method_preflight",
             "method_run",
@@ -188,6 +194,13 @@ def authorize_action(
 
         _schema_check(request, contract)
         preflight(workbench, operation, request, policy=policy)
+    elif operation == "model_list":
+        _schema_check(request, contract)
+    elif operation in {"model_preview", "model_run"}:
+        from .research_models import preflight_agent_model
+
+        _schema_check(request, contract)
+        request = preflight_agent_model(workbench, operation, request, policy=policy)
     elif operation == "run_recipe":
         normalized = recipe_scope(policy, workbench, request)
         request = {key: normalized[key] for key in ("source_id", "selection", "recipe")}
@@ -230,7 +243,16 @@ def authorize_action(
         "annotation_reference_run",
         "annotation_evaluation_get",
     }:
-        from .research_annotation_evaluation import validate_reference_request, validate_request
+        from .annotation_evaluation import estimated_working_bytes
+        from .research_annotation_evaluation import (
+            KIND as AGREEMENT_KIND,
+        )
+        from .research_annotation_evaluation import (
+            validate_parents,
+            validate_record,
+            validate_reference_request,
+            validate_request,
+        )
 
         _schema_check(request, contract)
         if operation == "annotation_evaluation_run":
@@ -245,6 +267,49 @@ def authorize_action(
             validate_request(workbench, request, check=policy.recheck)
         elif operation == "annotation_reference_run":
             validate_reference_request(workbench, request, check=policy.recheck)
+        elif operation == "annotation_evaluation_get":
+            if bound.get("kind") != AGREEMENT_KIND:
+                raise ValueError("Select the exact saved annotation-agreement revision")
+            validate_record(bound)
+            record = bound["provenance"]["annotation_evaluation"]
+            inputs = record["inputs"]
+            prediction = result_binding(inputs["prediction"])
+            reference = result_binding(inputs["reference"])
+            validate_parents(bound, {prediction["id"]: prediction, reference["id"]: reference})
+            retained_bytes = sum(item["bytes"] for item in bound["arrays"].values())
+            replay_bytes = (
+                2 * retained_bytes
+                + 16 * len(canonical_json(bound).encode())
+                + max(
+                    1024**2,
+                    estimated_working_bytes(
+                        math.prod(bound["arrays"]["labels"]["shape"]),
+                        thresholds=len(
+                            bound["provenance"]["accepted_request"].get("iou_thresholds", [])
+                        ),
+                    ),
+                )
+            )
+            if retained_bytes > budget // 4 or replay_bytes > budget:
+                raise PermissionError(
+                    "Annotation agreement inspection exceeds the delegated aggregate memory budget"
+                )
+            table = request.get("table", "summary")
+            if table == "summary":
+                if set(request) - {"result_id", "revision_hash", "table"}:
+                    raise ValueError("Summary queries do not accept table pagination")
+            elif table == "locate":
+                if set(request) - {"result_id", "revision_hash", "table", "role", "label"}:
+                    raise ValueError("Object location queries accept only role and label")
+                if "role" not in request or "label" not in request:
+                    raise ValueError("Object location queries require both role and label")
+                if record["metrics"]["instances"] is None:
+                    raise ValueError("Object location requires an instance annotation agreement")
+            else:
+                if set(request) & {"role", "label"}:
+                    raise ValueError("Table queries do not accept object location parameters")
+                if record["metrics"]["instances"] is None:
+                    raise ValueError("Choose an instance agreement match/unmatched table")
         policy.require_runtime(runtime_record())
     elif operation.startswith("method_"):
         from .research_methods import REQUEST_KEYS, validate_request
@@ -364,7 +429,12 @@ def authorize_action(
                 )
         if operation == "large_result_delete" and policy.memory_bytes < 256 * 1024**2:
             raise PermissionError("Large-result editing requires a 256 MiB working allowance")
-    if operation in TASK_ACTIONS and operation not in {"tissue_model_preview", "tissue_model_run"}:
+    if operation in TASK_ACTIONS and operation not in {
+        "tissue_model_preview",
+        "tissue_model_run",
+        "model_preview",
+        "model_run",
+    }:
         policy.require_runtime(runtime_record())
     policy.recheck()
     return request
@@ -373,9 +443,27 @@ def authorize_action(
 def inspect_action(agent, workbench, operation, request):
     """Run only in the disposable read worker, after independent authorization."""
     request = authorize_action(agent, workbench, operation, request, mode="read")
-    from .agent_shared_workflows import inspect_shared_action
+    if operation == "model_list":
+        from .research_models import inspect_agent_models
 
-    output = inspect_shared_action(agent, workbench, operation, request)
+        output = inspect_agent_models(workbench, policy=agent.policy)
+    elif operation == "organoidtracker_links":
+        from .organoidtracker_actions import inspect_links
+
+        output = inspect_links(agent.policy, workbench.project, request)
+    elif operation == "annotation_evaluation_get":
+        from .research_annotation_evaluation import report_get
+
+        output = report_get(
+            workbench,
+            request,
+            check=agent.policy.recheck,
+            working_bytes=min(DEFAULT_WORKING_BYTES, agent.policy.memory_bytes),
+        )
+    else:
+        from .agent_shared_workflows import inspect_shared_action
+
+        output = inspect_shared_action(agent, workbench, operation, request)
     if operation == "correction_info":
         result = agent._authorize_result(workbench, request["result_id"])
         if not result["provenance"].get("derived_measurement_arrays") and not result[

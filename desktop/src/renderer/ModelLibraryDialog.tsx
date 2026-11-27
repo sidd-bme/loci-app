@@ -13,12 +13,14 @@ import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   MODEL_LIBRARY_ENTRIES,
   MODEL_LIBRARY_NATIVE_BASELINES,
+  MODEL_LIBRARY_TASK_LABELS,
   findModelLibraryLinkIdByUrl,
   requireModelLibraryLinkId,
   type ModelLibraryEntry,
   type ModelLibraryFilterGroup,
   type ModelLibraryId,
   type ModelLibraryLinkId,
+  type ModelLibraryTaskFilter,
   type ModelLibraryWorkbenchRouteKind,
 } from "../shared/model-library";
 import {
@@ -45,6 +47,11 @@ export interface ModelLibraryDialogProps {
     modelId: ModelLibraryId,
   ) => void;
   workbenchRouteUnavailableReason?: string | null;
+  /** Override the shared reason for each destination. Return null when available. */
+  getWorkbenchRouteUnavailableReason?: (
+    route: ModelLibraryWorkbenchRouteKind,
+    modelId: ModelLibraryId,
+  ) => string | null;
   nucleiInstall?: NucleiModelInstallController | null;
   initialModelId?: ModelLibraryId;
   reducedMotion?: boolean;
@@ -287,20 +294,23 @@ function ModelZooDetail({
 }): React.JSX.Element {
   const isLocal = entry.filterGroup === "local";
   const routeDisabled = Boolean(workbenchRouteUnavailableReason);
+  const unavailableReasonId = useId();
 
   return (
     <div
-      className="model-zoo-detail"
+      className={example ? "model-zoo-detail" : "model-zoo-detail model-zoo-detail--text"}
       data-model-id={entry.id}
       data-execution-mode={entry.executionMode}
     >
-      <div className="model-zoo-detail__media-col">
-        <ModelZooComparison
-          entry={entry}
-          example={example}
-          reducedMotion={isReducedMotion}
-        />
-      </div>
+      {example && (
+        <div className="model-zoo-detail__media-col">
+          <ModelZooComparison
+            entry={entry}
+            example={example}
+            reducedMotion={isReducedMotion}
+          />
+        </div>
+      )}
 
       <div className="model-zoo-detail__info-col">
         <div className="model-zoo-detail__badges">
@@ -367,6 +377,7 @@ function ModelZooDetail({
               type="button"
               className="model-library-action-btn model-library-action-btn--primary"
               disabled={routeDisabled}
+              aria-describedby={routeDisabled ? unavailableReasonId : undefined}
               title={
                 workbenchRouteUnavailableReason ??
                 `Open ${entry.workbenchRoute.inspectorLocation}`
@@ -380,7 +391,7 @@ function ModelZooDetail({
             </button>
           )}
           {workbenchRouteUnavailableReason && (
-            <p className="model-zoo-detail__unavailable-note">
+            <p id={unavailableReasonId} className="model-zoo-detail__unavailable-note">
               {workbenchRouteUnavailableReason}
             </p>
           )}
@@ -619,6 +630,7 @@ export default function ModelLibraryDialog({
   onOpenLink,
   onSelectWorkbenchRoute,
   workbenchRouteUnavailableReason = null,
+  getWorkbenchRouteUnavailableReason,
   nucleiInstall = null,
   initialModelId,
   reducedMotion,
@@ -627,6 +639,7 @@ export default function ModelLibraryDialog({
   const titleId = useId();
   const statusId = useId();
   const [filter, setFilter] = useState<ModelLibraryFilterGroup>("all");
+  const [taskFilter, setTaskFilter] = useState<ModelLibraryTaskFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedModelId, setSelectedModelId] = useState<ModelLibraryId | null>(
     null,
@@ -825,13 +838,13 @@ export default function ModelLibraryDialog({
   };
 
   const counts = useMemo(
-    () => countModelZooEntries(MODEL_LIBRARY_ENTRIES, query, examples),
-    [query, examples],
+    () => countModelZooEntries(MODEL_LIBRARY_ENTRIES, query, examples, taskFilter),
+    [query, examples, taskFilter],
   );
 
   const visibleEntries = useMemo(
-    () => filterModelZooEntries(MODEL_LIBRARY_ENTRIES, filter, query, examples),
-    [filter, query, examples],
+    () => filterModelZooEntries(MODEL_LIBRARY_ENTRIES, filter, query, examples, taskFilter),
+    [filter, query, examples, taskFilter],
   );
 
   const selectedEntry = useMemo(
@@ -844,7 +857,10 @@ export default function ModelLibraryDialog({
   );
 
   const trimmedQuery = query.trim();
-  const isFiltered = trimmedQuery.length > 0 || filter !== "all";
+  const routeUnavailableReason = selectedEntry && getWorkbenchRouteUnavailableReason
+    ? getWorkbenchRouteUnavailableReason(selectedEntry.workbenchRoute.kind, selectedEntry.id)
+    : workbenchRouteUnavailableReason;
+  const isFiltered = trimmedQuery.length > 0 || filter !== "all" || taskFilter !== "all";
   const countLabel = isFiltered
     ? `${visibleEntries.length} of ${MODEL_LIBRARY_ENTRIES.length}`
     : `${MODEL_LIBRARY_ENTRIES.length}`;
@@ -852,8 +868,8 @@ export default function ModelLibraryDialog({
   const statusText =
     visibleEntries.length === 0
       ? trimmedQuery
-        ? `No models match “${trimmedQuery}”${filter !== "all" ? ` in ${filter} models` : ""}.`
-        : `No ${filter} models available.`
+        ? `No models match “${trimmedQuery}” with the current filters.`
+        : "No models match the current filters."
       : isFiltered
         ? `Showing ${visibleEntries.length} of ${MODEL_LIBRARY_ENTRIES.length} models.`
         : `${MODEL_LIBRARY_ENTRIES.length} curated models.`;
@@ -942,6 +958,18 @@ export default function ModelLibraryDialog({
                   )}
                 </div>
 
+                <select
+                  className="model-zoo-task-filter"
+                  aria-label="Filter models by task"
+                  value={taskFilter}
+                  onChange={(event) => setTaskFilter(event.target.value as ModelLibraryTaskFilter)}
+                >
+                  <option value="all">All tasks</option>
+                  {Object.entries(MODEL_LIBRARY_TASK_LABELS).map(([id, label]) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+
                 <div
                   className="model-library-filters"
                   role="radiogroup"
@@ -961,7 +989,7 @@ export default function ModelLibraryDialog({
                         tabIndex={checked ? 0 : -1}
                         onClick={() => setFilter(option.id)}
                       >
-                        <span>{option.label}</span>
+                        <span>{option.label}</span>{" "}
                         <span className="model-library-filter-btn__count">
                           ({count})
                         </span>
@@ -1013,7 +1041,7 @@ export default function ModelLibraryDialog({
               isReducedMotion={isReducedMotion}
               onOpenLink={handleOpenLink}
               onSelectWorkbenchRoute={onSelectWorkbenchRoute}
-              workbenchRouteUnavailableReason={workbenchRouteUnavailableReason}
+              workbenchRouteUnavailableReason={routeUnavailableReason}
               nucleiInstall={nucleiInstall}
             />
           ) : (
@@ -1021,7 +1049,7 @@ export default function ModelLibraryDialog({
               <p
                 id={statusId}
                 className={
-                  isFiltered
+                  isFiltered && visibleEntries.length > 0
                     ? "model-zoo-status"
                     : "model-zoo-status model-zoo-status--sr-only"
                 }
@@ -1033,13 +1061,14 @@ export default function ModelLibraryDialog({
 
               {visibleEntries.length === 0 ? (
                 <div className="model-zoo-empty">
-                  <p>{statusText}</p>
+                  <p aria-hidden="true">{statusText}</p>
                   <button
                     type="button"
                     className="model-library-action-btn model-zoo-empty__reset"
                     onClick={() => {
                       setQuery("");
                       setFilter("all");
+                      setTaskFilter("all");
                       searchInputRef.current?.focus();
                     }}
                   >

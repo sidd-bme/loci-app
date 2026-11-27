@@ -83,6 +83,12 @@ export interface ResearchResult {
     frame?: string;
   } | null;
   selection?: (ResearchSelection & { elapsed_time_s?: number }) | null;
+  channel_mapping?: Array<{
+    model_input_index: number;
+    model_channel: string;
+    package_source_slot?: number;
+    source_channel: number;
+  }>;
   parent_id?: string | null;
   review?: ResearchReview | null;
   working_bytes?: number;
@@ -375,6 +381,8 @@ export type ResearchAgentSessionState =
   | "disconnected"
   | "failed";
 export interface ResearchAgentAccessRequest {
+  client?: "codex" | "antigravity" | "claude" | "other";
+  allow_nuclei_model?: boolean;
   allow_workflow_graph?: boolean;
   allow_task_records?: boolean;
   source_id: string;
@@ -400,6 +408,13 @@ export interface ResearchAgentAccessRequest {
   limits: { cpu_seconds: number; memory_bytes: number; concurrency: number };
 }
 export interface ResearchAgentAccessReceipt {
+  nuclei_model_sha256?: string;
+  verification_prompt?: string;
+  codex_workspace?: "codex-workspace";
+  codex_config_filename?: "codex-workspace/.codex/config.toml";
+  antigravity_workspace?: "antigravity-workspace";
+  antigravity_config_filename?: "antigravity-workspace/.agents/mcp_config.json";
+  antigravity_plugin_filename?: string;
   schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5" | "loci.agent-policy/v7";
   volume_views?: ResearchAgentVolumeAccess;
   policy_sha256: string;
@@ -586,7 +601,8 @@ export interface ResearchAgentTaskRecord {
 export type ResearchAgentControlRequest =
   | { action: "edit_task"; task_id: string; expected_revision: number; goal: string; steps: Array<{ id: string; title: string }> }
   | { action: "cancel_task"; task_id: string; expected_revision: number }
-  | { action: "approve_request" | "deny_request"; approval_id: string; reason?: string }
+  | { action: "approve_request"; approval_id: string; reason?: string; inspected_preview?: { preview_id: string; preview_sha256: string; preview_job_id: string } }
+  | { action: "deny_request"; approval_id: string; reason?: string }
   | { action: "set_permission_mode"; policy_sha256: string; permission_mode: ResearchAgentPermissionMode }
   | { action: "pause_session" | "resume_session"; policy_sha256: string }
   | { action: "disconnect_session"; session_id: string }
@@ -1004,6 +1020,9 @@ export interface ResearchDesktopApi {
   dynacellStatus?(): Promise<import("./dynacell").VirtualStainInstallState>;
   installDynacell?(source: "publisher" | "local"): Promise<boolean>;
   cancelDynacellInstall?(): Promise<boolean>;
+  importOrganoidGraph?(binding: Pick<ResearchSource, "id" | "sha256">, first: number, origin: string): Promise<import("./organoidtracker").OrganoidGraph | null>;
+  listOrganoidGraphs?(binding: Pick<ResearchSource, "id" | "sha256">): Promise<string[]>;
+  loadOrganoidGraph?(binding: Pick<ResearchSource, "id" | "sha256">, id: string): Promise<import("./organoidtracker").OrganoidGraph>;
   runVirtualStain?(request: import("./dynacell").VirtualStainRequest): Promise<{ snapshot: ResearchSnapshot; source: ResearchSource } | null>;
   /** Application-private targets; paths and credentials are never returned. */
   computeTargets?(operation: "list" | "import_ssh" | "save" | "test" | "resources" | "remember" | "use" | "forget",
@@ -1085,6 +1104,8 @@ export interface ResearchDesktopApi {
   createAgentAccess?(
     request: ResearchAgentAccessRequest,
   ): Promise<ResearchAgentAccessReceipt | null>;
+  revealAgentSetup?(policySha256: string): Promise<void>;
+  copyAgentLaunch?(policySha256: string): Promise<void>;
   /** Controls active MCP sessions, permission modes, and single-use approval records. */
   controlAgentSession?(
     request: ResearchAgentControlRequest,

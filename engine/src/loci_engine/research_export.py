@@ -467,6 +467,26 @@ def export_research_result(
                     bigtiff=array.nbytes > 2**32 - 2**25,
                 )
                 roundtrip = tifffile.imread(file)
+                # OME readers drop a singleton C from CYX. Restore only
+                # that declared axis before verifying the original tensor.
+                if (
+                    name == "probabilities"
+                    and array.shape[0] == 1
+                    and roundtrip.shape == array.shape[1:]
+                ):
+                    from xml.etree import ElementTree
+
+                    with tifffile.TiffFile(file) as reopened:
+                        pixels = ElementTree.fromstring(reopened.ome_metadata).find(
+                            "./{*}Image/{*}Pixels"
+                        )
+                        if (
+                            reopened.series[0].axes != geometry.axes
+                            or pixels is None
+                            or pixels.get("SizeC") != "1"
+                        ):
+                            raise ValueError("Exported probability channel dimension changed")
+                    roundtrip = roundtrip[None, ...]
                 if (
                     roundtrip.dtype != array.dtype
                     or roundtrip.shape != array.shape

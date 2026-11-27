@@ -13,11 +13,21 @@ export type ModelLibraryId =
   | "plantseg-ovules-ds1x"
   | "mesmer-multiplex-tissue"
   | "dynacell-ipsc-nucleus"
+  | "care-planaria-3d"
+  | "organoidtracker-2"
   | "cellpose-sam-v2"
   | "micro-sam-vit-b-lm"
   | "stardist-2d-versatile-fluo"
   | "bioimageio-nuclei-boundary-onnx"
   | "puma-tissue-cpu";
+
+export type ModelLibraryTaskCategory =
+  | "segment"
+  | "virtual-stain"
+  | "restore"
+  | "track";
+
+export type ModelLibraryTaskFilter = "all" | ModelLibraryTaskCategory;
 
 export type ModelLibraryLinkId =
   | "plantseg-record"
@@ -30,6 +40,16 @@ export type ModelLibraryLinkId =
   | "dynacell-checkpoint"
   | "dynacell-paper"
   | "allen-terms"
+  | "care-planaria-scenario"
+  | "care-planaria-fiji-demo"
+  | "care-fiji-license"
+  | "care-planaria-dataset"
+  | "care-paper"
+  | "organoidtracker-repo"
+  | "organoidtracker-organoid-weights"
+  | "organoidtracker-example-data"
+  | "organoidtracker-paper"
+  | "organoidtracker-pmc"
   | "cellpose-sam-v2-checkpoint"
   | "cellpose-sam-v1-checkpoint"
   | "cellpose-github-repo"
@@ -66,6 +86,8 @@ export type ModelLibraryExecutionMode =
   | "optional-local-profile"
   | "external-native-handoff"
   | "external-label-return"
+  | "external-restored-volume"
+  | "external-tracking-graph"
   | "optional-local-onnx"
   | "optional-local-tissue";
 
@@ -73,6 +95,8 @@ export type ModelLibraryVerificationKind =
   | "unvalidated-checkpoint-hash-verified"
   | "external-unverified-handoff-grid-checked"
   | "external-unverified-grid-checked"
+  | "external-unverified-derived-signal"
+  | "external-unverified-tracking-graph"
   | "reference-tensor-verified-unvalidated"
   | "unvalidated-candidate-files-verified";
 
@@ -82,7 +106,9 @@ export type ModelLibraryWorkbenchRouteKind =
   | "labels-usam-handoff"
   | "labels-import"
   | "onnx-model-package"
-  | "tissue-epidermis";
+  | "tissue-epidermis"
+  | "open-restored-volume"
+  | "temporal-tracking";
 
 export type ModelLibraryPublicationStatus =
   | "arXiv preprint"
@@ -147,6 +173,7 @@ export interface ModelLibraryEntry {
   readonly id: ModelLibraryId;
   readonly title: string;
   readonly subtitle: string;
+  readonly taskCategory: ModelLibraryTaskCategory;
   readonly filterGroup: Exclude<ModelLibraryFilterGroup, "all">;
   readonly executionMode: ModelLibraryExecutionMode;
   readonly executionBadge: string;
@@ -214,6 +241,8 @@ const ALLOWED_EXTERNAL_HOSTS = new Set([
   "biohub.github.io",
   "dynacell.s3.us-west-2.amazonaws.com",
   "www.allencell.org",
+  "csbdeep.bioimagecomputing.com",
+  "pmc.ncbi.nlm.nih.gov",
   "huggingface.co",
   "github.com",
   "doi.org",
@@ -233,6 +262,14 @@ function deepFreeze<T>(value: T): Readonly<T> {
   return value;
 }
 
+export const MODEL_LIBRARY_TASK_LABELS: Readonly<Record<ModelLibraryTaskCategory, string>> =
+  deepFreeze({
+    segment: "Segment",
+    "virtual-stain": "Virtual stain",
+    restore: "Restore",
+    track: "Track",
+  });
+
 export const MODEL_LIBRARY_OFFICIAL_LINKS: Readonly<Record<ModelLibraryLinkId, string>> =
   deepFreeze({
     "plantseg-record": "https://zenodo.org/records/7772553",
@@ -245,6 +282,17 @@ export const MODEL_LIBRARY_OFFICIAL_LINKS: Readonly<Record<ModelLibraryLinkId, s
     "dynacell-checkpoint": DYNACELL_NUCLEUS.url,
     "dynacell-paper": "https://doi.org/10.48550/arXiv.2611.02324",
     "allen-terms": "https://www.allencell.org/terms-of-use.html",
+    "care-planaria-scenario": "https://csbdeep.bioimagecomputing.com/scenarios/denoisingplanaria/",
+    "care-planaria-fiji-demo":
+      "https://github.com/CSBDeep/CSBDeep_website/wiki/Fiji-Command-%E2%80%93-3D-Denoising-(Planaria)",
+    "care-fiji-license": "https://github.com/CSBDeep/CSBDeep_fiji/blob/master/LICENSE.txt",
+    "care-planaria-dataset": "https://doi.org/10.17617/3.FDFZOF",
+    "care-paper": "https://doi.org/10.1038/s41592-018-0216-7",
+    "organoidtracker-repo": "https://github.com/jvzonlab/OrganoidTracker",
+    "organoidtracker-organoid-weights": "https://doi.org/10.5281/zenodo.18479952",
+    "organoidtracker-example-data": "https://doi.org/10.5281/zenodo.13982844",
+    "organoidtracker-paper": "https://doi.org/10.1038/s41592-025-02845-6",
+    "organoidtracker-pmc": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12615265/",
     "cellpose-sam-v2-checkpoint": `https://huggingface.co/mouseland/cellpose-sam/blob/${CELLPOSE_MODEL_REVISION}/cpsam_v2`,
     "cellpose-sam-v1-checkpoint": `https://huggingface.co/mouseland/cellpose-sam/blob/${CELLPOSE_MODEL_REVISION}/cpsam`,
     "cellpose-github-repo": "https://github.com/MouseLand/cellpose",
@@ -324,6 +372,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "cellpose-sam-v2",
     title: "Cellpose-SAM v2",
     subtitle: `Generalist 2D cellular instance segmentation · cpsam_v2 (rev ${CELLPOSE_MODEL_REVISION.slice(0, 12)})`,
+    taskCategory: "segment",
     filterGroup: "local",
     executionMode: "optional-local-profile",
     executionBadge: "Optional local profile",
@@ -434,6 +483,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     title: "μSAM Light Microscopy Generalist",
     subtitle:
       "Standalone 2D/3D promptable & automatic segmentation · BioImage.IO diplomatic-bug 1.2 (vit_b.pt + vit_b_decoder.pt)",
+    taskCategory: "segment",
     filterGroup: "external",
     executionMode: "external-native-handoff",
     executionBadge: "External · Native TIFF handoff",
@@ -542,6 +592,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "stardist-2d-versatile-fluo",
     title: "StarDist Versatile Fluorescence Nuclei",
     subtitle: "Star-convex polygon nuclear instance detection · python_2D_versatile_fluo.zip (v0.1)",
+    taskCategory: "segment",
     filterGroup: "external",
     executionMode: "external-label-return",
     executionBadge: "External · Label TIFF return",
@@ -649,6 +700,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "bioimageio-nuclei-boundary-onnx",
     title: "BioImage.IO 2D Nuclei Boundary ONNX",
     subtitle: "Local CPU ONNX package · adapted from Zenodo 6647674 weights.onnx",
+    taskCategory: "segment",
     filterGroup: "local",
     executionMode: "optional-local-onnx",
     executionBadge: "Optional local ONNX package",
@@ -767,6 +819,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     title: "PUMA tissue nnU-Net · fold 4",
     subtitle:
       "Six-class PlainConvUNet histopathology candidate (fold 4 · class 4 epidermis) · converted network_weights.pth + conversion-receipt.json (0.1.0)",
+    taskCategory: "segment",
     filterGroup: "local",
     executionMode: "optional-local-tissue",
     executionBadge: "Optional local tissue profile",
@@ -882,6 +935,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "plantseg-ovules-ds1x",
     title: "PlantSeg · Arabidopsis ovules",
     subtitle: "Confocal cell-wall boundaries and 3D cell instances",
+    taskCategory: "segment",
     filterGroup: "external",
     executionMode: "external-label-return",
     executionBadge: "External · ZYX label TIFF",
@@ -942,6 +996,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "mesmer-multiplex-tissue",
     title: "Mesmer · multiplex tissue",
     subtitle: "Whole-cell or nuclear instance labels from two aligned markers",
+    taskCategory: "segment",
     filterGroup: "external",
     executionMode: "external-label-return",
     executionBadge: "External · YX label TIFF",
@@ -1002,6 +1057,7 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
     id: "dynacell-ipsc-nucleus",
     title: "DynaCell · iPSC nuclear virtual stain",
     subtitle: "Reconstructed Phase3D to normalized predicted nuclear signal",
+    taskCategory: "virtual-stain",
     filterGroup: "local",
     executionMode: "optional-local-virtual-stain",
     executionBadge: "Optional local · CPU",
@@ -1057,6 +1113,160 @@ export const MODEL_LIBRARY_ENTRIES: readonly Readonly<ModelLibraryEntry>[] = dee
       linkDescriptor("dynacell-checkpoint", "iPSC nucleus checkpoint (386 MB)", "download", "dynacell.s3.us-west-2.amazonaws.com"),
       linkDescriptor("dynacell-paper", "November 2026 preprint", "paper", "doi.org"),
       linkDescriptor("allen-terms", "Allen Institute image terms", "catalog", "www.allencell.org"),
+    ],
+  },
+  {
+    id: "care-planaria-3d",
+    title: "CARE · low-light 3D planaria",
+    subtitle: "CSBDeep demonstration model for low-SNR 3D fluorescence",
+    taskCategory: "restore",
+    filterGroup: "external",
+    executionMode: "external-restored-volume",
+    executionBadge: "External · Open restored volume",
+    executionShortLabel: "External · restored stack",
+    verificationKind: "external-unverified-derived-signal",
+    verificationBadge: "Derived intensity",
+    verificationDetail:
+      "Loci opens the output as a separate image using the native file picker. Keep the original acquisition and record the input, CARE model and settings with the output. Opening a file establishes neither model provenance nor registration to the raw image.",
+    target: "Schmidtea mediterranea (planaria) nuclei",
+    modalitySummary: "3D spinning-disk confocal fluorescence",
+    taskLabel: "3D low-light denoising",
+    modalityTags: ["3D fluorescence", "Low-SNR denoising", "Restoration"],
+    summary:
+      "Restore a low-light planaria stack in Fiji with the CSBDeep demo. Open the saved result as a separate image in Loci to inspect the derived signal.",
+    cardSummary: "Denoise low-SNR planaria fluorescence externally and inspect the derived stack in Loci.",
+    publisherBadge: "CSBDeep · planaria demo",
+    searchTerms: ["CARE", "CSBDeep", "restoration", "denoise", "planarian", "flatworm", "low light", "low SNR", "Fiji", "KNIME"],
+    taskSummary:
+      "The demo predicts the location (μ) and scale (b) of a Laplace distribution per voxel. Fiji displays the location as the restored result. The scale describes model uncertainty in the restored intensity.",
+    inputContract:
+      "Use a scalar 3D fluorescence Z-stack. Export the result as a separate calibrated TIFF or OME-TIFF. Check axis order, spacing and spatial correspondence before comparing it with the acquisition.",
+    lociPathway:
+      "Save the Fiji result under a new filename and choose Open restored volume… to select it. Adjust the view in Image & channels. Use Register & resample if an explicit transform is needed.",
+    workbenchRoute: {
+      kind: "open-restored-volume",
+      actionLabel: "Open restored volume…",
+      inspectorLocation: "the native image picker",
+    },
+    artifact: {
+      artifactId: "csbdeep-demo-3d-denoising-planaria",
+      fileName: "model-planaria.zip",
+      version: "CSBDeep Fiji Planaria demo",
+      sha256: null,
+      digestBasis: "external-unverified",
+      digestBasisLabel: "The publisher demo page gives no checkpoint digest. Loci has no verified checkpoint for this entry.",
+      sizeBytes: null,
+      companionNote: "The Fiji demo downloads the model when run. Loci reads the user-selected output TIFF.",
+      runtimeRequirement: "External Fiji with the CSBDeep plugin",
+    },
+    rights: {
+      codeLicense: "BSD-2-Clause for the Fiji plugin. BSD-3-Clause for the CSBDeep Python toolbox.",
+      weightsLicense: "The scenario page offers a demonstration and gives no separate checkpoint licence. Confirm terms with the publisher before reuse beyond the demo.",
+      trainingDataLineage: "Paired low- and high-signal planaria nuclei stacks. The Edmond paper data record (10.17617/3.FDFZOF) declares CC0 1.0.",
+      redistribution: "Loci bundles no weights or example images for this entry.",
+      commercialUse: "Confirm checkpoint reuse rights with the publisher. The code and data licences apply to their respective assets.",
+    },
+    limitations: [
+      "Restoration can suppress real dim structures or introduce features. Use the acquired signal for intensity measurements unless paired high-SNR reference data support your quantitative use.",
+      "The publisher demonstrated this checkpoint on planaria nuclei. Performance on other specimens, labels and acquisition settings is unestablished.",
+    ],
+    citation: {
+      authors: "Weigert, M., Schmidt, U., Boothe, T. et al.",
+      year: 2018,
+      title: "Content-aware image restoration: pushing the limits of fluorescence microscopy",
+      venue: "Nature Methods 15, 1090–1097",
+      publicationStatus: "Peer-reviewed journal article",
+      doi: "10.1038/s41592-018-0216-7",
+      linkId: "care-paper",
+    },
+    primaryLink: linkDescriptor(
+      "care-planaria-scenario",
+      "CSBDeep Planaria demo",
+      "catalog",
+      "csbdeep.bioimagecomputing.com",
+    ),
+    secondaryLinks: [
+      linkDescriptor("care-planaria-fiji-demo", "Fiji instructions", "repository", "github.com"),
+      linkDescriptor("care-fiji-license", "Fiji plugin licence", "repository", "github.com"),
+      linkDescriptor("care-planaria-dataset", "Edmond research data", "catalog", "doi.org"),
+      linkDescriptor("care-paper", "Nature Methods 2018", "paper", "doi.org"),
+    ],
+  },
+  {
+    id: "organoidtracker-2",
+    title: "OrganoidTracker 2.0",
+    subtitle: "3D time-lapse nuclear tracking and lineage reconstruction",
+    taskCategory: "track",
+    filterGroup: "external",
+    executionMode: "external-tracking-graph",
+    executionBadge: "External · Import .aut v1 graph",
+    executionShortLabel: "External · lineage graph",
+    verificationKind: "external-unverified-tracking-graph",
+    verificationBadge: "Publisher model · Imported scores",
+    verificationDetail:
+      "Loci reads the exported graph and preserves link probability and marginal probability as separate optional values. Missing values stay missing. Loci's timed-label tracker runs independently of the imported graph.",
+    target: "Dividing nuclei in mouse intestinal organoids",
+    modalitySummary: "3D time-lapse confocal nuclear fluorescence (H2B-mCherry)",
+    taskLabel: "Cell lineages and divisions",
+    modalityTags: ["3D+t fluorescence", "Organoid lineages", ".aut v1 graph"],
+    summary:
+      "Track nuclear positions and divisions in OrganoidTracker. Import the exported lineage graph into Loci to inspect tracks and reported link probabilities.",
+    cardSummary: "Track 3D time-lapse nuclei externally and review lineages and link uncertainty in Loci.",
+    publisherBadge: "OrganoidTracker · official repository",
+    searchTerms: ["organoidtracker", "tracking", "time lapse", "time-lapse", "division", "uncertainty", "confidence", "marginal probability", "D3 node-link"],
+    taskSummary:
+      "The external pipeline predicts nuclear centers, links and divisions, then selects tracks by min-cost flow. Marginalization estimates link probability using nearby alternative tracking solutions.",
+    inputContract:
+      "Select the corresponding calibrated native 3D OME-TIFF time series with uniform timing. Import a plain .aut v1 JSON file containing D3 nodes and links, with matching XYZ spacing and time interval and without image offsets.",
+    lociPathway:
+      "In Analyze → Track over time, set the upstream time point for the first image frame and the graph origin. Confirm the native grid and frame mapping, then use Choose .aut graph… to select the local file.",
+    workbenchRoute: {
+      kind: "temporal-tracking",
+      actionLabel: "Open Track over time",
+      inspectorLocation: "Analyze → Track over time",
+    },
+    artifact: {
+      artifactId: "organoidtracker2-intestinal-organoid-models",
+      fileName: "models_all.zip",
+      version: "Intestinal organoid weights v3 · Zenodo 18479952",
+      sha256: null,
+      digestBasis: "publisher-reported",
+      digestBasisLabel: "Zenodo reports MD5 c46ab6daae057209c20b844e2ab0c21b for the v3 archive. Loci has no verified checkpoint for this entry.",
+      sizeBytes: null,
+      companionNote: "The v3 archive provides TensorFlow and Keras/PyTorch variants for cell, link and division detection.",
+      runtimeRequirement: "External OrganoidTracker environment",
+    },
+    rights: {
+      codeLicense: "GPL-2.0 for the application. The repository identifies some neural network code under MIT.",
+      weightsLicense: "CC-BY-4.0 for Zenodo 18479952.",
+      trainingDataLineage: "Mouse intestinal organoid H2B-mCherry data, acquired at 0.32 × 0.32 × 2 µm XYZ spacing. The separate Zenodo example (13982844) declares CC-BY-4.0.",
+      redistribution: "Loci bundles no OrganoidTracker software, weights or datasets.",
+      commercialUse: "Follow the applicable software and attribution terms. Confirm access and reuse terms for separately requested training data.",
+    },
+    limitations: [
+      "Scores come from OrganoidTracker. Their calibration can change with imaging conditions and specimen.",
+      "The importer requires consecutive links with at most one parent and two daughters per detection. The image and graph must refer to the same native grid and time series.",
+    ],
+    citation: {
+      authors: "Betjes, M. A., Kok, R. N. U., Tans, S. J. & van Zon, J. S.",
+      year: 2025,
+      title: "Cell tracking with accurate error prediction",
+      venue: "Nature Methods 22, 2400–2410",
+      publicationStatus: "Peer-reviewed journal article",
+      doi: "10.1038/s41592-025-02845-6",
+      linkId: "organoidtracker-paper",
+    },
+    primaryLink: linkDescriptor(
+      "organoidtracker-repo",
+      "OrganoidTracker repository",
+      "repository",
+      "github.com",
+    ),
+    secondaryLinks: [
+      linkDescriptor("organoidtracker-organoid-weights", "Organoid weights v3", "catalog", "doi.org"),
+      linkDescriptor("organoidtracker-example-data", "Organoid example and tracking data", "catalog", "doi.org"),
+      linkDescriptor("organoidtracker-paper", "Nature Methods 2025", "paper", "doi.org"),
+      linkDescriptor("organoidtracker-pmc", "Open-access full text", "paper", "pmc.ncbi.nlm.nih.gov"),
     ],
   },
 ]);

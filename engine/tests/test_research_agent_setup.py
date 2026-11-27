@@ -29,6 +29,171 @@ def access_request(request, **changes):
     }
 
 
+def nuclei_access_request(request, **changes):
+    from loci_engine.agent_policy import DISCLOSURES
+
+    return access_request(
+        {**request, "selection": {k: v for k, v in request["selection"].items() if k != "z_stop"}},
+        **{
+            "allow_nuclei_model": True,
+            "delegation": {
+                "client_id": "codex",
+                "expires_at": None,
+                "result_scope": "granted-sources",
+                "allow_review": False,
+            },
+            "disclosures": sorted(DISCLOSURES),
+            **changes,
+        },
+    )
+
+
+@pytest.fixture
+def nuclei_policy_pins(monkeypatch):
+    from loci_engine import research_models
+    from loci_engine.workbench import runtime_record
+
+    package = {
+        "id": research_models.NUCLEI_MODEL_PACKAGE_ID,
+        "sha256": research_models.NUCLEI_MODEL_PACKAGE_SHA256,
+    }
+    runtime = {**runtime_record(), "backend": "onnxruntime-cpu:fixture"}
+    grants = {"model_packages": [package], "runtimes": [runtime]}
+    monkeypatch.setattr(research_models, "agent_policy_model_grants", lambda workbench: grants)
+    return grants
+
+
+def test_model_bundle_pins_exact_package_cpu_runtime_and_scoped_actions(
+    tmp_path, nuclei_policy_pins
+):
+    from loci_engine.agent_policy import _RUNTIME_KEYS
+    from loci_engine.research_models import MODEL_OPERATIONS
+
+    workbench, source, request = make_study(tmp_path)
+    destination = tmp_path / "model access"
+    request = nuclei_access_request(request, actions=["run_recipe", "model_preview"])
+    receipt = create_agent_access(workbench, request, destination)
+    policy = load_policy(destination / receipt["policy_filename"])
+    package = nuclei_policy_pins["model_packages"][0]
+    runtime = nuclei_policy_pins["runtimes"][0]
+    assert policy.model_packages == ((package["id"], package["sha256"]),)
+    assert policy.runtimes[1] == {key: runtime[key] for key in _RUNTIME_KEYS}
+    assert policy.runtimes[0]["backend"] == "numpy-scipy-cpu"
+    policy.require_runtime(runtime)
+    assert set(policy.actions) == {"run_recipe"} | MODEL_OPERATIONS
+    assert {"validate_action", "inspect_action", "submit_action", "job_status"} <= policy.operations
+    assert policy.cpu_seconds == request["limits"]["cpu_seconds"]
+    assert policy.memory_bytes == request["limits"]["memory_bytes"]
+    assert policy.sources[source["id"]].z == (request["selection"]["z"],)
+    assert "preview_recipe" not in policy.operations and "review_result" not in policy.operations
+    assert receipt["nuclei_model_sha256"] == package["sha256"]
+    assert str(tmp_path) not in json.dumps(receipt)
+    assert request["actions"] == ["run_recipe", "model_preview"]
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"allow_nuclei_model": 1}, "explicit boolean"),
+        ({"allow_nuclei_model": False, "actions": ["model_preview"]}, "explicit nuclei model"),
+        ({"allow_run": False}, "explicit run"),
+        ({"disclosures": ["agent_metadata"]}, "all response disclosures"),
+        (
+            {
+                "delegation": {
+                    "client_id": "codex",
+                    "expires_at": None,
+                    "result_scope": "pinned-recipes",
+                    "allow_review": False,
+                }
+            },
+            "source-scoped delegation",
+        ),
+    ],
+)
+def test_model_bundle_requires_explicit_scoped_permissions(tmp_path, changes, message):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "rejected"
+    with pytest.raises(ValueError, match=message):
+        create_agent_access(workbench, nuclei_access_request(request, **changes), destination)
+    assert not destination.exists()
+
+
+def test_model_bundle_rejects_volume_and_unregistered_model(tmp_path):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "rejected"
+    volume = {**nuclei_access_request(request), "selection": request["selection"]}
+    with pytest.raises(ValueError, match="single Z plane"):
+        create_agent_access(workbench, volume, destination)
+    with pytest.raises(ValueError, match="Install the verified BioImage.IO"):
+        create_agent_access(workbench, nuclei_access_request(request), destination)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("missing_runtime", [False, True])
+def test_model_bundle_rejects_other_packages_or_missing_cpu_runtime(
+    tmp_path, nuclei_policy_pins, missing_runtime
+):
+    workbench, _, request = make_study(tmp_path)
+    if missing_runtime:
+        nuclei_policy_pins["runtimes"].clear()
+    else:
+        nuclei_policy_pins["model_packages"][0]["sha256"] = "0" * 64
+    destination = tmp_path / "rejected"
+    with pytest.raises(ValueError, match="Install the verified BioImage.IO"):
+        create_agent_access(workbench, nuclei_access_request(request), destination)
+    assert not destination.exists()
+
+
+def test_model_bundle_preserves_cpu_budget_bounds(tmp_path, nuclei_policy_pins):
+    workbench, _, request = make_study(tmp_path)
+    destination = tmp_path / "rejected"
+    grant = nuclei_access_request(request)
+    grant["limits"]["cpu_seconds"] = 0
+    with pytest.raises(ValueError, match="CPU seconds"):
+        create_agent_access(workbench, grant, destination)
+    assert not destination.exists()
+
+
+def test_full_access_and_explicit_false_leave_nuclei_package_ungranted(
+    tmp_path, nuclei_policy_pins
+):
+    from loci_engine.research_models import MODEL_OPERATIONS
+
+    workbench, _, request = make_study(tmp_path)
+    for value in (False, None):
+        destination = tmp_path / f"access {value}"
+        grant = nuclei_access_request(
+            request, allow_nuclei_model=False, actions=["run_recipe"], permission_mode="full_access"
+        )
+        if value is None:
+            grant.pop("allow_nuclei_model")
+        receipt = create_agent_access(workbench, grant, destination)
+        policy = load_policy(destination / receipt["policy_filename"])
+        assert not policy.model_packages
+        assert not (set(policy.actions) & MODEL_OPERATIONS)
+        assert len(policy.runtimes) == 1
+        assert "nuclei_model_sha256" not in receipt
+
+
+def test_model_bundle_rechecks_exact_package_before_publication(
+    tmp_path, nuclei_policy_pins, monkeypatch
+):
+    workbench, _, request = make_study(tmp_path)
+    write_policy = research_agent_setup.write_policy
+
+    def install_then_remove(*args, **kwargs):
+        receipt = write_policy(*args, **kwargs)
+        nuclei_policy_pins["model_packages"].clear()
+        return receipt
+
+    monkeypatch.setattr(research_agent_setup, "write_policy", install_then_remove)
+    destination = tmp_path / "rejected"
+    with pytest.raises(ValueError, match="Install the verified BioImage.IO"):
+        create_agent_access(workbench, nuclei_access_request(request), destination)
+    assert not destination.exists()
+
+
 def test_explicit_delegation_creates_named_review_authority_and_plugin(tmp_path):
     workbench, _, request = make_study(tmp_path)
     destination = tmp_path / "delegated"
@@ -690,6 +855,139 @@ def test_interactive_frozen_plugin_preserves_exact_worker_command(tmp_path, monk
     assert server == {"type": "stdio", **manual}
     assert server["args"][:2] == ["--cli", "mcp"]
     assert "cwd" not in server and "env" not in server
+
+
+def test_antigravity_workspace_reads_only_its_generated_policy(tmp_path):
+    workbench, source, request = make_study(tmp_path)
+    destination = tmp_path / "Agent access with spaces"
+    receipt = create_agent_access(
+        workbench,
+        access_request(
+            request, client="antigravity", allow_run=False, disclosures=["agent_metadata"]
+        ),
+        destination,
+    )
+    config = json.loads((destination / receipt["antigravity_config_filename"]).read_text())
+    server_id, server = next(iter(config["mcpServers"].items()))
+    assert server_id == f"loci-research-{receipt['policy_sha256'][:12]}"
+    assert (
+        server
+        == json.loads((destination / "mcp-config.json").read_text())["mcpServers"]["loci-research"]
+    )
+    assert server["args"][-1] == str(destination / "agent-policy.json")
+    assert server["env"] == {"PYTHONPATH": str(Path(server["cwd"]) / "src")}
+    plugin_file = destination / receipt["antigravity_plugin_filename"]
+    plugin = json.loads(plugin_file.read_text())
+    assert plugin["suggestedPrompts"] == [receipt["verification_prompt"]]
+    assert not (plugin_file.parent / "mcp_config.json").exists()
+    assert (plugin_file.parent / "skills/loci-analysis/SKILL.md").is_file()
+    assert str(tmp_path) not in json.dumps(receipt)
+    assert receipt["verification_prompt"] in (destination / "README.txt").read_text()
+    assert receipt["policy_sha256"] in receipt["verification_prompt"]
+    assert source["id"] in receipt["verification_prompt"]
+    assert receipt["operations"] == ["analysis_context", "inspect_source", "validate_recipe"]
+    if os.name == "posix":
+        for path in (destination / receipt["antigravity_workspace"]).rglob("*"):
+            assert path.stat().st_mode & 0o777 == (0o700 if path.is_dir() else 0o600)
+
+    async def check():
+        async with (
+            stdio_client(StdioServerParameters(**server)) as streams,
+            ClientSession(*streams) as session,
+        ):
+            await session.initialize()
+            catalog = await session.call_tool("catalog")
+            assert not catalog.is_error
+            assert (
+                json.loads(catalog.content[0].text)["policy"]["sha256"] == receipt["policy_sha256"]
+            )
+            inspected = await session.call_tool("inspect_source", {"source_id": source["id"]})
+            assert not inspected.is_error
+            assert json.loads(inspected.content[0].text)["verified"] is True
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("worker", "policy_path"),
+    [
+        ("/Applications/My Loci.app/loci-engine", "/Volumes/My Drive/Study A/agent-policy.json"),
+        (r"C:\Program Files\Loci\loci-engine.exe", r"D:\Study A\agent-policy.json"),
+    ],
+)
+def test_antigravity_frozen_paths_are_literal_and_minimal(worker, policy_path):
+    from loci_engine.agent_plugin import antigravity_documents, codex_documents
+
+    stdio = {"command": worker, "args": ["--cli", "mcp", "--policy", policy_path]}
+    documents, receipt = antigravity_documents(stdio, "a" * 64, "b" * 32, disclose_metadata=False)
+    config = json.loads(documents[receipt["antigravity_config_filename"]])
+    assert config == {"mcpServers": {"loci-research-aaaaaaaaaaaa": stdio}}
+    assert "catalog" not in receipt["verification_prompt"]
+    assert "a" * 64 not in receipt["verification_prompt"]
+    assert "b" * 32 in receipt["verification_prompt"]
+    codex, codex_receipt = codex_documents(stdio, "a" * 64, "b" * 32, disclose_metadata=False)
+    assert tomllib.loads(codex[codex_receipt["codex_config_filename"]]) == {
+        "mcp_servers": {"loci-research-aaaaaaaaaaaa": stdio}
+    }
+    assert codex_receipt["verification_prompt"] == receipt["verification_prompt"]
+
+
+def test_explicit_codex_access_adds_trusted_workspace_and_keeps_existing_artifacts(tmp_path):
+    workbench, source, request = make_study(tmp_path)
+    destination = tmp_path / "Codex access with spaces"
+    receipt = create_agent_access(
+        workbench,
+        access_request(
+            request,
+            client="codex",
+            disclosures=["agent_metadata"],
+            interactive=interactive_request(),
+        ),
+        destination,
+    )
+    workspace = destination / receipt["codex_workspace"]
+    config = destination / receipt["codex_config_filename"]
+    assert config == workspace / ".codex/config.toml"
+    server = f"loci-research-{receipt['policy_sha256'][:12]}"
+    manual = tomllib.loads((destination / "codex-config.toml").read_text())["mcp_servers"]
+    assert set(manual) == {"loci-research"}
+    assert tomllib.loads(config.read_text()) == {"mcp_servers": {server: manual["loci-research"]}}
+    assert (destination / ".agents/plugins/marketplace.json").is_file()
+    assert (destination / receipt["plugin_filename"]).is_file()
+    assert server in (workspace / "AGENTS.md").read_text()
+    assert str(tmp_path) not in receipt["verification_prompt"]
+    assert source["id"] in receipt["verification_prompt"]
+    assert receipt["policy_sha256"] in receipt["verification_prompt"]
+    readme = (destination / "README.txt").read_text()
+    assert "trust the project" in readme
+    assert receipt["verification_prompt"] in readme
+    if os.name == "posix":
+        assert workspace.stat().st_mode & 0o777 == 0o700
+        assert config.stat().st_mode & 0o777 == 0o600
+
+
+def test_antigravity_access_bundles_keep_distinct_studies_and_existing_files(tmp_path):
+    def bundle(index, client):
+        folder = tmp_path / f"study {index}"
+        folder.mkdir()
+        workbench, _, request = make_study(folder)
+        return create_agent_access(
+            workbench, access_request(request, client=client), folder / "access"
+        )
+
+    first = bundle(1, "antigravity")
+    first_config = tmp_path / "study 1/access" / first["antigravity_config_filename"]
+    original = first_config.read_bytes()
+    second = bundle(2, "antigravity")
+    second_config = tmp_path / "study 2/access" / second["antigravity_config_filename"]
+    assert first_config.read_bytes() == original
+    assert set(json.loads(original)["mcpServers"]).isdisjoint(
+        json.loads(second_config.read_bytes())["mcpServers"]
+    )
+    codex = bundle(3, "codex")
+    assert "antigravity_workspace" not in codex
+    with pytest.raises(ValueError, match="supported assistant client"):
+        bundle(4, ["antigravity"])
 
 
 def test_replaced_staging_directory_is_not_published_or_deleted(tmp_path, monkeypatch):

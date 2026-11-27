@@ -91,6 +91,37 @@ describe("Detached agent workspace", () => {
     expect(screen.getByLabelText("Goal")).toHaveValue("Preserve this human draft");
   });
 
+  it("hands model approval inspection to the main window and keeps denial available", async () => {
+    const state = initialState(), snapshot = state.snapshot!, sessions = snapshot.agent_sessions!;
+    const job = { id: "9".repeat(32), request_hash: "8".repeat(64), request: { source_id: sourceId },
+      state: "succeeded" as const, operation: "model_preview", request_key: "preview", created_at: "", updated_at: "",
+      progress: 1, cancel_requested: false, result_ids: [], error: null };
+    snapshot.jobs = [job];
+    state.inspectablePreviewJobIds = [job.id];
+    sessions.policies[0].project_id = snapshot.project.project_id!;
+    sessions.sessions[0].project_id = snapshot.project.project_id!;
+    const approval = { ...wire.approvals[0], project_id: snapshot.project.project_id!, operation: "submit_action",
+      action_name: "model_run", source_id: sourceId, source_sha256: sourceHash, expires_at: new Date(Date.now() + 60000).toISOString(),
+      parameters_summary: { review_requirement: "visual-preview-inspection-required", preview_id: "preview-a",
+        preview_sha256: "5".repeat(64), preview_job_id: job.id } };
+    sessions.approvals = [approval];
+    const h = harness(state);
+    render(<DetachedAgentWorkspace api={h.api} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Inspect model preview" }));
+    expect(h.api.navigate).toHaveBeenCalledWith(state.binding, { requestId: expect.any(String), intent: "inspect-preview", approvalId: approval.id,
+      target: { kind: "job", id: job.id, sha256: job.request_hash, source_id: sourceId, source_sha256: sourceHash } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Deny submit_action" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Approve submit_action" })).toBeNull();
+    expect(h.api.control).not.toHaveBeenCalled();
+    const revoked = structuredClone(state);
+    revoked.sequence++;
+    revoked.snapshot!.agent_sessions!.policies[0].revoked = true;
+    h.emit(revoked);
+    expect(screen.getByRole("button", { name: "Inspect model preview" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Deny submit_action" }));
+    expect(h.api.control).toHaveBeenCalledWith(state.binding, { action: "deny_request", approval_id: approval.id });
+  });
+
   it("shows evidence navigation in progress until the main renderer acknowledges the exact target", async () => {
     const h = harness(), completion = deferred<typeof h.receipt>();
     vi.mocked(h.api.navigate).mockReturnValue(completion.promise);

@@ -187,6 +187,8 @@ describe("Model Zoo search and filter helpers", () => {
       "bioimageio-nuclei-boundary-onnx",
       "mesmer-multiplex-tissue",
       "dynacell-ipsc-nucleus",
+      "care-planaria-3d",
+      "organoidtracker-2",
     ]);
 
     const nucleiLocal = filterModelZooEntries(
@@ -200,7 +202,7 @@ describe("Model Zoo search and filter helpers", () => {
     ]);
 
     const counts = countModelZooEntries(MODEL_LIBRARY_ENTRIES, "nuclei");
-    expect(counts).toEqual({ all: 5, local: 2, external: 3 });
+    expect(counts).toEqual({ all: 7, local: 2, external: 5 });
 
     expect(
       filterModelZooEntries(MODEL_LIBRARY_ENTRIES, "all", "no-such-stain-999"),

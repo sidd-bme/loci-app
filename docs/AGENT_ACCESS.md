@@ -1,5 +1,15 @@
 # Policy-bound agent access
 
+## Compare two segmentation methods with your assistant
+
+1. Open a study and select one native Z plane of a scalar fluorescence image. In **Model Zoo**, install the **BioImage.IO 2D Nuclei Boundary ONNX** model for that study. Select the channel and region you want to compare.
+2. In **Connect an assistant**, choose **Codex** or **Antigravity**, select **Analyze**, and enable **Use installed nuclei ONNX model**. Grant access and open the generated workspace in the chosen assistant. Copy **First prompt** into a new chat. **Check connection** shows which client connected to this study.
+3. Give the assistant a research question. For example, “On this region, compare classical connected components with the installed nuclei model. Show me the masks, list the objects found by only one method, and save the comparison so I can inspect them.”
+4. Watch the plan and jobs in **Agent workspace**. When the model asks to save a result, choose **Inspect model preview**. Examine the outlines on the source image. You can approve the displayed prediction or deny it.
+5. Open the saved comparison from the plan and choose **Show me the differences**. Step through objects found by either method, or switch between the two overlays for a matched pair. Both predictions remain available. A manual reference is needed to assess which prediction is correct.
+
+The chat runs in your chosen assistant. Loci executes the granted operations in the study and records their inputs, outputs and review state. [Host setup](CLI.md#vision-assistants-and-local-mcp-access)
+
 ## Detached agent workspace
 
 The Agent session drawer can open as a separate native window, including on a
@@ -212,11 +222,13 @@ recipes currently reject every non-empty `references` object before validation.
 Adding that capability requires a later policy revision that independently
 checks each reference source fingerprint and selection scope.
 
-Runtime records are exact identities for the built-in CPU implementation.
-Current workbench recipes do not load model packages; `model_packages` is an
-explicit dormant scope for a future recipe integration and grants no download,
-installation, loading, or execution right by itself. There is no MCP model or
-runtime provisioning tool.
+Runtime records are exact identities for the built-in CPU implementation or an
+approved local model backend (for example `onnxruntime-cpu:<contract_sha256>`
+or `puma:<contract_sha256>`). Standard workbench recipes do not load model
+packages; `model_packages` pins exact `{id, sha256}` model package or weights
+identities for supported model actions and grants no download, installation,
+or arbitrary file-loading right by itself. Humans install and administer models
+in Loci; there is no MCP model or runtime provisioning tool.
 
 For an export grant, use an existing absolute plain `root` and a non-empty list
 of exact single-component `filenames`. Export writes one new directory and
@@ -536,6 +548,49 @@ undefined density. All three input masks remain permission-bound dependencies.
 Correct the inputs and rerun; direct correction of the derivative is refused.
 See [the endpoint and persistence contract](SPATIAL_DISTANCE_BANDS.md). This
 operation does not infer epidermis or establish tissue thickness.
+
+The verified installed BioImage.IO nuclei ONNX path
+(`nuclei-segmentation-boundary-model`, version `0.1.0-publication-20261015-r2`,
+`loci.model-package/1`) exposes path-free `model_list`, bounded `model_preview`,
+and receipt-bound `model_run`:
+
+- **Discovery (`model_list`)**: Runs through `inspect_action` and requires only
+  `model_list` in `policy.actions` plus response disclosures. It returns only
+  ready, reference-qualified verified packages managed by the study, omitting
+  private paths, `reimport-required` placeholders, and unsupported custom
+  packages. Each entry includes `agent_execution` indicating whether this
+  policy also grants `model_packages` and the pinned ONNX CPU runtime.
+- **Bounded preview (`model_preview` + `task_preview_get`)**: Runs as a durable
+  preview task (`submit_action`) on an explicitly granted scalar 2D source crop
+  and exact `model_id`. Every `channel_mapping` source channel and
+  `display.source_channel` must be in the source grant's `c` list, and every
+  `measurement_channels` entry must be in `measurement_channels`; RGB sources,
+  unpinned models/runtimes, and working-memory overruns fail closed before pixel
+  decoding or job creation. For calibrated crops (such as a fluorescence plane
+  compared directly against `classical_run` adaptive watershed), explicit
+  no-resample `scale: {"mode": "override", "scale_yx": [1.0, 1.0],
+  "scale_unit": "pixel", "declaration": "..."}` evaluates the pixel-trained
+  model without implicit resampling while preserving calibrated source geometry
+  on output measurements. `inspect_action("task_preview_get", {"job_id": ...})`
+  returns the retained preview receipt and delivers `overlay_png` as a verified
+  MCP `ImageContent` PNG block. Unreferenced `model_preview` receipts are
+  bounded (`MAX_UNADOPTED_MODEL_PREVIEWS = 64`) without evicting adopted or
+  pending-approval previews.
+- **Researcher-approved adoption (`model_run`)**: Binds `{preview_id,
+  preview_sha256}` and **always** requires a single-use human approval in Loci
+  (`explicit_approval_required: true`, `decided_by: "human"`), even when the
+  session is in `full_access` mode. Approving a `model_run` request via
+  `research_agent_session_control` requires `inspected_preview: {preview_id,
+  preview_sha256, preview_job_id}`, verifying the retained task preview and
+  overlay `png_sha256` before marking the request approved. Switching session
+  mode to `full_access` or recording an agent `review_result` never satisfies or
+  substitutes for human visual review of the preview. Stale sources, modified
+  channel declarations, or changed model revisions invalidate pending or approved
+  requests before execution, and the disposable `run` worker independently
+  verifies the consumed human approval record before adopting the preview into an
+  immutable `model-segmentation` result (recording canonical `selection` with `c`
+  for single-channel models so direct agreement comparison with `classical_run`
+  works on the same plane).
 
 The separate optional [epidermis model](TISSUE_MODELS.md) exposes
 `tissue_model_profiles`, exact-request `tissue_model_status` and

@@ -362,6 +362,11 @@ def result_summary(result: dict[str, Any], review: dict[str, Any] | None = None)
         "arrays": result["arrays"],
         "geometry": provenance.get("geometry"),
         "selection": provenance.get("selection"),
+        **(
+            {"channel_mapping": provenance["channel_mapping"]}
+            if "channel_mapping" in provenance
+            else {}
+        ),
         "object_count": result.get("object_count", len(provenance.get("measurements", []))),
         "schema": result["schema"],
         "working_bytes": result_working_bytes(result),

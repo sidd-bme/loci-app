@@ -1,5 +1,13 @@
 import { ResearchControlledMethodsPanel, ControlledMethodSummary } from "./ResearchControlledMethodsPanel";
-import { ResearchAnnotationEvaluationPanel, AnnotationAgreementSummary } from "./ResearchAnnotationEvaluationPanel";
+import {
+  ResearchAnnotationEvaluationPanel,
+  AnnotationAgreementSummary,
+  resolveAgreementParents,
+  validateAgreementLocateResponse,
+  type AgreementDifferenceRole,
+  type AgreementDifferenceTarget,
+  type AgreementLocateRequest,
+} from "./ResearchAnnotationEvaluationPanel";
 import { StudyWorkspace, type StudySection } from "./StudyWorkspace";
 import { ResearchWorkflowGraphPanel } from "./ResearchWorkflowGraphPanel";
 import { SpatialDensityPanel } from "./SpatialDensityPanel";
@@ -117,7 +125,8 @@ import type { AgentWorkspaceNavigationRequest } from "../shared/agent-workspace-
 import { AgentSnapshotFence, waitForAgentNavigation } from "./agent-workspace-host";
 import { useAgentWorkspaceHost } from "./use-agent-workspace-host";
 import { useAgentWorkflowTargets, type AgentWorkflowNavigation } from "./agent-workspace-workflows";
-import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewComparison";
+import { modelApprovalTarget, requiresModelInspection } from "./agent-model-approval";
+import { AgentPreviewComparison, matchesModelApproval, type SharedTaskPreview } from "./AgentPreviewComparison";
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
 import { ResearchPortabilityPanel } from "./ResearchPortabilityPanel";
@@ -125,6 +134,7 @@ import { ImageConversionPanel } from "./ImageConversionPanel";
 import { ResearchRemotePanel } from "./ResearchRemotePanel";
 import { activeComputeRun, ResearchComputeControl, ResearchComputeJobs, useResearchCompute, type ResearchComputeController } from "./ResearchCompute";
 import { ResearchSurfaceView } from "./ResearchSurfaceView";
+import { OrganoidTrackerPanel } from "./OrganoidTrackerPanel";
 import { ResearchTemporalPanel } from "./ResearchTemporalPanel";
 import {
   clampNativeSelection,
@@ -945,6 +955,15 @@ export default function ResearchWorkbench({
   const [selectedRow, setSelectedRow] = useState<number | null>(null);
   const [populationHighlight, setPopulationHighlight] = useState<PopulationHighlight | null>(null);
   const [populationObject, setPopulationObject] = useState<Record<string, unknown> | null>(null);
+  const [agreementContext, setAgreementContext] = useState<{
+    studyScope: string;
+    sourceId: string;
+    sourceSha256: string;
+    agreementId: string;
+    agreementRevisionHash: string;
+    activeDifference: AgreementDifferenceTarget | null;
+  } | null>(null);
+  const agreementLocateToken = useRef(0);
   const [correctionObjectTarget, setCorrectionObjectTarget] = useState<CorrectionObjectTarget | null>(null);
   const [largeObject, setLargeObject] = useState<Record<string, unknown> | null>(null);
   const [largeFocus, setLargeFocus] = useState<{ point_index: [number, number] } | null>(null);
@@ -1103,6 +1122,10 @@ export default function ResearchWorkbench({
   const [compareDefault, setCompareDefault] = useState(false);
   const [savedCamera, setSavedCamera] = useState<Camera | null>(null);
   const [viewCamera, setViewCamera] = useState<Camera | null>(null);
+  const [lineageFocus, setLineageFocus] = useState<{
+    scope: string; t: number; z: number; x: number; y: number;
+  } | null>(null);
+  const clearLineageFocus = useCallback(() => setLineageFocus(null), []);
   const [controlledViewCamera, setControlledViewCamera] = useState<Camera | null>(null);
   const [displaySampling, setDisplaySampling] = useState<DisplaySamplingMode>("auto");
   const [viewReadyKey, setViewReadyKey] = useState("");
@@ -1130,9 +1153,10 @@ export default function ResearchWorkbench({
   const [pendingAgentSource, setPendingAgentSource] = useState<{
     target: ResearchAgentTargetReference; isCurrent: () => boolean;
   } | null>(null);
-  const [sharedPreview, setSharedPreview] = useState<{ preview: SharedTaskPreview; study: string } | null>(null);
+  const [sharedPreview, setSharedPreview] = useState<{ preview: SharedTaskPreview; study: string; approvalId?: string } | null>(null);
   const previewReturnFocus = useRef<HTMLElement | null>(null);
   const previewReadToken = useRef(0);
+  const [workspaceOpenRequest, setWorkspaceOpenRequest] = useState(0);
   const [agentRefreshError, setAgentRefreshError] = useState<string | null>(null);
   const agentInteraction = useRef({ pointers: new Set<number>(), lastInput: 0, generation: 0 });
   const batchViewAdoption = useRef<{
@@ -2338,6 +2362,10 @@ export default function ResearchWorkbench({
     route: ModelLibraryWorkbenchRouteKind,
   ) => {
     setModelLibraryState(null);
+    if (route === "open-restored-volume") {
+      void openImages("files");
+      return;
+    }
     if (!source || !dimensions) return;
     setToolsHidden(false);
     if (route === "segment-cellpose-v2") {
@@ -2355,7 +2383,15 @@ export default function ResearchWorkbench({
       openWorkbenchTab("Tissue model");
     } else if (route === "virtual-stain") {
       openWorkbenchTab("Virtual stain");
+    } else if (route === "temporal-tracking") {
+      openWorkbenchTab("Temporal");
     }
+  };
+  const zooRouteUnavailable = (route: ModelLibraryWorkbenchRouteKind) => {
+    if (route === "open-restored-volume") return null;
+    if (route === "temporal-tracking" && (!source || !dimensions || dimensions.t <= 1))
+      return "Open a calibrated time series to inspect a lineage.";
+    return source && dimensions ? null : "Open an image first to configure this tool in the inspector.";
   };
   const refreshModels = useCallback(
     async (
@@ -2387,7 +2423,7 @@ export default function ResearchWorkbench({
   const hasLoadedStudy = Boolean(snapshot);
   const modelLibraryOpen = modelLibraryState !== null;
   useEffect(() => {
-    if (presenting && hasLoadedStudy && (tab === "Model" || modelLibraryOpen)) {
+    if (presenting && hasLoadedStudy && (tab === "Model" || tab === "Agent" || modelLibraryOpen)) {
       void refreshModels(exportDraftStudy);
     }
   }, [presenting, hasLoadedStudy, tab, modelLibraryOpen, exportDraftStudy, refreshModels]);
@@ -2917,15 +2953,16 @@ export default function ResearchWorkbench({
       setSharedPreview(null);
     }
   }, [source?.id, source?.sha256, exportDraftStudy, sharedPreview]);
-  const inspectAgentPreview = async (target: ResearchAgentTargetReference) => {
+  const inspectAgentPreview = async (target: ResearchAgentTargetReference, approvalId?: string) => {
     if (!snapshot || !agentTargetNavigationReady || documentSwitch.current) {
       setError("Finish the current edit or operation before inspecting a preview."); return false;
     }
     const job = snapshot.jobs.find((item) => item.id === target.id && item.state === "succeeded");
-    if (!job || !["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)) {
+    if (!job || !["workflow_preview", "exploration_preview", "exploration_compare", "model_preview"].includes(job.operation)) {
       setError("The recorded preview task is unavailable."); return false;
     }
     const token = ++previewReadToken.current;
+    if (sharedPreview?.approvalId) setSharedPreview(null);
     const generation = agentInteraction.current.generation, study = exportDraftStudy;
     const isCurrent = () => token === previewReadToken.current && currentStudyScope.current === study &&
       generation === agentInteraction.current.generation && !documentSwitch.current;
@@ -2937,12 +2974,19 @@ export default function ResearchWorkbench({
     try {
       if (preview.job_id !== job.id || preview.operation !== job.operation) throw new Error("The preview does not match its task.");
       const exact = agentSourceTarget(snapshot, { kind: "source", id: preview.source_id, sha256: preview.source_sha256 });
+      if (preview.operation === "model_preview" && (preview.request_sha256 !== job.request_hash ||
+          job.request.source_id !== exact.id || (target.sha256 && target.sha256 !== job.request_hash))) throw new Error("The model preview task changed.");
+      if (approvalId) {
+        const approval = snapshot.agent_sessions?.approvals.find(item => item.id === approvalId);
+        if (!approval || modelApprovalTarget(approval, snapshot)?.id !== job.id || !matchesModelApproval(preview, approval))
+          throw new Error("The model preview does not match this pending approval.");
+      }
       previewReturnFocus.current = returnFocus;
       resultLoadToken.current++; resultViewToken.current++; largeNavigationIntent.current++;
       pendingStudyNavigation.current = null; setPendingResultNavigation(null); setPendingAgentSource(null);
       setResultId(null); setResultView(null); setRows([]); setSelectedRow(null);
       setSourceId(exact.id); setTab("Display"); setFocusedPanel(null); setRawVolumeOpen(false);
-      setSharedPreview({ preview, study });
+      setSharedPreview({ preview, study, approvalId });
       return true;
     } catch (caught) { if (isCurrent()) setError(message(caught, "The exact preview source is unavailable.")); return false; }
   };
@@ -3554,7 +3598,7 @@ export default function ResearchWorkbench({
     const point = centroidOnView(row.centroid_index, displayedResultView); return point ? [point] : [];
   }) ?? [], [exactGroupHighlight, displayedResultView]);
   const sourceResultOverlay = useMemo(() => {
-    if (!source || !selectedResult || !displayedResultView) return null;
+    if (!source || source.locator_state === "relink-required" || !selectedResult || !displayedResultView) return null;
     const resolved = resolveResultPlaneOverlay(source, selectedResult, { ...displayedResultView, image: displayedResultView.labelImage ?? displayedResultView.image }, 1);
     return resolved.ok ? resolved.overlay : null;
   }, [source, selectedResult, displayedResultView]);
@@ -3713,6 +3757,146 @@ export default function ResearchWorkbench({
         }
       }
     } catch (caught) { if (current()) setError(message(caught, "Could not locate this object.")); }
+  };
+
+  const resolvedAgreementContext = useMemo(() => {
+    if (!agreementContext || !snapshot || !source || !selectedResult) return null;
+    if (agreementContext.studyScope !== exportDraftStudy || agreementContext.sourceId !== source.id || agreementContext.sourceSha256 !== source.sha256) return null;
+    const agreement = snapshot.results.find((item) =>
+      item.id === agreementContext.agreementId && item.revision_hash === agreementContext.agreementRevisionHash &&
+      item.kind === "annotation-agreement" && item.source_id === source.id && item.source_sha256 === source.sha256,
+    );
+    if (!agreement) return null;
+    if (selectedResult.id === agreement.id && selectedResult.revision_hash === agreement.revision_hash) {
+      return { agreement, role: null as AgreementDifferenceRole | null };
+    }
+    const parents = resolveAgreementParents(snapshot, agreement);
+    if (parents.prediction && selectedResult.id === parents.prediction.id && selectedResult.revision_hash === parents.prediction.revision_hash) {
+      return { agreement, role: "prediction" as AgreementDifferenceRole };
+    }
+    if (parents.reference && selectedResult.id === parents.reference.id && selectedResult.revision_hash === parents.reference.revision_hash) {
+      return { agreement, role: "reference" as AgreementDifferenceRole };
+    }
+    return null;
+  }, [agreementContext, snapshot, source, selectedResult, exportDraftStudy]);
+
+  useEffect(() => {
+    if (agreementContext && !resolvedAgreementContext) {
+      agreementLocateToken.current++;
+      setAgreementContext(null);
+    }
+  }, [agreementContext, resolvedAgreementContext]);
+
+  useEffect(() => {
+    agreementLocateToken.current++;
+  }, [exportDraftStudy, source?.id, source?.sha256]);
+
+  const locateAgreementDifference = async (request: AgreementLocateRequest) => {
+    if (!snapshot || !source || busy || documentSwitch.current) {
+      throw new Error("Finish the current edit or operation before locating a saved difference.");
+    }
+    const agreement = snapshot.results.find((item) =>
+      item.id === request.agreementId && item.revision_hash === request.agreementRevisionHash &&
+      item.kind === "annotation-agreement" && item.source_id === source.id && item.source_sha256 === source.sha256,
+    );
+    if (!agreement) {
+      throw new Error("The selected annotation agreement revision is no longer available on this source.");
+    }
+    const parents = resolveAgreementParents(snapshot, agreement);
+    const targetParent = request.role === "prediction" ? parents.prediction : parents.reference;
+    if (!targetParent) {
+      throw new Error(`Exact ${request.role} revision for this agreement is unavailable in this study. Restore it before locating objects.`);
+    }
+    const scope = exportDraftStudy;
+    const srcId = source.id;
+    const srcSha = source.sha256;
+    const locateToken = ++agreementLocateToken.current;
+    const pickToken = ++objectPickToken.current;
+    const navIntent = ++largeNavigationIntent.current;
+    const loadToken = ++resultLoadToken.current;
+    const planeToken = ++resultViewToken.current;
+    const isCurrent = () =>
+      locateToken === agreementLocateToken.current &&
+      pickToken === objectPickToken.current &&
+      navIntent === largeNavigationIntent.current &&
+      loadToken === resultLoadToken.current &&
+      planeToken === resultViewToken.current &&
+      currentStudyScope.current === scope &&
+      !documentSwitch.current;
+
+    const rawLocated = await api.execute("annotation_evaluation_get", {
+      result_id: agreement.id,
+      revision_hash: agreement.revision_hash,
+      table: "locate",
+      role: request.role,
+      label: request.label,
+    });
+    if (!isCurrent()) return;
+    const located = validateAgreementLocateResponse(rawLocated, agreement, targetParent, request.role, request.label);
+
+    const [record, rendered] = await Promise.all([
+      api.execute("result", { result_id: targetParent.id, offset: 0, limit: 200 }),
+      api.execute("result_view", { result_id: targetParent.id, axis: "z", index: 0, labels: true }),
+    ]);
+    if (!isCurrent()) return;
+    const page = record as { result?: ResearchResult; measurements?: Array<Record<string, unknown>> };
+    if (page.result?.id !== targetParent.id || page.result?.revision_hash !== targetParent.revision_hash ||
+        page.result?.source_id !== targetParent.source_id || page.result?.source_sha256 !== targetParent.source_sha256) {
+      throw new Error("The parent result revision changed before the difference could be shown.");
+    }
+    const view = exactResultView(rendered, targetParent, "z", 0);
+    const activeDifference: AgreementDifferenceTarget = {
+      ...request,
+      targetResultId: targetParent.id,
+      targetRevisionHash: targetParent.revision_hash,
+      targetLabelsSha256: located.target.labels_sha256,
+      pointIndex: located.point_index,
+      centroidIndex: located.centroid_index,
+      bboxStart: located.bbox_start,
+      bboxStopExclusive: located.bbox_stop_exclusive,
+      pixelCount: located.pixel_count,
+      sourcePointXy: located.source_point_xy,
+      sourceCentroidXy: located.source_centroid_xy,
+      worldPointXyz: located.world_point_xyz,
+      distanceUnit: located.distance_unit,
+    };
+    const measurements = page.measurements ?? [];
+    const rowIndex = measurements.findIndex((item) => item.label === request.label);
+    const highlightedObject = rowIndex >= 0
+      ? { ...measurements[rowIndex], label: request.label, centroid_index: located.point_index }
+      : { label: request.label, centroid_index: located.point_index };
+    setSharedPreview(null);
+    setRawVolumeOpen(false);
+    setAbCompareMode(false);
+    setResultId(targetParent.id);
+    setResultView(view);
+    setRows(measurements);
+    setSelectedRow(rowIndex < 0 ? null : rowIndex);
+    setPopulationObject(highlightedObject);
+    setAgreementContext({
+      studyScope: scope,
+      sourceId: srcId,
+      sourceSha256: srcSha,
+      agreementId: agreement.id,
+      agreementRevisionHash: agreement.revision_hash,
+      activeDifference,
+    });
+    const resolvedOverlay = resolveResultPlaneOverlay(source, targetParent, { ...view, image: view.labelImage ?? view.image }, 1);
+    const cameraTarget = resolvedOverlay.ok
+      ? resultPixelToSourcePoint(resolvedOverlay.overlay, { u: located.point_index[1], v: located.point_index[0] })
+      : { x: (targetParent.selection?.x ?? 0) + located.point_index[1] + 0.5, y: (targetParent.selection?.y ?? 0) + located.point_index[0] + 0.5 };
+    if (cameraTarget) {
+      setControlledViewCamera({ x: cameraTarget.x, y: cameraTarget.y, scale: Math.max(viewCamera?.scale ?? 1, 1.5) });
+    }
+  };
+
+  const returnToAgreement = () => {
+    if (!resolvedAgreementContext) return;
+    const { agreement } = resolvedAgreementContext;
+    agreementLocateToken.current++;
+    setAgreementContext((prev) => prev && prev.agreementId === agreement.id && prev.agreementRevisionHash === agreement.revision_hash
+      ? { ...prev, activeDifference: null } : prev);
+    void navigateExactResult(agreement, exportDraftStudy, "review");
   };
 
   const handleObjectClick = useCallback(
@@ -3877,7 +4061,7 @@ export default function ResearchWorkbench({
   const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, presenting && Boolean(nativeAgentApi) && !documentSwitching);
   const agentCurrentTargets = useMemo(() => agentWorkflowTargets.map(({ version: _version, ...target }) => target), [agentWorkflowTargets]);
   const inspectableAgentPreviewIds = useMemo(() => snapshot?.jobs.filter(job => job.state === "succeeded" &&
-    ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
+    ["workflow_preview", "exploration_preview", "exploration_compare", "model_preview"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
   const [agentWorkflowNavigation, setAgentWorkflowNavigation] = useState<AgentWorkflowNavigation | null>(null);
   const agentWorkflowCompletion = useRef<{ requestId: string; resolve(): void; reject(error: Error): void } | null>(null);
   const finishAgentWorkflow = useCallback((requestId: string, error?: string) => {
@@ -3923,16 +4107,17 @@ export default function ResearchWorkbench({
     } else if (request.intent === "open-result" || request.intent === "review-result") {
       if (!target) throw new Error("The recorded result target is missing.");
       const exact = agentResultTarget(snapshot, target);
+      const openReview = request.intent === "review-result" || exact.kind === "annotation-agreement";
       agentRenderedOverlay.current = null;
-      setSharedPreview(null); setRawVolumeOpen(false); setTab("Display"); setFocusedPanel(null);
+      setSharedPreview(null); setRawVolumeOpen(false); setTab(openReview ? "Info" : "Display"); setFocusedPanel(null);
       await navigateExactResult(exact, scope, "review", current);
       if (!current()) throw new Error("The recorded result navigation was superseded.");
-      if (request.intent === "review-result") await openWorkbenchTab("Info");
+      if (openReview) await openWorkbenchTab("Info");
       ready = () => {
         const view = agentNavigationView.current;
         if (view.sourceId !== exact.source_id || view.resultId !== exact.id || view.pendingResultNavigation ||
             view.resultView?.resultId !== exact.id || view.resultView.revisionHash !== exact.revision_hash || view.busy ||
-            (request.intent === "review-result" && (view.tab !== "Info" || view.resultSection !== "review"))) return false;
+            (openReview && (view.tab !== "Info" || view.resultSection !== "review"))) return false;
         if (view.sourceResultOverlay) return agentRenderedOverlay.current === view.sourceResultOverlay.key;
         const image = document.querySelector<HTMLImageElement>("img[alt='Exact selected result revision']");
         return Boolean(image?.complete && image.naturalWidth > 0 && image.getAttribute("src") === view.resultView.image);
@@ -3943,12 +4128,13 @@ export default function ResearchWorkbench({
       setJobsOpen(true);
       ready = () => agentNavigationView.current.jobsOpen && Boolean(document.querySelector("[aria-label='Job center']"));
     } else if (request.intent === "inspect-preview") {
-      if (!target || !await inspectAgentPreview(target)) throw new Error("The exact retained preview is unavailable.");
+      if (!target || !await inspectAgentPreview(target, request.approvalId)) throw new Error("The exact retained preview is unavailable.");
       ready = () => {
         const view = agentNavigationView.current;
         const panel = document.querySelector(".agent-preview-comparison");
         const images = panel ? Array.from(panel.querySelectorAll<HTMLImageElement>("img")) : [];
-        return view.sharedPreview?.preview.job_id === target.id && view.sharedPreview.study === scope && view.tab === "Display" &&
+        if (request.approvalId && !panel?.querySelector('input[type="checkbox"]:enabled')) return false;
+        return view.sharedPreview?.preview.job_id === target.id && view.sharedPreview.approvalId === request.approvalId && view.sharedPreview.study === scope && view.tab === "Display" &&
           images.length > 0 && images.every(image => image.complete && image.naturalWidth > 0);
       };
     } else {
@@ -3980,12 +4166,22 @@ export default function ResearchWorkbench({
   }, {
     control: async (request, current) => {
       if (!current() || !api.controlAgentSession) throw new Error("Agent controls are unavailable for this study.");
+      if (request.action === "approve_request" && snapshot?.agent_sessions?.approvals.some(item =>
+        item.id === request.approval_id && requiresModelInspection(item))) throw new Error("Inspect and approve the retained model preview in the main window.");
       const next = await api.controlAgentSession(request);
       return current() ? next : null;
     },
     navigate: navigateAgentWorkspace,
     follow: (value, current) => { if (!current()) throw new Error("The Follow command is stale."); flushSync(() => setFollowAgent(value)); },
   }, setError);
+  async function refreshAgentConnection() {
+    const next = await agentSnapshotFence.current.read(api.getSnapshot);
+    if (!next || documentSwitch.current || currentStudyScope.current !== exportDraftStudy ||
+        !snapshot || next.project.project_id !== snapshot.project.project_id)
+      throw new Error("The active study changed. Check the connection in the open study.");
+    setSnapshot(next);
+    setAgentRefreshError(null);
+  }
   const opening = openingPreview.visible;
   const handoff = opening?.target;
   const openingId = opening?.preview.opening_id;
@@ -4418,8 +4614,8 @@ export default function ResearchWorkbench({
                 : undefined
             }
             nucleiInstall={nucleiInstallController}
-            workbenchRouteUnavailableReason="Open an image first to configure this tool in the inspector."
-            onSelectWorkbenchRoute={() => setModelLibraryState(null)}
+            getWorkbenchRouteUnavailableReason={zooRouteUnavailable}
+            onSelectWorkbenchRoute={handleSelectModelLibraryRoute}
           />
         )}
       </main>
@@ -4440,6 +4636,12 @@ export default function ResearchWorkbench({
   const panelFocused = !toolsPanelHidden && canFocusPanel && focusedPanel === tab;
   const imageStageHidden = !toolsPanelHidden &&
     (panelFocused || (tab === "Population" && statisticsFocused) || (tab === "Study" && studyFocused));
+  const requestedApproval = snapshot.agent_sessions?.approvals.find(item => item.id === sharedPreview?.approvalId);
+  const reviewApproval = requestedApproval && sharedPreview?.study === exportDraftStudy &&
+    !agentRefreshError && !documentSwitching && !imageStageHidden && tab === "Display" &&
+    source?.id === sharedPreview.preview.source_id && source?.sha256 === sharedPreview.preview.source_sha256 &&
+    modelApprovalTarget(requestedApproval, snapshot)?.sha256 === sharedPreview.preview.request_sha256 &&
+    matchesModelApproval(sharedPreview.preview, requestedApproval) ? requestedApproval : undefined;
   const imageDetachTitle = correctionPoints.length ? "Finish or discard the current correction draft before detaching"
     : "Drag outside the window or click to detach the image. This window becomes the control panel.";
   const focusLabel = panelFocused ? "Show image" : tab === "Workflow" ? "Focus workflow" : tab === "Model" || tab === "Agent" ? "Focus setup" : "Focus panel";
@@ -4670,6 +4872,16 @@ export default function ResearchWorkbench({
         <AgentPreviewComparison key={exportDraftStudy}
           preview={sharedPreview?.study === exportDraftStudy && sharedPreview.preview.source_id === source?.id &&
             sharedPreview.preview.source_sha256 === source?.sha256 ? sharedPreview.preview : null}
+          approval={reviewApproval} onDecision={api.controlAgentSession && (async request => {
+            if (!reviewApproval || !sharedPreview || documentSwitch.current || currentStudyScope.current !== exportDraftStudy) return;
+            try {
+              const next = await api.controlAgentSession!(request);
+              if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy && next.project.project_id === snapshot.project.project_id) {
+                setSnapshot(next);
+                setSharedPreview(current => current === sharedPreview ? null : current);
+              }
+            } catch (caught) { if (currentStudyScope.current === exportDraftStudy) setError(message(caught, "Could not record the approval decision.")); }
+          })}
           sourceLabel={source ? sourceLabelForId(snapshot.sources, source.id) : "Source"} onClose={closeSharedPreview} />
         <div className="research-view-toolbar">
           <div ref={imageToolbar} className="research-canvas-toolbar" role="group" aria-label="Image view">
@@ -5043,9 +5255,11 @@ export default function ResearchWorkbench({
             showRegion={!sourceResultOverlay && ["Process", "Analyze", "Quantify", "Model"].includes(tab)}
             onRegion={drawingAnalysisRegion ? selectDrawnRegion : undefined}
             annotations={sourceAnnotations}
-            draft={tab === "Annotate" || tab === "Epidermis" ? annotationDraft : []}
+            draft={tab === "Temporal" && lineageFocus?.scope === numberScope && lineageFocus.t === shownSelection.t &&
+              lineageFocus.z === shownSelection.z && resolvedProjection === "plane" ? [lineageFocus] :
+              tab === "Annotate" || tab === "Epidermis" ? annotationDraft : []}
             drawingMode={tab === "Annotate" || tab === "Epidermis" ? annotationTool : "navigate"}
-            onDraftChange={updateViewportDraft}
+            onDraftChange={tab === "Temporal" ? clearLineageFocus : updateViewportDraft}
             onPoint={(tab === "Annotate" || tab === "Epidermis") && annotationTool !== "navigate" ? (point) => setAnnotationDraft((old) => {
               const maximum = annotationTool === "point" ? 1 : ["polygon", "freehand"].includes(annotationTool) ? 2048 : 2;
               return old.length >= maximum ? [point] : [...old, point];
@@ -5204,10 +5418,17 @@ export default function ResearchWorkbench({
           points={annotationDraft} onPoints={setAnnotationDraft} onAnnotations={setSourceAnnotations} onError={setError} /></div>}
         {source && tab === "Annotate" && <ResearchAnnotationEvaluationPanel
           key={`annotation-evaluation:${exportDraftStudy}:${source.id}`} api={api} snapshot={snapshot} source={source}
-          selectedResult={selectedResult} active={tab === "Annotate"} busy={busy !== null || documentSwitching}
+          selectedResult={selectedResult}
+          boundAgreement={resolvedAgreementContext?.agreement ?? null}
+          activeDifference={resolvedAgreementContext ? agreementContext?.activeDifference ?? null : null}
+          showingParentRole={resolvedAgreementContext?.role ?? null}
+          active={tab === "Annotate"} busy={busy !== null || documentSwitching}
           workingBytes={recipe.working_bytes ?? 512 * 1024 ** 2}
           onBusyChange={value => setBusy(current => value ? (current ?? "annotation evaluation") : current === "annotation evaluation" ? null : current)}
-          onPublished={publishGeneratedResult} onInspect={(id, revision) => { void report(async () => {
+          onPublished={publishGeneratedResult}
+          onLocateDifference={locateAgreementDifference}
+          onReturnToAgreement={returnToAgreement}
+          onInspect={(id, revision) => { void report(async () => {
             const target = snapshot.results.find(result => result.id === id && result.revision_hash === revision);
             if (!target) throw new Error("This exact annotation input revision is unavailable. Restore it before inspection.");
             await navigateExactResult(target); openWorkbenchTab("Info");
@@ -5582,6 +5803,20 @@ export default function ResearchWorkbench({
             canRedo={Boolean(redoTargetId)}
           />
         )}
+        {tab === "Temporal" && source && dimensions && api.importOrganoidGraph && (
+          <OrganoidTrackerPanel key={JSON.stringify([exportDraftStudy, source.id, source.sha256])}
+            source={source} api={api} busy={busy !== null || sourceIsChanging || documentSwitching}
+            canNavigate={sourcePlaneReady} onClearFocus={clearLineageFocus}
+            onPlane={(t, [, x, y, z]) => {
+              if (!sourcePlaneReady) return;
+              setResultId(null); setResultView(null); setImage(null); setProjection("plane");
+              selectSourcePlane({ ...shownSelection, t, z: Math.round(z), z_stop: undefined });
+              // The canvas draws image edges at integers; upstream integers locate voxel centers.
+              const center = { x: x + 0.5, y: y + 0.5 };
+              setLineageFocus({ scope: numberScope, t, z: Math.round(z), ...center });
+              setControlledViewCamera({ ...center, scale: Math.max(viewCamera?.scale ?? 1, 3) });
+            }} />
+        )}
         {tab === "Temporal" && (
           <ResearchTemporalPanel
             api={api}
@@ -5617,9 +5852,7 @@ export default function ResearchWorkbench({
           />
         )}
         {source && dimensions && tab === "Agent" && (
-          <><AgentImagePanel api={api} source={source} selection={shownSelection} channels={channels}
-            projection={resolvedProjection} following={assistantFollowing} followBusy={assistantFollowBusy || !viewSettingsReady}
-            onFollowing={(value) => void followAssistantDisplay(value)} onError={setError} />
+          <>
           {!configurationValid && <p role="status">Finish numeric fields before connecting with this recipe. {invalidNumberForms[`${numberScope}:quantify`] && <button onClick={() => openWorkbenchTab("Quantify")}>Review marker gates</button>}</p>}
           <ResearchAgentPanel
             api={api}
@@ -5632,14 +5865,20 @@ export default function ResearchWorkbench({
             report={report}
             configurationValid={configurationValid}
             busy={busy !== null}
-            onCreated={() => {
-              void api.getSnapshot().then((next) => {
-                if (next && !documentSwitch.current && currentStudyScope.current === exportDraftStudy &&
-                  next.project.project_id === snapshot.project.project_id) setSnapshot(next);
-              }).catch((caught) => {
-                if (currentStudyScope.current === exportDraftStudy)
-                  setAgentRefreshError(message(caught, "Could not refresh the new agent access bundle."));
-              });
+            imageTools={fileOnly => <AgentImagePanel api={api} source={source} selection={shownSelection}
+              channels={channels} projection={resolvedProjection} following={assistantFollowing}
+              followBusy={assistantFollowBusy || !viewSettingsReady} mode={fileOnly ? "handoff" : "display"}
+              onFollowing={value => void followAssistantDisplay(value)} onError={setError} />}
+            onCreated={() => { void refreshAgentConnection().catch(caught => {
+              if (currentStudyScope.current === exportDraftStudy)
+                setAgentRefreshError(message(caught, "Could not refresh the new agent access bundle."));
+            }); }}
+            onCheckConnection={refreshAgentConnection}
+            nucleiModelReady={installedNucleiMatch?.state === "ready"}
+            onChooseNucleiModel={() => setModelLibraryState({ initialModelId: "bioimageio-nuclei-boundary-onnx" })}
+            onOpenWorkspace={() => {
+              if (agentWorkspace.detached) agentWorkspace.focus();
+              else setWorkspaceOpenRequest(value => value + 1);
             }}
             onBusyChange={(value) =>
               setBusy((current) =>
@@ -5945,6 +6184,11 @@ export default function ResearchWorkbench({
             onSnapshot={adopt}
             onSelectResult={(target) => void navigateExactResult(target, undefined, resultSection)}
             onOpenPopulation={() => openWorkbenchTab("Population")}
+            boundAgreement={resolvedAgreementContext?.agreement ?? null}
+            activeDifference={resolvedAgreementContext ? agreementContext?.activeDifference ?? null : null}
+            showingParentRole={resolvedAgreementContext?.role ?? null}
+            onLocateDifference={locateAgreementDifference}
+            onReturnToAgreement={returnToAgreement}
           />
         )}
       </aside>
@@ -5961,11 +6205,12 @@ export default function ResearchWorkbench({
           key={exportDraftStudy}
           api={api}
           snapshot={snapshot}
+          openRequest={workspaceOpenRequest + agentWorkspace.openRequest}
+          onConfigureAccess={() => { void openWorkbenchTab("Agent"); }}
           {...(nativeAgentApi ? { detached: agentWorkspace.detached, onFocusDetached: agentWorkspace.focus,
-            onDetach: agentWorkspace.open, openRequest: agentWorkspace.openRequest, presentation: agentWorkspace.presentation,
+            onDetach: agentWorkspace.open, presentation: agentWorkspace.presentation,
             onPresentationChange: agentWorkspace.changePresentation, commandBusy: Boolean(agentWorkspace.state?.pendingCommands),
             currentTargets: agentCurrentTargets,
-            onConfigureAccess: () => { void openWorkbenchTab("Agent"); },
             onOpenWorkflow: (target: ResearchAgentTargetReference) => {
               const scope = exportDraftStudy;
               void navigateAgentWorkspace({ requestId: crypto.randomUUID(), intent: "open-workflow", target },
@@ -5982,7 +6227,7 @@ export default function ResearchWorkbench({
           }}
           onError={(value) => { if (!documentSwitch.current && currentStudyScope.current === exportDraftStudy) setError(value); }}
           inspectablePreviewJobIds={inspectableAgentPreviewIds}
-          onInspectPreview={(target) => void inspectAgentPreview(target)}
+          onInspectPreview={(target, approvalId) => void inspectAgentPreview(target, approvalId)}
           onOpenSource={openAgentSource}
           onReviewResult={(target) => {
             if (!agentTargetNavigationReady || documentSwitch.current) {
@@ -6002,8 +6247,12 @@ export default function ResearchWorkbench({
             try {
               const exact = agentResultTarget(snapshot, target);
               setSharedPreview(null);
-              setTab("Display");
-              void navigateExactResult(exact, exportDraftStudy);
+              if (exact.kind === "annotation-agreement") {
+                void navigateExactResult(exact, exportDraftStudy, "review").then(() => openWorkbenchTab("Info"));
+              } else {
+                setTab("Display");
+                void navigateExactResult(exact, exportDraftStudy);
+              }
             }
             catch (caught) { setError(message(caught, "The recorded agent result is unavailable.")); }
           }}
@@ -6070,11 +6319,7 @@ export default function ResearchWorkbench({
               : undefined
           }
           nucleiInstall={nucleiInstallController}
-          workbenchRouteUnavailableReason={
-            source && dimensions
-              ? null
-              : "Open an image first to configure this tool in the inspector."
-          }
+          getWorkbenchRouteUnavailableReason={zooRouteUnavailable}
           onSelectWorkbenchRoute={handleSelectModelLibraryRoute}
         />
       )}
@@ -8084,6 +8329,11 @@ export function Info({
   onCompareIntensity,
   section: controlledSection,
   onSectionChange,
+  boundAgreement,
+  activeDifference,
+  showingParentRole,
+  onLocateDifference,
+  onReturnToAgreement,
 }: {
   source: ResearchSource;
   snapshot: ResearchSnapshot;
@@ -8105,6 +8355,11 @@ export function Info({
   onCompareIntensity?: () => void;
   section?: "review" | "export";
   onSectionChange?: (section: "review" | "export") => void;
+  boundAgreement?: ResearchResult | null;
+  activeDifference?: AgreementDifferenceTarget | null;
+  showingParentRole?: AgreementDifferenceRole | null;
+  onLocateDifference?: (request: AgreementLocateRequest) => Promise<void> | void;
+  onReturnToAgreement?: () => void;
 }) {
   const [localSection, setLocalSection] = useState<"review" | "export">("review");
   const section = controlledSection ?? localSection;
@@ -8188,8 +8443,23 @@ export function Info({
           </div>
           {section === "review" && <section aria-label="Review result">
             {result.kind === "controlled-method" && <ControlledMethodSummary key={`${snapshot.project.project_id}:${result.id}:${result.revision_hash}`} api={api} result={result}/>}
-            {result.kind === "annotation-agreement" && <AnnotationAgreementSummary key={`${snapshot.project.project_id}:${result.id}:${result.revision_hash}`} api={api} result={result}
-              onInspect={onSelectResult ? (id, revision) => { void report(async () => { const exact = snapshot.results.find(item => item.id === id && item.revision_hash === revision); if (!exact) throw new Error("This exact annotation input revision is unavailable. Restore it before inspection."); onSelectResult(exact); }, "Could not inspect the annotation input."); } : undefined} />}
+            {(result.kind === "annotation-agreement" || boundAgreement) && (() => {
+              const agreementResult = result.kind === "annotation-agreement" ? result : boundAgreement!;
+              return (
+                <AnnotationAgreementSummary
+                  key={`${snapshot.project.project_id}:${agreementResult.id}:${agreementResult.revision_hash}`}
+                  api={api}
+                  snapshot={snapshot}
+                  result={agreementResult}
+                  activeDifference={activeDifference}
+                  showingParentRole={result.kind === "annotation-agreement" ? null : showingParentRole}
+                  busy={busy || reviewPending}
+                  onLocateDifference={onLocateDifference}
+                  onReturnToAgreement={onReturnToAgreement}
+                  onInspect={onSelectResult ? (id, revision) => { void report(async () => { const exact = snapshot.results.find(item => item.id === id && item.revision_hash === revision); if (!exact) throw new Error("This exact annotation input revision is unavailable. Restore it before inspection."); onSelectResult(exact); }, "Could not inspect the annotation input."); } : undefined}
+                />
+              );
+            })()}
             {result.kind === "spatial-distance-bands" && <SpatialSummary value={result.spatial} api={api} result={result} />}
             {result.kind === "perinuclear-enrichment" && <PerinuclearResultSummary api={api} result={result} rows={rows} />}
             {rows.length > 0 && (

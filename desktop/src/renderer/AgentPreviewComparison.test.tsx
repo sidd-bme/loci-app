@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { createHash, webcrypto } from "node:crypto";
+import type { ResearchAgentApprovalRecord } from "../shared/research-contracts";
+import wire from "./__fixtures__/agent-sessions-snapshot.json";
+import { waitFor, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentPreviewComparison, type SharedTaskPreview } from "./AgentPreviewComparison";
 
@@ -19,6 +22,44 @@ const preview = (overrides: Partial<SharedTaskPreview> = {}): SharedTaskPreview 
 });
 
 describe("AgentPreviewComparison", () => {
+  it("requires the exact painted overlay and a fresh inspection for each pending request", async () => {
+    vi.stubGlobal("crypto", webcrypto);
+    try {
+      const digest = createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex");
+      const receipt = { schema: "loci.model-preview/v1", id: "preview-a", preview_sha256: "7".repeat(64),
+        source: { id: sourceId, sha256: sourceHash, display: { png_sha256: digest } } };
+      const model = preview({ operation: "model_preview", output: { adopted: false, overlay_png: png, preview: receipt } });
+      const approval = { ...wire.approvals[0], operation: "submit_action", action_name: "model_run", state: "pending",
+        source_id: sourceId, source_sha256: sourceHash, expires_at: new Date(Date.now() + 60000).toISOString(),
+        parameters_summary: { preview_job_id: model.job_id, preview_id: receipt.id, preview_sha256: receipt.preview_sha256 } } as ResearchAgentApprovalRecord;
+      const onDecision = vi.fn().mockResolvedValue(undefined);
+      const props = { preview: model, approval, onDecision, sourceLabel: "Source", onClose: vi.fn() };
+      const view = render(<AgentPreviewComparison {...props} />);
+      const check = () => screen.getByRole("checkbox", { name: "I inspected this model preview" });
+      const allow = () => screen.getByRole("button", { name: "Approve submit_action" });
+      const image = await screen.findByRole("img", { name: "Source with predicted model labels" });
+      expect(check()).toBeDisabled();
+      Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1 }, naturalHeight: { value: 1 } });
+      vi.spyOn(image, "getBoundingClientRect").mockReturnValue({ width: 48, height: 48 } as DOMRect);
+      fireEvent.load(image);
+      await waitFor(() => expect(check()).toBeEnabled());
+      expect(allow()).toBeDisabled();
+      fireEvent.click(check());
+      fireEvent.click(allow());
+      expect(onDecision).toHaveBeenCalledExactlyOnceWith({ action: "approve_request", approval_id: approval.id,
+        inspected_preview: { preview_id: receipt.id, preview_sha256: receipt.preview_sha256, preview_job_id: model.job_id } });
+      view.rerender(<AgentPreviewComparison {...props} approval={{ ...approval, id: "another-request" }} />);
+      expect(check()).not.toBeChecked();
+      expect(allow()).toBeDisabled();
+      view.rerender(<AgentPreviewComparison {...props} preview={{ ...model, output_sha256: "9".repeat(64),
+        output: { ...model.output, preview: { ...receipt, source: { ...receipt.source, display: { png_sha256: sourceHash } } } } }} />);
+      await screen.findByText("The exact source-bound model preview is unavailable.");
+      expect(screen.queryByRole("img")).toBeNull();
+      expect(check()).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Deny submit_action" })).toBeEnabled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("compares two exact previews while keeping a pinned reference immutable", () => {
     const first = preview();
     const { rerender } = render(<AgentPreviewComparison preview={first} sourceLabel="Source" onClose={vi.fn()} />);

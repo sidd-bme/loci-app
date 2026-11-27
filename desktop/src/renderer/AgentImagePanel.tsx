@@ -4,7 +4,8 @@ import { checkedVisionReceipt, checkedVisionRequest } from "../shared/vision-han
 import type { ViewerChannel } from "./ImageViewport";
 
 export function AgentImagePanel({ api, source, selection, channels, projection, following, followBusy,
-  onFollowing, onError }: {
+  onFollowing, onError, mode = "both" }: {
+  mode?: "both" | "handoff" | "display";
   api: ResearchDesktopApi; source: ResearchSource; selection: ResearchSelection; channels: ViewerChannel[];
   projection: "plane" | "max" | "mean"; following: boolean; followBusy: boolean;
   onFollowing: (active: boolean) => void; onError: (error: string) => void;
@@ -33,19 +34,19 @@ export function AgentImagePanel({ api, source, selection, channels, projection, 
     finally { if (generation.current === token) setBusy(false); }
   };
   return <section className="research-panel source-agent-controls" aria-label="Vision assistant tools">
-    <h3>Vision assistant</h3>
+    {mode !== "display" && <>
     <button disabled={busy || tooLarge || !api.exportVisionHandoff || !channels.some((c) => c.visible)} onClick={() => void exportImage()}>
       {busy ? "Exporting image and context…" : "Export vision handoff"}
     </button>
     {tooLarge && <p role="status">Choose an analysis region no larger than 2048 × 2048 pixels, or a suitable pyramid level, before exporting.</p>}
     {receipt && <p role="status">{receipt}</p>}
-    <label className="research-check"><input type="checkbox" checked={following} disabled={followBusy}
+    </>}
+    {mode !== "handoff" && <><label className="research-check"><input type="checkbox" checked={following} disabled={followBusy}
       onChange={(event) => onFollowing(event.target.checked)} /> Follow assistant display</label>
     {following && <p role="status">Following saved channel settings. Turn this off to edit display locally.</p>}
-    <details><summary>Image scope and connection</summary>
-      <p>Export the analysis region with its current colors and contrast, up to 1536 pixels. The bundle records the source, crop, projection and display settings.</p>
-      <p>Upload image.png and context.json in ChatGPT or another vision client. You choose whether to upload these local files. Visual suggestions remain provisional.</p>
-      <p>Grant display access in Connect an assistant, then follow its channel colors, ranges and visibility here.</p>
-    </details>
+    </>}
+    {mode !== "display" && <details><summary>What gets exported</summary>
+      <p>The current region, colors and contrast, up to 1536 pixels. The accompanying file records the source, crop, projection and display settings.</p>
+    </details>}
   </section>;
 }

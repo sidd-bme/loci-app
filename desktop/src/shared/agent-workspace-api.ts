@@ -36,6 +36,7 @@ export interface AgentWorkspaceState {
 }
 export interface AgentWorkspaceNavigationRequest {
   requestId: string;
+  approvalId?: string;
   intent: "open-source" | "open-result" | "review-result" | "open-job" | "open-workflow" | "inspect-preview" | "configure-access";
   target?: ResearchAgentTargetReference;
 }

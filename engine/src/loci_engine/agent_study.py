@@ -51,6 +51,10 @@ def authorize_result(
             from .research_tissue_integration import authorize_retained
 
             authorize_retained(policy, workbench, record)
+        if record.get("kind") == "model-segmentation" or "model_preview" in provenance:
+            from .research_models import authorize_retained_model_result
+
+            authorize_retained_model_result(policy, record)
         recipe = provenance.get("recipe", {})
         if not isinstance(recipe, dict):
             raise PermissionError("Result recipe is invalid")
@@ -67,7 +71,28 @@ def authorize_result(
             if not isinstance(raw_channels, list) or any(type(c) is not int for c in raw_channels):
                 raise PermissionError("Method raw channel authority is invalid")
             channels = list(dict.fromkeys([*channels, *raw_channels]))
-        grant = source_scope(record["source_id"], provenance.get("selection"), channels)
+        selection = provenance.get("selection")
+        channel_mapping = provenance.get("channel_mapping")
+        if (
+            isinstance(selection, dict)
+            and "c" not in selection
+            and isinstance(channel_mapping, list)
+            and len(channel_mapping) > 0
+            and all(
+                isinstance(mapping, dict) and type(mapping.get("source_channel")) is int
+                for mapping in channel_mapping
+            )
+        ):
+            grant = None
+            for mapping in channel_mapping:
+                grant = source_scope(
+                    record["source_id"],
+                    {**selection, "c": mapping["source_channel"]},
+                    channels,
+                )
+            assert grant is not None
+        else:
+            grant = source_scope(record["source_id"], selection, channels)
         if record["source_sha256"] != grant.sha256:
             raise PermissionError("Result source fingerprint exceeds the grant")
         if "paired_selection" in provenance:

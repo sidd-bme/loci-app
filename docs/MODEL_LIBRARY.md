@@ -1,6 +1,6 @@
 # Model Zoo
 
-Open **File → Model Zoo…** to browse microscopy models for segmentation and virtual staining. Search by model, biological target or modality. **Local** shows profiles you can provision in Loci. **External** shows methods whose labels you can bring back to the workbench.
+Open **File → Model Zoo…** to browse ten microscopy workflows. Use **All tasks** to choose **Segment**, **Virtual stain**, **Restore** or **Track**. Search by model, target or modality, such as `confocal fluorescence` or `time lapse`. **Local** shows models you can provision and run in Loci. **External** shows methods you run separately and the labels, images or graphs you can bring into Loci.
 
 ## Inspect an example
 
@@ -30,6 +30,8 @@ These examples document what each run produced on one field. Accuracy on a new s
 | PlantSeg · Arabidopsis ovules | Separates 3D cells in confocal cell-wall stacks. | **Import existing labels**, native ZYX volume |
 | Mesmer · multiplex tissue | Outlines cells or nuclei using paired markers. | **Import existing labels**, native YX plane |
 | DynaCell · iPSC nuclear virtual stain | Predicts normalized nuclear signal from reconstructed Phase3D. | **Open virtual stain control**, optional local CPU |
+| CARE · low-light 3D planaria | Restores low-signal 3D nuclear fluorescence externally in Fiji. | **Open restored volume…**, separate derived TIFF or OME-TIFF |
+| OrganoidTracker 2.0 | Tracks 3D time-lapse nuclei and divisions externally. | **Analyze → Track over time**, import a published-format `.aut` v1 graph |
 
 For an offline method with no learned weights, **Analyze → Segment & measure** includes classical thresholding, connected components and watershed.
 
@@ -89,9 +91,19 @@ Open a calibrated scalar OME-TIFF of unperturbed WTC-11 iPSCs with the float32 c
 
 On matched interiors from four WTC-11 test fields, predicted and measured nuclear signal correlated at Pearson *r* = 0.48–0.77. The model had lower mean absolute error than a field-median prediction on three of the four fields. On the three additional fields, it underestimated 99–100% of the scored voxels at or above the field’s 99th fluorescence percentile. These observations support inspecting spatial structure in this cell line. Use measured fluorescence for intensity quantitation. The Allen Institute's terms apply to its microscopy images and derivatives. [Allen iPSC microscopy study](https://pubmed.ncbi.nlm.nih.gov/36599983/) · [Image use terms](https://www.allencell.org/terms-of-use.html)
 
-## Candidate for future tracking support
+### CARE · low-light 3D planaria
 
-OrganoidTracker 2.0 assigns error probabilities to lineage features in time-lapse data. Evaluating it for Loci would require a time-indexed result that retains detections, parent/daughter links and their uncertainty. A single ZYX label volume represents spatial objects only. The catalog currently offers no tracking action for this candidate. [Published organoid tracking evaluation](https://doi.org/10.1038/s41592-025-02845-6)
+In Fiji, open a scalar 3D fluorescence stack and choose **Plugins → CSBDeep → Demo → 3D Denoising - Planaria**. The Fiji demo downloads the model and displays the estimated Laplace location as the restored image. The model also estimates a scale parameter that describes intensity uncertainty. Save the restored result as a separate calibrated TIFF or OME-TIFF. Choose **Open restored volume…** in Model Zoo and grant access to that local file in the image picker. Adjust its display in **Image & channels** and use **Save study** to retain your view settings. [CSBDeep demo](https://csbdeep.bioimagecomputing.com/scenarios/denoisingplanaria/) · [Fiji instructions](https://github.com/CSBDeep/CSBDeep_website/wiki/Fiji-Command-%E2%80%93-3D-Denoising-%28Planaria%29) · [Weigert et al., Nature Methods](https://doi.org/10.1038/s41592-018-0216-7)
+
+Keep the raw acquisition and record the model, input and settings with the derived file. Check axes, voxel spacing and spatial correspondence before comparison. Opening the file does not establish registration or validate restoration. Use **Analyze → Register & resample** when you need to record a transform. Use measured fluorescence for intensity comparisons unless you have qualified the restored intensities against paired high-SNR data from the same imaging regime. [Registration workflow](REGISTRATION.md)
+
+The Fiji plugin uses BSD-2-Clause, the CSBDeep Python toolbox uses BSD-3-Clause, and the Edmond paper data record declares CC0 1.0. The publisher offers `model-planaria.zip` as a demo and gives no separate checkpoint licence on the scenario page. Confirm checkpoint reuse rights for use beyond the demo. Loci provides a file-opening workflow for the output. [Fiji plugin licence](https://github.com/CSBDeep/CSBDeep_fiji/blob/master/LICENSE.txt) · [CSBDeep Python licence](https://github.com/CSBDeep/CSBDeep/blob/main/LICENSE.txt) · [Edmond data record](https://doi.org/10.17617/3.FDFZOF)
+
+### OrganoidTracker 2.0
+
+Run detection, tracking and marginalization in OrganoidTracker. In Loci, select the corresponding calibrated native 3D OME-TIFF time series with uniform OME timing. In **Analyze → Track over time**, enter the upstream time point for the first image frame, declare the graph's origin and confirm that the image and graph share the native grid. Choose **Choose .aut graph…** to grant access to the plain v1 D3 node-link JSON file. The importer checks the spatial calibration and time interval. Supported graphs use consecutive links, at most one parent and two daughters per node, and no image offsets. [OrganoidTracker repository](https://github.com/jvzonlab/OrganoidTracker) · [Betjes et al., Nature Methods](https://doi.org/10.1038/s41592-025-02845-6)
+
+Review links and divisions against the source planes. Loci preserves the original link probability and the context-aware marginal probability as separate optional scores. Missing scores remain unavailable. Loci's timed-label tracker runs independently. The v3 mouse intestinal organoid weights archive and separate example dataset each declare CC-BY 4.0. The external application is GPL-2.0, with MIT terms for source files marked by the publisher. The example archive also contains tracking results. Check terms for any separately requested data. [Weights v3](https://doi.org/10.5281/zenodo.18479952) · [Example data and results](https://doi.org/10.5281/zenodo.13982844)
 
 ## Reviewing study results
 

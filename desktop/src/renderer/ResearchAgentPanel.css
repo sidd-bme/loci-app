@@ -8,12 +8,8 @@
   border-top: 1px solid var(--border-subtle);
 }
 
-.research-agent > .research-agent-card {
-  padding: var(--space-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-panel);
-  background: var(--surface-3);
-}
+.research-agent .research-agent-buttons { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.research-agent .research-agent-prompt { width: 100%; resize: vertical; font: inherit; }
 
 .research-agent .research-agent-card h3 {
   margin: 0 0 var(--space-2);
@@ -76,7 +72,7 @@
 .research-agent .research-agent-disclosure input[type="checkbox"] { width: 16px; height: 16px; min-height: 16px; padding: 0; flex: none; }
 .research-agent-disclosure small { margin-inline-start: var(--space-6); color: var(--ink-secondary); line-height: var(--leading-sm); }
 
-.research-agent > .research-agent-ready { border-color: var(--accent); background: var(--accent-wash); }
+.research-agent > .research-agent-ready { border-top-color: var(--accent); }
 
 .research-agent-channels {
   display: grid;

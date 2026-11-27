@@ -333,6 +333,10 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:vision-handoff", request, sourceSha256),
   createAgentAccess: (request) =>
     ipcRenderer.invoke("loci-research:agent-access", request),
+  revealAgentSetup: (policySha256) =>
+    ipcRenderer.invoke("loci-research:reveal-agent-setup", policySha256),
+  copyAgentLaunch: (policySha256) =>
+    ipcRenderer.invoke("loci-research:copy-agent-launch", policySha256),
   controlAgentSession: (request) =>
     ipcRenderer.invoke("loci-research:agent-session-control", request),
   importModel: (workingBytes, recoveryModelId) =>
@@ -341,6 +345,9 @@ const researchApi: ResearchDesktopApi = {
   dynacellStatus: () => ipcRenderer.invoke("loci-research:dynacell-status"),
   installDynacell: (source) => ipcRenderer.invoke("loci-research:dynacell-install", source),
   cancelDynacellInstall: () => ipcRenderer.invoke("loci-research:dynacell-cancel-install"),
+  importOrganoidGraph: (binding, first, origin) => ipcRenderer.invoke("loci-research:organoidtracker-import", binding, first, origin),
+  listOrganoidGraphs: (binding) => ipcRenderer.invoke("loci-research:organoidtracker-list", binding),
+  loadOrganoidGraph: (binding, id) => ipcRenderer.invoke("loci-research:organoidtracker-load", binding, id),
   runVirtualStain: (request) => ipcRenderer.invoke("loci-research:virtual-stain", request),
   cancelNucleiModelInstall: () => ipcRenderer.invoke("loci-research:cancel-nuclei-model-install"),
   importTissueModel: (profileId) => ipcRenderer.invoke("loci-research:import-tissue-model", profileId),

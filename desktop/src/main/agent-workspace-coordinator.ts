@@ -215,6 +215,10 @@ export class AgentWorkspaceCoordinator {
     if (event.sender !== this.popup?.sender || this.status !== 'open' || !this.packet || this.packet.refreshError) throw new Error('The agent workspace must be current and available before sending an action.');
     if (this.pending) throw new Error('Wait for the pending agent workspace action.');
     const command = { commandId: randomUUID(), binding, ...data } as AgentWorkspaceCommand;
+    if (command.kind === "navigate" && command.request.approvalId) {
+      this.main!.show();
+      this.main!.focus();
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { if (this.pending?.command.commandId === command.commandId) { this.pending = null; this.error = 'The main workspace did not acknowledge the action.'; this.notify(); reject(new Error(this.error)); } }, this.timeouts.command);
       this.pending = { command, sender: event.sender, frame: event.senderFrame, dataSequence: this.dataSequence, timer, resolve, reject }; this.notify();

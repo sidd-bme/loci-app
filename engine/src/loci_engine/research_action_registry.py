@@ -132,6 +132,95 @@ REQUESTS = {
             "working_bytes": MEMORY,
         }
     ),
+    "model_list": _object({}),
+    "model_preview": _object(
+        {
+            "model_id": ID,
+            "source_id": ID,
+            "selection": _object(
+                {
+                    **{name: INDEX for name in ("x", "y", "t", "z", "level")},
+                    "width": {"type": "integer", "minimum": 1},
+                    "height": {"type": "integer", "minimum": 1},
+                }
+            ),
+            "channel_mapping": _array(
+                _object(
+                    {
+                        "model_input_index": INDEX,
+                        "model_channel": {"type": "string", "minLength": 1, "maxLength": 128},
+                        "source_channel": {"type": "integer", "minimum": 0, "maximum": 255},
+                    }
+                ),
+                1,
+                32,
+            ),
+            "scale": {
+                "oneOf": [
+                    _object({"mode": {"const": "source"}}),
+                    _object(
+                        {
+                            "mode": {"const": "override"},
+                            "scale_yx": _array(
+                                {"type": "number", "minimum": 1e-12, "maximum": 1e12}, 2, 2
+                            ),
+                            "scale_unit": {"enum": ["pixel", "nm", "um", "mm", "m"]},
+                            "declaration": TEXT,
+                        }
+                    ),
+                ]
+            },
+            "postprocessing": {
+                "oneOf": [
+                    _object(
+                        {
+                            "probability_channel": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 31,
+                            },
+                            "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+                            "method": {"const": "components"},
+                            "min_size": {"type": "number", "minimum": 0, "maximum": 1e20},
+                            "split_height": {"const": None},
+                            "exclude_border": {"type": "boolean"},
+                        },
+                        ["probability_channel", "threshold", "method"],
+                    ),
+                    _object(
+                        {
+                            "probability_channel": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 31,
+                            },
+                            "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+                            "method": {"const": "watershed"},
+                            "min_size": {"type": "number", "minimum": 0, "maximum": 1e20},
+                            "split_height": {"type": "number", "minimum": 1e-9, "maximum": 1e9},
+                            "exclude_border": {"type": "boolean"},
+                        },
+                        ["probability_channel", "threshold", "method", "split_height"],
+                    ),
+                ]
+            },
+            "measurement_channels": _array(
+                {"type": "integer", "minimum": 0, "maximum": 255}, 1, 32
+            ),
+            "display": _object(
+                {
+                    "source_channel": {"type": "integer", "minimum": 0, "maximum": 255},
+                    "low": {"oneOf": [{"const": None}, NUMBER]},
+                    "high": {"oneOf": [{"const": None}, NUMBER]},
+                    "gamma": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+                    "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"},
+                },
+                ["source_channel", "low", "high", "gamma", "color"],
+            ),
+            "working_bytes": MEMORY,
+        }
+    ),
+    "model_run": _object({"preview_id": ID, "preview_sha256": SHA}),
     "describe_result": _object(BOUND),
     "morphometrics_run": _object({**BOUND, "working_bytes": MEMORY}),
     "method_list": _object(
@@ -181,11 +270,19 @@ REQUESTS = {
         {
             **BOUND,
             "table": {
-                "enum": ["summary", "matches", "unmatched_reference", "unmatched_prediction"]
+                "enum": [
+                    "summary",
+                    "matches",
+                    "unmatched_reference",
+                    "unmatched_prediction",
+                    "locate",
+                ]
             },
             "threshold_index": INDEX,
             "offset": INDEX,
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "role": {"enum": ["prediction", "reference"]},
+            "label": LABEL,
         },
         list(BOUND),
     ),
@@ -314,6 +411,20 @@ REQUESTS = {
             "working_bytes": MEMORY,
         },
         ["frames", "time_declaration", "max_distance"],
+    ),
+    "organoidtracker_links": _object(
+        {
+            "source_id": ID,
+            "source_sha256": SHA,
+            "graph_id": ID,
+            "graph_sha256": SHA,
+            "filter": {"enum": ["all", "branch", "low-marginal"]},
+            "marginal_below": {"type": "number", "minimum": 0, "maximum": 1},
+            "source_t": INDEX,
+            "offset": INDEX,
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+        ["source_id", "source_sha256", "graph_id", "graph_sha256", "filter", "offset", "limit"],
     ),
     "tracking_result": _object(
         {
@@ -677,6 +788,7 @@ READ_ACTIONS = frozenset(
         "method_result",
         "method_query",
         "correction_info",
+        "organoidtracker_links",
         "tracking_result",
         "population_locate",
         "population_query",
@@ -707,14 +819,22 @@ READ_ACTIONS = frozenset(
         "spatial_density_list",
         "spatial_density_query",
         "task_preview_get",
+        "model_list",
     }
 )
 PREVIEW_ACTIONS = frozenset(
-    {"workflow_preview", "exploration_preview", "exploration_compare", "tissue_model_preview"}
+    {
+        "workflow_preview",
+        "exploration_preview",
+        "exploration_compare",
+        "tissue_model_preview",
+        "model_preview",
+    }
 )
 PUBLICATION_ACTIONS = frozenset(
     {
         "tissue_model_run",
+        "model_run",
         "run_recipe",
         "classical_run",
         "perinuclear_run",
@@ -809,6 +929,8 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                     if name in {"spatial_density_preview", "wound_closure_preview"}
                     else "saved-comparison-receipt"
                     if name == "exploration_compare"
+                    else "saved-model-preview-receipt"
+                    if name == "model_preview"
                     else "none"
                     if name in READ_ACTIONS or name in PREVIEW_ACTIONS
                     else "saved-wound-report"
@@ -821,6 +943,18 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                     "explicit-action",
                     "all-response-disclosures",
                     "every-input-source-selection",
+                    *(
+                        [
+                            "pinned-model-package-and-onnx-cpu-runtime",
+                        ]
+                        if name in {"model_preview", "model_run"}
+                        else []
+                    ),
+                    *(
+                        ["single-use-human-visual-review-approval"]
+                        if name == "model_run"
+                        else []
+                    ),
                 ],
                 "revision_checks": "Every result input must match its revision hash; "
                 "corrections also bind the label-array hash.",

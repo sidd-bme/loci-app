@@ -113,6 +113,44 @@ describe("Exact saved annotation comparison", () => {
     choose(); expect(screen.getByRole("button", { name: "Compare saved annotations" })).toBeEnabled();
   });
 
+  it("aligns single-channel model-segmentation without selection.c in both role orders and blocks multi-channel or mismatched models", async () => {
+    const { c: _omitted, ...modelSelection } = selection;
+    const modelParent: ResearchResult = {
+      ...parent,
+      kind: "model-segmentation",
+      selection: modelSelection as ResearchResult["selection"],
+      channel_mapping: [{ model_input_index: 0, model_channel: "nuclei", package_source_slot: 0, source_channel: 1 }],
+    };
+    const classicalRef: ResearchResult = { ...reference, kind: "adaptive-segmentation" };
+    const v = setup();
+    // Order 1: prediction=model-segmentation (no c), reference=adaptive-segmentation (c=1)
+    v.rerender(<ResearchAnnotationEvaluationPanel {...v.props} snapshot={{ ...v.props.snapshot, results: [modelParent, classicalRef] }} />);
+    choose();
+    expect(screen.getByRole("button", { name: "Compare saved annotations" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Compare saved annotations" }));
+    await waitFor(() => expect(v.props.onPublished).toHaveBeenCalledTimes(1));
+
+    // Order 2: prediction=adaptive-segmentation (c=1), reference=model-segmentation (no c)
+    const swappedModel: ResearchResult = {
+      ...reference,
+      kind: "model-segmentation",
+      selection: modelSelection as ResearchResult["selection"],
+      channel_mapping: [{ model_input_index: 0, model_channel: "nuclei", package_source_slot: 0, source_channel: 1 }],
+    };
+    v.rerender(<ResearchAnnotationEvaluationPanel {...v.props} snapshot={{ ...v.props.snapshot, results: [{ ...parent, kind: "adaptive-segmentation" }, swappedModel] }} />);
+    expect(screen.getByRole("button", { name: "Compare saved annotations" })).toBeEnabled();
+
+    // Negative: model mapped to c=0 vs classical c=1 -> gridMismatch refused
+    v.rerender(<ResearchAnnotationEvaluationPanel {...v.props} snapshot={{ ...v.props.snapshot, results: [{ ...modelParent, channel_mapping: [{ model_input_index: 0, model_channel: "nuclei", package_source_slot: 0, source_channel: 0 }] }, classicalRef] }} />);
+    expect(screen.getByRole("button", { name: "Compare saved annotations" })).toBeDisabled();
+    expect(screen.getByText(/different crop, channel/)).toBeVisible();
+
+    // Negative: multi-channel model mapping -> ambiguous channel refused
+    v.rerender(<ResearchAnnotationEvaluationPanel {...v.props} snapshot={{ ...v.props.snapshot, results: [{ ...modelParent, channel_mapping: [{ model_input_index: 0, model_channel: "nuclei", package_source_slot: 0, source_channel: 1 }, { model_input_index: 1, model_channel: "cyto", package_source_slot: 1, source_channel: 0 }] }, classicalRef] }} />);
+    expect(screen.getByRole("button", { name: "Compare saved annotations" })).toBeDisabled();
+    expect(screen.getByText(/does not declare one unambiguous scalar source channel/)).toBeVisible();
+  });
+
 });
 describe("Saved agreement inspection", () => {
   it("keeps empty metrics undefined with reasons and opens exact parent revisions", () => {
@@ -135,6 +173,121 @@ describe("Saved agreement inspection", () => {
     render(<AnnotationAgreementSummary result={result} api={{ execute } as unknown as ResearchDesktopApi} />); fireEvent.click(screen.getByText("Inspect matched and unmatched labels")); await screen.findByText("1–50 of 52");
     execute.mockResolvedValueOnce({ result_id: result.id, revision_hash: result.revision_hash, table: "matches", iou_threshold: 0.5, offset: 50, total: 52, rows: [row(51), row(52)] });
     fireEvent.click(screen.getByRole("button", { name: "Next rows" })); expect(await screen.findByText("51–52 of 52")).toBeVisible(); expect(execute).toHaveBeenLastCalledWith("annotation_evaluation_get", { result_id: result.id, revision_hash: result.revision_hash, table: "matches", threshold_index: 0, offset: 50, limit: 50 }); expect(screen.getByRole("button", { name: "Next rows" })).toBeDisabled();
+  });
+
+  it("handles zero differences, one difference, and multi-page stepping with keyboard controls", async () => {
+    // Zero unmatched differences (all matched)
+    const zeroRec = agreement();
+    const zeroResult = saved(zeroRec);
+    const refFrozen: ResearchResult = { ...reference, kind: "annotation-reference" };
+    const snap = { project: { project_id: "7".repeat(32) }, results: [parent, refFrozen, zeroResult], sources: [source] } as ResearchSnapshot;
+    const locateZero = vi.fn();
+    const execZero = vi.fn().mockResolvedValueOnce({
+      result_id: zeroResult.id, revision_hash: zeroResult.revision_hash, table: "matches", iou_threshold: 0.5, offset: 0, total: 2,
+      rows: [{ reference_label: 1, prediction_label: 11, intersection_pixels: 2, union_pixels: 2, iou: 1 }, { reference_label: 2, prediction_label: 12, intersection_pixels: 2, union_pixels: 2, iou: 1 }],
+    });
+    const firstRender = render(<AnnotationAgreementSummary result={zeroResult} snapshot={snap} api={{ execute: execZero } as unknown as ResearchDesktopApi} onLocateDifference={locateZero} />);
+    expect(screen.getByText(/No unmatched differences at IoU ≥ 0\.5/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Show me the differences" }));
+    await waitFor(() => expect(locateZero).toHaveBeenCalledWith(expect.objectContaining({ table: "matches", role: "prediction", label: 11, pairedRole: "reference", pairedLabel: 1, index: 0, total: 2 })));
+    // Toggle matched overlay side from Prediction to Reference
+    fireEvent.click(screen.getByRole("button", { name: "Reference" }));
+    await waitFor(() => expect(locateZero).toHaveBeenLastCalledWith(expect.objectContaining({ table: "matches", role: "reference", label: 1, pairedRole: "prediction", pairedLabel: 11, index: 0 })));
+    firstRender.unmount();
+
+    // One unmatched difference: Previous and Next disabled
+    const oneRec = agreement();
+    Object.assign(oneRec.metrics.region, { prediction_pixels: 5, reference_pixels: 4, intersection_pixels: 4, union_pixels: 5, iou: 4 / 5, dice: 8 / 9 });
+    Object.assign(oneRec.metrics.instances, { prediction_count: 3, reference_count: 2, count_error_signed: 1, count_error_absolute: 1, count_error_relative: 0.5 });
+    Object.assign(oneRec.metrics.instances.scores[0], { true_positive: 2, false_positive: 1, false_negative: 0, matches_count: 2, unmatched_prediction_count: 1, unmatched_reference_count: 0, precision: 2 / 3, recall: 1, f1: 4 / 5 });
+    const oneResult = saved(oneRec);
+    const execOne = vi.fn().mockResolvedValueOnce({ result_id: oneResult.id, revision_hash: oneResult.revision_hash, table: "unmatched_prediction", iou_threshold: 0.5, offset: 0, total: 1, rows: [77] });
+    const locateOne = vi.fn();
+    const oneRender = render(<AnnotationAgreementSummary result={oneResult} snapshot={{ ...snap, results: [parent, refFrozen, oneResult] }} api={{ execute: execOne } as unknown as ResearchDesktopApi} onLocateDifference={locateOne} />);
+    fireEvent.click(screen.getByRole("button", { name: "Show me the differences" }));
+    await waitFor(() => expect(locateOne).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ table: "unmatched_prediction", role: "prediction", label: 77, index: 0, total: 1 })));
+    expect(screen.getByText("1 of 1")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Previous difference" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next difference" })).toBeDisabled();
+    oneRender.unmount();
+
+    // Many differences (>50): steps across page boundary and supports ArrowRight / ArrowLeft
+    const manyRec = agreement();
+    Object.assign(manyRec.metrics.region, { prediction_pixels: 54, reference_pixels: 4, intersection_pixels: 4, union_pixels: 54, iou: 4 / 54, dice: 8 / 58 });
+    Object.assign(manyRec.metrics.instances, { prediction_count: 54, reference_count: 2, count_error_signed: 52, count_error_absolute: 52, count_error_relative: 26 });
+    Object.assign(manyRec.metrics.instances.scores[0], { true_positive: 2, false_positive: 52, false_negative: 0, matches_count: 2, unmatched_prediction_count: 52, unmatched_reference_count: 0, precision: 2 / 54, recall: 1, f1: 4 / 56 });
+    const manyResult = saved(manyRec);
+    const execMany = vi.fn(async (_op: string, req: { offset?: number }) => req.offset === 50
+      ? { result_id: manyResult.id, revision_hash: manyResult.revision_hash, table: "unmatched_prediction", iou_threshold: 0.5, offset: 50, total: 52, rows: [151, 152] }
+      : { result_id: manyResult.id, revision_hash: manyResult.revision_hash, table: "unmatched_prediction", iou_threshold: 0.5, offset: 0, total: 52, rows: Array.from({ length: 50 }, (_, i) => i + 101) });
+    const locateMany = vi.fn();
+    render(<AnnotationAgreementSummary
+      result={manyResult}
+      snapshot={{ ...snap, results: [parent, refFrozen, manyResult] }}
+      api={{ execute: execMany } as unknown as ResearchDesktopApi}
+      activeDifference={{
+        agreementId: manyResult.id, agreementRevisionHash: manyResult.revision_hash, table: "unmatched_prediction",
+        thresholdIndex: 0, iouThreshold: 0.5, index: 49, total: 52, role: "prediction", label: 150,
+        targetResultId: parent.id, targetRevisionHash: parent.revision_hash, targetLabelsSha256: parent.arrays!.labels.sha256!,
+        pointIndex: [3, 4], centroidIndex: [3.5, 4.5], bboxStart: [3, 4], bboxStopExclusive: [5, 6], pixelCount: 4,
+        sourcePointXy: [6, 6], sourceCentroidXy: [6.5, 6.5], worldPointXyz: [12, 18, 5], distanceUnit: "um",
+      }}
+      showingParentRole="prediction"
+      onLocateDifference={locateMany}
+      onReturnToAgreement={vi.fn()}
+    />);
+    expect(screen.getByText("50 of 52")).toBeVisible();
+    expect(screen.getByText("(6, 6) px")).toBeVisible();
+    expect(screen.getByText(/origin \(2, 3\)/)).toBeVisible();
+    expect(screen.getByText(/Calibrated \(µm\)/)).toBeVisible();
+    // Keyboard ArrowRight crosses page boundary to offset 50 (label 151)
+    fireEvent.keyDown(screen.getByRole("region", { name: "Show me the differences" }), { key: "ArrowRight" });
+    await waitFor(() => expect(execMany).toHaveBeenCalledWith("annotation_evaluation_get", expect.objectContaining({ table: "unmatched_prediction", offset: 50, limit: 50 })));
+    await waitFor(() => expect(locateMany).toHaveBeenLastCalledWith(expect.objectContaining({ label: 151, index: 50, total: 52 })));
+    // Keyboard ArrowLeft crosses back to offset 0 (label 150)
+    fireEvent.keyDown(screen.getByRole("region", { name: "Show me the differences" }), { key: "ArrowLeft" });
+    await waitFor(() => expect(locateMany).toHaveBeenLastCalledWith(expect.objectContaining({ label: 150, index: 49, total: 52 })));
+  });
+
+  it("frames two prediction masks as disagreement (never ground truth) and refuses missing parent revisions", async () => {
+    const rec = agreement();
+    Object.assign(rec.metrics.region, { prediction_pixels: 5, reference_pixels: 5, intersection_pixels: 4, union_pixels: 6, iou: 4 / 6, dice: 8 / 10 });
+    Object.assign(rec.metrics.instances, { prediction_count: 3, reference_count: 3, count_error_signed: 0, count_error_absolute: 0, count_error_relative: 0 });
+    Object.assign(rec.metrics.instances.scores[0], { true_positive: 2, false_positive: 1, false_negative: 1, matches_count: 2, unmatched_prediction_count: 1, unmatched_reference_count: 1, precision: 2 / 3, recall: 2 / 3, f1: 2 / 3 });
+    const result = saved(rec);
+    // Both parents are model/segmentation predictions -> label as disagreement
+    const predA: ResearchResult = { ...parent, kind: "cellpose-segmentation" };
+    const predB: ResearchResult = { ...reference, kind: "adaptive-segmentation" };
+    const snapBoth = { project: { project_id: "7".repeat(32) }, results: [predA, predB, result], sources: [source] } as ResearchSnapshot;
+    const execute = vi.fn();
+    const locate = vi.fn();
+    const view = render(<AnnotationAgreementSummary result={result} snapshot={snapBoth} api={{ execute } as unknown as ResearchDesktopApi} onLocateDifference={locate} />);
+    expect(screen.getByText("Saved prediction disagreement")).toBeVisible();
+    expect(screen.getByText(/prediction disagreement \(neither mask is ground truth\)/)).toBeVisible();
+    expect(screen.getByText(/does not establish biological ground truth or accuracy/)).toBeVisible();
+    expect(screen.getByText(/\+1 only in prediction a · −1 only in prediction b/)).toBeVisible();
+    view.unmount();
+
+    // Missing/mismatched parent revision: refuses locate and never jumps on coincident IDs
+    const wrongRevParent: ResearchResult = { ...parent, revision_hash: "9".repeat(64) };
+    const snapMismatch = { project: { project_id: "7".repeat(32) }, results: [wrongRevParent, predB, result], sources: [source] } as ResearchSnapshot;
+    render(<AnnotationAgreementSummary result={result} snapshot={snapMismatch} api={{ execute } as unknown as ResearchDesktopApi} onLocateDifference={locate} />);
+    expect(screen.getByText(/missing exact revision/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Show me the differences" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("revision is unavailable");
+    expect(execute).not.toHaveBeenCalled();
+    expect(locate).not.toHaveBeenCalled();
+  });
+
+  it("explains that foreground-region agreements do not support object stepping", () => {
+    const rec = agreement();
+    rec.semantics = "foreground-region";
+    rec.metrics.semantics = "foreground-region";
+    (rec.metrics as { instances: unknown }).instances = null;
+    const result = saved(rec);
+    render(<AnnotationAgreementSummary result={result} api={{ execute: vi.fn() } as unknown as ResearchDesktopApi} onLocateDifference={vi.fn()} />);
+    expect(screen.getByText(/foreground-region comparisons discard individual object IDs/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show me the differences" })).not.toBeInTheDocument();
   });
 
 });

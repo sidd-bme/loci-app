@@ -194,11 +194,6 @@ _GUI_ONLY_REASONS: dict[str, str] = {
         "Requires a human-selected local TIFF path grant via the native OS file picker."
     ),
     "roi_import": ("Requires a human-selected GeoJSON/ImageJ file via the native OS file picker."),
-    "model_list": (
-        "Managed ONNX/Cellpose model provisioning is human-administered in the desktop workbench."
-    ),
-    "model_preview": "Model qualification requires human visual inspection before adoption.",
-    "model_run": "Requires an exact human-qualified model preview receipt.",
     "cellpose_run": (
         "Provisioned Cellpose runtime execution is configured in the desktop segmentation panel."
     ),
@@ -331,6 +326,20 @@ def capability_map() -> dict[str, Any]:
         elif name in ACTION_NAMES:
             is_read = name in READ_ACTIONS
             mcp_tool = "inspect_action" if is_read else "submit_action"
+            grant_note = (
+                f"Requires delegated study access with '{name}' in policy.actions "
+                f"(validate with validate_action, run with {mcp_tool})."
+            )
+            if name in {"model_preview", "model_run"}:
+                grant_note += (
+                    " Also requires the verified BioImage.IO nuclei ONNX model in "
+                    "policy.model_packages and the pinned ONNX CPU runtime in policy.runtimes."
+                )
+            if name == "model_run":
+                grant_note += (
+                    " Always requires a single-use human visual-review approval in Loci, "
+                    "even in Full access mode."
+                )
             entries.append(
                 {
                     "operation": name,
@@ -338,10 +347,7 @@ def capability_map() -> dict[str, Any]:
                     "mutates": mutates,
                     "status": "supported_with_grant",
                     "mcp_tool": mcp_tool,
-                    "grant_requirement": (
-                        f"Requires delegated study access with '{name}' in policy.actions "
-                        f"(validate with validate_action, run with {mcp_tool})."
-                    ),
+                    "grant_requirement": grant_note,
                     "reason": None,
                 }
             )
@@ -1178,6 +1184,86 @@ def _extract_binding(
             params_summary["segmentation"] = {
                 k: seg[k] for k in ("method", "threshold", "min_size") if k in seg
             }
+    if action_name == "model_preview":
+        if isinstance(inner.get("model_id"), str):
+            params_summary["model_id"] = inner["model_id"]
+        if isinstance(inner.get("channel_mapping"), list):
+            params_summary["channel_mapping"] = [
+                {k: item.get(k) for k in ("model_input_index", "model_channel", "source_channel")}
+                for item in inner["channel_mapping"][:8]
+                if isinstance(item, dict)
+            ]
+        if isinstance(inner.get("postprocessing"), dict):
+            params_summary["postprocessing"] = {
+                k: inner["postprocessing"][k]
+                for k in (
+                    "probability_channel",
+                    "threshold",
+                    "method",
+                    "min_size",
+                    "split_height",
+                    "exclude_border",
+                )
+                if k in inner["postprocessing"]
+            }
+        if isinstance(inner.get("measurement_channels"), list):
+            params_summary["measurement_channels"] = list(inner["measurement_channels"][:32])
+    elif action_name == "model_run" and isinstance(inner.get("preview_id"), str):
+        preview_id = inner["preview_id"]
+        params_summary["preview_id"] = preview_id
+        if isinstance(inner.get("preview_sha256"), str):
+            params_summary["preview_sha256"] = inner["preview_sha256"]
+        params_summary["review_requirement"] = "visual-preview-inspection-required"
+        with suppress(Exception):
+            pdocs = workbench.project.documents("model_preview", document_id=preview_id)
+            if pdocs:
+                receipt = pdocs[0]["data"]
+                psource = receipt.get("source", {})
+                if isinstance(psource, dict):
+                    if isinstance(psource.get("id"), str) and source_id is None:
+                        source_id = psource["id"]
+                    if isinstance(psource.get("sha256"), str) and source_sha256 is None:
+                        source_sha256 = psource["sha256"]
+                    if isinstance(psource.get("selection"), dict):
+                        params_summary["selection"] = dict(psource["selection"])
+                    if isinstance(psource.get("measurement_channels"), list):
+                        params_summary["measurement_channels"] = list(
+                            psource["measurement_channels"][:32]
+                        )
+                    pdisplay = psource.get("display", {})
+                    if isinstance(pdisplay, dict) and isinstance(pdisplay.get("png_sha256"), str):
+                        params_summary["png_sha256"] = pdisplay["png_sha256"]
+                if isinstance(receipt.get("model_id"), str):
+                    params_summary["model_id"] = receipt["model_id"]
+                pkg = receipt.get("package", {})
+                if isinstance(pkg, dict):
+                    for key, out_key in (
+                        ("id", "package_id"),
+                        ("version", "package_version"),
+                        ("package_sha256", "package_sha256"),
+                    ):
+                        if isinstance(pkg.get(key), str):
+                            params_summary[out_key] = pkg[key]
+                out = receipt.get("output", {})
+                if isinstance(out, dict) and type(out.get("object_count")) is int:
+                    params_summary["object_count"] = out["object_count"]
+                if isinstance(receipt.get("segmentation_postprocessing"), dict):
+                    params_summary["postprocessing"] = dict(receipt["segmentation_postprocessing"])
+                # Only the retained cache can provide pixels for native review.
+                with workbench.project.connection() as connection:
+                    rows = connection.execute(
+                        "SELECT json_extract(value, '$.job_id') FROM metadata "
+                        "WHERE key LIKE 'task-preview:%' "
+                        "AND json_extract(value, '$.operation')='model_preview' "
+                        "AND json_extract(value, '$.output.preview.id')=? "
+                        "AND json_extract(value, '$.output.preview.preview_sha256')=? "
+                        "AND json_extract(value, '$.source_id')=? "
+                        "AND json_extract(value, '$.source_sha256')=? LIMIT 2",
+                        (preview_id, inner.get("preview_sha256"), source_id, source_sha256),
+                    ).fetchall()
+                if len(rows) == 1:
+                    params_summary["preview_job_id"] = checked_id(rows[0][0])
+
     if action_name == "correct_result" and isinstance(inner.get("operations"), list):
         params_summary["edit_count"] = len(inner["operations"])
         params_summary["edit_ops"] = [
@@ -1297,6 +1383,7 @@ def check_or_await_approval(
     request_payload: dict[str, Any],
     *,
     force_approval: bool = False,
+    model_request_key_sha256: str | None = None,
 ) -> dict[str, Any] | None:
     """Enforce session pause/revocation, permission_mode, and single-use human approvals."""
     project = workbench.project
@@ -1309,6 +1396,15 @@ def check_or_await_approval(
         or getattr(policy, "permission_mode", None) is not None
         or is_policy_registered(project, policy.content_sha256)
     )
+    if (
+        force_approval
+        and operation == "submit_action"
+        and request_payload.get("operation") == "model_run"
+        and session_id is None
+    ):
+        raise AgentSessionApprovalError(
+            "Model preview adoption requires a registered session and explicit researcher approval."
+        )
     if not tracked:
         if force_approval:
             raise AgentSessionApprovalError("Explicit continuation requires a registered session.")
@@ -1337,6 +1433,14 @@ def check_or_await_approval(
 
     mode = policy_record.get("permission_mode") or infer_permission_mode(policy)
     binding = _extract_binding(workbench, operation, request_payload)
+    if (
+        force_approval
+        and binding["action_name"] == "model_run"
+        and not binding["parameters_summary"].get("preview_job_id")
+    ):
+        raise AgentSessionApprovalError(
+            "Run a fresh model preview with a retained overlay before requesting adoption."
+        )
     target_info = {
         k: binding[k]
         for k in ("action_name", "source_id", "result_id", "revision_hash", "destination_name")
@@ -1435,6 +1539,13 @@ def check_or_await_approval(
                 or existing.get("session_id") != session_id
             ):
                 continue
+            if (
+                model_request_key_sha256 is not None
+                and existing.get("state") == "consumed"
+                and existing.get("execution_request_key_sha256") == model_request_key_sha256
+            ):
+                # Recover after approval consumption but before durable job creation.
+                return _public_approval(existing)
             if _expire_approval(connection, key, existing):
                 continue
             if existing.get("state") == "approved":
@@ -1453,6 +1564,8 @@ def check_or_await_approval(
                     )
                 if _expire_approval(connection, key, existing):
                     continue
+                if model_request_key_sha256 is not None:
+                    existing["execution_request_key_sha256"] = model_request_key_sha256
                 existing["state"] = "consumed"
                 existing["consumed_at"] = now
                 existing["updated_at"] = now
@@ -1643,6 +1756,8 @@ def check_or_await_approval(
                 ):
                     state = "expired"
                 if state == "approved":
+                    if model_request_key_sha256 is not None:
+                        app_rec["execution_request_key_sha256"] = model_request_key_sha256
                     app_rec["state"] = "consumed"
                     app_rec["consumed_at"] = timestamp()
                     app_rec["updated_at"] = app_rec["consumed_at"]
@@ -1727,7 +1842,12 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
         return control_task(workbench, request)
 
     if action in {"approve_request", "deny_request"}:
-        exact_keys(request, {"action", "approval_id", "reason"}, "agent approval decision")
+        allowed_keys = (
+            {"action", "approval_id", "reason", "inspected_preview"}
+            if action == "approve_request"
+            else {"action", "approval_id", "reason"}
+        )
+        exact_keys(request, allowed_keys, "agent approval decision")
         approval_id = checked_id(request.get("approval_id"))
         reason = checked_text(
             request.get("reason")
@@ -1752,6 +1872,86 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 {"pending"} if action == "approve_request" else {"pending", "approved"}
             ):
                 raise ValueError(f"Approval request is already {approval['state']}")
+            if action == "approve_request" and approval.get("action_name") == "model_run":
+                import base64
+
+                from .research_models import verify_model_review_installation
+                from .research_task_preview import get_preview
+
+                inspected = request.get("inspected_preview")
+                if not isinstance(inspected, dict):
+                    raise ValueError(
+                        "Approving model preview adoption requires inspected_preview confirmation"
+                    )
+                exact_keys(
+                    inspected,
+                    {"preview_id", "preview_sha256", "preview_job_id"},
+                    "inspected model preview",
+                )
+                if set(inspected) != {"preview_id", "preview_sha256", "preview_job_id"}:
+                    raise ValueError(
+                        "Inspected model preview requires preview_id, preview_sha256, "
+                        "and preview_job_id"
+                    )
+                inspected_pid = checked_id(inspected.get("preview_id"))
+                inspected_sha = _sha256_text(inspected.get("preview_sha256"), "preview_sha256")
+                inspected_jid = checked_id(inspected.get("preview_job_id"))
+                params = approval.get("parameters_summary", {})
+                if inspected_pid != params.get("preview_id") or inspected_sha != params.get(
+                    "preview_sha256"
+                ):
+                    raise ValueError(
+                        "Inspected preview does not match the pending model adoption request"
+                    )
+                if inspected_jid != params.get("preview_job_id"):
+                    raise ValueError(
+                        "Inspected preview job does not match the pending model adoption request"
+                    )
+                require_session_authority(
+                    project,
+                    approval["policy_sha256"],
+                    checked_id(approval["session_id"]),
+                    connection=connection,
+                )
+                retained = get_preview(project, inspected_jid)["preview"]
+                retained_out = retained.get("output", {})
+                retained_doc = retained_out.get("preview", {})
+                overlay_url = retained_out.get("overlay_png")
+                expected_png_sha = (
+                    retained_doc.get("source", {}).get("display", {}).get("png_sha256")
+                )
+                prefix = "data:image/png;base64,"
+                if (
+                    retained.get("operation") != "model_preview"
+                    or retained.get("adopted") is not False
+                    or retained.get("source_id") != approval["source_id"]
+                    or retained.get("source_sha256") != approval["source_sha256"]
+                    or retained_doc.get("source", {}).get("id") != approval["source_id"]
+                    or retained_doc.get("source", {}).get("sha256") != approval["source_sha256"]
+                    or expected_png_sha != params.get("png_sha256")
+                    or retained_doc.get("id") != inspected_pid
+                    or retained_doc.get("preview_sha256") != inspected_sha
+                    or not isinstance(overlay_url, str)
+                    or not overlay_url.startswith(prefix)
+                    or not isinstance(expected_png_sha, str)
+                    or not SHA_PATTERN.fullmatch(expected_png_sha)
+                ):
+                    raise ValueError(
+                        "Retained model preview is unavailable or mismatched; "
+                        "run and inspect a fresh model preview"
+                    )
+                png_bytes = base64.b64decode(overlay_url.removeprefix(prefix), validate=True)
+                if hashlib.sha256(png_bytes).hexdigest() != expected_png_sha:
+                    raise ValueError("Retained model preview overlay PNG failed integrity check")
+                verify_model_review_installation(workbench, retained_doc)
+                approval["inspected_preview"] = {
+                    "preview_id": inspected_pid,
+                    "preview_sha256": inspected_sha,
+                    "preview_job_id": inspected_jid,
+                    "png_sha256": expected_png_sha,
+                }
+            elif action == "approve_request" and "inspected_preview" in request:
+                raise ValueError("inspected_preview is only valid for model_run approvals")
             if action == "approve_request" and _target_is_stale(
                 project, approval, verify_sources=True
             ):

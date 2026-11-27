@@ -23,7 +23,7 @@ describe("Shared agent workspace surface", () => {
     expect(screen.getByRole("heading", { name: "Agent workspace" })).toBeVisible();
     expect(screen.getByText("Shared study")).toBeVisible();
     expect(screen.getByText("No active agent")).toBeVisible();
-    fireEvent.click(within(screen.getByRole("region", { name: "No agent plan" })).getByRole("button", { name: "Configure access in workspace" }));
+    fireEvent.click(within(screen.getByRole("region", { name: "No agent plan" })).getByRole("button", { name: "Connect an assistant" }));
     expect(configure).toHaveBeenCalledOnce();
     expect(control).not.toHaveBeenCalled();
   });

@@ -11,13 +11,37 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .agent_plugin import plugin_documents
-from .agent_policy import DISCLOSURES, PERMISSION_MODES, load_policy, write_policy
+from .agent_plugin import antigravity_documents, codex_config, codex_documents, plugin_documents
+from .agent_policy import _RUNTIME_KEYS, DISCLOSURES, PERMISSION_MODES, load_policy, write_policy
 from .agent_sessions import register_policy
 from .export import _fsync_directory, _rename_noreplace
 from .quantitative import exact_keys, finite_number
 from .research_process import research_command
 from .workbench import Workbench, runtime_record
+
+
+def _shell_path(path: Path) -> str:
+    if os.name == "nt":
+        return "'" + str(path).replace("'", "''") + "'"
+    return shlex.quote(str(path))
+
+
+def _nuclei_model_pins(workbench: Workbench) -> tuple[dict[str, str], dict[str, str]]:
+    from .research_models import (
+        NUCLEI_MODEL_PACKAGE_ID,
+        NUCLEI_MODEL_PACKAGE_SHA256,
+        agent_policy_model_grants,
+    )
+
+    package = {"id": NUCLEI_MODEL_PACKAGE_ID, "sha256": NUCLEI_MODEL_PACKAGE_SHA256}
+    grants = agent_policy_model_grants(workbench)
+    if package not in grants["model_packages"] or len(grants["runtimes"]) != 1:
+        raise ValueError(
+            "Install the verified BioImage.IO nuclei ONNX model in this study "
+            "and qualify it on the available CPU runtime before granting model access"
+        )
+    (runtime,) = grants["runtimes"]
+    return package, {key: runtime[key] for key in _RUNTIME_KEYS}
 
 
 def _whole_source_grants(workbench, scope, selected_source):
@@ -190,10 +214,18 @@ def create_agent_access(
         "allow_workflow_graph",
         "allow_task_records",
         "volume_views",
+        "client",
+        "allow_nuclei_model",
     }
     exact_keys(request, expected | optional, "agent access")
     if set(request) - optional != expected:
         raise ValueError("Agent access requires every explicit permission and limit")
+    client = request.get("client")
+    if "client" in request and client not in ("codex", "antigravity", "claude", "other"):
+        raise ValueError("Choose a supported assistant client")
+    allow_nuclei_model = request.get("allow_nuclei_model", False)
+    if type(allow_nuclei_model) is not bool:
+        raise ValueError("Nuclei model access requires an explicit boolean")
     if "permission_mode" in request and request["permission_mode"] not in PERMISSION_MODES:
         raise ValueError("Choose inspect_only, ask_approval or full_access permission mode")
     for name in ("allow_preview", "allow_run", "allow_export"):
@@ -255,11 +287,16 @@ def create_agent_access(
         )
     if not isinstance(actions, list) or any(not isinstance(item, str) for item in actions):
         raise ValueError("Research actions must be an explicit list")
-    if actions:
+    if actions or allow_nuclei_model:
         from .research_action_registry import ACTION_NAMES, TASK_ACTIONS
+        from .research_models import MODEL_OPERATIONS
 
         if len(set(actions)) != len(actions) or not set(actions) <= ACTION_NAMES:
             raise ValueError("Choose unique supported research actions")
+        if allow_nuclei_model:
+            actions = [*actions, *sorted(MODEL_OPERATIONS - set(actions))]
+        elif set(actions) & MODEL_OPERATIONS:
+            raise ValueError("Model actions require explicit nuclei model access")
         if (
             delegation is None
             or delegation["result_scope"] != "granted-sources"
@@ -294,6 +331,16 @@ def create_agent_access(
         raise ValueError("Export destinations require an explicit export or handoff grant")
     selection = validated["selection"]
     source = workbench.project.source(validated["source_id"], verify=True)
+    nuclei_pins = None
+    if allow_nuclei_model:
+        metadata = source["metadata"]
+        if (
+            "z_stop" in selection
+            or metadata.get("sample_semantics") in {"RGB", "RGBA"}
+            or (metadata.get("rgb") is True)
+        ):
+            raise ValueError("Nuclei model access requires a single Z plane of a scalar source")
+        nuclei_pins = _nuclei_model_pins(workbench)
     operations = ["inspect_source", "validate_recipe"]
     if "agent_metadata" in disclosures:
         operations.append("analysis_context")
@@ -354,20 +401,8 @@ def create_agent_access(
             }
         ],
         "operations": operations,
-        "model_packages": [],
-        "runtimes": [
-            {
-                key: runtime[key]
-                for key in (
-                    "engine",
-                    "numpy",
-                    "scipy",
-                    "scikit_image",
-                    "backend",
-                    "resolved_device",
-                )
-            }
-        ],
+        "model_packages": [nuclei_pins[0]] if nuclei_pins else [],
+        "runtimes": [{key: runtime[key] for key in _RUNTIME_KEYS}],
         "export": {
             "root": str(export_root),
             "filenames": request["export_names"]
@@ -378,6 +413,8 @@ def create_agent_access(
         "limits": limits,
         "disclosures": disclosures,
     }
+    if nuclei_pins:
+        specification["runtimes"].append(nuclei_pins[1])
     if interactive is not None:
         specification["remote_grants"] = []
         specification["experimental_recipes"] = (
@@ -454,41 +491,45 @@ def create_agent_access(
     try:
         receipt = write_policy(stage / "agent-policy.json", workbench.project, specification)
         command = research_command(["mcp", "--policy", str(target / "agent-policy.json")])
-        config = {"mcpServers": {"loci-research": {"command": command[0], "args": command[1:]}}}
+        stdio = {"command": command[0], "args": command[1:]}
         # A source checkout needs a deterministic import directory; frozen workers do not.
-        if "-m" in command:
-            config["mcpServers"]["loci-research"]["cwd"] = str(Path(__file__).resolve().parents[2])
-        stdio = config["mcpServers"]["loci-research"]
-        if include_plugin:
-            for name, body in plugin_documents(stdio, receipt["policy_sha256"]).items():
-                path = stage / name
-                missing = []
-                directory = path.parent
-                while directory != stage and not directory.exists():
-                    missing.append(directory)
-                    directory = directory.parent
-                for directory in reversed(missing):
-                    directory.mkdir(mode=0o700)
-                    os.chmod(directory, 0o700)
-                    bundle_directories.add(directory)
-                with path.open("x", encoding="utf-8") as stream:
-                    os.fchmod(stream.fileno(), 0o600) if hasattr(os, "fchmod") else os.chmod(
-                        path, 0o600
-                    )
-                    stream.write(body)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                _fsync_directory(path.parent)
-        codex_config = (
-            "[mcp_servers.loci-research]\n"
-            + "\n".join(
-                f"{key} = {json.dumps(value, ensure_ascii=False)}" for key, value in stdio.items()
+        if command[1:3] == ["-m", "loci_engine.research_cli"]:
+            engine = Path(__file__).resolve().parents[2]
+            stdio.update(cwd=str(engine), env={"PYTHONPATH": str(engine / "src")})
+        config = {"mcpServers": {"loci-research": stdio}}
+        host_documents = plugin_documents(stdio, receipt["policy_sha256"]) if include_plugin else {}
+        host_receipt = {}
+        if client in ("antigravity", "codex"):
+            workspace_documents = (
+                antigravity_documents if client == "antigravity" else codex_documents
             )
-            + "\n"
-        )
+            documents, host_receipt = workspace_documents(
+                stdio,
+                receipt["policy_sha256"],
+                source["id"],
+                disclose_metadata="agent_metadata" in disclosures,
+            )
+            host_documents.update(documents)
+        for name, body in host_documents.items():
+            path = stage / name
+            missing = []
+            directory = path.parent
+            while directory != stage and not directory.exists():
+                missing.append(directory)
+                directory = directory.parent
+            for directory in reversed(missing):
+                directory.mkdir(mode=0o700)
+                os.chmod(directory, 0o700)
+                bundle_directories.add(directory)
+            with path.open("x", encoding="utf-8") as stream:
+                os.chmod(path, 0o600)
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _fsync_directory(path.parent)
         with (stage / "codex-config.toml").open("x", encoding="utf-8") as stream:
             os.chmod(stage / "codex-config.toml", 0o600)
-            stream.write(codex_config)
+            stream.write(codex_config(stdio))
             stream.flush()
             os.fsync(stream.fileno())
         approved_request = {key: validated[key] for key in ("source_id", "selection", "recipe")}
@@ -503,7 +544,6 @@ def create_agent_access(
                 stream.flush()
                 os.fsync(stream.fileno())
         instructions = (
-            "Loci local MCP access\n\n"
             "Claude Desktop: merge the loci-research entry from mcp-config.json into the "
             "mcpServers object in your Developer > Edit Config file; preserve other servers. "
             "Restart Claude Desktop and inspect its connected tools.\n\n"
@@ -533,7 +573,7 @@ def create_agent_access(
             "To revoke this access, remove agent-policy.json and disconnect the client. "
             "A changed policy or runtime fails closed; create a new bundle to authorize it. "
             "Keep the bundle in this location, or create a new one after moving it.\n"
-            "\nOpenAI setup documentation (checked 2026-10-07):\n"
+            "\nOpenAI setup documentation\n"
             "https://learn.chatgpt.com/docs/extend/mcp\n"
             "https://developers.openai.com/plugins/build/plugins\n"
         )
@@ -573,18 +613,63 @@ def create_agent_access(
                 "and choose your available model. Local stdio is not a hosted connector; "
                 "no model availability or subscription-to-API bridge is supplied.\n\n"
                 "Exact local installation commands:\n"
-                f"codex plugin marketplace add {shlex.quote(str(target))}\n"
+                f"codex plugin marketplace add {_shell_path(target)}\n"
                 f"codex plugin add loci-analysis@loci-local-{receipt['policy_sha256'][:12]}\n"
             )
+        workspace_instructions = ""
+        if host_receipt:
+            workspace = target / host_receipt[f"{client}_workspace"]
+            change_directory = "Set-Location -LiteralPath" if os.name == "nt" else "cd"
+            if client == "codex":
+                workspace_instructions = (
+                    "Codex App or CLI\n\n"
+                    "Open codex-workspace as a local project in Codex, or run codex from "
+                    "that folder. Review the generated .codex/config.toml and trust the "
+                    "project when Codex asks. Saving the bundle outside other Git projects "
+                    "keeps project trust scoped to this workspace.\n\n"
+                    f"{change_directory} {_shell_path(workspace)}\n"
+                    "codex\n"
+                )
+            else:
+                workspace_instructions = (
+                    "Antigravity App or CLI\n\n"
+                    "Open antigravity-workspace as the sole folder in a new Antigravity App "
+                    "project, or run agy from that folder. If prompted, review and allow "
+                    "this local stdio connection.\n\n"
+                    f"{change_directory} {_shell_path(workspace)}\n"
+                    "agy\n"
+                )
+            workspace_instructions += (
+                "\nStart a fresh conversation and paste this prompt to verify the selected "
+                "study\n\n"
+                f"{host_receipt['verification_prompt']}\n\n"
+                "Check Loci's Agent sessions for the new connection and successful read. "
+            )
+            if client == "codex":
+                workspace_instructions += (
+                    "If the connection is missing, check that Codex opened codex-workspace "
+                    "as a trusted project, then start a new conversation.\n\n"
+                    "https://learn.chatgpt.com/docs/config-file/config-basic\n\n"
+                )
+            else:
+                workspace_instructions += (
+                    "If the connection is missing, check the MCP status in Antigravity. "
+                    "CLI users can open /mcp.\n\n"
+                    "https://antigravity.google/docs/mcp\n"
+                    "https://antigravity.google/docs/customization-discovery/\n\n"
+                )
+            workspace_instructions += "Other local setup options\n\n"
         with (stage / "README.txt").open("x", encoding="utf-8") as stream:
             os.chmod(stage / "README.txt", 0o600)
-            stream.write(instructions)
+            stream.write("Loci local MCP access\n\n" + workspace_instructions + instructions)
             stream.flush()
             os.fsync(stream.fileno())
         for grant in specification["sources"]:
             current_source = workbench.project.source(grant["id"], verify=True)
             if current_source["sha256"] != grant["sha256"]:
                 raise ValueError("An authorized source changed before grant publication")
+        if nuclei_pins and _nuclei_model_pins(workbench) != nuclei_pins:
+            raise ValueError("The verified nuclei model or CPU runtime changed before publication")
         for directory in sorted(bundle_directories, key=lambda path: len(path.parts), reverse=True):
             _fsync_directory(directory)
         current_parent = parent.lstat()
@@ -622,6 +707,8 @@ def create_agent_access(
             ),
             "source_id": source["id"],
             "selection": selection,
+            **({"nuclei_model_sha256": nuclei_pins[0]["sha256"]} if nuclei_pins else {}),
+            **host_receipt,
             **({"plugin_filename": "plugin/plugin.json"} if include_plugin else {}),
             **({"delegation": specification["delegation"]} if delegation is not None else {}),
             **(

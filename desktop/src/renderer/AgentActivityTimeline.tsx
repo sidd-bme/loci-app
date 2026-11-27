@@ -16,7 +16,7 @@ export interface AgentActivityNavigation {
   onReviewResult?: (target: ResearchAgentTargetReference) => void;
   onOpenJob?: (target: ResearchAgentTargetReference) => void;
   onOpenWorkflow?: (target: ResearchAgentTargetReference) => void;
-  onInspectPreview?: (target: ResearchAgentTargetReference) => void;
+  onInspectPreview?: (target: ResearchAgentTargetReference, approvalId?: string) => void;
   /** Host-confirmed succeeded preview jobs; cache retrieval can still report eviction. */
   inspectablePreviewJobIds?: string[];
 }
@@ -107,7 +107,7 @@ export function AgentTargetLinks({ targets, snapshot, navigation = {}, unavailab
         ? snapshot.results.find((item) => item.id === target.id) : undefined;
       const job = target.kind === "job" ? snapshot.jobs.find((item) => item.id === target.id) : undefined;
       const previewAvailable = state === "current" && job?.state === "succeeded" &&
-        ["preview_recipe", "workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation) &&
+        ["model_preview", "preview_recipe", "workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation) &&
         navigation.inspectablePreviewJobIds?.includes(target.id) && navigation.onInspectPreview;
       return <li key={`${target.kind}:${target.id}:${index}`}>
         <button type="button" className="agent-target-link" disabled={Boolean(reason)}

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { webcrypto, createHash } from "node:crypto";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ResearchWorkbench from "./ResearchWorkbench";
@@ -104,6 +105,23 @@ function harness() {
       created_at: "2026-10-27T00:01:00Z", updated_at: "2026-10-27T00:02:00Z", progress: 1, cancel_requested: false, result_ids: [], error: null }],
       agent_sessions: { ...current.agent_sessions!, events: [{ ...wire.events[0], id: "preview-completed", approval_id: null,
         operation: "workflow_preview", kind: "task_completed", summary: "Workflow prefix preview available", targets: [{ kind: "job", id: "9".repeat(32) }] }] } }; },
+    publishModelApproval() {
+      const approval = { ...wire.approvals[0], project_id: current.project.project_id!, source_id: ID_A, source_sha256: SHA_A,
+        action_name: "model_run", operation: "submit_action", expires_at: new Date(now + 60_000).toISOString(),
+        parameters_summary: { review_requirement: "visual-preview-inspection-required", preview_id: "preview-a",
+          preview_sha256: "3".repeat(64), preview_job_id: current.jobs[0].id } };
+      current = { ...current, jobs: [{ ...current.jobs[0], operation: "model_preview" }], agent_sessions: { ...current.agent_sessions!,
+        policies: [{ ...wire.policies[0], project_id: current.project.project_id! }],
+        sessions: [{ ...wire.sessions[0], project_id: current.project.project_id! }], approvals: [approval], pending_approval_count: 1 } };
+      return approval;
+    },
+    completeModelPreview() {
+      previewOutput({ preview: { schema: "loci.task-preview/v1", job_id: current.jobs[0].id, operation: "model_preview",
+        source_id: ID_A, source_sha256: SHA_A, request_sha256: current.jobs[0].request_hash, output_sha256: "4".repeat(64), adopted: false,
+        created_at: "2026-10-27T00:02:00Z", output: { adopted: false, overlay_png: png, preview: {
+          schema: "loci.model-preview/v1", id: "preview-a", preview_sha256: "3".repeat(64), source: { id: ID_A, sha256: SHA_A,
+            selection, display: { png_sha256: createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex") } } } } } });
+    },
     completePreview() {
       const preview: SharedTaskPreview = { schema: "loci.task-preview/v1", job_id: "9".repeat(32), operation: "workflow_preview",
         source_id: ID_A, source_sha256: SHA_A, request_sha256: "8".repeat(64), output_sha256: "7".repeat(64), adopted: false,
@@ -231,6 +249,34 @@ describe("Agent navigation integration", () => {
     await screen.findByLabelText("Image viewer: Source B");
     expect(screen.queryByRole("region", { name: "Agent preview comparison" })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Active image")).toHaveTextContent("Source B");
+  });
+
+  it("opens the pending model request in the main image stage and binds its native approval to the loaded overlay", async () => {
+    vi.stubGlobal("crypto", webcrypto);
+    const state = harness();
+    state.api.controlAgentSession = vi.fn(async () => (await state.api.getSnapshot())!);
+    await startFollowing(state);
+    state.publishPreview();
+    const approval = state.publishModelApproval();
+    await poll();
+    userClick(screen.getByRole("button", { name: "Agent session status" }));
+    expect(screen.queryByRole("button", { name: "Approve submit_action" })).toBeNull();
+    userClick(screen.getByRole("button", { name: "Inspect model preview" }));
+    expect(state.execute).toHaveBeenCalledWith("task_preview_get", { job_id: approval.parameters_summary.preview_job_id });
+    await act(async () => state.completeModelPreview());
+    const image = await screen.findByRole("img", { name: "Source with predicted model labels" });
+    const check = screen.getByRole("checkbox", { name: "I inspected this model preview" });
+    const allow = screen.getByRole("button", { name: "Approve submit_action" });
+    expect(check).toBeDisabled();
+    Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1 }, naturalHeight: { value: 1 } });
+    vi.spyOn(image, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+    fireEvent.load(image);
+    await waitFor(() => expect(check).toBeEnabled());
+    expect(allow).toBeDisabled();
+    userClick(check);
+    userClick(allow);
+    await waitFor(() => expect(state.api.controlAgentSession).toHaveBeenCalledExactlyOnceWith({ action: "approve_request", approval_id: approval.id,
+      inspected_preview: { preview_id: "preview-a", preview_sha256: "3".repeat(64), preview_job_id: approval.parameters_summary.preview_job_id } }));
   });
 
   it("discards a late preview cache response after a human selects another source", async () => {

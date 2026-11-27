@@ -9,7 +9,12 @@ import time
 import pytest
 from mcp.client.session import ClientSession
 from mcp.client.stdio import stdio_client
+from mcp.shared.message import SessionMessage
+from mcp.types import Implementation, JSONRPCRequest, JSONRPCResponse
+from mcp_types import CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY
+from mcp_types.version import LATEST_MODERN_VERSION
 from test_agent_actions import actions_agent
+from test_agent_policy import make_study
 from test_agent_review import decision
 from test_research_agent_setup import access_request
 from test_research_mcp import stdio_parameters
@@ -130,7 +135,8 @@ def test_configuration_ready_does_not_claim_connected_client(tmp_path):
     assert str(tmp_path) not in json.dumps(snap)
 
 
-def test_real_mcp_stdio_session_presence_heartbeat_and_clean_disconnect(tmp_path):
+@pytest.mark.parametrize("modern", [False, True])
+def test_real_mcp_stdio_session_presence_heartbeat_and_clean_disconnect(tmp_path, modern):
     policy, workbench, _, path, request, _, _ = session_fixture(
         tmp_path, permission_mode="full_access"
     )
@@ -140,15 +146,22 @@ def test_real_mcp_stdio_session_presence_heartbeat_and_clean_disconnect(tmp_path
     async def exercise(errlog):
         async with (
             stdio_client(stdio_parameters(path), errlog=errlog) as streams,
-            ClientSession(*streams) as session,
+            ClientSession(
+                *streams, client_info=Implementation(name="host-fixture", version="1.0")
+            ) as session,
         ):
-            await session.initialize()
+            if modern:
+                await session.discover()
+            else:
+                await session.initialize()
             live = workbench.snapshot()["agent_sessions"]
             assert live["status"] == "connected_idle"
             assert live["connected_count"] == 1
             assert len(live["sessions"]) == 1
             active_session = live["sessions"][0]
             assert active_session["state"] == "connected_idle"
+            assert active_session["client_id"] == "host-fixture"
+            assert active_session["client_version"] == "1.0"
             assert active_session["policy_sha256"] == policy.content_sha256
             assert active_session["identity_assurance"] == "declared"
             assert "private_pid" not in active_session
@@ -169,6 +182,100 @@ def test_real_mcp_stdio_session_presence_heartbeat_and_clean_disconnect(tmp_path
     assert after_close["status"] == "disconnected"
     assert after_close["connected_count"] == 0
     assert after_close["sessions"][0]["state"] == "disconnected"
+
+
+def test_modern_stdio_calls_own_jobs_and_reconnect_keeps_exact_ownership(tmp_path):
+    workbench, _, request = make_study(tmp_path)
+    bundle = tmp_path / "access"
+    receipt = create_agent_access(
+        workbench, access_request(request, permission_mode="full_access"), bundle
+    )
+    parameters = stdio_parameters(bundle / receipt["policy_filename"])
+
+    async def exercise():
+        async with (
+            stdio_client(parameters) as streams,
+            ClientSession(
+                *streams, client_info=Implementation(name="agy-fixture", version="1")
+            ) as session,
+        ):
+            await session.discover()
+            identity = workbench.snapshot()["agent_sessions"]["sessions"][0]["session_id"]
+            inspected = await session.call_tool(
+                "inspect_source", {"source_id": request["source_id"]}
+            )
+            assert not inspected.is_error
+            denied = await session.call_tool("inspect_source", {"source_id": "0" * 32})
+            assert denied.is_error
+            submit = await session.call_tool(
+                "submit_recipe", {"request": request, "request_key": "modern-job"}
+            )
+            assert not submit.is_error
+            job_id = json.loads(submit.content[0].text)["job"]["id"]
+            assert workbench.project.job(job_id)["owner"] == {
+                "session_id": identity,
+                "policy_sha256": receipt["policy_sha256"],
+            }
+            async with asyncio.timeout(20):
+                while True:
+                    status = await session.call_tool("job_status", {"job_id": job_id})
+                    assert not status.is_error
+                    report = json.loads(status.content[0].text)["job"]
+                    if (
+                        report["state"] not in {"queued", "running"}
+                        and not report["owned_worker_active"]
+                    ):
+                        break
+                    await asyncio.sleep(0.05)
+            assert report["state"] == "succeeded"
+
+        async with stdio_client(parameters) as streams, ClientSession(*streams) as session:
+            await session.discover()
+            status = await session.call_tool("job_status", {"job_id": job_id})
+            assert status.is_error
+            assert "not authorized by the active policy" in status.content[0].text
+            sessions = workbench.snapshot()["agent_sessions"]["sessions"]
+            assert len(sessions) == 2
+            assert sessions[0]["session_id"] != identity
+            assert workbench.project.job(job_id)["owner"]["session_id"] == identity
+
+    asyncio.run(exercise())
+
+
+def test_modern_stdio_accepts_first_scoped_call_without_discovery(tmp_path):
+    policy, workbench, _, path, request, _, _ = session_fixture(tmp_path)
+
+    async def exercise():
+        async with stdio_client(stdio_parameters(path)) as (received, send):
+            await send.send(
+                SessionMessage(
+                    JSONRPCRequest(
+                        jsonrpc="2.0",
+                        id=1,
+                        method="tools/call",
+                        params={
+                            "_meta": {
+                                PROTOCOL_VERSION_META_KEY: LATEST_MODERN_VERSION,
+                                CLIENT_CAPABILITIES_META_KEY: {},
+                                CLIENT_INFO_META_KEY: {"name": "agy-fixture", "version": "1"},
+                            },
+                            "name": "inspect_source",
+                            "arguments": {"source_id": request["source_id"]},
+                        },
+                    )
+                )
+            )
+            async with asyncio.timeout(10):
+                response = (await received.receive()).message
+            assert isinstance(response, JSONRPCResponse)
+            assert response.result["structuredContent"]["verified"]
+            snapshot = workbench.snapshot()["agent_sessions"]
+            (session,) = snapshot["sessions"]
+            assert session["client_id"] == "agy-fixture"
+            assert session["policy_sha256"] == policy.content_sha256
+            assert session["last_operation"] == "inspect_source"
+
+    asyncio.run(exercise())
 
 
 def test_abrupt_process_loss_and_heartbeat_ttl_transition_to_interrupted(tmp_path):
