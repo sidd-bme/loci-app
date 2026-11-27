@@ -102,7 +102,14 @@ export function inspectBeforeAdoption({ page, preview, previewJob, image, channe
     assert.equal(displayedSha, image.sha256);
     const region = preview.source.selection;
     await displayedPreview.getByText(`${region.width} × ${region.height} px at (${region.x}, ${region.y}) · Input C ${channel} · Z ${region.z} · T ${region.t} (zero-based)`, { exact: true }).waitFor();
-    await displayedPreview.getByText(`${preview.output.object_count} predicted objects · green outlines`, { exact: true }).waitFor();
+    const cellpose = preview.schema === "loci.cellpose-preview/v1";
+    const legend = cellpose ? "teal boundaries" : "green outlines";
+    await displayedPreview.getByText(`${preview.output.object_count} predicted objects · ${legend}`, { exact: true }).waitFor();
+    if (cellpose) {
+      const channels = preview.source.measurement_channels;
+      const measured = channels.length ? channels.map(c => `C ${c}`).join(", ") + " (zero-based)" : "No intensity channels";
+      await displayedPreview.getByText(`Raw measurements · ${measured}`, { exact: true }).waitFor();
+    }
     await checkpoint("model-04-exact-preview-rendered");
     const confirm = displayedPreview.getByRole("checkbox", { name: "I inspected this model preview", exact: true });
     const approve = displayedPreview.getByRole("button", { name: "Approve submit_action", exact: true });
