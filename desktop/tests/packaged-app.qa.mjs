@@ -234,6 +234,19 @@ async function imagePoint(u, v, click = true) {
   }
   return point;
 }
+async function zoomForCorrection(u, v) {
+  const viewport = page.locator('.image-viewport');
+  const scale = async () => JSON.parse(await viewport.getAttribute('data-camera')).scale;
+  // A native pixel must span several CSS pixels to address an exact voxel by mouse.
+  while (await scale() < 4) {
+    const before = await scale();
+    const anchor = await imagePoint(u, v, false);
+    await page.mouse.move(anchor.x, anchor.y);
+    await page.mouse.wheel(0, -150);
+    await until(scale, value => value > before, "zoom around the correction object");
+  }
+  await viewerReady();
+}
 async function assertNavigationOutsideImage() {
   const viewport = page.locator('.image-viewport');
   const image = await viewport.locator('canvas').boundingBox();
@@ -351,6 +364,7 @@ ref=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickl
   await page.getByLabel("Correction label", { exact: true }).selectOption(String(expectedCount + 1));
   await page.getByRole("button", { name: "Delete selected label", exact: true }).click();
   const deleted = await changedFrom(added, "delete added label"); assert.equal(deleted.object_count, expectedCount);
+  await zoomForCorrection(228, 45);
   await page.getByLabel("Correction tool", { exact: true }).selectOption("add");
   for (const [u, v] of [[220, 40], [230, 40], [230, 50], [220, 50]]) await imagePoint(u, v);
   await page.getByRole("button", { name: "Commit add polygon", exact: true }).click();
@@ -374,12 +388,25 @@ ref=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickl
   await page.getByRole("button", { name: "Nudge selected vertex right one voxel", exact: true }).waitFor();
   const boundary = await page.evaluate(({ result_id, revision_hash, label }) => window.lociResearch.execute("correction_info", { result_id, revision_hash, label, plane: "XY", index: 0 }), { result_id: erased.id, revision_hash: erased.revision_hash, label: expectedCount + 1 });
   const vertices = boundary.boundary.vertices_uv;
-  const firstVertex = vertices[0], from = await imagePoint(firstVertex.u, firstVertex.v, false), to = await imagePoint(firstVertex.u + 3, firstVertex.v, false);
+  // Move an outer handle into the empty margin, landing on a native voxel center.
+  const start = [...vertices].sort((a, b) => b.v - a.v || a.u - b.u)[0];
+  const destination = { u: Math.round(start.u), v: Math.round(start.v) + 2 };
+  await zoomForCorrection(start.u, start.v);
+  const from = await imagePoint(start.u, start.v, false);
+  const to = await imagePoint(destination.u, destination.v, false);
   await page.mouse.move(from.x, from.y); await page.mouse.down(); await page.mouse.move(to.x, to.y, { steps: 6 }); await page.mouse.up();
   await until(() => page.getByRole("button", { name: "Commit boundary vertex", exact: true }).isEnabled(), Boolean, "single vertex drag");
   await page.getByRole("button", { name: "Commit boundary vertex", exact: true }).click();
   const vertex = await changedFrom(erased, "boundary vertex"); assert.equal(vertex.object_count, expectedCount + 1);
-  const finalRecord = await record(vertex.id); receipts.corrections = { added: added.id, deleted: deleted.id, painted: painted.id, erased: erased.id, vertex: vertex.id };
+  const finalRecord = await record(vertex.id);
+  const [move] = finalRecord.provenance.correction.operations;
+  assert.equal(move.op, "move_boundary_vertex");
+  assert.equal(move.moved_vertex_index, vertices.indexOf(start));
+  assert.deepEqual(move.source_vertex_uv, [start.u, start.v]);
+  assert.deepEqual(move.destination_vertex_uv, [destination.u, destination.v]);
+  assert.ok(move.changed_voxels > 0);
+  receipts.corrections = { added: added.id, deleted: deleted.id, painted: painted.id, erased: erased.id, vertex: vertex.id,
+    source_vertex_uv: move.source_vertex_uv, destination_vertex_uv: move.destination_vertex_uv, changed_voxels: move.changed_voxels };
   await reviewAndExport(vertex, correctedExport); await shot("04-corrected-reviewed-result");
   const corrected = JSON.parse((await run(python, ["-c", `import json,sys,numpy as np
 base=np.load(sys.argv[1],allow_pickle=False); got=np.load(sys.argv[2],allow_pickle=False); assert np.unique(got[got>0]).size==int(sys.argv[3]); assert np.any(base!=got); assert np.all(base[200:,200:]==got[200:,200:]); print(json.dumps({'changes_local_to_declared_correction_margin':True,'changed_pixels':int(np.count_nonzero(base!=got))}))`, referenceLabels, path.join(correctedExport, "labels.npy"), String(expectedCount + 1)])).stdout);
