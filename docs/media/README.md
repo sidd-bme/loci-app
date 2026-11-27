@@ -1,5 +1,13 @@
 # Product media and image credits
 
+## Current README
+
+The two workbench screenshots were captured in Loci build 77 on macOS. Both use the native Black theme. The published images are resized WebP versions of the full application captures. [Application source](https://github.com/sidd-bme/loci-app/tree/89fdf9b1691f9e487627df49e9aac8efba155df5)
+
+- **[Human iPSC colony](ipsc-workbench.webp).** Thirstrup and the Allen Institute for Cell Science Microscopy & Image Analysis Team contributed BBBC034v1. From field AICS_12_134, six consecutive acquired sections (zero-based Z 15–20) of the three fluorescence channels were copied losslessly into an OME-TIFF. Loci projects the maximum per channel and uses amber for plasma membrane, aqua for GFP-labelled α-tubulin and violet for DNA. The view is enlarged and the display ranges adjusted. Source sampling is 0.065 µm in X and Y and 0.29 µm in Z. The image and its adaptation are credited under CC BY 4.0. [Dataset](https://bbbc.broadinstitute.org/BBBC034) · [Cell line](https://cell-catalog.allencell.org/cell-line/aics-12-105/) · [Collection citation](https://doi.org/10.1038/nmeth.2083) · [Licence](https://creativecommons.org/licenses/by/4.0/)
+- **[Nuclear segmentation comparison](nuclei-comparison.webp).** Hoechst fluorescence from U2OS cells, plate position A06, site 6, in BBBC039v1 (Caicedo et al., Broad Bioimage Benchmark Collection, CC0). Two methods ran on the same 696 × 520 pixel field. The BioImage.IO nuclei boundary ONNX model with connected-component postprocessing yielded 66 objects and classical thresholding with connected components yielded 67. At an intersection-over-union threshold of 0.50, 56 pairs matched. The selected model label, 49, has an area of 851 px² and no match at that threshold. Colours identify predicted objects. This comparison uses the two predictions as its inputs. [Dataset and licence](https://bbbc.broadinstitute.org/BBBC039) · [Model publisher](https://doi.org/10.5281/zenodo.6647674) · [Comparison workflow](../AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant)
+- **[*Optical Section*](optical-section.mp4).** The film poster uses a cropped frame of the PUMA melanoma field in the closing sequence. The complete film is 2 minutes 4 seconds. [Film credits and methods](optical-section-credits.md)
+
 ## Model Zoo
 
 [The gallery image](model-zoo.webp) is a crop of the running Loci workbench. The original screenshot was captured at 1336 × 932 pixels from public commit `616615ebb8da`. The WebP preserves the pixels inside the dialog.
@@ -14,9 +22,9 @@
 
 ## October 2026 showcase
 
-The homepage features the [74-second Loci film and its credits](launch-credits.md),
-plus real application captures. The film is an edited tour, combining native
-views with arranged analysis graphics and recorded command-line output.
+The October 2026 homepage featured a 74-second launch film alongside application
+captures. The tour combines native views, arranged analysis graphics and recorded
+command-line output. [Watch the October film](https://github.com/user-attachments/assets/d825ca58-b8ed-4011-83e0-a6ea6b4fe6b3) · [Launch film credits](launch-credits.md)
 
 - `histology-current.png`: native CMU-1 view; OpenSlide test data, CC0.
 - `fluorescence-volume-current.png`: native BBBC032 volume and channel controls; provider copyright and related-rights waiver.
