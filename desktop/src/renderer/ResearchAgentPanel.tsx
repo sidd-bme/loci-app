@@ -1,4 +1,7 @@
 import { researcherScopeLabel, sourceChannelLabel } from "./research-scope-labels";
+import type { ReactNode } from "react";
+import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
+import { AgentConnectionReceipt } from "./AgentConnectionReceipt";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ResearchAgentAccessReceipt,
@@ -162,6 +165,11 @@ export function ResearchAgentPanel({
   busy,
   onBusyChange,
   onCreated,
+  onCheckConnection,
+  onOpenWorkspace,
+  nucleiModelReady = false,
+  onChooseNucleiModel,
+  imageTools,
   configurationValid = true,
 }: {
   api: ResearchDesktopApi;
@@ -176,6 +184,11 @@ export function ResearchAgentPanel({
   configurationValid?: boolean;
   onBusyChange: (busy: boolean) => void;
   onCreated?: () => void;
+  onCheckConnection?: () => Promise<void>;
+  onOpenWorkspace?: () => void;
+  nucleiModelReady?: boolean;
+  onChooseNucleiModel?: () => void;
+  imageTools?: (fileOnly: boolean) => ReactNode;
 }): React.JSX.Element {
   const [allowPreview, setAllowPreview] = useState(false);
   const [preset, setPreset] = useState("custom");
@@ -186,6 +199,7 @@ export function ResearchAgentPanel({
   const [exportMode, setExportMode] = useState<"listed" | "directory">("listed");
   const [allowRun, setAllowRun] = useState(false);
   const [allowWorkflowGraph, setAllowWorkflowGraph] = useState(false);
+  const [allowNucleiModel, setAllowNucleiModel] = useState(false);
   const [allowTaskRecords, setAllowTaskRecords] = useState(false);
   const [allowExport, setAllowExport] = useState(false);
   const [allowReview, setAllowReview] = useState(false);
@@ -213,8 +227,18 @@ export function ResearchAgentPanel({
   const [localBusy, setLocalBusy] = useState(false);
   const [client, setClient] = useState("codex");
   const scopedSources = [...new Map((studySources ?? [source]).map(item => [item.id, item])).values()];
+  const sourcePolicies = agentSessions?.policies.filter(policy => !policy.revoked && policy.source_ids?.includes(source.id)) ?? [];
+  const connectedHere = agentSessions?.sessions.some(session =>
+    ["connected_idle", "executing", "awaiting_approval", "paused"].includes(session.state) &&
+    sourcePolicies.some(policy => policy.project_id === session.project_id && policy.policy_sha256 === session.policy_sha256));
   const actionChoices = Object.entries(operations ?? {}).filter(([, item]) => item.agent_execution);
-  const actions = actionMode === "none" ? [] : actionChoices.filter(([, item]) => actionMode === "analyze" || item.agent_execution === "read").map(([name]) => name).sort();
+  const canOfferModel = actionMode === "analyze" && operations?.model_preview?.agent_execution === "task" &&
+    operations?.model_run?.agent_execution === "task";
+  const grantModel = Boolean(canOfferModel && nucleiModelReady && allowNucleiModel);
+  const modelActions = ["model_list", "model_preview", "model_run"];
+  const actions = actionMode === "none" ? [] : actionChoices.filter(([name, item]) =>
+    (actionMode === "analyze" || item.agent_execution === "read") && (grantModel || !modelActions.includes(name)))
+    .map(([name]) => name).sort();
   const [validatedScope, setValidatedScope] = useState<string | null>(null);
   const validationGeneration = useRef(0);
   const creationGeneration = useRef(0);
@@ -227,7 +251,7 @@ export function ResearchAgentPanel({
   const hasReferences = Boolean(agentRecipe.references && Object.keys(agentRecipe.references).length);
   const validationFingerprint = JSON.stringify([source.id, source.sha256, selection, agentRecipe]);
   const grantFingerprint = JSON.stringify([
-    validationFingerprint, allowPreview, allowRun, allowWorkflowGraph, allowTaskRecords, allowExport, disclosures,
+    validationFingerprint, allowPreview, allowRun, allowWorkflowGraph, allowTaskRecords, grantModel, allowExport, disclosures,
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
     allowReview, resultScope, expiryHours, client, permissionMode,
@@ -248,6 +272,7 @@ export function ResearchAgentPanel({
     creationGeneration.current += 1;
     setReceipt(null);
   }, [grantFingerprint]);
+  useEffect(() => { setAllowNucleiModel(false); }, [source.id, source.sha256, nucleiModelReady, actionMode]);
   useEffect(() => {
     setAllowPreview(false);
     setPreset("custom"); setPermissionMode("default"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
@@ -310,9 +335,13 @@ export function ResearchAgentPanel({
     read: true, write: allowVolumeWrite, image: allowVolumeImage, fields: allowVolumeWrite ? [...volumeFields].sort() : [],
   } : undefined;
   const volumeChannels = [...new Set([selection.c, ...(imageScope ? displayChannels : [])])].sort((a, b) => a - b);
+  const modelUnavailable = !allowRun || permissionMode === "inspect_only" ? "Allow analysis jobs to use this model."
+    : memory === null || memory * MIB < NUCLEI_MODEL_INSTALL.workingBytes ? "Set the memory limit to at least 2048 MiB for this model."
+    : selection.z_stop !== undefined || selection.level !== 0 || ["RGB", "RGBA"].includes(source.metadata.sample_semantics?.toUpperCase() ?? "")
+      ? "Select one native Z plane of a scalar image." : null;
   const canCreate = Boolean(
     configurationValid && api.createAgentAccess && validation && validatedScope === validationFingerprint &&
-    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && volumeValid && !busy && !localBusy,
+    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && volumeValid && (!grantModel || !modelUnavailable) && !busy && !localBusy,
   );
 
   const anticipatedOperations = [...new Set([
@@ -366,8 +395,8 @@ export function ResearchAgentPanel({
   };
 
   useEffect(() => {
-    if (configurationValid && preset !== "custom" && !hasReferences) void validate();
-  }, [preset, validationFingerprint, configurationValid]);
+    if (configurationValid && client !== "web" && preset !== "custom" && !hasReferences) void validate();
+  }, [preset, validationFingerprint, configurationValid, client]);
 
   const applyPreset = (value: string) => {
     setPreset(value);
@@ -378,6 +407,8 @@ export function ResearchAgentPanel({
     setResultScope("granted-sources");
     setActionMode(analyze ? "analyze" : actionChoices.length ? "inspect" : "none");
     setAllowPreview(analyze); setAllowRun(analyze); setAllowReview(full); setAllowExport(full);
+    setAllowNucleiModel(false);
+    setAllowTaskRecords(analyze); setAllowWorkflowGraph(false);
     setExportMode(full ? "directory" : "listed");
     setAllowImage(true); setAllowDisplay(analyze); setAllowHandoff(false); setExperiment(false);
     setAllowVolumeRead(false); setAllowVolumeWrite(false); setAllowVolumeImage(false); setVolumeFields([]);
@@ -392,6 +423,8 @@ export function ResearchAgentPanel({
     const authorizedGrant = grantFingerprint;
     const resolvedPermissionMode = permissionMode === "default" ? undefined : permissionMode;
     const request: ResearchAgentAccessRequest = {
+      ...(client === "antigravity" || client === "codex" ? { client } : {}),
+      ...(grantModel ? { allow_nuclei_model: true } : {}),
       source_id: source.id,
       selection,
       recipe: agentRecipe,
@@ -424,6 +457,12 @@ export function ResearchAgentPanel({
     try {
       const output = await report(async () => {
         const value = await api.createAgentAccess!(request);
+        if (value !== null && value.nuclei_model_sha256 !== (grantModel ? NUCLEI_MODEL_INSTALL.packageSha256 : undefined))
+          throw new Error("The model identity in the new grant did not match the selected package.");
+        if (client === "antigravity" && value !== null && (
+          value.antigravity_workspace !== "antigravity-workspace" ||
+          value.antigravity_config_filename !== "antigravity-workspace/.agents/mcp_config.json"
+        )) throw new Error("The Antigravity workspace was not created.");
         return value === null ? null : exactReceipt(
           value,
           validation,
@@ -450,39 +489,52 @@ export function ResearchAgentPanel({
     }
   };
 
+  const GrantSettings = receipt ? "details" : "div";
   return (
     <div className="research-panel research-agent">
       <h2>Connect an assistant</h2>
-      <p>Grant a scope once, then let your assistant work within it.</p>
       <label>Assistant client <select aria-label="Assistant client" value={client} onChange={(event) => setClient(event.target.value)}>
-        <option value="codex">Codex</option><option value="claude">Claude Desktop</option>
-        <option value="web">ChatGPT web / claude.ai</option></select></label>
-      {client === "web" ? <p className="research-derived-notice">For a file-based conversation, use Agent → Export vision handoff, then upload image.png and context.json to your chosen vision model. Live automation requires a compatible local MCP client.</p> :
-        <p className="research-agent-client-help">{client === "claude" ? "The saved bundle includes a Claude-compatible MCP configuration." : "The saved bundle includes STDIO settings and Codex configuration. Interactive access also includes a local Loci plugin."} Connect it after reviewing the permissions below.</p>}
-      <details><summary>Connection and safety details</summary><p>The local server has no shell, file browser, import, policy-editing or model-installation tool. Your assistant provider may receive the responses you allow.</p></details>
-
+        <option value="codex">Codex</option><option value="antigravity">Antigravity</option>
+        <option value="claude">Claude Desktop</option><option value="web">Web chat (file handoff)</option>
+      </select></label>
+      {client === "web" ? <>
+        <p>Save the current image and its display settings, then attach them to your chat.</p>
+        {imageTools?.(true)}
+      </> : <>
+      {!receipt && sourcePolicies.length > 0 && onOpenWorkspace && <button onClick={onOpenWorkspace}>
+        {connectedHere ? "View connected assistant" : "Manage existing access"}
+      </button>}
+      {receipt && <AgentConnectionReceipt key={receipt.policy_sha256} receipt={receipt} sessions={agentSessions}
+        client={client} onCheck={onCheckConnection} onReveal={api.revealAgentSetup} onCopyLaunch={api.copyAgentLaunch} onOpenWorkspace={onOpenWorkspace} />}
+      <GrantSettings key={receipt ? `settings-${receipt.policy_sha256}` : "new-grant"} className="research-agent-grant-settings">
+      {receipt && <summary>Create another grant</summary>}
       <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
         <option value="custom">Custom permissions</option><option value="inspect">Inspect</option>
         <option value="analyze" disabled={!actionChoices.length}>Analyze</option><option value="full" disabled={!actionChoices.length}>Full study</option>
       </select></label>
       <label>Session permission mode<select aria-label="Session permission mode" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as "default" | ResearchAgentPermissionMode)}>
-        <option value="default">Automatic (ask approval for mutating actions)</option>
-        <option value="ask_approval">Ask for approval (confirm mutating actions in Loci)</option>
-        <option value="full_access">Full access (run granted actions without per-call prompts)</option>
-        <option value="inspect_only">Inspect only (read-only; mutating actions blocked)</option>
+        <option value="default">Automatic</option>
+        <option value="ask_approval">Confirm changes in Loci</option>
+        <option value="full_access">Allow granted changes</option>
+        <option value="inspect_only">Read only</option>
       </select></label>
-      {preset !== "custom" && <p className="research-agent-preset-summary">{preset === "inspect" ? "Read images, measurements and review history within the region shown." : preset === "analyze" ? "Inspect, run analyses, correct labels and remeasure within the region shown. Review decisions stay with you." : `Inspect and analyze all ${scopedSources.length} current sources, correct results, approve revisions as an agent, and export into your chosen folder.`} Your connected provider may receive these images and records.</p>}
+      {preset !== "custom" && <p className="research-agent-preset-summary">{preset === "inspect" ? "Read images, measurements and review history within the region shown." : preset === "analyze" ? "Share a plan, run analyses and inspect differences in this region. You review the results." : `Share a plan across all ${scopedSources.length} current sources. The assistant can analyze, review and export results.`} Your connected provider may receive these images and records.</p>}
 
+      {canOfferModel && (nucleiModelReady ? <>
+        <label className="research-check"><input type="checkbox" checked={allowNucleiModel} onChange={event => setAllowNucleiModel(event.target.checked)} />
+          Use installed nuclei ONNX model</label>
+        {grantModel && (modelUnavailable ? <p role="alert">{modelUnavailable}</p> : <p>Inspect the predicted outlines in Loci before accepting a result.</p>)}
+      </> : onChooseNucleiModel && <button onClick={onChooseNucleiModel}>Choose a nuclei model in Model Zoo</button>)}
       <section className="research-agent-card" aria-label="Exact agent source and scope">
         <h3>Source and scope</h3>
         <dl className="research-kv">
           <div><dt>Display name</dt><dd>{source.name}</dd></div>
           <div><dt>Crop and axes</dt><dd>{sourceMode === "study" ? `All pixels, channels, Z planes and timepoints in ${scopedSources.length} current sources` : researcherScopeLabel(source, selection)}</dd></div>
           <div><dt>Measurement channels</dt><dd>{sourceMode === "study" ? "All acquisition channels" : agentRecipe.measurement_channels.map((channel) => sourceChannelLabel(source, channel)).join(", ")}</dd></div>
-          <div><dt>Memory limit</dt><dd>{Number(memoryMiB).toLocaleString()} MiB per task</dd></div>
         </dl>
         {sourceMode === "study" && <details><summary>Included sources ({scopedSources.length})</summary><ul>{scopedSources.map(item => <li key={item.id}>{item.name}</li>)}</ul><p>Sources added later require a new grant.</p></details>}
         <details><summary>Technical record</summary><dl className="research-kv">
+          <div><dt>Memory limit</dt><dd>{Number(memoryMiB).toLocaleString()} MiB per task</dd></div>
           <div><dt>API coordinates (zero-based)</dt><dd>{scopeSummary(selection)}</dd></div>
           <div><dt>Coordinate basis</dt><dd>X/Y are zero-based pixel offsets; API intervals are half-open. C/Z/T above are one-based.</dd></div>
           <div><dt>Source ID</dt><dd>{source.id}</dd></div>
@@ -665,31 +717,14 @@ export function ResearchAgentPanel({
         disabled={!canCreate} onClick={() => void create()}>
         Grant selected access
       </button>
+      {preset === "custom" && disclosures.length > 0 && <p>Your assistant provider may receive the selected disclosures.</p>}
       {!api.createAgentAccess && <p role="alert">This desktop build does not provide the native policy-bundle creator.</p>}
       <details><summary>Access and review</summary><p>Choose a new access-bundle folder in the next dialog.
         Exports require review of the exact result revision. {allowReview ? "This grant permits agent review." : "Review stays with the researcher."} The built-in recipe runs locally on CPU.</p></details>
+      </GrantSettings>
 
-      {receipt && <section className="research-agent-card research-agent-ready" aria-label="Created agent access receipt">
-        <h3>Local agent access bundle is ready (not connected yet)</h3>
-        <dl className="research-kv">
-          <div><dt>Connection state</dt><dd>{agentSessions?.sessions.some(s => s.policy_sha256 === receipt.policy_sha256 && ["connected_idle", "executing", "awaiting_approval", "paused"].includes(s.state)) ? "Connected over STDIO" : "Bundle ready · Waiting for MCP client connection"}</dd></div>
-          <div><dt>Permission mode</dt><dd>{receipt.permission_mode ?? (permissionMode === "default" ? "ask_approval (or inspect_only when read-only)" : permissionMode)}</dd></div>
-          <div><dt>Policy file</dt><dd>{receipt.policy_filename}</dd></div>
-          <div><dt>MCP config</dt><dd>{receipt.config_filename}</dd></div>
-          {receipt.plugin_filename && <div><dt>Local plugin</dt><dd>{receipt.plugin_filename}</dd></div>}
-          <div><dt>Operations</dt><dd>{receipt.operations.join(", ")}</dd></div>
-          <div><dt>Disclosures</dt><dd>{receipt.disclosures.length ? receipt.disclosures.join(", ") : "none"}</dd></div>
-        </dl>
-        <details><summary>Technical record</summary><dl className="research-kv">
-          <div><dt>Policy SHA-256</dt><dd>{receipt.policy_sha256}</dd></div>
-          <div><dt>Project ID</dt><dd>{receipt.project_id}</dd></div>
-          <div><dt>Recipe SHA-256</dt><dd>{receipt.recipe_sha256}</dd></div>
-        </dl></details>
-        <p>{client === "claude" ? "In Claude Desktop, open Developer settings → Edit Config. Merge the loci-research entry from mcp-config.json into your existing mcpServers, then restart Claude." : client === "codex" ? "Use the saved README to add the local plugin in Codex, or merge codex-config.toml into your existing MCP configuration. Preserve your other servers." : "Use this bundle with a compatible desktop MCP client."}</p>
-        <p>{disclosures.includes("agent_metadata")
-          ? "Ask the assistant to read Loci's analysis context and recipe guide, then inspect the permitted source."
-          : "Ask the assistant to read Loci's recipe guide, then inspect the permitted source using the binding in Technical record."} The saved README includes setup and revocation steps.</p>
-      </section>}
+      {imageTools?.(false)}
+      </>}
     </div>
   );
 }

@@ -87,6 +87,7 @@ def test_execution_contract_distinguishes_preview_from_mutation():
         "exploration_preview",
         "exploration_compare",
         "tissue_model_preview",
+        "model_preview",
     } == PREVIEW_ACTIONS
     guide = {item["operation"]: item for item in action_guide()["actions"]}
     assert guide["workflow_preview"]["execution_kind"] == "preview-task"

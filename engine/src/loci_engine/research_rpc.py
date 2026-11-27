@@ -246,6 +246,27 @@ def dispatch_research(method: str, params: dict[str, Any]) -> dict[str, Any]:
             params["destination"],
             params.get("working_bytes", 512 * 1024**2),
         )
+    if method == "research_organoidtracker_import":
+        from .organoidtracker import import_graph
+
+        exact_keys(params, {"project", "path", "binding", "first", "origin"}, method)
+        return import_graph(
+            _open(params["project"]).project,
+            params["path"],
+            params["binding"],
+            params["first"],
+            params["origin"],
+        )
+    if method == "research_organoidtracker_load":
+        from .organoidtracker import load
+
+        exact_keys(params, {"project", "binding", "id"}, method)
+        return load(_open(params["project"]).project, params["binding"], params["id"])
+    if method == "research_organoidtracker_list":
+        from .organoidtracker import list_graphs
+
+        exact_keys(params, {"project", "binding"}, method)
+        return list_graphs(_open(params["project"]).project, params["binding"])
     if method == "research_usam_handoffs":
         from .research_usam_handoff import list_usam_handoffs
 

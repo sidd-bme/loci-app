@@ -13,6 +13,7 @@ import type { AgentWorkspacePresentation } from "../shared/agent-workspace-api";
 import type { PanelOpenOptions } from "../shared/panel-open-options";
 export type { AgentWorkspacePresentation } from "../shared/agent-workspace-api";
 import "./AgentSessionIndicator.css";
+import { modelApprovalTarget, requiresModelInspection } from "./agent-model-approval";
 import "./AgentWorkspaceSurface.css";
 
 export const EMPTY_AGENT_PRESENTATION: AgentWorkspacePresentation = { selectedTaskId: null, section: "overview", draft: null };
@@ -221,6 +222,8 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
   const navigation: AgentActivityNavigation = { currentTargets, onOpenSource, onOpenResult, onReviewResult, onOpenJob, onOpenWorkflow, onInspectPreview, inspectablePreviewJobIds };
 
   const renderApproval = (approval: ResearchAgentApprovalRecord) => {
+    const inspectModel = requiresModelInspection(approval);
+    const target = inspectModel ? modelApprovalTarget(approval, snapshot) : null;
     const sourceLabel = approval.source_id
       ? sourceLabelForId(snapshot.sources, approval.source_id)
       : null;
@@ -270,7 +273,9 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
         </dl>
         <AgentApprovalDetails approval={approval} snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)}
           decisionControls={approval.state === "pending" && <div className="agent-session-actions">
-          <button
+          {inspectModel ? <button type="button" className="research-primary"
+            disabled={locked || !target || !inspectablePreviewJobIds?.includes(target.id) || !onInspectPreview}
+            onClick={() => { if (target) onInspectPreview?.(target, approval.id); }}>Inspect model preview</button> : <button
             type="button"
             className="research-primary"
             disabled={locked || !onControl}
@@ -278,7 +283,7 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
             onClick={() => void decideApproval("approve_request", approval.id)}
           >
             Approve once
-          </button>
+          </button>}
           <button
             type="button"
             disabled={locked || !onControl}
@@ -363,8 +368,12 @@ export function AgentWorkspaceSurface({ snapshot, followAgent, onFollowAgentChan
             <div className="agent-workspace-columns">
               <div className="agent-workspace-plan" hidden={!["overview", "plan"].includes(currentPresentation.section)}>
                 {(agentSessions.tasks?.length ?? 0) === 0 && <section className="agent-workspace-empty" aria-label="No agent plan">
-                  <h3>No agent plan yet</h3><p>Plans and evidence from connected external agents will appear here.</p>
-                  {onConfigureAccess && <button type="button" disabled={locked} onClick={onConfigureAccess}>Configure access in workspace</button>}
+                  <h3>No agent plan yet</h3>
+                  {liveSessions.length ? <p>{activePolicies.some(policy => policy.operations.includes("agent_task_write"))
+                    ? "Ask your connected assistant to share a plan for this image."
+                    : "This connection can record activity. Choose Analyze to share a plan."}</p>
+                    : activePolicies.length ? <p>Open your saved setup in the assistant and send its first prompt.</p> : null}
+                  {!activePolicies.length && onConfigureAccess && <button type="button" disabled={locked} onClick={onConfigureAccess}>Connect an assistant</button>}
                 </section>}
                 <AgentTaskPanel tasks={agentSessions.tasks ?? []} sessionId={primarySession?.session_id}
                   snapshot={snapshot} navigation={navigation} unavailable={Boolean(refreshError)}

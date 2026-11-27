@@ -359,8 +359,15 @@ class AgentPolicy:
             return
         if not isinstance(model, dict):
             raise PermissionError("The result model identity is outside the pinned policy")
-        package_id = model.get("package_id", model.get("id", model.get("artifact_id")))
-        identity = (package_id, model.get("sha256"))
+        if model.get("schema_version") == "loci.model-package/1":
+            from .research_models import is_verified_agent_model_package
+
+            if not is_verified_agent_model_package(model):
+                raise PermissionError("The result model identity is outside the pinned policy")
+            identity = (model.get("id"), model.get("package_sha256"))
+        else:
+            package_id = model.get("package_id", model.get("id", model.get("artifact_id")))
+            identity = (package_id, model.get("sha256"))
         if identity not in self.model_packages:
             raise PermissionError("The result model identity is outside the pinned policy")
 

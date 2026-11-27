@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ResearchAgentApprovalRecord, ResearchAgentControlRequest } from "../shared/research-contracts";
 import { X } from "lucide-react";
 import "./AgentPreviewComparison.css";
 
@@ -70,6 +71,10 @@ function PreviewImage({ value, label }: { value: unknown; label: string }): Reac
 
 function selectionFor(cell: PreviewCell): RecordValue | null {
   const selection = record(cell.receipt?.selection) ?? record(record(cell.value.provenance)?.selection) ?? record(cell.value.selection);
+  return checkedSelection(selection);
+}
+
+function checkedSelection(selection: RecordValue | null): RecordValue | null {
   if (!selection || !["x", "y", "width", "height", "c", "t", "z", "level"].every((key) =>
     Number.isSafeInteger(selection[key]) && Number(selection[key]) >= (key === "width" || key === "height" ? 1 : 0)) ||
     (selection.z_stop !== undefined && (!Number.isSafeInteger(selection.z_stop) || Number(selection.z_stop) <= Number(selection.z)))) return null;
@@ -127,12 +132,106 @@ function PreviewPane({ preview, cell, label }: { preview: SharedTaskPreview; cel
   </section>;
 }
 
+type ReviewProps = {
+  approval?: ResearchAgentApprovalRecord;
+  onDecision?: (request: ResearchAgentControlRequest) => Promise<void>;
+};
+
+export function matchesModelApproval(preview: SharedTaskPreview, approval: ResearchAgentApprovalRecord): boolean {
+  const receipt = record(preview.output.preview);
+  return preview.operation === "model_preview" && approval.state === "pending" &&
+    preview.job_id === approval.parameters_summary.preview_job_id &&
+    preview.source_id === approval.source_id && preview.source_sha256 === approval.source_sha256 &&
+    receipt?.id === approval.parameters_summary.preview_id && receipt?.preview_sha256 === approval.parameters_summary.preview_sha256;
+}
+
+function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPreview } & ReviewProps) {
+  const receipt = record(preview.output.preview);
+  const source = record(receipt?.source);
+  const display = record(source?.display);
+  const mapping = source?.channel_mapping;
+  const inputChannel = Array.isArray(mapping) && mapping.length === 1 ? record(mapping[0])?.source_channel : undefined;
+  const region = checkedSelection({ ...record(source?.selection), c: inputChannel });
+  const count = record(receipt?.output)?.object_count;
+  const digest = display?.png_sha256;
+  const data = cellsFor(preview).length === 1 && preview.output.adopted === false &&
+    receipt?.schema === "loci.model-preview/v1" && text(receipt.id) && text(receipt.preview_sha256) && hash.test(receipt.preview_sha256) &&
+    source?.id === preview.source_id && source?.sha256 === preview.source_sha256 && text(digest) && hash.test(digest)
+    ? pngData(preview.output.overlay_png) : null;
+  const [verifiedImage, setVerifiedImage] = useState<{ data: string; digest: string } | null>(null);
+  const verified = Boolean(data && verifiedImage?.data === data && verifiedImage.digest === digest);
+  const [painted, setPainted] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [checked, setChecked] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    if (!approval) return;
+    const timer = window.setTimeout(() => setExpired(true), Math.max(0, Date.parse(approval.expires_at) - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [approval?.expires_at]);
+  useEffect(() => {
+    if (!data) return;
+    let active = true;
+    const bytes = Uint8Array.from(atob(data.slice(data.indexOf(",") + 1)), ch => ch.charCodeAt(0));
+    if (!crypto.subtle) { setFailed(true); return; }
+    void crypto.subtle.digest("SHA-256", bytes).then(buffer => {
+      if (!active) return;
+      const actual = Array.from(new Uint8Array(buffer), byte => byte.toString(16).padStart(2, "0")).join("");
+      if (actual === digest) setVerifiedImage({ data, digest });
+      else setFailed(true);
+    }).catch(() => { if (active) setFailed(true); });
+    return () => { active = false; };
+  }, [data, digest]);
+  const bound = approval && matchesModelApproval(preview, approval) && !expired;
+  const canInspect = Boolean(bound && region && verified && painted && !failed && onDecision);
+  const decide = async (allow: boolean) => {
+    if (savingRef.current || !approval || !onDecision || (allow && (!canInspect || !checked || Date.parse(approval.expires_at) <= Date.now()))) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onDecision(allow ? { action: "approve_request", approval_id: approval.id, inspected_preview: {
+        preview_id: String(receipt!.id), preview_sha256: String(receipt!.preview_sha256), preview_job_id: preview.job_id,
+      } } : { action: "deny_request", approval_id: approval.id });
+    } finally { savingRef.current = false; setSaving(false); setChecked(false); }
+  };
+  return <section className="agent-preview-body" aria-label="Model preview">
+    {verified && !failed && data ? <div className="agent-preview-images"><figure>
+      <img src={data} alt="Source with predicted model labels" data-preview-job={preview.job_id}
+        onError={() => { setFailed(true); setPainted(false); }}
+        onLoad={event => {
+          setChecked(false);
+          setPainted(false);
+          const image = event.currentTarget;
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (image.isConnected && image.complete && image.naturalWidth > 0 && image.naturalHeight > 0 &&
+                image.getBoundingClientRect().width > 0 && image.getBoundingClientRect().height > 0) setPainted(true);
+          }));
+        }} />
+      <figcaption>{Number.isSafeInteger(count) && Number(count) >= 0 ? `${count} predicted objects` : "Predicted objects"} · green outlines</figcaption>
+    </figure></div> : <p role="status">{data && !failed ? "Verifying model preview…" : "The exact source-bound model preview is unavailable."}</p>}
+    {region ? <p className="agent-preview-scope">
+      {String(region.width)} × {String(region.height)} px at ({String(region.x)}, {String(region.y)}) ·
+      {" "}Input C {String(region.c)} · Z {String(region.z)} · T {String(region.t)} (zero-based)
+      {Number(region.level) > 0 && ` · Level ${region.level}`}
+    </p> : <p className="agent-preview-scope">The source region or model input channel could not be verified.</p>}
+    {approval && <div className="agent-preview-toolbar">
+      <label><input type="checkbox" disabled={!canInspect || saving} checked={checked}
+        onChange={event => setChecked(event.target.checked)} />I inspected this model preview</label>
+      <button type="button" className="research-primary" aria-label={`Approve ${approval.operation}`}
+        disabled={!canInspect || !checked || saving} onClick={() => void decide(true)}>Approve once</button>
+      <button type="button" aria-label={`Deny ${approval.operation}`} disabled={saving || !onDecision} onClick={() => void decide(false)}>Deny</button>
+    </div>}
+  </section>;
+}
+
 /** The host verifies the cache, active source and document before mounting this view. */
-export function AgentPreviewComparison({ preview, sourceLabel, onClose }: {
+export function AgentPreviewComparison({ preview, sourceLabel, onClose, approval, onDecision }: {
   preview: SharedTaskPreview | null;
   sourceLabel: string;
   onClose: () => void;
-}): React.JSX.Element | null {
+} & ReviewProps): React.JSX.Element | null {
   const [selected, setSelected] = useState({ key: "", index: 0 });
   const [pinned, setPinned] = useState<PinnedPreview | null>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -160,10 +259,12 @@ export function AgentPreviewComparison({ preview, sourceLabel, onClose }: {
   return <section className="agent-preview-comparison" aria-label="Agent preview comparison"
     onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Escape") { event.preventDefault(); onClose(); } }}>
     <header className="agent-preview-header">
-      <div><h2>Agent preview · {sourceLabel}</h2><p>Non-adopted preview · no result or review is created here.</p></div>
+      <h2>{preview.operation === "model_preview" ? "Model preview" : "Agent preview"} on {sourceLabel}</h2>
       <button type="button" ref={close} aria-label="Close preview comparison" onClick={onClose}><X size={16} aria-hidden="true" /></button>
     </header>
-    <div className="agent-preview-toolbar">
+    {preview.operation === "model_preview" ? <ModelPreview key={JSON.stringify([previewKey, preview.source_id, preview.source_sha256,
+      approval?.id, approval?.request_hash, approval?.session_id, approval?.policy_sha256, approval?.expires_at])}
+      preview={preview} approval={approval} onDecision={onDecision} /> : <><div className="agent-preview-toolbar">
       {cells.length > 1 && <label>Preview cell<select aria-label="Preview cell" value={cellIndex}
         onChange={(event) => setSelected({ key: previewKey, index: Number(event.target.value) })}>
         {cells.map((item, index) => <option key={index} value={index}>{item.label}</option>)}
@@ -181,6 +282,6 @@ export function AgentPreviewComparison({ preview, sourceLabel, onClose }: {
         {cell ? <PreviewPane preview={preview} cell={cell} label="Current preview" />
           : <p className="agent-preview-unavailable" role="status">Preview unavailable · the recorded output is missing or unsupported. It has not been rerun.</p>}
       </div>
-    </div>
+    </div></>}
   </section>;
 }

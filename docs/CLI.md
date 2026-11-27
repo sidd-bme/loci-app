@@ -117,6 +117,8 @@ the one-shot welcome. This is separate from package/platform qualification.
 In the app, open **Connect an assistant** to grant a selected source region,
 response categories, operations and optional threshold/minimum-size ranges.
 Interactive access includes a local Codex plugin and manual MCP configurations.
+Choose Antigravity to create a study-specific Antigravity workspace with the
+local Loci connection and workflow skill.
 The agent cannot import files, download models, review its own results or widen
 its policy. Source images return as native MCP image blocks in a v3 connection.
 See [Agent access](AGENT_ACCESS.md) for exact grants and installation.
@@ -137,6 +139,64 @@ is granted. The access request uses the same explicit fields as the native form:
 `export_names`, `disclosures`, `limits`, and optionally the `interactive` object
 documented in Agent access. Existing exact-recipe access remains v1 when that
 object is absent. Each destination must be new; publication never overwrites it.
+Set the optional `"client": "antigravity"` or `"client": "codex"` in the request
+to generate that host's workspace. This preference only changes the files in the bundle.
+The same policy, limits and disclosures apply in either host.
+
+### Antigravity App and CLI
+
+Add only the generated `antigravity-workspace` folder to a new Antigravity App
+project, or start the Antigravity CLI from that folder. Follow the exact
+platform-specific command in the bundle's `README.txt` when the pathname has
+spaces. The workspace's `.agents` directory contains `mcp_config.json` for the
+local server and a `plugins` directory for the Loci skill. Use one workspace per study and
+review any local MCP approval in the host.
+
+In a fresh conversation, paste the verification prompt from `README.txt`.
+It calls `inspect_source` on the selected source and, when analysis context was
+granted, checks the policy fingerprint first. In Loci, open **Agent sessions**
+to confirm the client connected and completed the read. If the server is
+missing in the CLI, check `/mcp`. Keep the original bundle in place so the
+workspace's server continues to reference the same local policy.
+[Google MCP setup](https://antigravity.google/docs/mcp) ·
+[Customization discovery](https://antigravity.google/docs/customization-discovery/)
+
+### Local Codex
+
+Open the generated `codex-workspace` folder as a local project in Codex, or start
+the CLI from that folder. Review `config.toml` in its `.codex` directory and trust the
+project when Codex asks. In a fresh conversation, paste the verification prompt
+from `README.txt`. Check the connection and read in Loci's **Agent sessions**.
+Each workspace uses a policy-specific server name. Save the bundle outside
+existing Git projects to keep Codex trust scoped to the generated workspace.
+
+The bundle also provides `codex-config.toml` for manual setup under the
+`loci-research` server name. Preserve other server entries and disconnect the
+previous study before replacing that entry. Interactive bundles include
+marketplace and plugin installation commands in `README.txt`. Choose one
+connection method per study.
+[Codex configuration and project trust](https://learn.chatgpt.com/docs/config-file/config-basic) ·
+[Codex MCP setup](https://learn.chatgpt.com/docs/extend/mcp)
+
+### Headless host verification
+
+The [external host QA helper](../scripts/qa/external-host-setup.py) runs the
+selected CLI against an installed Loci worker and a generated synthetic study.
+Use an isolated host profile authenticated with a subscription and select a
+model available to that profile. The helper retains the host transcript and
+compares its MCP tool responses with the Loci session, job and result records.
+
+```sh
+PYTHONPATH=engine/src engine/.venv/bin/python scripts/qa/external-host-setup.py \
+  --client antigravity --host-bin "$(command -v agy)" \
+  --host-home /absolute/path/private-qa-home --model "$QA_SUBSCRIPTION_MODEL" \
+  --worker /absolute/path/to/loci-engine --output /absolute/path/new-qa-directory
+```
+
+For Codex, pass `--client codex` and the path to the `codex` executable. Use
+an output directory outside Git repositories to isolate project trust.
+
+### Image handoff
 
 An image request is an explicit display, for example:
 

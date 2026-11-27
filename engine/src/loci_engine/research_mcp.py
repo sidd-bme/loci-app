@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from .agent_experiments import matching_templates
 from .agent_policy import (
@@ -280,7 +281,7 @@ def protocol_image_result(value, *, required=True, retained_preview=False):
             or hashlib.sha256(encoded_output).hexdigest() != preview["output_sha256"]
         ):
             raise ValueError("Retained preview image output identity changed")
-        for key in ("image", "label_image"):
+        for key in ("image", "label_image", "overlay_png"):
             extract(output, key, "/preview/output/" + key)
         cells = output.get("cells", [])
         if not isinstance(cells, list) or len(cells) > 9:
@@ -837,6 +838,22 @@ class PolicyAgent:
         if "tissue_model" in value and not self.policy.disclosures >= DISCLOSURES:
             value.pop("tissue_model", None)
             value.pop("host_runtime", None)
+        if "model_preview" in value and not self.policy.disclosures >= DISCLOSURES:
+            for key in (
+                "model_preview",
+                "model",
+                "source_scale",
+                "channel_mapping",
+                "preprocessing",
+                "tiling",
+                "package_postprocessing",
+                "probabilities",
+                "measurements",
+                "reference_qualification",
+                "scientific_validation",
+                "rights",
+            ):
+                value.pop(key, None)
         if "perinuclear" in value and not self.policy.disclosures >= DISCLOSURES:
             # These bounded scientific snapshots combine counts, channel
             # declarations, geometry and parent identities. A narrower reader
@@ -950,6 +967,8 @@ class PolicyAgent:
                 else job["request"].get("task_request")
             )
             authorize_action(self, workbench, job["operation"], request, mode="task")
+            if job["operation"] == "model_run":
+                self._require_model_run_human_approval(workbench, job, request)
             return job
         if job.get("operation") not in {"run_recipe", "preview_recipe"} or not isinstance(
             job.get("request"), dict
@@ -976,7 +995,11 @@ class PolicyAgent:
                 verify_scientific_arrays=verify_scientific_arrays,
             )
         result = workbench.project.result(checked_id(result_id), verify_scientific_arrays=False)
-        if "tissue_model" in result["provenance"]:
+        if (
+            "tissue_model" in result["provenance"]
+            or result.get("kind") == "model-segmentation"
+            or "model_preview" in result["provenance"]
+        ):
             from .agent_study import authorize_result
 
             return authorize_result(
@@ -1879,20 +1902,119 @@ class PolicyAgent:
         finally:
             workbench.close()
 
+    def _require_model_run_human_approval(
+        self, workbench: Workbench, job: dict[str, Any], request: Any
+    ) -> None:
+        if not isinstance(request, dict):
+            raise PermissionError("Model preview adoption requires a verified human approval")
+        with workbench.project.connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key LIKE 'agent-approval:%' "
+                "AND json_extract(value, '$.execution_request_key_sha256')=? "
+                "AND json_extract(value, '$.session_id')=? "
+                "AND json_extract(value, '$.policy_sha256')=? "
+                "AND json_extract(value, '$.inspected_preview.preview_id')=? "
+                "AND json_extract(value, '$.inspected_preview.preview_sha256')=? "
+                "AND json_extract(value, '$.action_name')='model_run' "
+                "AND json_extract(value, '$.operation')='submit_action' LIMIT 1",
+                (
+                    hashlib.sha256(job["request_key"].encode()).hexdigest(),
+                    self.session_id,
+                    self.policy.content_sha256,
+                    request.get("preview_id"),
+                    request.get("preview_sha256"),
+                ),
+            ).fetchone()
+        approval = parse_json(row[0]) if row else None
+        if (
+            not isinstance(approval, dict)
+            or approval.get("state") != "consumed"
+            or approval.get("decided_by") != "human"
+            or approval.get("explicit_approval_required") is not True
+            or approval.get("policy_sha256") != self.policy.content_sha256
+            or approval.get("session_id") != self.session_id
+            or not isinstance(approval.get("inspected_preview"), dict)
+            or approval["inspected_preview"].get("preview_id") != request.get("preview_id")
+            or approval["inspected_preview"].get("preview_sha256") != request.get("preview_sha256")
+        ):
+            raise PermissionError(
+                "Model preview adoption requires a consumed single-use researcher approval"
+            )
+
     def submit_action(
         self, operation: str, request: dict[str, Any], request_key: str
     ) -> dict[str, Any]:
         from .agent_actions import authorize_action
+        from .research_jobs import public_job
+        from .research_project import checked_text
 
         workbench = self._workbench("submit_action")
         try:
             normalized = authorize_action(self, workbench, operation, request, mode="task")
-            check_or_await_approval(
-                self,
-                workbench,
-                "submit_action",
-                {"operation": operation, "request": normalized},
-            )
+            if operation == "model_run":
+                checked_key = checked_text(request_key, "Request key", 128)
+                with workbench.project.connection() as connection:
+                    row = connection.execute(
+                        "SELECT record FROM jobs WHERE request_key=?", (checked_key,)
+                    ).fetchone()
+                if row:
+                    existing_job = parse_json(row[0])
+                    if existing_job.get("owner") != self.job_owner:
+                        raise PermissionError(
+                            "Repeated submission key belongs to a different owner"
+                        )
+                    if (
+                        existing_job.get("operation") == "model_run"
+                        and existing_job.get("request", {}).get("task_request") == normalized
+                    ):
+                        self._require_model_run_human_approval(workbench, existing_job, normalized)
+                        if existing_job["state"] == "queued":
+                            existing_job = self.supervisor.start(
+                                workbench, normalized, checked_key, operation=operation
+                            )
+                        return {"job": self._safe_job(public_job(existing_job))}
+                    raise ValueError(
+                        "Request key is already bound to a different operation or request"
+                    )
+                with workbench.project.connection() as connection:
+                    already_adopted = connection.execute(
+                        "SELECT 1 FROM results "
+                        "WHERE json_extract(record, '$.provenance.model_preview.id')=? LIMIT 1",
+                        (normalized["preview_id"],),
+                    ).fetchone()
+                if already_adopted is not None:
+                    raise ValueError(
+                        "This model preview has already been adopted as a saved result; "
+                        "inspect the existing result or run a new preview"
+                    )
+                consumed = check_or_await_approval(
+                    self,
+                    workbench,
+                    "submit_action",
+                    {"operation": operation, "request": normalized},
+                    force_approval=True,
+                    model_request_key_sha256=hashlib.sha256(checked_key.encode()).hexdigest(),
+                )
+                if (
+                    not isinstance(consumed, dict)
+                    or consumed.get("state") != "consumed"
+                    or consumed.get("decided_by") != "human"
+                    or consumed.get("explicit_approval_required") is not True
+                    or not isinstance(consumed.get("inspected_preview"), dict)
+                    or consumed["inspected_preview"].get("preview_id") != normalized["preview_id"]
+                    or consumed["inspected_preview"].get("preview_sha256")
+                    != normalized["preview_sha256"]
+                ):
+                    raise PermissionError(
+                        "Model preview adoption requires an explicit single-use researcher approval"
+                    )
+            else:
+                check_or_await_approval(
+                    self,
+                    workbench,
+                    "submit_action",
+                    {"operation": operation, "request": normalized},
+                )
             job = self.supervisor.start(workbench, normalized, request_key, operation=operation)
             if self.session_id is not None:
                 heartbeat_session(workbench.project, self.session_id, active_job_id=job["id"])
@@ -2203,6 +2325,24 @@ def build_server(policy_path: str | Path) -> MCPServer:
             },
         )
 
+    def bind_stdio_session(client_id: str | None, client_version: str | None) -> None:
+        # One Loci session per stdio process, even when the SDK constructs
+        # a fresh protocol connection object for every request.
+        if agent.session_id is None:
+            session = start_session(
+                ResearchProject(agent.policy.project_path),
+                agent.policy,
+                client_id=client_id or "mcp-stdio-client",
+                client_version=client_version,
+                pid=os.getpid(),
+            )
+            agent.session_id = session["session_id"]
+
+    def bind_modern_session(context) -> None:
+        client = context.session.client_params
+        info = client.client_info if client is not None else None
+        bind_stdio_session(info.name if info else None, info.version if info else None)
+
     async def strict_remote_arguments(context, call_next):
         # The SDK's default Pydantic argument model ignores extra keys. Reject
         # extra remote arguments at the public raw-request middleware boundary.
@@ -2210,16 +2350,8 @@ def build_server(policy_path: str | Path) -> MCPServer:
         if context.method == "initialize":
             response = await call_next(context)
             # The SDK validates and commits initialization before returning here.
-            if agent.session_id is None:
-                info = params.get("clientInfo", {}) if isinstance(params, Mapping) else {}
-                session = start_session(
-                    ResearchProject(agent.policy.project_path),
-                    agent.policy,
-                    client_id=info.get("name") or "mcp-stdio-client",
-                    client_version=info.get("version"),
-                    pid=os.getpid(),
-                )
-                agent.session_id = session["session_id"]
+            info = params.get("clientInfo", {}) if isinstance(params, Mapping) else {}
+            bind_stdio_session(info.get("name"), info.get("version"))
             return response
         if context.method == "tools/call" and isinstance(params, dict):
             name = params.get("name")
@@ -2364,6 +2496,19 @@ def build_server(policy_path: str | Path) -> MCPServer:
 
     async def activity_arguments(context, call_next):
         params = context.params
+        if (
+            agent.session_id is None
+            and context.request_id is not None
+            and context.protocol_version in MODERN_PROTOCOL_VERSIONS
+        ):
+            # The SDK validates the modern envelope before entering middleware.
+            # Bind before a read or execution handler can touch study state.
+            if context.method in {"tools/call", "resources/read"}:
+                bind_modern_session(context)
+            elif context.method in {"server/discover", "tools/list", "resources/list"}:
+                response = await call_next(context)
+                bind_modern_session(context)
+                return response
         if context.method != "tools/call" or not isinstance(params, dict):
             return await strict_remote_arguments(context, call_next)
         name, arguments = params.get("name"), params.get("arguments", {})

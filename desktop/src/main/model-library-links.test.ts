@@ -12,7 +12,13 @@ import {
 describe("main-process fixed-ID model library link dispatcher", () => {
   it("opens each registered fixed-ID link with its exact pinned HTTPS URL", async () => {
     const keys = Object.keys(MODEL_LIBRARY_OFFICIAL_LINKS) as ModelLibraryLinkId[];
-    expect(keys.length).toBe(38);
+    expect(keys.length).toBe(48);
+    expect(MODEL_LIBRARY_OFFICIAL_LINKS["care-planaria-scenario"]).toBe(
+      "https://csbdeep.bioimagecomputing.com/scenarios/denoisingplanaria/",
+    );
+    expect(MODEL_LIBRARY_OFFICIAL_LINKS["organoidtracker-organoid-weights"]).toBe(
+      "https://doi.org/10.5281/zenodo.18479952",
+    );
     expect(MODEL_LIBRARY_OFFICIAL_LINKS["cellpose-github-repo"]).toBe(
       "https://github.com/MouseLand/cellpose",
     );

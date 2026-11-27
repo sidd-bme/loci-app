@@ -541,6 +541,7 @@ class ResearchProject:
         source_id: str,
         *,
         verify: bool = False,
+        native_metadata_fields: tuple[str, ...] = (),
         check: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         with self.connection() as connection:
@@ -600,7 +601,13 @@ class ResearchProject:
                     expected_sha256=record["sha256"],
                     check=check,
                 ) as session:
-                    validate_source_calibration(record, asdict(session.metadata))
+                    current_metadata = asdict(session.metadata)
+                    validate_source_calibration(record, current_metadata)
+                    for field in native_metadata_fields:
+                        if canonical_json(record["metadata"][field]) != canonical_json(
+                            current_metadata[field]
+                        ):
+                            raise ValueError("Saved metadata disagrees with the native image")
                     _virtual_stain_binding(record, record["private_path"])
         return record
 
@@ -677,6 +684,7 @@ class ResearchProject:
             "volume_view_request",
             "channels",
             "annotations",
+            "organoidtracker_graph",
             "tracks",
             "selection",
             "policy",
@@ -705,6 +713,12 @@ class ResearchProject:
         }:
             raise ValueError("Unsupported study document kind")
         checked_id(document_id)
+        if kind == "organoidtracker_graph":
+            from .organoidtracker import validate
+
+            if expected_revision != 0:
+                raise ValueError("Imported OrganoidTracker graphs are immutable")
+            validate(record, self.source(record["source_id"]), document_id)
         if kind == "controlled_method":
             from .research_methods import validate_package_document
 

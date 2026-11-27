@@ -1,6 +1,8 @@
-import type {
-  ModelLibraryEntry,
-  ModelLibraryFilterGroup,
+import {
+  MODEL_LIBRARY_TASK_LABELS,
+  type ModelLibraryEntry,
+  type ModelLibraryFilterGroup,
+  type ModelLibraryTaskFilter,
 } from "../../shared/model-library";
 import type { ModelZooExampleRegistry } from "./examples";
 
@@ -17,6 +19,8 @@ function entrySearchHaystack(
     entry.cardSummary,
     entry.target,
     entry.modalitySummary,
+    entry.taskCategory,
+    MODEL_LIBRARY_TASK_LABELS[entry.taskCategory],
     entry.taskLabel,
     entry.modalityTags.join(" "),
     entry.filterGroup,
@@ -67,9 +71,13 @@ export function filterModelZooEntries(
   filterGroup: ModelLibraryFilterGroup,
   query: string,
   examples?: ModelZooExampleRegistry,
+  taskFilter: ModelLibraryTaskFilter = "all",
 ): ReadonlyArray<Readonly<ModelLibraryEntry>> {
   return entries.filter((entry) => {
     if (filterGroup !== "all" && entry.filterGroup !== filterGroup) {
+      return false;
+    }
+    if (taskFilter !== "all" && entry.taskCategory !== taskFilter) {
       return false;
     }
     return matchesModelZooQuery(entry, query, examples);
@@ -86,11 +94,13 @@ export function countModelZooEntries(
   entries: readonly Readonly<ModelLibraryEntry>[],
   query: string,
   examples?: ModelZooExampleRegistry,
+  taskFilter: ModelLibraryTaskFilter = "all",
 ): ModelZooFilterCounts {
   let all = 0;
   let local = 0;
   let external = 0;
   for (const entry of entries) {
+    if (taskFilter !== "all" && entry.taskCategory !== taskFilter) continue;
     if (!matchesModelZooQuery(entry, query, examples)) continue;
     all += 1;
     if (entry.filterGroup === "local") local += 1;

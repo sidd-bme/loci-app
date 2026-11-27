@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   save: vi.fn(),
   message: vi.fn(),
   openExternal: vi.fn(),
+  showItemInFolder: vi.fn(),
+  writeClipboard: vi.fn(),
   prepareLegacy: vi.fn(),
   prepareNuclei: vi.fn(),
   clients: [] as Array<{ request: ReturnType<typeof vi.fn>; cancelCurrent: ReturnType<typeof vi.fn>;
@@ -27,7 +29,8 @@ vi.mock("electron", () => ({
     getVersion: () => "0.1.0",
   },
   dialog: { showOpenDialog: mocks.open, showSaveDialog: mocks.save, showMessageBox: mocks.message },
-  shell: { openExternal: mocks.openExternal },
+  shell: { openExternal: mocks.openExternal, showItemInFolder: mocks.showItemInFolder },
+  clipboard: { writeText: mocks.writeClipboard },
   ipcMain: {
     handle: (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
       mocks.handlers.set(name, operation),
@@ -325,6 +328,25 @@ describe("native research bridge", () => {
   afterEach(async () => {
     delete process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT;
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("imports OrganoidTracker data only through the native picker for the selected study", async () => {
+    const project = path.join(root, "Lineage.loci-study");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const binding = { id: "a".repeat(32), sha256: sha };
+    await expect(call("organoidtracker-import", { ...binding, path: "/forged.aut" }, 0, "synthetic"))
+      .rejects.toThrow(/exact study image/);
+    await expect(call("organoidtracker-import", binding, 0, "synthetic", "/forged.aut"))
+      .rejects.toThrow(/time origin/);
+    mocks.open.mockResolvedValueOnce({ canceled: true });
+    expect(await call("organoidtracker-import", binding, 0, "synthetic")).toBeNull();
+    const chosen = path.join(root, "external.aut");
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [chosen] });
+    await call("organoidtracker-import", binding, 7, "unspecified");
+    expect(mocks.request).toHaveBeenLastCalledWith("research_organoidtracker_import", {
+      project, path: chosen, binding: { source_id: binding.id, source_sha256: sha }, first: 7, origin: "unspecified",
+    }, 0);
   });
 
   it("binds virtual staining to the native output picker and rejects renderer path arguments", async () => {
@@ -864,6 +886,32 @@ describe("native research bridge", () => {
     expect(mocks.request).toHaveBeenLastCalledWith("research_agent_access", {
       project, request: { ...value, interactive: { allow_handoff: true } }, export_root: root, destination: path.join(root, "access"),
     }, 0);
+  });
+
+  it("reveals only the original setup folder selected for this study", async () => {
+    const project = path.join(root, "Agent setup.loci-study");
+    const folder = path.join(root, "Researcher's setup");
+    const policy = "a".repeat(64);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    const workspace = path.join(folder, "antigravity-workspace");
+    await fs.mkdir(workspace, { recursive: true });
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: folder });
+    mocks.request.mockResolvedValueOnce({ policy_sha256: policy, antigravity_workspace: "antigravity-workspace" });
+    await call("agent-access", { client: "antigravity" });
+    await expect(call("reveal-agent-setup", folder)).rejects.toThrow("no longer selected");
+    await call("reveal-agent-setup", policy);
+    expect(mocks.showItemInFolder).toHaveBeenCalledWith(workspace);
+    await call("copy-agent-launch", policy);
+    const quoted = "'" + workspace.replaceAll("'", process.platform === "win32" ? "''" : "'\\''") + "'";
+    expect(mocks.writeClipboard).toHaveBeenCalledWith(process.platform === "win32"
+      ? `Set-Location -LiteralPath ${quoted} -ErrorAction Stop; agy` : `cd -- ${quoted} && agy`);
+    await fs.rename(folder, folder + ".original");
+    await fs.mkdir(folder);
+    await expect(call("reveal-agent-setup", policy)).rejects.toThrow("moved or changed");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Different.loci-study") });
+    await call("create");
+    await expect(call("reveal-agent-setup", policy)).rejects.toThrow("no longer selected");
   });
 
   it("preflights every workflow target before any batch submission", async () => {

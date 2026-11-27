@@ -1,7 +1,7 @@
 import { checkedImageConversion, checkedImageConversionReceipt } from "../shared/image-conversion";
 import { checkedMethodInput, checkedMethodRights } from "../shared/controlled-method-contracts";
 import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
-import { app, dialog, ipcMain, shell } from "electron";
+import { app, clipboard, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { openModelLibraryLink } from "./model-library-links";
 import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
@@ -315,6 +315,7 @@ export class ResearchBridge {
   private readonly sessions = new ManagedResearchSessionStore(app.getPath("userData"));
   private project: string | null = null;
   private sessionId: string | null = null;
+  private agentSetup: { policy: string; folder: string; dev: number; ino: number; client?: "antigravity" | "codex" } | null = null;
   private running: { id: string; project: string; graphRunId?: string } | null = null;
   private switching = false;
   private closing = false;
@@ -398,6 +399,7 @@ export class ResearchBridge {
     this.cancelNucleiModelInstall();
     this.project = project;
     this.sessionId = sessionId;
+    this.agentSetup = null;
     this.vendorGrants.clear();
     this.directVolumeSource = null;
     this.viewerQueue.cancelPending(new Error("The image study changed."));
@@ -1760,6 +1762,46 @@ export class ResearchBridge {
     const handle = (name: string, operation: (...args: unknown[]) => Promise<unknown>) =>
       handleFromFrame(name, (_event, ...args) => operation(...args));
     handle("recipe-resources", async () => recipeResources(totalmem()));
+    for (const op of ["list", "load", "import"] as const) {
+      handle("organoidtracker-" + op, async (value, ...args) => {
+        const project = this.requireProject();
+        const epoch = this.viewDocumentEpoch;
+        if (!value || typeof value !== "object" || Object.keys(value).sort().join(",") !== "id,sha256" ||
+            !("id" in value) || typeof value.id !== "string" || !/^[a-f0-9]{32}$/.test(value.id) ||
+            !("sha256" in value) || typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256))
+          throw new Error("Choose an exact study image.");
+        const binding = { source_id: value.id, source_sha256: value.sha256 };
+        const current = () => {
+          if (this.project !== project || this.viewDocumentEpoch !== epoch)
+            throw new Error("The OrganoidTracker study changed.");
+        };
+        if (op === "import") {
+          const [first, origin] = args;
+          if (args.length !== 2 || !Number.isSafeInteger(first) || typeof origin !== "string" ||
+              !["unspecified", "model-output", "manually-annotated", "synthetic"].includes(origin))
+            throw new Error("Choose the time origin and graph provenance.");
+          if (this.running || this.switching) throw new Error("Finish the active study operation first.");
+          this.switching = true;
+          try {
+            const picked = await dialog.showOpenDialog({ title: "Choose an OrganoidTracker v1 graph",
+              properties: ["openFile"], filters: [{ name: "OrganoidTracker graph", extensions: ["aut"] }] });
+            if (picked.canceled || !picked.filePaths[0]) return null;
+            current();
+            const result = await this.control.request("research_organoidtracker_import", {
+              project, binding, first, origin, path: picked.filePaths[0],
+            }, 0);
+            current();
+            return result;
+          } finally { this.switching = false; }
+        }
+        if (op === "list" ? args.length !== 0 : args.length !== 1 || typeof args[0] !== "string" || !/^[a-f0-9]{32}$/.test(args[0]))
+          throw new Error("Invalid OrganoidTracker graph selection.");
+        const result = await this.control.request("research_organoidtracker_" + op,
+          op === "list" ? { project, binding } : { project, binding, id: args[0] }, 0);
+        current();
+        return result;
+      });
+    }
     handle("dynacell-status", async (...args) => {
       if (args.length) throw new Error("Choose the registered DynaCell model.");
       if (!dynacellPlatformSupported) return "unsupported";
@@ -2275,10 +2317,42 @@ export class ResearchBridge {
         });
         if (picked.canceled || !picked.filePath) return null;
         if (this.requireProject() !== project) throw new Error("The active study changed.");
-        return await this.control.request("research_agent_access", {
+        const receipt = await this.control.request<{ policy_sha256: string; antigravity_workspace?: string; codex_workspace?: string }>("research_agent_access", {
           project, request, destination: picked.filePath, export_root: exportRoot,
         }, 0);
+        const stat = await fs.lstat(picked.filePath).catch(() => null);
+        const client = receipt?.antigravity_workspace === "antigravity-workspace" && request.client === "antigravity" ? "antigravity"
+          : receipt?.codex_workspace === "codex-workspace" && request.client === "codex" ? "codex" : undefined;
+        this.agentSetup = stat?.isDirectory() && /^[a-f0-9]{64}$/.test(receipt.policy_sha256)
+          ? { policy: receipt.policy_sha256, folder: picked.filePath, dev: stat.dev, ino: stat.ino, client } : null;
+        return receipt;
       } finally { this.switching = false; }
+    });
+    const selectedAgentSetup = async (policy: unknown) => {
+      const setup = this.agentSetup;
+      if (!setup || setup.policy !== policy)
+        throw new Error("This setup folder is no longer selected.");
+      const stat = await fs.lstat(setup.folder).catch(() => null);
+      if (this.agentSetup !== setup || !stat?.isDirectory() || stat.dev !== setup.dev || stat.ino !== setup.ino)
+        throw new Error("The setup folder moved or changed.");
+      const directory = setup.client ? path.join(setup.folder, setup.client + "-workspace") : setup.folder;
+      if (setup.client && !(await fs.lstat(directory).catch(() => null))?.isDirectory())
+        throw new Error("The assistant workspace moved or changed.");
+      if (this.agentSetup !== setup) throw new Error("The active study changed.");
+      return { directory, client: setup.client };
+    };
+    handle("reveal-agent-setup", async (policy) => {
+      const { directory } = await selectedAgentSetup(policy);
+      shell.showItemInFolder(directory);
+    });
+    handle("copy-agent-launch", async (policy) => {
+      const { directory, client } = await selectedAgentSetup(policy);
+      if (!client || /[\x00-\x1f\x7f]/u.test(directory)) throw new Error("Open the setup folder to connect this assistant.");
+      const windows = process.platform === "win32";
+      const quoted = "'" + directory.replaceAll("'", windows ? "''" : "'\\''") + "'";
+      const command = client === "codex" ? `codex -C ${quoted}`
+        : windows ? `Set-Location -LiteralPath ${quoted} -ErrorAction Stop; agy` : `cd -- ${quoted} && agy`;
+      clipboard.writeText(command);
     });
     handle("agent-session-control", async (value) => {
       const project = this.requireProject();

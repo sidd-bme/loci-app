@@ -65,8 +65,9 @@ export function validateControl(value: unknown): ResearchAgentControlRequest {
   return v as unknown as ResearchAgentControlRequest;
 }
 export function validateNavigation(value: unknown): AgentWorkspaceNavigationRequest {
-  const v = object(value); exact(v, ["requestId", "intent"], ["target"]);
+  const v = object(value); exact(v, ["requestId", "intent"], ["target", "approvalId"]);
   if (typeof v.requestId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/u.test(v.requestId) || !["open-source", "open-result", "review-result", "open-job", "open-workflow", "inspect-preview", "configure-access"].includes(v.intent as string)) throw new Error("Invalid workspace navigation.");
+  if (v.approvalId !== undefined && (v.intent !== "inspect-preview" || !id(v.approvalId))) throw new Error("Invalid preview approval identity.");
   if (v.intent === "configure-access") { if (v.target !== undefined) throw new Error("Access configuration must use the main window's captured context."); }
   else {
     v.target = validateTarget(v.target); const t = v.target as ResearchAgentTargetReference;

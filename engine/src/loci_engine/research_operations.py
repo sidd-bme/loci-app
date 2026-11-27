@@ -271,6 +271,10 @@ OPERATION_CATALOG = {
         "mutates": True,
         "summary": "Track exact timed object revisions with explicit missing observations",
     },
+    "organoidtracker_links": {
+        "mutates": False,
+        "summary": "Page explicit imported OrganoidTracker links on a fully granted source",
+    },
     "tracking_result": {
         "mutates": False,
         "summary": "Inspect temporal associations, uncertainty and trajectories",

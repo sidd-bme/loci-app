@@ -65,6 +65,8 @@ export function AgentSessionIndicator({ api, onSnapshot, detached = false, onFoc
     <span id={statusId} className="agent-session-pill__description" role="status">{label}{pending > 0 ? `. ${pendingDescription}.` : ""}</span>
     {open && !detached && <section id={drawerId} className="agent-session-drawer" aria-label="Agent session and approvals">
       <AgentWorkspaceSurface {...surface} presentation={currentPresentation}
+        onInspectPreview={(target, approvalId) => { if (approvalId) setOpen(false); surface.onInspectPreview?.(target, approvalId); }}
+        onConfigureAccess={surface.onConfigureAccess && (() => { setOpen(false); surface.onConfigureAccess?.(); })}
         onPresentationChange={next => { if (!presentation) setLocalPresentation(next); onPresentationChange?.(next); }}
         onControl={api.controlAgentSession ? async request => {
           const next = await api.controlAgentSession!(request);

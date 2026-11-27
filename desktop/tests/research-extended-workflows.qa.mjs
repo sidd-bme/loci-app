@@ -380,6 +380,7 @@ export async function qualifyExtendedWorkflows({
   assert.ok(!deniedPolicy.operations.includes("analysis_context"));
   await screenshot(page, "extended-agent-policy");
   // Opt in through the visible control, keeping names and geometry denied.
+  await page.locator(".research-agent").getByText("Create another grant", { exact: true }).click();
   const permissions = page.locator('details.research-agent-custom');
   if (!(await permissions.evaluate(element => element.open)))
     await permissions.locator(':scope > summary').click();

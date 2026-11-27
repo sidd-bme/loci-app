@@ -62,6 +62,7 @@ _RECORD_KINDS = frozenset(
         "display",
         "channels",
         "annotations",
+        "organoidtracker_graph",
         "tracks",
         "selection",
         "policy",
@@ -584,6 +585,13 @@ def _archive_records(project: ResearchProject, snapshot: dict[str, Any]) -> dict
                 {item["id"]: item for item in snapshot["sources"]},
                 {item["id"]: item for item in snapshot["results"]},
             )
+        if envelope["kind"] == "organoidtracker_graph":
+            from .organoidtracker import validate
+
+            data = envelope["data"]
+            if envelope["revision"] != 1:
+                raise ValueError("OrganoidTracker graph revision is invalid")
+            validate(data, project.source(data["source_id"]), envelope["id"])
         if envelope["kind"] == "intensity_report":
             from .research_intensity_reports import references
 
@@ -1187,6 +1195,12 @@ def _validate_document_crossrefs(
         from .research_workspace_records import validate_visibility
 
         validate_visibility(data, sources, results)
+    if kind == "organoidtracker_graph":
+        from .organoidtracker import validate
+
+        if document["revision"] != 1 or data.get("source_id") not in sources:
+            raise ValueError("Portable OrganoidTracker binding is invalid")
+        validate(data, sources[data["source_id"]], document["id"])
     if kind == "display" and data.get("schema") == "loci.source-view/v1":
         from .source_view_state import validate_view_data
 

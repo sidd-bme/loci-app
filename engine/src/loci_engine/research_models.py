@@ -23,10 +23,12 @@ import numpy as np
 from .model_packages import (
     DEFAULT_WORKING_BYTES,
     ModelPackage,
+    ModelPackageError,
     import_model_package,
     inspect_model_package,
     preview_inference,
     run_inference,
+    runtime_status,
 )
 from .models import ENGINE_VERSION
 from .quantitative import (
@@ -39,7 +41,7 @@ from .quantitative import (
 )
 from .render import render_overlay
 from .research_project import ResearchProject, canonical_json, checked_id
-from .workbench import Workbench, display_scalar, result_summary
+from .workbench import Workbench, display_scalar, result_summary, runtime_record
 
 MODEL_SCHEMA = "loci.managed-model/v1"
 PREVIEW_SCHEMA = "loci.model-preview/v1"
@@ -77,6 +79,41 @@ _PACKAGE_PUBLIC_KEYS = {
 _REFERENCE_KEYS = {"compatible", "package", "runtime", "comparison", "meaning"}
 _RECOVERY_STATE = "model-package-not-included"
 _RECOVERY_ACTION = "reimport-the-exact-declared-package-before-use"
+MAX_UNADOPTED_MODEL_PREVIEWS = 64
+_POLICY_RUNTIME_KEYS = ("engine", "numpy", "scipy", "scikit_image")
+
+NUCLEI_MODEL_PACKAGE_ID = "nuclei-segmentation-boundary-model"
+NUCLEI_MODEL_VERSION = "0.1.0-publication-20261015-r2"
+NUCLEI_MODEL_DEFAULT_WORKING_BYTES = 2 * 1024**3
+NUCLEI_MODEL_MIN_POLICY_MEMORY_BYTES = 512 * 1024**2
+NUCLEI_MODEL_PACKAGE_SHA256 = "774aa0c53566c9f995af02c905863c0ca86b71460f93c3a11fe101b11c5ba582"
+NUCLEI_MODEL_METADATA_SHA256 = "e77c15651c117ded7a9eb73b643c889c4abb41d40024a1294438b767fa6d622d"
+NUCLEI_MODEL_WEIGHTS_SHA256 = "df913b85947f5132bcdaf81d91af0963f60d44f4caf8a4fec672d96a2f327b44"
+NUCLEI_MODEL_REFERENCE_INPUT_SHA256 = (
+    "c29bd6e16e3f7856217b407ba948222b1c2a0da41922a0f79297e25588614fe2"
+)
+NUCLEI_MODEL_REFERENCE_OUTPUT_SHA256 = (
+    "510181f38930e59e4fd8ecc03d6ea7c980eb6609759655f2d4a41fe36108d5f5"
+)
+VERIFIED_NUCLEI_MODEL_PACKAGE: dict[str, Any] = {
+    "schema_version": "loci.model-package/1",
+    "source_format": "loci",
+    "id": NUCLEI_MODEL_PACKAGE_ID,
+    "version": NUCLEI_MODEL_VERSION,
+    "task": "semantic-segmentation",
+    "package_sha256": NUCLEI_MODEL_PACKAGE_SHA256,
+    "metadata_sha256": NUCLEI_MODEL_METADATA_SHA256,
+    "model_sha256": NUCLEI_MODEL_WEIGHTS_SHA256,
+    "opset_version": 12,
+    "reference_input_sha256": NUCLEI_MODEL_REFERENCE_INPUT_SHA256,
+    "reference_output_sha256": NUCLEI_MODEL_REFERENCE_OUTPUT_SHA256,
+    "input_axes": "BCYX",
+    "input_dtype": "float32",
+    "input_shape": [1, 1, 256, 256],
+    "input_scale_yx": [1.0, 1.0],
+    "input_scale_unit": "pixel",
+}
+VERIFIED_AGENT_MODEL_PACKAGES: tuple[dict[str, Any], ...] = (VERIFIED_NUCLEI_MODEL_PACKAGE,)
 
 
 def _models_root(project: ResearchProject, *, create: bool) -> Path:
@@ -101,7 +138,7 @@ def _models_root(project: ResearchProject, *, create: bool) -> Path:
 
 def _document(project: ResearchProject, kind: str, document_id: str) -> dict[str, Any]:
     checked_id(document_id)
-    matches = [item for item in project.documents(kind) if item.get("id") == document_id]
+    matches = project.documents(kind, document_id=document_id)
     if len(matches) != 1:
         raise ValueError(f"{kind.replace('_', ' ').title()} is not part of this study")
     return matches[0]
@@ -125,6 +162,167 @@ def _model_id_from_record(package: dict[str, Any]) -> str:
         "package_sha256": package["package_sha256"],
     }
     return hashlib.sha256(canonical_json(identity).encode()).hexdigest()[:32]
+
+
+NUCLEI_MODEL_ID = _model_id_from_record(
+    {
+        "id": NUCLEI_MODEL_PACKAGE_ID,
+        "version": NUCLEI_MODEL_VERSION,
+        "package_sha256": NUCLEI_MODEL_PACKAGE_SHA256,
+    }
+)
+
+
+def is_verified_agent_model_package(package: Any) -> bool:
+    """Return True only when package matches a pinned verified ONNX model contract."""
+    if not isinstance(package, dict) or set(package) != _PACKAGE_PUBLIC_KEYS:
+        return False
+    model = package.get("model")
+    reference = package.get("reference")
+    input_spec = package.get("input")
+    if (
+        not isinstance(model, dict)
+        or not isinstance(reference, dict)
+        or not isinstance(reference.get("input"), dict)
+        or not isinstance(reference.get("output"), dict)
+        or not isinstance(input_spec, dict)
+    ):
+        return False
+    for spec in VERIFIED_AGENT_MODEL_PACKAGES:
+        if (
+            package.get("schema_version") == spec["schema_version"]
+            and package.get("source_format") == spec["source_format"]
+            and package.get("id") == spec["id"]
+            and package.get("version") == spec["version"]
+            and package.get("task") == spec["task"]
+            and package.get("package_sha256") == spec["package_sha256"]
+            and package.get("metadata_sha256") == spec["metadata_sha256"]
+            and model.get("sha256") == spec["model_sha256"]
+            and model.get("opset_version") == spec["opset_version"]
+            and reference["input"].get("sha256") == spec["reference_input_sha256"]
+            and reference["output"].get("sha256") == spec["reference_output_sha256"]
+            and input_spec.get("axes") == spec["input_axes"]
+            and input_spec.get("dtype") == spec["input_dtype"]
+            and input_spec.get("shape") == spec["input_shape"]
+            and input_spec.get("scale_yx") == spec["input_scale_yx"]
+            and input_spec.get("scale_unit") == spec["input_scale_unit"]
+        ):
+            return True
+    return False
+
+
+def _onnx_runtime_contract(onnx_version: str, onnxruntime_version: str) -> dict[str, Any]:
+    return {
+        "backend": "onnxruntime",
+        "onnx_version": onnx_version,
+        "onnxruntime_version": onnxruntime_version,
+        "requested_providers": ["CPUExecutionProvider"],
+        "session_providers": ["CPUExecutionProvider"],
+        "execution_mode": "sequential",
+        "intra_op_threads": 1,
+        "inter_op_threads": 1,
+        "graph_optimization": "basic",
+    }
+
+
+def onnx_policy_runtime() -> dict[str, str]:
+    """Return the pinned CPU ONNX runtime identity for agent policy validation."""
+    status = runtime_status()
+    versions = status.get("versions", {})
+    if not status.get("ready") or not all(
+        isinstance(versions.get(key), str) and versions[key]
+        for key in ("onnx", "onnxruntime", "yaml")
+    ):
+        raise PermissionError("The bounded ONNX CPU runtime is unavailable")
+    contract = _onnx_runtime_contract(str(versions["onnx"]), str(versions["onnxruntime"]))
+    digest = hashlib.sha256(canonical_json(contract).encode()).hexdigest()
+    host = runtime_record()
+    return {
+        **{key: host[key] for key in _POLICY_RUNTIME_KEYS},
+        "backend": f"onnxruntime-cpu:{digest}",
+        "resolved_device": "cpu",
+    }
+
+
+def onnx_runtime_identity_from_record(runtime: Any) -> dict[str, str]:
+    """Derive the policy runtime identity from a persisted ONNX model runtime record."""
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("backend") != "onnxruntime"
+        or not isinstance(runtime.get("onnx_version"), str)
+        or not runtime["onnx_version"]
+        or not isinstance(runtime.get("onnxruntime_version"), str)
+        or not runtime["onnxruntime_version"]
+        or runtime.get("requested_providers") != ["CPUExecutionProvider"]
+        or runtime.get("session_providers") != ["CPUExecutionProvider"]
+        or runtime.get("execution_mode") != "sequential"
+        or type(runtime.get("intra_op_threads")) is not int
+        or runtime["intra_op_threads"] != 1
+        or type(runtime.get("inter_op_threads")) is not int
+        or runtime["inter_op_threads"] != 1
+        or runtime.get("graph_optimization") != "basic"
+    ):
+        raise PermissionError("The result ONNX runtime identity is outside the pinned policy")
+    contract = _onnx_runtime_contract(runtime["onnx_version"], runtime["onnxruntime_version"])
+    digest = hashlib.sha256(canonical_json(contract).encode()).hexdigest()
+    host = runtime_record()
+    return {
+        **{key: host[key] for key in _POLICY_RUNTIME_KEYS},
+        "backend": f"onnxruntime-cpu:{digest}",
+        "resolved_device": "cpu",
+    }
+
+
+def _reference_runtime_matches_live(data: dict[str, Any], live_onnx_rt: dict[str, str]) -> bool:
+    qual_rt = data.get("reference_qualification", {}).get("runtime")
+    try:
+        return onnx_runtime_identity_from_record(qual_rt) == live_onnx_rt
+    except PermissionError:
+        return False
+
+
+def authorize_retained_model_result(policy: Any, record: dict[str, Any]) -> None:
+    """Fail closed when a persisted model-segmentation result exceeds policy grants."""
+    provenance = record.get("provenance")
+    if not isinstance(provenance, dict):
+        raise PermissionError("Model result provenance is invalid")
+    model = provenance.get("model")
+    if not is_verified_agent_model_package(model):
+        raise PermissionError(
+            "Only the verified BioImage.IO nuclei ONNX model package is supported for agent access"
+        )
+    policy.require_model(model)
+    policy.require_runtime(onnx_runtime_identity_from_record(provenance.get("runtime")))
+
+
+def agent_policy_model_grants(workbench: Workbench) -> dict[str, list[dict[str, str]]]:
+    """Return pinned model_packages and runtimes for setup bundles when verified & ready."""
+    try:
+        onnx_rt = onnx_policy_runtime()
+    except PermissionError:
+        return {"model_packages": [], "runtimes": []}
+    granted_packages: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in workbench.project.documents("model"):
+        data, state = _validated_model_data(item)
+        package = data["package"]
+        if (
+            state != "ready"
+            or not is_verified_agent_model_package(package)
+            or not _reference_runtime_matches_live(data, onnx_rt)
+        ):
+            continue
+        try:
+            _managed_package_safe(workbench, item["id"])
+        except ValueError:
+            continue
+        identity = (str(package["id"]), str(package["package_sha256"]))
+        if identity not in seen:
+            seen.add(identity)
+            granted_packages.append({"id": identity[0], "sha256": identity[1]})
+    if not granted_packages:
+        return {"model_packages": [], "runtimes": []}
+    return {"model_packages": granted_packages, "runtimes": [onnx_rt]}
 
 
 def _digest(value: Any) -> bool:
@@ -262,6 +460,16 @@ def _managed_package(workbench: Workbench, model_id: str) -> tuple[dict[str, Any
     ):
         raise ValueError("Stored model package identity changed")
     return document, package
+
+
+def _managed_package_safe(
+    workbench: Workbench, model_id: str
+) -> tuple[dict[str, Any], ModelPackage]:
+    """Verify a managed package while sanitizing any filesystem-bearing package error."""
+    try:
+        return _managed_package(workbench, model_id)
+    except (ModelPackageError, OSError) as exc:
+        raise ValueError("Managed model package is unavailable or failed verification") from exc
 
 
 def import_model(
@@ -773,9 +981,35 @@ def _request_from_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _prune_unadopted_model_previews(
+    project: ResearchProject, *, max_unadopted: int | None = None
+) -> None:
+    """Bound unreferenced model_preview documents without evicting adopted or active previews."""
+    limit = MAX_UNADOPTED_MODEL_PREVIEWS if max_unadopted is None else max_unadopted
+    with project.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        # Choose and delete victims against the same job, approval and result state.
+        connection.execute(
+            "DELETE FROM documents WHERE kind='model_preview' AND id IN ("
+            "SELECT id FROM documents WHERE kind='model_preview' AND id NOT IN ("
+            "SELECT json_extract(record, '$.provenance.model_preview.id') FROM results "
+            "WHERE json_type(record, '$.provenance.model_preview.id')='text' UNION "
+            "SELECT json_extract(record, '$.request.task_request.preview_id') FROM jobs "
+            "WHERE json_extract(record, '$.state') IN ('queued','running') "
+            "AND json_extract(record, '$.operation')='model_run' "
+            "AND json_type(record, '$.request.task_request.preview_id')='text' UNION "
+            "SELECT json_extract(value, '$.parameters_summary.preview_id') FROM metadata "
+            "WHERE key LIKE 'agent-approval:%' "
+            "AND json_extract(value, '$.state') IN ('pending','approved') "
+            "AND json_type(value, '$.parameters_summary.preview_id')='text') "
+            "ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+            (max(1, limit),),
+        )
+
+
 def _preview(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
     request = _normal_request(request)
-    model_document, package = _managed_package(workbench, checked_id(request.get("model_id")))
+    model_document, package = _managed_package_safe(workbench, checked_id(request.get("model_id")))
     receipt, _probabilities, _labels, measurements, _geometry, overlay = _compute(
         workbench, model_document, package, request, purpose="preview"
     )
@@ -787,6 +1021,7 @@ def _preview(workbench: Workbench, request: dict[str, Any]) -> dict[str, Any]:
         {**receipt, "preview_sha256": digest},
         expected_revision=0,
     )
+    _prune_unadopted_model_previews(workbench.project)
     return {
         "preview": {
             "id": preview_id,
@@ -825,7 +1060,9 @@ def _run(
     receipt = {key: value for key, value in stored.items() if key != "preview_sha256"}
     if stored_hash != _preview_hash(receipt) or preview_hash != stored_hash:
         raise ValueError("Model run must bind to the exact persisted preview")
-    model_document, package = _managed_package(workbench, checked_id(receipt.get("model_id")))
+    if external_guard is not None:
+        external_guard()
+    model_document, package = _managed_package_safe(workbench, checked_id(receipt.get("model_id")))
     candidate, probabilities, labels, measurements, geometry, _overlay = _compute(
         workbench,
         model_document,
@@ -844,9 +1081,17 @@ def _run(
         "source"
     ].get("channel_metadata_sha256"):
         raise ValueError("Channel declarations changed after the model preview")
+    mapped_source_channels = {
+        int(item["source_channel"]) for item in receipt["source"]["channel_mapping"]
+    }
+    provenance_selection = (
+        {**receipt["source"]["selection"], "c": next(iter(mapped_source_channels))}
+        if len(mapped_source_channels) == 1
+        else receipt["source"]["selection"]
+    )
     provenance = {
         "geometry": _geometry_record(geometry),
-        "selection": receipt["source"]["selection"],
+        "selection": provenance_selection,
         "model": package.public_record(),
         "runtime": receipt["runtime"],
         "model_preview": {
@@ -871,13 +1116,27 @@ def _run(
         "rights": receipt["rights"],
     }
 
+    owned_run = job_id is not None and workbench.project.job(job_id).get("owner") is not None
+
     def publication_guard() -> None:
+        if owned_run:
+            with workbench.project.connection() as connection:
+                if connection.execute(
+                    "SELECT 1 FROM results "
+                    "WHERE json_extract(record, '$.provenance.model_preview.id')=? LIMIT 1",
+                    (preview_id,),
+                ).fetchone():
+                    raise ValueError(
+                        "This model preview has already been adopted as a saved result"
+                    )
+        if workbench.channel_metadata(receipt["source"]["id"]) != channel_declaration:
+            raise ValueError("Channel declarations changed before model result publication")
         if external_guard is not None:
             external_guard()
         current_preview = _document(workbench.project, "model_preview", preview_id)
         if current_preview != document:
             raise ValueError("Model preview changed before result publication")
-        current_model, current_package = _managed_package(workbench, model_document["id"])
+        current_model, current_package = _managed_package_safe(workbench, model_document["id"])
         if (
             current_model != model_document
             or current_package.public_record() != package.public_record()
@@ -912,6 +1171,254 @@ def _run(
         "total_measurements": len(measurements),
         "adopted": True,
     }
+
+
+def inspect_agent_models(workbench: Workbench, *, policy: Any) -> dict[str, Any]:
+    """Return path-free ready verified models installed in this study."""
+    status = runtime_status()
+    onnx_rt: dict[str, str] | None = None
+    if status.get("ready"):
+        with suppress(PermissionError):
+            onnx_rt = onnx_policy_runtime()
+    models: list[dict[str, Any]] = []
+    for item in workbench.project.documents("model"):
+        data, state = _validated_model_data(item)
+        package = data["package"]
+        if state != "ready" or not is_verified_agent_model_package(package):
+            continue
+        if onnx_rt is None or not _reference_runtime_matches_live(data, onnx_rt):
+            continue
+        document, _package = _managed_package_safe(workbench, item["id"])
+        entry = _path_free_model(document)
+        entry["agent_execution"] = {
+            "model_package_granted": (package["id"], package["package_sha256"])
+            in policy.model_packages,
+            "runtime_granted": onnx_rt in policy.runtimes,
+            "runtime_policy_identity": onnx_rt,
+            "adoption_requires_human_visual_review": True,
+        }
+        models.append(entry)
+    return {"models": models}
+
+
+def _preflight_preview_request(
+    workbench: Workbench, request: dict[str, Any], *, policy: Any
+) -> dict[str, Any]:
+    from .agent_actions import source_scope
+
+    request = _normal_request(request)
+    working_bytes = integer(
+        request.get("working_bytes"), "working_bytes", 1024**2, policy.memory_bytes
+    )
+    model_id = checked_id(request.get("model_id"))
+    document = _document(workbench.project, "model", model_id)
+    data, state = _validated_model_data(document)
+    if state != "ready":
+        raise ValueError(
+            "Managed model package is unavailable after study interchange; "
+            "human re-import is required before preview or run"
+        )
+    package_record = data["package"]
+    if not is_verified_agent_model_package(package_record):
+        raise PermissionError(
+            "Only the verified BioImage.IO nuclei ONNX model package is supported for agent access"
+        )
+    policy.require_model(package_record)
+    live_onnx_rt = onnx_policy_runtime()
+    if not _reference_runtime_matches_live(data, live_onnx_rt):
+        raise PermissionError(
+            "Managed model reference qualification differs from the active ONNX CPU runtime"
+        )
+    policy.require_runtime(live_onnx_rt)
+
+    source_id = checked_id(request.get("source_id"))
+    grant = policy.source_grant(workbench.project, source_id)
+    source = workbench.project.source(source_id)
+    metadata = source.get("metadata", {})
+    if (
+        metadata.get("sample_semantics") in {"RGB", "RGBA"}
+        or metadata.get("rgb") is True
+        or metadata.get("rgb_samples")
+        or metadata.get("is_rgb")
+        or "S" in metadata.get("axes", "")
+        or metadata.get("dimensions", {}).get("s", 1) > 1
+    ):
+        raise ValueError(
+            "BioImage.IO nuclei model requires scalar channels; "
+            "RGB components are not biological channels"
+        )
+
+    input_channels = package_record["input"]["channels"]
+    raw_mapping = request.get("channel_mapping")
+    if not isinstance(raw_mapping, list) or len(raw_mapping) != len(input_channels):
+        raise ValueError("Channel mapping must explicitly map every model input channel")
+    mapped_channels: list[int] = []
+    slots: list[int] = []
+    for index, (spec, item) in enumerate(zip(input_channels, raw_mapping, strict=True)):
+        exact_keys(item, {"model_input_index", "model_channel", "source_channel"}, "mapping")
+        if item.get("model_input_index") != index or item.get("model_channel") != spec["name"]:
+            raise ValueError("Channel mapping must match model input order and names exactly")
+        ch = integer(item.get("source_channel"), "source channel", 0, 255)
+        if ch not in grant.c:
+            raise PermissionError("Model input channel is outside the source grant")
+        mapped_channels.append(ch)
+        slots.append(int(spec["source_index"]))
+
+    measurement_channels = _checked_measurement_channels(request.get("measurement_channels"))
+    display_channel, _display_settings = _display_request(request.get("display"))
+    if display_channel not in grant.c:
+        raise PermissionError("Model preview display channel is outside the source grant")
+
+    resolved_base: dict[str, Any] | None = None
+    for ch in sorted(set(mapped_channels) | {display_channel}):
+        candidate_plane = {**request["selection"], "c": ch}
+        if not grant.allows(candidate_plane, measurement_channels):
+            raise PermissionError(
+                "Action source selection or measurement channels exceed the grant"
+            )
+        resolved = source_scope(
+            policy,
+            workbench,
+            source_id,
+            candidate_plane,
+            measurement_channels,
+        )
+        plane = {k: resolved[k] for k in ("x", "y", "width", "height", "t", "z", "level")}
+        if resolved_base is None:
+            resolved_base = plane
+        elif plane != resolved_base:
+            raise ValueError("Source channel selections resolved to different grids")
+    assert resolved_base is not None
+
+    _verified_doc, package = _managed_package_safe(workbench, model_id)
+    _checked_mapping(package, raw_mapping)
+
+    post = request.get("postprocessing")
+    exact_keys(
+        post,
+        {
+            "probability_channel",
+            "threshold",
+            "method",
+            "min_size",
+            "split_height",
+            "exclude_border",
+        },
+        "model postprocessing",
+    )
+    output_indices = {source_index for _name, source_index in package.output.channels}
+    prob_channel = integer(
+        post.get("probability_channel"),
+        "probability channel",
+        0,
+        max(output_indices),
+    )
+    if prob_channel not in output_indices:
+        raise ValueError("Probability channel is not declared by the model output")
+    finite_number(post.get("threshold"), "probability threshold", 0, 1)
+    method = post.get("method")
+    if method not in {"components", "watershed"}:
+        raise ValueError("Postprocessing method must be components or watershed")
+    finite_number(post.get("min_size", 0), "minimum size", 0, 1e20)
+    if not isinstance(post.get("exclude_border", False), bool):
+        raise ValueError("exclude_border must be boolean")
+    if method == "watershed":
+        finite_number(post.get("split_height"), "watershed split height", 1e-9, 1e9)
+    elif post.get("split_height") is not None:
+        raise ValueError("split_height is only valid for watershed postprocessing")
+
+    scale = request.get("scale")
+    if not isinstance(scale, dict) or scale.get("mode") not in {"source", "override"}:
+        raise ValueError("Scale must explicitly use source or override mode")
+    if scale["mode"] == "override":
+        exact_keys(scale, {"mode", "scale_yx", "scale_unit", "declaration"}, "scale override")
+        raw_yx = scale.get("scale_yx")
+        if not isinstance(raw_yx, list) or len(raw_yx) != 2:
+            raise ValueError("Scale override requires explicit Y and X values")
+        used_yx = tuple(finite_number(v, "scale override", 1e-12, 1e12) for v in raw_yx)
+        if used_yx != package.input.scale_yx or scale.get("scale_unit") != package.input.scale_unit:
+            raise ValueError(
+                "Used source scale must exactly equal the model contract; "
+                "implicit resampling is forbidden"
+            )
+    else:
+        exact_keys(scale, {"mode"}, "source scale")
+
+    required_channels = sorted(set(mapped_channels) | set(measurement_channels) | {display_channel})
+    pixels = resolved_base["width"] * resolved_base["height"]
+    slot_count = max(slots) + 1
+    if pixels * (len(required_channels) + slot_count + 8) * 8 > working_bytes:
+        raise ValueError("Selected model channels exceed the working-memory budget")
+
+    return {
+        **request,
+        "selection": resolved_base,
+        "working_bytes": working_bytes,
+    }
+
+
+def verify_model_review_installation(workbench: Workbench, preview: dict[str, Any]) -> None:
+    """Check the retained receipt against its persisted document and installed CPU runtime."""
+    doc = _document(workbench.project, "model_preview", checked_id(preview.get("id")))
+    stored = doc["data"]
+    if preview != {
+        **stored,
+        "id": doc["id"],
+        "updated_at": doc["updated_at"],
+        "revision": doc["revision"],
+    } or stored["preview_sha256"] != _preview_hash(
+        {key: val for key, val in stored.items() if key != "preview_sha256"}
+    ):
+        raise ValueError("The retained model preview no longer matches the persisted receipt")
+    model, package = _managed_package_safe(workbench, checked_id(stored["model_id"]))
+    live = onnx_policy_runtime()
+    if (
+        model["revision"] != stored["model_revision"]
+        or not is_verified_agent_model_package(package.public_record())
+        or not _reference_runtime_matches_live(model["data"], live)
+        or onnx_runtime_identity_from_record(stored["runtime"]) != live
+    ):
+        raise ValueError("The inspected model package or ONNX CPU runtime changed")
+
+
+def preflight_agent_model(
+    workbench: Workbench, operation: str, request: dict[str, Any], *, policy: Any
+) -> dict[str, Any]:
+    """Validate policy, model, runtime, source, and channel scopes before decode or job creation."""
+    if policy.delegation is None or policy.delegation.get("result_scope") != "granted-sources":
+        raise PermissionError("Model actions require delegated granted-sources study scope")
+    if operation == "model_preview":
+        return _preflight_preview_request(workbench, request, policy=policy)
+    if operation == "model_run":
+        exact_keys(request, {"preview_id", "preview_sha256"}, "model run")
+        preview_id = checked_id(request.get("preview_id"))
+        preview_hash = request.get("preview_sha256")
+        if not _digest(preview_hash):
+            raise ValueError("Model run requires an exact preview SHA-256")
+        document = _document(workbench.project, "model_preview", preview_id)
+        stored = document.get("data")
+        if not isinstance(stored, dict) or stored.get("schema") != PREVIEW_SCHEMA:
+            raise ValueError("Stored model preview is invalid")
+        stored_hash = stored.get("preview_sha256")
+        receipt = {key: value for key, value in stored.items() if key != "preview_sha256"}
+        if stored_hash != _preview_hash(receipt) or preview_hash != stored_hash:
+            raise ValueError("Model run must bind to the exact persisted preview")
+        if receipt.get("working_bytes", 0) > policy.memory_bytes:
+            raise PermissionError("Model preview working-memory budget exceeds the policy")
+        _preflight_preview_request(workbench, _request_from_receipt(receipt), policy=policy)
+        model_doc = _document(workbench.project, "model", checked_id(receipt.get("model_id")))
+        if model_doc["revision"] != receipt.get("model_revision"):
+            raise ValueError("Managed model changed after the model preview")
+        current_source = workbench.project.source(receipt["source"]["id"], verify=True)
+        if current_source["sha256"] != receipt["source"]["sha256"]:
+            raise ValueError("Source changed after the model preview")
+        channel_decl = workbench.channel_metadata(receipt["source"]["id"])
+        if hashlib.sha256(canonical_json(channel_decl).encode()).hexdigest() != receipt[
+            "source"
+        ].get("channel_metadata_sha256"):
+            raise ValueError("Channel declarations changed after the model preview")
+        return {"preview_id": preview_id, "preview_sha256": preview_hash}
+    raise ValueError("Unsupported agent model action")
 
 
 def execute_model(

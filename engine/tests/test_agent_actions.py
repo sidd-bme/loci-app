@@ -19,6 +19,7 @@ from loci_engine.research_action_registry import ACTION_NAMES, READ_ACTIONS, TAS
 from loci_engine.research_agent_setup import create_agent_access
 from loci_engine.research_jobs import run_job, submit_job
 from loci_engine.research_mcp import PolicyAgent
+from loci_engine.research_models import MODEL_OPERATIONS
 from loci_engine.research_operations import TASK_OPERATIONS
 
 
@@ -176,13 +177,15 @@ def test_whole_study_grant_pins_only_the_explicit_source_snapshot(tmp_path):
                 "result_scope": "granted-sources",
                 "allow_review": True,
             },
-            actions=sorted(ACTION_NAMES),
+            actions=sorted(ACTION_NAMES - MODEL_OPERATIONS),
             source_scope={"mode": "study-sources", "sources": bindings},
         ),
         directory,
     )
     policy = load_policy(directory / "agent-policy.json")
     assert receipt["sources"] == bindings
+    assert not policy.model_packages
+    assert not (set(policy.actions) & MODEL_OPERATIONS)
     assert set(policy.sources) == {first["id"], second["id"]}
     assert policy.sources[first["id"]].t == (0, 1)
     assert policy.sources[first["id"]].c == (0, 1)

@@ -237,19 +237,29 @@ def submit_job(
 
             source_id = preflight(workbench, operation, request)["source_id"]
         elif operation == "model_run":
-            preview = next(
-                (
-                    item
-                    for item in workbench.project.documents("model_preview")
-                    if item["id"] == request.get("preview_id")
-                ),
-                None,
+            from .research_models import PREVIEW_SCHEMA, _preview_hash
+            from .research_project import checked_id
+
+            preview_id = checked_id(request.get("preview_id"))
+            matches = workbench.project.documents("model_preview", document_id=preview_id)
+            preview = matches[0] if len(matches) == 1 else None
+            stored = preview.get("data") if isinstance(preview, dict) else None
+            receipt = (
+                {k: v for k, v in stored.items() if k != "preview_sha256"}
+                if isinstance(stored, dict) and stored.get("schema") == PREVIEW_SCHEMA
+                else None
             )
-            if preview is None or preview["data"]["preview_sha256"] != request.get(
-                "preview_sha256"
+            if (
+                receipt is None
+                or stored.get("preview_sha256") != _preview_hash(receipt)
+                or stored.get("preview_sha256") != request.get("preview_sha256")
             ):
                 raise ValueError("Task requires the exact stored model preview")
-            source_id = preview["data"]["source"]["id"]
+            source_id = receipt["source"]["id"]
+        elif operation == "model_preview":
+            from .research_project import checked_id
+
+            source_id = checked_id(request.get("source_id"))
         elif operation == "large_result_adopt":
             source_id = request.get("source_id")
             if not isinstance(source_id, str):

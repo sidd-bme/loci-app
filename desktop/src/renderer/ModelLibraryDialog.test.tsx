@@ -333,6 +333,8 @@ describe("Model Zoo dialog", () => {
     ["ovule confocal", "PlantSeg · Arabidopsis ovules", "Open volume label importer", "labels-import", "plantseg-ovules-ds1x"],
     ["multiplex tissue", "Mesmer · multiplex tissue", "Open plane label importer", "labels-import", "mesmer-multiplex-tissue"],
     ["Phase3D", "DynaCell · iPSC nuclear virtual stain", "Open virtual stain control", "virtual-stain", "dynacell-ipsc-nucleus"],
+    ["planarian low light fluorescence", "CARE · low-light 3D planaria", "Open restored volume…", "open-restored-volume", "care-planaria-3d"],
+    ["time lapse marginal probability", "OrganoidTracker 2.0", "Open Track over time", "temporal-tracking", "organoidtracker-2"],
   ])("opens the published workflow for %s from a text-only card", (query, title, action, route, modelId) => {
     const selectRoute = vi.fn();
     const openLink = vi.fn();
@@ -340,6 +342,7 @@ describe("Model Zoo dialog", () => {
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: query } });
     fireEvent.click(screen.getByRole("button", { name: title }));
     expect(screen.queryByRole("slider")).toBeNull();
+    expect(document.querySelector(".model-zoo-detail-stage")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: action }));
     expect(selectRoute).toHaveBeenCalledExactlyOnceWith(route, modelId);
     expect(openLink).not.toHaveBeenCalled();
@@ -366,7 +369,7 @@ describe("Model Zoo dialog", () => {
     expect(
       screen.queryByRole("heading", { name: "Cellpose-SAM v2" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(/showing 1 of 8/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/showing 1 of 10/i);
 
     // Non-matching search shows explicit empty state with reset action
     fireEvent.change(search, { target: { value: "unmatched-modality-777" } });
@@ -410,6 +413,57 @@ describe("Model Zoo dialog", () => {
     expect(
       screen.queryByRole("heading", { name: "Cellpose-SAM v2" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("combines task, execution, and modality filters and resets them together", () => {
+    render(<ModelLibraryDialog onClose={vi.fn()} />);
+    const task = screen.getByRole("combobox", { name: "Filter models by task" });
+    const search = screen.getByRole("searchbox");
+    const execution = screen.getByRole("radiogroup", { name: /execution route/i });
+    fireEvent.change(task, { target: { value: "restore" } });
+    fireEvent.change(search, { target: { value: "confocal fluorescence" } });
+
+    expect(screen.getByRole("button", { name: "CARE · low-light 3D planaria" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "OrganoidTracker 2.0" })).toBeNull();
+    expect(within(execution).getByRole("radio", { name: "External (1)" })).toBeInTheDocument();
+    fireEvent.click(within(execution).getByRole("radio", { name: "Local (0)" }));
+    expect(screen.getByRole("status")).toHaveTextContent(/no models match/i);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset search & filter" }));
+    expect(task).toHaveValue("all");
+    expect(search).toHaveValue("");
+    expect(within(execution).getByRole("radio", { name: "All (10)" })).toHaveAttribute("aria-checked", "true");
+    fireEvent.change(task, { target: { value: "track" } });
+    expect(screen.getByRole("button", { name: "OrganoidTracker 2.0" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "CARE · low-light 3D planaria" })).toBeNull();
+  });
+
+  it("leaves the restored image picker available when tracking needs a time series", () => {
+    const selectRoute = vi.fn();
+    render(
+      <ModelLibraryDialog
+        onClose={vi.fn()}
+        onSelectWorkbenchRoute={selectRoute}
+        workbenchRouteUnavailableReason="Open an image first."
+        getWorkbenchRouteUnavailableReason={(route) =>
+          route === "open-restored-volume" ? null : "Open a calibrated 3D time series first."
+        }
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "OrganoidTracker 2.0" }));
+    const track = screen.getByRole("button", { name: "Open Track over time" });
+    expect(track).toBeDisabled();
+    expect(track).toHaveAccessibleDescription("Open a calibrated 3D time series first.");
+    fireEvent.click(track);
+    expect(selectRoute).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Model Zoo" }));
+    fireEvent.click(screen.getByRole("button", { name: "CARE · low-light 3D planaria" }));
+    const restore = screen.getByRole("button", { name: "Open restored volume…" });
+    expect(restore).toBeEnabled();
+    fireEvent.click(restore);
+    expect(selectRoute).toHaveBeenCalledExactlyOnceWith("open-restored-volume", "care-planaria-3d");
   });
 
   it("opens contextual detail without nested dialogs, provides aligned keyboard-accessible comparison for pairs, and enforces fixed-ID links & plain credit addresses", () => {

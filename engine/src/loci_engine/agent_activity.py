@@ -134,6 +134,52 @@ def collect_targets(project, payload: Any) -> list[dict[str, Any]]:
                 if _id(bound_source):
                     source_target(bound_source, job["request"].get("selection"))
                 add({"kind": "job", "id": job_id})
+        model_id = value.get("model_id")
+        if _id(model_id):
+            model_docs = project.documents("model", document_id=model_id)
+            if model_docs:
+                mdoc = model_docs[0]
+                pkg_sha = mdoc.get("data", {}).get("package", {}).get("package_sha256")
+                mtarget: dict[str, Any] = {
+                    "kind": "model",
+                    "id": model_id,
+                    "revision": mdoc["revision"],
+                }
+                if _sha(pkg_sha):
+                    mtarget["sha256"] = pkg_sha
+                add(mtarget)
+        preview_id = value.get("preview_id")
+        if _id(preview_id):
+            pdocs = project.documents("model_preview", document_id=preview_id)
+            if pdocs:
+                pdoc = pdocs[0]
+                pdata = pdoc.get("data", {})
+                pdigest = (
+                    value["preview_sha256"]
+                    if _sha(value.get("preview_sha256"))
+                    else pdata.get("preview_sha256")
+                )
+                ptarget: dict[str, Any] = {
+                    "kind": "model_preview",
+                    "id": preview_id,
+                    "revision": pdoc["revision"],
+                }
+                if _sha(pdigest):
+                    ptarget["sha256"] = pdigest
+                psource = pdata.get("source", {})
+                if isinstance(psource, dict):
+                    ch_sha = psource.get("channel_metadata_sha256")
+                    if _sha(ch_sha):
+                        ptarget["channel_metadata_sha256"] = ch_sha
+                    if _id(psource.get("id")):
+                        source_target(psource["id"], psource.get("selection"))
+                add(ptarget)
+                if (
+                    _id(pdata.get("model_id"))
+                    and ("model_preview", preview_id) not in visited_documents
+                ):
+                    visited_documents.add(("model_preview", preview_id))
+                    visit({"model_id": pdata["model_id"]}, depth + 1)
         for key, kind in DOCUMENT_KEYS.items():
             document_id = value.get(key)
             if not _id(document_id):
@@ -265,6 +311,45 @@ def targets_stale(project, targets, *, verify_sources=False) -> bool:
                 from .volume_view_mailbox import _current
 
                 _current(project, identity, target["live_token"])
+            elif kind == "model":
+                docs = project.documents("model", document_id=identity)
+                if not docs:
+                    return True
+                doc = docs[0]
+                if doc["revision"] != target.get("revision"):
+                    return True
+                data = doc.get("data", {})
+                if "private_path" not in data:
+                    return True
+                if (
+                    target.get("sha256") is not None
+                    and data.get("package", {}).get("package_sha256") != target["sha256"]
+                ):
+                    return True
+            elif kind == "model_preview":
+                docs = project.documents("model_preview", document_id=identity)
+                if not docs:
+                    return True
+                doc = docs[0]
+                if doc["revision"] != target.get("revision"):
+                    return True
+                data = doc.get("data", {})
+                if (
+                    target.get("sha256") is not None
+                    and data.get("preview_sha256") != target["sha256"]
+                ):
+                    return True
+                expected_ch = target.get("channel_metadata_sha256")
+                if expected_ch is not None:
+                    from .workbench import Workbench
+
+                    wb = Workbench(project)
+                    try:
+                        ch_decl = wb.channel_metadata(data["source"]["id"])
+                    finally:
+                        wb.close()
+                    if hashlib.sha256(canonical_json(ch_decl).encode()).hexdigest() != expected_ch:
+                        return True
             elif kind in set(DOCUMENT_KEYS.values()):
                 docs = project.documents(kind, document_id=identity)
                 if not docs:
@@ -291,6 +376,15 @@ def targets_stale(project, targets, *, verify_sources=False) -> bool:
 def response_targets(project, body):
     """Promote opaque ids only in native, typed response containers."""
     payload = dict(body)
+    preview_item = body.get("preview")
+    if (
+        isinstance(preview_item, dict)
+        and preview_item.get("schema") == "loci.model-preview/v1"
+        and _id(preview_item.get("id"))
+    ):
+        payload["preview_id"] = preview_item["id"]
+        if _sha(preview_item.get("preview_sha256")):
+            payload["preview_sha256"] = preview_item["preview_sha256"]
     for key, field in (
         ("job", "job_id"),
         ("result", "result_id"),

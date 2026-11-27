@@ -154,8 +154,24 @@ def _result(agent, workbench, identity, revision=None, *, _seen=None):
     runtime = result["provenance"].get("runtime")
     if not isinstance(runtime, dict):
         raise PermissionError("Result runtime identity is unverifiable")
+    if result.get("kind") == "model-segmentation" or "model_preview" in result["provenance"]:
+        from .research_models import onnx_runtime_identity_from_record
+
+        runtime = onnx_runtime_identity_from_record(runtime)
     agent.policy.require_runtime(runtime)
-    agent.policy.require_model(result["provenance"].get("model"))
+    model = result["provenance"].get("model")
+    if result.get("kind") == "adaptive-segmentation":
+        from .profiles import DEFAULT_PROFILE_ID, resolve_profile
+
+        profile = resolve_profile(DEFAULT_PROFILE_ID)
+        if model != {
+            "profile": profile.provenance_dict(),
+            "rights": profile.rights.to_dict(),
+            "validation": profile.validation.to_dict(),
+        }:
+            raise PermissionError("The retained adaptive watershed profile is unverifiable")
+    else:
+        agent.policy.require_model(model)
     from .agent_actions import source_scope
 
     provenance = result["provenance"]

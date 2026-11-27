@@ -11,6 +11,8 @@ import type {
   ResearchSource,
 } from "../shared/research-contracts";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
+import { AgentConnectionReceipt } from "./AgentConnectionReceipt";
+import sessionFixture from "./__fixtures__/agent-sessions-snapshot.json";
 
 afterEach(cleanup);
 
@@ -81,6 +83,47 @@ function renderPanel(
 }
 
 describe("ResearchAgentPanel", () => {
+  it("adds the installed nuclei model only after a separate grant on a native plane", async () => {
+    const plane = { ...selection };
+    delete plane.z_stop;
+    const create = vi.fn().mockResolvedValue(null);
+    const execute = vi.fn(async (_op: string, request: Record<string, unknown>) => ({
+      ...validation, selection: request.selection,
+    }));
+    const { props, rerender } = renderPanel(bridge(execute, create), source, plane);
+    const operations: ResearchSnapshot["operations"] = {
+      classical_run: { summary: "Classical segmentation", mutates: true, agent_execution: "task" },
+      model_list: { summary: "Installed models", mutates: false, agent_execution: "read" },
+      model_preview: { summary: "Preview", mutates: false, agent_execution: "task" },
+      model_run: { summary: "Adopt", mutates: true, agent_execution: "task" },
+    };
+    rerender(<ResearchAgentPanel {...props} operations={operations} nucleiModelReady />);
+    const access = screen.getByLabelText("Assistant access level");
+    fireEvent.change(access, { target: { value: "analyze" } });
+    const optIn = screen.getByLabelText("Use installed nuclei ONNX model");
+    const grant = screen.getByRole("button", { name: /Grant selected access/ });
+    expect(optIn).not.toBeChecked();
+    await waitFor(() => expect(grant).toBeEnabled());
+    fireEvent.click(grant);
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create.mock.calls[0][0].actions).toEqual(["classical_run"]);
+    expect(create.mock.calls[0][0]).not.toHaveProperty("allow_nuclei_model");
+
+    fireEvent.click(optIn);
+    fireEvent.click(grant);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    expect(create.mock.calls[1][0]).toMatchObject({
+      allow_nuclei_model: true, actions: Object.keys(operations).sort(),
+    });
+    fireEvent.change(access, { target: { value: "full" } });
+    expect(screen.getByLabelText("Use installed nuclei ONNX model")).not.toBeChecked();
+    rerender(<ResearchAgentPanel {...props} operations={operations} nucleiModelReady selection={selection} />);
+    fireEvent.click(screen.getByLabelText("Use installed nuclei ONNX model"));
+    expect(screen.getByText("Select one native Z plane of a scalar image.")).toBeVisible();
+    expect(grant).toBeDisabled();
+    await waitFor(() => expect(execute).toHaveBeenLastCalledWith("validate_recipe", expect.objectContaining({ selection })));
+  });
+
   it("requires explicit task sharing and all disclosures without granting execution", async () => {
     const createAgentAccess = vi.fn().mockResolvedValue(null);
     const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue(validation), createAgentAccess));
@@ -91,7 +134,8 @@ describe("ResearchAgentPanel", () => {
     expect(screen.getByRole("button", { name: /Grant selected access/ })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Assistant access level"), { target: { value: "inspect" } });
     fireEvent.click(screen.getByText("Customize permissions"));
-    expect(screen.getByLabelText("Share plans and assessments")).toBeChecked();
+    expect(screen.getByLabelText("Share plans and assessments")).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText("Share plans and assessments"));
     expect(screen.getByLabelText("Allow durable recipe runs and result reads")).not.toBeChecked();
     expect(screen.getByText(/Resulting tool scope:/).closest("p")).toHaveTextContent("agent_task_read, agent_task_write");
     fireEvent.click(screen.getByLabelText("Disclose measurements"));
@@ -165,7 +209,8 @@ describe("ResearchAgentPanel", () => {
       disclosures: request.disclosures,
       operations: ["inspect_source", "validate_recipe", "analysis_context", "preview_recipe", "submit_recipe",
         "job_status", "cancel_job", "result", "result_view", "export_result", "source_image", "source_display",
-        "set_source_display", "review_history", "study_results", "review_result", "validate_action", "inspect_action", "submit_action"],
+        "set_source_display", "review_history", "study_results", "review_result", "validate_action", "inspect_action", "submit_action",
+        "agent_task_read", "agent_task_write"],
     })) as NonNullable<ResearchDesktopApi["createAgentAccess"]>;
     const api = bridge(vi.fn().mockResolvedValue(validation), createAgentAccess);
     const props = { api, source, selection, recipe, operations, studySources: [source, second],
@@ -327,6 +372,7 @@ describe("ResearchAgentPanel", () => {
     fireEvent.change(screen.getByLabelText("Agent concurrency"), { target: { value: "2" } });
     fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
     await waitFor(() => expect(createAgentAccess).toHaveBeenCalledWith({
+      client: "codex",
       source_id: source.id,
       selection,
       recipe,
@@ -342,7 +388,7 @@ describe("ResearchAgentPanel", () => {
     expect(ready).not.toHaveTextContent("/Users/");
     const policyHash = within(ready).getByText(receipt.policy_sha256);
     expect(policyHash).not.toBeVisible();
-    fireEvent.click(within(ready).getByText("Technical record"));
+    fireEvent.click(within(ready).getByText("Connection record"));
     expect(policyHash).toBeVisible();
   });
 
@@ -550,8 +596,8 @@ describe("ResearchAgentPanel", () => {
     expect(createAgentAccess).toHaveBeenCalledWith(
       expect.objectContaining({ permission_mode: "ask_approval" }),
     );
-    expect(readyCard).toHaveTextContent("not connected yet");
-    expect(readyCard).toHaveTextContent("Bundle ready · Waiting for MCP client connection");
+    expect(readyCard).toHaveTextContent("Waiting for your assistant");
+    expect(within(readyCard).getByRole("button", { name: "Copy prompt" })).toBeVisible();
     expect(onCreated).toHaveBeenCalledOnce();
   });
 
@@ -560,7 +606,9 @@ describe("ResearchAgentPanel", () => {
 it("points file-based vision clients to Agent and keeps source fingerprints in a closed record", () => {
   renderPanel(bridge(vi.fn()));
   fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "web" } });
-  expect(screen.getByText(/Agent → Export vision handoff/)).toBeVisible();
+  expect(screen.getByText(/attach them to your chat/)).toBeVisible();
+  expect(screen.queryByLabelText("Assistant access level")).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "codex" } });
   expect(screen.queryByText(/Display → Export vision handoff/)).not.toBeInTheDocument();
   const scope = screen.getByLabelText("Exact agent source and scope");
   const fingerprint = within(scope).getByText(source.sha256);
@@ -608,7 +656,7 @@ describe("explicit shared 3D grants", () => {
     fireEvent.click(screen.getByText("Validate exact scope and recipe")); await screen.findByLabelText("Exact recipe validation");
     fireEvent.click(screen.getByLabelText("Allow shared 3D scene inspection")); discloseScene();
     fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
-    expect(await screen.findByLabelText("Created agent access receipt")).toHaveTextContent("not connected yet");
+    expect(await screen.findByLabelText("Created agent access receipt")).toHaveTextContent("Waiting for your assistant");
     expect(createAgentAccess).toHaveBeenCalledWith(expect.objectContaining({
       selection: fullSelection, allow_run: false, allow_preview: false, allow_export: false,
       volume_views: { read: true, write: false, image: false, fields: [] },
@@ -691,4 +739,50 @@ describe("explicit shared 3D grants", () => {
     expect(screen.getByLabelText("Allow changes to selected 3D view settings")).not.toBeChecked();
     expect(screen.getByLabelText("Allow images from the live 3D workspace")).not.toBeChecked();
   });
+});
+
+it("grants the selected Antigravity workspace without changing its permission set", async () => {
+  const minimal: ResearchAgentAccessReceipt = { ...receipt, operations: ["inspect_source", "validate_recipe"], disclosures: [],
+    antigravity_workspace: "antigravity-workspace", antigravity_config_filename: "antigravity-workspace/.agents/mcp_config.json",
+    verification_prompt: "Use this Loci workspace to inspect the selected source." };
+  const create = vi.fn().mockResolvedValue(minimal);
+  const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue(validation), create));
+  fireEvent.change(screen.getByLabelText("Assistant client"), { target: { value: "antigravity" } });
+  fireEvent.click(screen.getByRole("button", { name: "Validate exact scope and recipe" }));
+  await screen.findByLabelText("Exact recipe validation");
+  fireEvent.click(screen.getByRole("button", { name: /Grant selected access/ }));
+  const connection = await screen.findByLabelText("Created agent access receipt");
+  for (const busy of [true, false]) rerender(<ResearchAgentPanel {...props} busy={busy} />);
+  expect(screen.getAllByLabelText("Created agent access receipt")).toHaveLength(1);
+  expect(create).toHaveBeenCalledWith(expect.objectContaining({ client: "antigravity", allow_run: false, disclosures: [] }));
+  expect(within(connection).getByRole("heading")).toHaveTextContent("Waiting for your assistant");
+  const firstPrompt = within(connection).getByLabelText("First prompt");
+  expect(firstPrompt).toHaveValue(minimal.verification_prompt);
+  expect(firstPrompt).not.toBeVisible();
+  fireEvent.click(within(connection).getByText("View first prompt"));
+  expect(firstPrompt).toBeVisible();
+  expect(screen.getByLabelText("Assistant access level")).not.toBeVisible();
+  fireEvent.click(screen.getByText("Create another grant"));
+  expect(screen.getByLabelText("Assistant access level")).toBeVisible();
+});
+
+it("uses the live session's declared client, exact study and grant when checking a connection", async () => {
+  const scope = sessionFixture as unknown as NonNullable<ResearchSnapshot["agent_sessions"]>;
+  const check = vi.fn().mockResolvedValue(undefined);
+  const open = vi.fn();
+  const options = { receipt, client: "codex", onCheck: check, onOpenWorkspace: open };
+  const { rerender } = render(<AgentConnectionReceipt {...options} sessions={scope} />);
+  fireEvent.click(screen.getByRole("button", { name: "Check connection" }));
+  await screen.findByText(/No active session for this setup/);
+  expect(check).toHaveBeenCalledOnce();
+  const live = { ...scope.sessions[0], project_id: receipt.project_id, policy_sha256: receipt.policy_sha256, client_id: "antigravity-client" };
+  rerender(<AgentConnectionReceipt {...options} sessions={{ ...scope, sessions: [live] }} />);
+  expect(screen.queryByLabelText("First prompt")).not.toBeInTheDocument();
+  expect(screen.getByRole("heading")).toHaveTextContent("Antigravity connected");
+  fireEvent.click(screen.getByRole("button", { name: "View agent workspace" }));
+  expect(open).toHaveBeenCalledOnce();
+  rerender(<AgentConnectionReceipt {...options} sessions={{ ...scope, sessions: [live], policies: [{ ...scope.policies[0],
+    project_id: receipt.project_id, policy_sha256: receipt.policy_sha256, revoked: true }] }} />);
+  expect(screen.getByRole("heading")).toHaveTextContent("Access revoked");
+  expect(screen.queryByRole("button", { name: "Copy prompt" })).toBeNull();
 });
