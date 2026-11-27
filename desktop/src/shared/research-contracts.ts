@@ -383,6 +383,8 @@ export type ResearchAgentSessionState =
 export interface ResearchAgentAccessRequest {
   client?: "codex" | "antigravity" | "claude" | "other";
   allow_nuclei_model?: boolean;
+  allow_cellpose_model?: boolean;
+  cellpose_measurement_channels?: number[];
   allow_workflow_graph?: boolean;
   allow_task_records?: boolean;
   source_id: string;
@@ -409,13 +411,15 @@ export interface ResearchAgentAccessRequest {
 }
 export interface ResearchAgentAccessReceipt {
   nuclei_model_sha256?: string;
+  cellpose_model_sha256?: string;
+  cellpose_scope?: { source_id: string; selection: ResearchSelection; measurement_channels: number[] };
   verification_prompt?: string;
   codex_workspace?: "codex-workspace";
   codex_config_filename?: "codex-workspace/.codex/config.toml";
   antigravity_workspace?: "antigravity-workspace";
   antigravity_config_filename?: "antigravity-workspace/.agents/mcp_config.json";
   antigravity_plugin_filename?: string;
-  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5" | "loci.agent-policy/v7";
+  schema: "loci.agent-policy/v1" | "loci.agent-policy/v3" | "loci.agent-policy/v4" | "loci.agent-policy/v5" | "loci.agent-policy/v7" | "loci.agent-policy/v8";
   volume_views?: ResearchAgentVolumeAccess;
   policy_sha256: string;
   project_id: string;
@@ -1106,6 +1110,10 @@ export interface ResearchDesktopApi {
   ): Promise<ResearchAgentAccessReceipt | null>;
   revealAgentSetup?(policySha256: string): Promise<void>;
   copyAgentLaunch?(policySha256: string): Promise<void>;
+  copyAgentWorkspacePath?(policySha256: string): Promise<void>;
+  canOpenAgentHost?(policySha256: string): Promise<boolean>;
+  /** Returns true when macOS accepts the workspace-open request. Check the journal for a live session. */
+  openAgentHost?(policySha256: string): Promise<boolean>;
   /** Controls active MCP sessions, permission modes, and single-use approval records. */
   controlAgentSession?(
     request: ResearchAgentControlRequest,

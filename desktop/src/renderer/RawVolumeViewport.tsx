@@ -25,15 +25,16 @@ import vtkVolume from "@kitware/vtk.js/Rendering/Core/Volume";
 import vtkVolumeMapper from "@kitware/vtk.js/Rendering/Core/VolumeMapper";
 import { BlendMode } from "@kitware/vtk.js/Rendering/Core/VolumeMapper/Constants";
 import vtkGenericRenderWindow from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
-import { type KeyboardEvent as ReactKeyboardEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VolumeFigureExportReceipt, VolumeFigureExportRequest, VolumeFigurePayloadRecord, VolumeLevelZeroIndexTransform } from "../shared/research-contracts";
 import { validateVolumeFocusGeometry, validateVolumeLevelZeroSampling, volumeLevelZeroGeometry,
   worldAtVolumeIndex } from "../shared/volume-coordinate-mapping";
 import { HistogramPlot, type HistogramRecord } from "./DisplayHistogram";
 import { buildRawVolumeHistograms, type RawVolumeHistogramRecord } from "./raw-volume-histogram";
-import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, SlidersHorizontal } from "lucide-react";
+import { ArrowLeftRight, Grid2X2, Maximize2, Minimize2, Box, RotateCcw, SlidersHorizontal } from "lucide-react";
 import { MprSlicePane } from "./MprSlicePane";
-import { indexToWorld, mprPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { indexToWorld, mprPlanes, sourceGridPlanes, worldToIndex, type MprScalars, type Vec3 } from "./mpr-reslice";
+import { orientToSourcePlane, panVolumeCamera, wheelZoomFactor, zoomVolumeCamera } from "./volume-camera";
 import { VolumeWorkspaceControls } from "./VolumeWorkspaceControls";
 import { labelBoundaryMesh, labelGeometry, mprCanvasSignature, pickLabelRay, verifyVolumeLabels, type VolumeLabelPayload, type VerifiedVolumeLabels, type VolumeLabelStyle } from "./volume-label-display";
 import type { VolumeSceneAdapter, VolumeViewState, VolumeSceneSnapshot, VolumePane } from "./volume-scene-types";
@@ -697,6 +698,7 @@ export function RawVolumeViewport({
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
+  const settingsRef = useRef<HTMLDetailsElement>(null);
   const sceneRef = useRef<any>(null);
   const [verifiedLabels, setVerifiedLabels] = useState<VerifiedVolumeLabels | null>(null);
   const [labelError, setLabelError] = useState<string | null>(null);
@@ -705,8 +707,21 @@ export function RawVolumeViewport({
   const [boundCrosshair, setBoundCrosshair] = useState<{ binding: string; source: Vec3 } | null>(null);
   const liveEpochRef = useRef(0);
   const gestureRef = useRef(false);
+  const wheelTimer = useRef<number | null>(null);
   const sceneLockedRef = useRef(false);
   const [sceneLocked, setSceneLocked] = useState(false);
+  useEffect(() => {
+    const dismissOutside = (event: PointerEvent | FocusEvent) => {
+      const settings = settingsRef.current;
+      if (settings?.open && event.target instanceof Node && !settings.contains(event.target)) settings.open = false;
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside);
+    };
+  }, []);
   const [targetLongAxis, setTargetLongAxis] = useState(128);
   const focusRequestGeneration = useRef(0);
   const snapshotRef = useRef<() => VolumeSceneSnapshot | null>(() => null);
@@ -922,7 +937,6 @@ export function RawVolumeViewport({
         vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 3 }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 1, shift: true }),
-        vtkMouseCameraTrackballZoomManipulator.newInstance({ dragEnabled: false, scrollEnabled: true }),
         vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 2, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballRotateManipulator.newInstance({ button: 1, alt: true, useFocalPointAsCenterOfRotation: true }),
         vtkMouseCameraTrackballPanManipulator.newInstance({ button: 2, shift: true }),
@@ -998,6 +1012,41 @@ export function RawVolumeViewport({
           record.image.getPointData().getScalars()?.delete(); record.image.delete();
         });
       } finally { releaseRenderWindow(); }
+    };
+  }, [rendererGeneration]);
+
+  useEffect(() => {
+    const scene = sceneRef.current;
+    const stage = containerRef.current;
+    if (!stage || !scene) return;
+    const interactor = scene.renderWindow.getInteractor();
+    const wheel = (event: WheelEvent) => {
+      // Consume the native wheel before vtk's bubbling interactor. Chromium
+      // delivers trackpad pinch through this same event with ctrlKey set.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (sceneLockedRef.current || scene.contextLost || !scene.activeCamera) return;
+      const factor = wheelZoomFactor(event, stage.clientHeight);
+      if (!Number.isFinite(factor) || factor === 1) return;
+      try {
+        zoomVolumeCamera(scene.renderer.getActiveCamera(), factor);
+        scene.renderer.resetCameraClippingRange();
+        scene.stateEpoch++;
+        liveEpochRef.current++;
+        if (wheelTimer.current === null) interactor.requestAnimation(wheel);
+        else window.clearTimeout(wheelTimer.current);
+        wheelTimer.current = window.setTimeout(() => {
+          wheelTimer.current = null;
+          interactor.cancelAnimation(wheel);
+          changedRef.current?.();
+        }, 160);
+      } catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Could not zoom the volume camera."); }
+    };
+    stage.addEventListener("wheel", wheel, { capture: true, passive: false });
+    return () => {
+      stage.removeEventListener("wheel", wheel, true);
+      if (wheelTimer.current !== null) window.clearTimeout(wheelTimer.current);
+      wheelTimer.current = null;
     };
   }, [rendererGeneration]);
 
@@ -1382,19 +1431,23 @@ export function RawVolumeViewport({
     }
   }, [focusContainsCrosshair, verifiedPlanes, volume]);
 
-  const resetCamera = () => {
+  const changeCamera = (change: (camera: vtkCamera, extent: ExtentCamera) => void) => {
     const scene = sceneRef.current;
-    if (!scene || scene.contextLost) return;
+    if (sceneLockedRef.current || !scene?.activeCamera || scene.contextLost ||
+        scene.imageRecords[0]?.payload !== volume?.context) return;
     try {
-      const initial = scene.activeCamera?.fitted;
-      if (!initial) return;
-      restoreVolumeCamera(scene.renderer.getActiveCamera(), initial);
-      scene.renderer.resetCameraClippingRange?.();
-      scene.orientationWidget.updateMarkerOrientation(); scene.renderWindow.render();
+      const camera = scene.renderer.getActiveCamera();
+      change(camera, scene.activeCamera);
+      scene.renderer.resetCameraClippingRange();
+      scene.orientationWidget.updateMarkerOrientation();
+      scene.renderWindow.render();
       scene.stateEpoch += 1;
+      changedRef.current?.();
     }
-    catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Could not reset the volume camera."); }
+    catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Could not move the volume camera."); }
   };
+
+  const resetCamera = () => changeCamera((camera, extent) => restoreVolumeCamera(camera, extent.fitted));
 
   const moveSlice = (axis: 0 | 1 | 2, delta: number) => {
     if (!volume) return;
@@ -1404,31 +1457,24 @@ export function RawVolumeViewport({
   };
 
   const onStageKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const key = event.key.toLowerCase();
-    if (key === "r") { event.preventDefault(); resetCamera(); return; }
-    if (mode === "mpr") {
-      const action = event.key === "ArrowLeft" ? [0, -1] : event.key === "ArrowRight" ? [0, 1]
-        : event.key === "ArrowUp" ? [1, 1] : event.key === "ArrowDown" ? [1, -1]
-          : event.key === "PageUp" ? [2, 1] : event.key === "PageDown" ? [2, -1] : null;
-      if (action) { event.preventDefault(); moveSlice(action[0] as 0 | 1 | 2, action[1]); }
-      return;
-    }
-    const scene = sceneRef.current;
-    const camera = scene?.renderer.getActiveCamera?.();
-    if (!camera || scene.contextLost) return;
-    try {
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight")
-        camera.azimuth(event.key === "ArrowLeft" ? -5 : 5);
-      else if (event.key === "ArrowUp" || event.key === "ArrowDown")
-        camera.elevation(event.key === "ArrowUp" ? 5 : -5);
-      else if (["+", "=", "-", "_"].includes(event.key))
-        camera.dolly(["+", "="].includes(event.key) ? 1.1 : 0.9);
-      else return;
-      event.preventDefault(); camera.orthogonalizeViewUp?.();
-      scene.renderer.resetCameraClippingRange?.(); scene.orientationWidget.updateMarkerOrientation();
-      scene.renderWindow.render();
-      scene.stateEpoch += 1;
-    } catch (caught) { setRenderError(caught instanceof Error ? caught.message : "Could not move the volume camera."); }
+    const x = key === "arrowright" ? 1 : key === "arrowleft" ? -1 : 0;
+    const y = key === "arrowup" ? 1 : key === "arrowdown" ? -1 : 0;
+    if (key === "r") resetCamera();
+    else if (["+", "=", "-", "_"].includes(key))
+      changeCamera(camera => zoomVolumeCamera(camera, key === "+" || key === "=" ? 1.1 : 1 / 1.1));
+    else if (event.shiftKey && (x || y)) changeCamera(camera => panVolumeCamera(camera, x, y));
+    else if (mode === "mpr" && (x || y || key === "pageup" || key === "pagedown"))
+      moveSlice(x ? 0 : y ? 1 : 2, x || y || (key === "pageup" ? 1 : -1));
+    else if (x || y) changeCamera(camera => {
+      if (x) camera.azimuth(x * 5);
+      else camera.elevation(y * 5);
+      camera.orthogonalizeViewUp();
+    });
+    else return;
+    event.preventDefault();
+    event.stopPropagation();
   };
 
   const requestFocus = () => {
@@ -1464,6 +1510,7 @@ export function RawVolumeViewport({
         activeModeDetails.shade, renderMode, quality,
       );
       if (scene.contextLost || contextState !== "ready" || scene.binding !== expectedBinding ||
+          wheelTimer.current !== null ||
           scene.renderStateSignature !== expectedRenderState ||
           scene.imageRecords[0]?.payload !== volume.context ||
           (volume.focus && scene.imageRecords[1]?.payload !== volume.focus))
@@ -1652,6 +1699,8 @@ export function RawVolumeViewport({
   }, [sceneRevision, volume]);
 
   const slicePlanes = useMemo(() => activePayload ? mprPlanes(activePayload) : [], [activePayload]);
+  const cameraReady = Boolean(activePayload && verifiedPlanes?.volume === volume && contextState === "ready" && !renderError && !error);
+  const sourcePlanes = useMemo(() => activePayload && cameraReady ? sourceGridPlanes(activePayload.direction_3x3) : [], [activePayload, cameraReady]);
   const sliceValues = verifiedPlanes?.volume === volume ? verifiedPlanes?.values[detailView === "focus" && volume?.focus ? 1 : 0] : null;
   const showFour = layout === "four";
   const togglePane = (id: string) => { invalidateFigureCapture(); setExpandedPane((current) => current === id ? null : id); };
@@ -1720,6 +1769,20 @@ export function RawVolumeViewport({
     }
   };
 
+  const resizeSplitByKey = (axis: "col" | "row", event: ReactKeyboardEvent) => {
+    const change = axis === "col" ? setColSplit : setRowSplit;
+    const smaller = axis === "col" ? "ArrowLeft" : "ArrowUp";
+    const larger = axis === "col" ? "ArrowRight" : "ArrowDown";
+    if (event.key === "Home") change(20);
+    else if (event.key === "End") change(80);
+    else if (event.key === smaller || event.key === larger) {
+      const delta = event.key === smaller ? -1 : 1;
+      change(current => Math.min(80, Math.max(20, current + delta)));
+    } else if (event.key === "Enter") { setColSplit(50); setRowSplit(50); }
+    else return;
+    event.preventDefault();
+  };
+
   const locateLabel = () => {
     if (!verifiedLabels || !selectedLabel || !volume) return;
     const dims = verifiedLabels.payload.dimensions_xyz;
@@ -1781,7 +1844,7 @@ export function RawVolumeViewport({
     const available = rawReady && labelsReady && panesReady && !loading && !labelsLoading && !error && !renderError && !labelError && !labelsError && !meshError &&
       contextState === "ready" && verifiedPlanes?.volume === volume && (!labelResult || Boolean(boundLabels)) &&
       scene.imageRecords[0]?.payload === volume.context && (!volume.focus || scene.imageRecords[1]?.payload === volume.focus);
-    return { state, liveEpoch: liveEpochRef.current, rendererGeneration, busy: gestureRef.current || isDraggingSplit || exporting, available };
+    return { state, liveEpoch: liveEpochRef.current, rendererGeneration, busy: gestureRef.current || wheelTimer.current !== null || isDraggingSplit || exporting, available };
   };
 
   useEffect(() => {
@@ -1813,7 +1876,7 @@ export function RawVolumeViewport({
     snapshot: () => snapshotRef.current(),
     lock: (locked) => { sceneLockedRef.current = locked; setSceneLocked(locked); },
     apply: async (state) => {
-      if (!sceneLockedRef.current || gestureRef.current || !volume) throw new Error("The volume must be idle and locked before applying a shared scene.");
+      if (!sceneLockedRef.current || gestureRef.current || wheelTimer.current !== null || !volume) throw new Error("The volume must be idle and locked before applying a shared scene.");
       if (state.t !== volume.context.t || sceneKey(state.channels) !== sceneKey(volume.context.components.map(c => c.channel_index)) ||
           state.result?.result_id !== (verifiedLabels?.payload.result.result_id) || state.result?.revision_hash !== (verifiedLabels?.payload.result.revision_hash))
         throw new Error("Load the exact source, channels and labels before applying this scene.");
@@ -1890,7 +1953,7 @@ export function RawVolumeViewport({
       onPointerDownCapture={(event) => { if (sceneLockedRef.current) { event.preventDefault(); event.stopPropagation(); return; } gestureRef.current = true; liveEpochRef.current++; }}
       onPointerUpCapture={() => { gestureRef.current = false; window.setTimeout(() => changedRef.current?.(), 0); }}
       onPointerCancelCapture={() => { gestureRef.current = false; changedRef.current?.(); }}
-      onWheelCapture={(event) => { if (sceneLockedRef.current) { event.stopPropagation(); return; } liveEpochRef.current++; window.setTimeout(() => changedRef.current?.(), 100); }}
+      onWheelCapture={(event) => { if (sceneLockedRef.current && !containerRef.current?.contains(event.target as Node)) event.stopPropagation(); }}
       onKeyDownCapture={(event) => { if (sceneLockedRef.current) { event.preventDefault(); event.stopPropagation(); return; } liveEpochRef.current++; window.setTimeout(() => changedRef.current?.(), 0); }}
       data-layout={showFour ? "four" : "single"}
       data-expanded-pane={expandedPane ?? "none"}
@@ -1905,133 +1968,119 @@ export function RawVolumeViewport({
       data-focus-native-steps={volume?.focus ? String(focusUsesNativeSteps) : undefined}
       data-transfer-ranges={transfers.map((component) => `${component.window.low}:${component.window.high}`).join(",")}
       data-transfer-range-basis={volume?.context.components.map((component) => component.provenance.range).join(",")}>
-      <div className="raw-volume-toolbar">
+      <div className="raw-volume-toolbar" role="group" aria-label="Volume view controls">
         <div className="raw-volume-segment" role="group" aria-label="Volume layout">
-          <button type="button" aria-pressed={showFour} onClick={() => { invalidateFigureCapture(); setLayout("four"); setExpandedPane(null); }}><Grid2X2 aria-hidden="true" />Four panes</button>
-          <button type="button" aria-pressed={!showFour} onClick={() => { invalidateFigureCapture(); setLayout("single"); setExpandedPane(null); }}><Box aria-hidden="true" />3D view</button>
+          <button type="button" aria-label="Four panes" title="Four panes" aria-pressed={showFour} onClick={() => { invalidateFigureCapture(); setLayout("four"); setExpandedPane(null); }}><Grid2X2 aria-hidden="true" /><span>Four panes</span></button>
+          <button type="button" aria-label="3D view" title="Single 3D view" aria-pressed={!showFour} onClick={() => { invalidateFigureCapture(); setLayout("single"); setExpandedPane(null); }}><Box aria-hidden="true" /><span>3D view</span></button>
         </div>
-        {volume?.focus ? <div className="raw-volume-segment" role="group" aria-label="Displayed volume extent">
-          <button type="button" aria-pressed={detailView === "context"} onClick={() => { invalidateFigureCapture(); setDetailView("context"); }}>Whole</button>
-          <button type="button" aria-pressed={detailView === "focus"} disabled={!focusContainsCrosshair}
-            title={focusContainsCrosshair ? "Show detail around the current crosshair" : "Move the crosshair into this focus region, or request new detail"}
-            onClick={() => { invalidateFigureCapture(); setDetailView("focus"); }}>Focus</button>
-        </div> : null}
-        <button type="button" onClick={resetCamera} title="Fit the active volume and restore its initial view">Reset camera</button>
-        {mode === "volume" && (
-          <>
-            <label className="raw-volume-control" title="Volume rendering mode">
-              <span>Mode</span>
-              <select
-                aria-label="3D rendering mode"
-                value={renderMode}
-                onChange={(event) => {
-                  invalidateFigureCapture();
-                  const next = event.target.value as VolumeRenderMode;
-                  setRenderMode(next);
-                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode: next, quality });
-                }}
-              >
-                {Object.entries(RENDER_MODE_DETAILS).map(([key, details]) => (
-                  <option key={key} value={key} title={details.title}>
-                    {details.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </>
-        )}
-      </div>
-      <div className="raw-volume-options">
-        <details className="raw-volume-disclosure raw-volume-rendering-detail">
-          <summary>Rendering &amp; detail</summary>
-          <div className="raw-volume-advanced-controls">
-            {mode === "volume" && <>
-            <label className="raw-volume-quality-control" title="Raycasting sample density: lower for faster rendering, higher for sharper sub-voxel detail without aliasing">
-              <span>Quality</span>
-              <input
-                aria-label="3D rendering quality"
-                type="range"
-                min={10}
-                max={100}
-                step={5}
-                value={quality}
-                onChange={(event) => {
-                  invalidateFigureCapture();
-                  const next = Number(event.target.value);
-                  setQuality(next);
-                  onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode, quality: next });
-                }}
-              />
-              <span className="raw-volume-quality-val">{quality}%</span>
-            </label>
-            </>}
-            <label><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
-            {clipEnabled ? (
-              <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
-            ) : null}
-            {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
-              <label>Detail span<select aria-label="Detail span" value={detailSpan}
-                onChange={(event) => setDetailSpan(event.target.value)}>
-                <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
-                <option value="wide">256 × 256 × 64 voxels (XYZ)</option>
-              </select></label>
-              <button type="button" onClick={requestFocus}>Detail at crosshair</button>
-            </> : null}
+        <div className="raw-volume-segment" role="group" aria-label="Rendering mode">
+          <button type="button" aria-pressed={mode === "volume"} onClick={() => { invalidateFigureCapture(); setMode("volume"); }} title="Render the volume along each camera ray">Volume</button>
+          <button type="button" aria-pressed={mode === "mpr"} onClick={() => { invalidateFigureCapture(); setMode("mpr"); }} title="Show the three intersecting source-grid planes in 3D">MPR</button>
+        </div>
+        {mode === "volume" &&
+          <label className="raw-volume-control" title="Volume rendering mode">
+            <span className="raw-volume-mode-label">Mode</span>
+            <select
+              aria-label="3D rendering mode"
+              value={renderMode}
+              onChange={(event) => {
+                invalidateFigureCapture();
+                const next = event.target.value as VolumeRenderMode;
+                setRenderMode(next);
+                onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode: next, quality });
+              }}
+            >
+              {Object.entries(RENDER_MODE_DETAILS).map(([key, details]) => (
+                <option key={key} value={key} title={details.title}>
+                  {details.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        }
+        <details ref={settingsRef} className="raw-volume-disclosure raw-volume-rendering-detail"
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && event.currentTarget.open) {
+              event.preventDefault(); event.stopPropagation();
+              event.currentTarget.open = false;
+              event.currentTarget.querySelector("summary")?.focus();
+            }
+          }}>
+          <summary aria-label="Rendering & detail" title="Rendering & detail"><SlidersHorizontal aria-hidden="true" /><span>Rendering &amp; detail</span>
+            {clipEnabled && <small className="raw-volume-active-setting">Clip {(["X", "Y", "Z"] as const)[clipAxis]} · {clipPosition}%</small>}
+          </summary>
+          <div className="raw-volume-settings-panel">
+            {volume && crosshair && <fieldset>
+              <legend>Source crosshair</legend>
+              <div className="raw-volume-slices">
+                {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>
+                  {label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.source_dimensions_xyz[axis] - 1}
+                    value={crosshair.source[axis]} onChange={(event) => {
+                      invalidateFigureCapture();
+                      const point: Vec3 = [...crosshair.source];
+                      point[axis] = Number(event.target.value);
+                      setSourceCrosshair(point);
+                    }} /><output aria-label={`${label} source index`}>{crosshair.source[axis]}</output>
+                </label>)}
+                <span className="raw-volume-world">World {crosshair.world.map(value => value.toFixed(3)).join(", ")} {volume.context.unit}</span>
+              </div>
+            </fieldset>}
+            <fieldset><legend>Rendering &amp; sampling</legend>
+              <div className="raw-volume-advanced-controls">
+                {mode === "volume" && <label className="raw-volume-quality-control" title="Adjust ray sampling density for the rendered volume">
+                  <span>Quality</span>
+                  <input
+                    aria-label="3D rendering quality"
+                    type="range"
+                    min={10}
+                    max={100}
+                    step={5}
+                    value={quality}
+                    onChange={(event) => {
+                      invalidateFigureCapture();
+                      const next = Number(event.target.value);
+                      setQuality(next);
+                      onDisplayChange?.({ channels: transfers.length ? volumeDisplayChannels(transfers) : externalDisplay?.channels ?? [], renderMode, quality: next });
+                    }}
+                  />
+                  <span className="raw-volume-quality-val">{quality}%</span>
+                </label>}
+                <label title="Clip the volume rendering and visible 3D label surface"><input type="checkbox" checked={clipEnabled} onChange={(event) => { invalidateFigureCapture(); setClipEnabled(event.target.checked); }} />Clip</label>
+                {clipEnabled ? (
+                  <><label>Axis<select aria-label="Clipping axis" value={clipAxis} onChange={(event) => { invalidateFigureCapture(); setClipAxis(Number(event.target.value) as 0 | 1 | 2); }}><option value={0}>X</option><option value={1}>Y</option><option value={2}>Z</option></select></label><label>Position<input aria-label="Clipping position" type="range" min={0} max={100} value={clipPosition} onChange={(event) => { invalidateFigureCapture(); setClipPosition(Number(event.target.value)); }} /></label></>
+                ) : null}
+                {volume?.context.refinement?.focus_supported && onRequestRefinement ? <>
+                  <label>Detail span<select aria-label="Detail span" value={detailSpan}
+                    onChange={(event) => setDetailSpan(event.target.value)}>
+                    <option value={32}>32 voxels</option><option value={64}>64 voxels</option><option value={96}>96 voxels</option>
+                    <option value="wide">256 × 256 × 64 voxels (XYZ)</option>
+                  </select></label>
+                  <button type="button" onClick={requestFocus}>Detail at crosshair</button>
+                </> : null}
+              </div>
+            </fieldset>
+            <details className="raw-volume-controls-guide">
+              <summary>Controls &amp; sampling</summary>
+              <div className="raw-volume-guide-content">
+                <p><strong>Slice panes.</strong> {verifiedLabels ? "Click a label to select it. " : ""}Drag the crosshair to pick a location. Scroll or use ↑ and ↓ to step through slices.</p>
+                <p><strong>3D view.</strong> Drag to orbit. Right-drag or Shift-drag to pan. Scroll, pinch or Ctrl-drag to zoom. XY, XZ and YZ face the corresponding source plane.</p>
+                <p>{mode === "volume" ? "Arrow keys orbit." : "Arrow keys move the source X and Y indices. Page Up and Page Down move Z."} Shift plus an arrow key pans. + and − zoom. R restores the fitted camera for the active extent.</p>
+                {volume?.focus && mode === "volume" && <p>MIP shows the brightest sample along each ray through the focus volume.</p>}
+                <p><strong>Sampling.</strong> Raw slices use linear interpolation. {verifiedLabels && "Labels use nearest native sampling. The 3D label surface is a bounded voxel approximation. "}{activePayload?.frame === "image" ? "Slice panes follow source coordinates." : activePayload ? "Slice panes follow the radiological patient frame." : ""} The linked crosshair gives the level-zero source location. Use native source data for measurements.</p>
+                {onExportFigure && <p><strong>Figure export.</strong> The PNG records the 3D pane and its display provenance. Hide labels to export the raw-volume figure.</p>}
+              </div>
+            </details>
+            {onExportFigure ? <button type="button" disabled={exporting || loading || !volume || contextState !== "ready" || Boolean(error || renderError) || Boolean(verifiedLabels && labelStyle.visible)}
+              onClick={() => void exportFigure()} title={verifiedLabels && labelStyle.visible ? "Hide labels to export a raw-volume figure. Open Controls & sampling for the figure scope." : "Export the 3D pane with its exact display provenance; the separate slice panes are not included"}>
+              {exporting ? "Exporting…" : "Export PNG…"}
+            </button> : null}
           </div>
         </details>
-        {clipEnabled && <span className="raw-volume-active-setting" title="Clipping is enabled; open Rendering & detail to adjust it">Clip {(["X", "Y", "Z"] as const)[clipAxis]} · {clipPosition}%</span>}
-        <details className="raw-volume-disclosure raw-volume-controls-guide">
-          <summary>Controls &amp; sampling</summary>
-          <div className="raw-volume-guide-content">
-            <p><strong>Slice panes.</strong> {verifiedLabels ? "Click a label to select it. " : ""}Drag the crosshair; scroll or use ↑↓ to step through slices.</p>
-            <p><strong>3D view.</strong> {mode === "volume"
-              ? "Left-drag or Alt-drag to orbit; right-drag or Shift-drag to pan; scroll, pinch or Ctrl-drag to zoom. Press R to reset."
-              : "Arrow keys move X/Y; Page Up/Down moves Z. Left-drag to orient; right-drag to pan; scroll to zoom. Press R to reset."}</p>
-            {volume?.focus && mode === "volume" ? <p>For dense detail, choose MIP in 3D rendering mode to show the brightest sample along each ray.</p> : null}
-            <p><strong>Sampling.</strong> Raw slices use linear interpolation{verifiedLabels ? "; labels use nearest native sampling. The 3D label surface is a bounded voxel approximation for display" : ""}.</p>
-            {activePayload && <p>{activePayload.frame === "image" ? "Source-coordinate planes" : "Patient-frame planes · radiological orientation"} · linked crosshair · resliced display samples, not native measurements.</p>}
-            {onExportFigure && <p><strong>Figure export.</strong> Export PNG includes the 3D pane, with its exact display provenance. Separate slice panes are excluded. Hide labels to export a raw-volume figure.</p>}
-          </div>
-        </details>
-        {onExportFigure ? <button type="button" disabled={exporting || loading || !volume || contextState !== "ready" || Boolean(error || renderError) || Boolean(verifiedLabels && labelStyle.visible)}
-          onClick={() => void exportFigure()} title={verifiedLabels && labelStyle.visible ? "Hide labels to export a raw-volume figure. Controls & sampling explains the display bounds." : "Export the 3D pane with its exact display provenance; the separate slice panes are not included"}>
-          {exporting ? "Exporting…" : "Export PNG…"}
-        </button> : null}
       </div>
-      {onSelectLabel ? <VolumeWorkspaceControls resultName={labelResult?.name} revisionShort={labelResult?.revision_hash.slice(0, 8)}
-        selectedObject={selectedLabel} readiness={labelsLoading ? "loading" : !labelResult ? "raw-only" : verifiedLabels ? "ready" : "unavailable"}
-        busy={sceneLocked} error={labelsError || labelError} labelsVisible={labelStyle.visible} labelOpacity={labelStyle.opacity} selectedOnly={labelStyle.selected_only}
-        canLocate={Boolean(verifiedLabels && selectedLabel)} canCorrect={Boolean(verifiedLabels && selectedLabel && onCorrectLabel)}
-        correctionReason={selectedLabel ? "Corrections open on an exact native source plane and create a new measured result." : null}
-        selectionHiddenReason={selectedLabel && clipEnabled ? "Clipping may hide the selected object. Locate object moves the crosshair; clipping stays unchanged." : undefined}
-        onVisibilityChange={(visible) => setLabelStyle(s => ({ ...s, visible }))} onOpacityChange={(opacity) => setLabelStyle(s => ({ ...s, opacity }))}
-        onSelectedOnlyChange={(selected_only) => setLabelStyle(s => ({ ...s, selected_only }))} onLocateObject={locateLabel}
-        onCorrectObject={() => { if (verifiedLabels && selectedLabel) onCorrectLabel?.(selectedLabel, Math.max(0, Math.min(verifiedLabels.payload.dimensions_xyz[2] - 1, (crosshair?.source[2] ?? verifiedLabels.payload.source_offset_xyz[2]) - verifiedLabels.payload.source_offset_xyz[2]))); }}
-        onClearSelection={() => onSelectLabel(null)} /> : null}
-      {meshError ? <p className="raw-volume-export-status" role="status">{meshError}</p> : null}
-      {exportError ? <p className="raw-volume-export-status raw-volume-export-error" role="alert">{exportError}</p> : null}
-      {exportStatus ? <p className="raw-volume-export-status" role="status">{exportStatus}</p> : null}
-      {(showFour || mode === "mpr") && volume ? (
-        <div className="raw-volume-slices">
-          {(["X", "Y", "Z"] as const).map((label, axis) => <label key={label}>{label}<input aria-label={`${label} slice`} type="range" min={0} max={volume.context.source_dimensions_xyz[axis] - 1} value={crosshair?.source[axis] ?? 0} onChange={(event) => {
-            invalidateFigureCapture(); const point = (crosshair?.source ?? [0, 0, 0]).map((n, i) => i === axis ? Number(event.target.value) : n) as Vec3;
-            setSourceCrosshair(point);
-          }} /><output aria-label={`${label} source index`}>{crosshair?.source[axis]}</output></label>)}
-          {crosshair ? <span className="raw-volume-world">World {crosshair.world.map((value) => value.toFixed(3)).join(", ")} {volume.context.unit}</span> : null}
-        </div>
-      ) : null}
       <div
         ref={panesContainerRef}
         className={`raw-volume-panes ${showFour && !expandedPane ? "raw-volume-panes-four" : "raw-volume-panes-single"} ${isDraggingSplit ? "is-splitting" : ""}`}
-        style={
-          showFour && !expandedPane
-            ? {
-                gridTemplateColumns: `${colSplit}fr ${100 - colSplit}fr`,
-                gridTemplateRows: `${rowSplit}fr ${100 - rowSplit}fr`,
-                position: "relative",
-              }
-            : undefined
-        }
+        style={{ "--volume-column": `${colSplit}%`, "--volume-row": `${rowSplit}%` } as CSSProperties}
       >
         {slicePlanes.map((plane) => (
           <div
@@ -2040,13 +2089,13 @@ export function RawVolumeViewport({
             hidden={Boolean(!showFour || (expandedPane && expandedPane !== plane.id))}
             style={{ order: paneOrder.indexOf(plane.id) >= 0 ? paneOrder.indexOf(plane.id) : 0 }}
           >
-            {showFour && activePayload && sliceValues && crosshair ? (
+            {activePayload && sliceValues && crosshair ? (
               <MprSlicePane
                 payload={activePayload}
                 values={sliceValues}
                 plane={plane}
                 crosshair={crosshair.world}
-                visible={!expandedPane || expandedPane === plane.id}
+                visible={showFour && (!expandedPane || expandedPane === plane.id)}
                 transfers={transfers}
                 expanded={expandedPane === plane.id}
                 onExpand={() => togglePane(plane.id)}
@@ -2067,9 +2116,14 @@ export function RawVolumeViewport({
           <header className="mpr-pane-header">
             <span className="mpr-plane-mark" />
             <strong>3D</strong>
-            <div className="raw-volume-segment" role="group" aria-label="Rendering mode">
-              <button type="button" aria-pressed={mode === "volume"} onClick={() => { invalidateFigureCapture(); setMode("volume"); }}>Volume</button>
-              <button type="button" aria-pressed={mode === "mpr"} onClick={() => { invalidateFigureCapture(); setMode("mpr"); }} title="Show the three source-grid planes together in 3D">MPR</button>
+            <div className="raw-volume-camera-tools" role="group" aria-label="3D camera">
+              {sourcePlanes.map(plane => <button key={plane.sourcePlane} type="button"
+                aria-label={`View along source ${plane.sourcePlane}`} title={`Face the source ${plane.sourcePlane} plane`}
+                disabled={sceneLocked}
+                onClick={() => changeCamera(camera => orientToSourcePlane(camera, plane))}>{plane.sourcePlane}</button>)}
+              <button type="button" aria-label="Reset camera" title="Restore the fitted camera for this extent (R)"
+                disabled={sceneLocked || !cameraReady}
+                onClick={resetCamera}><RotateCcw aria-hidden="true" /></button>
             </div>
             {showFour ? (
               <button
@@ -2089,11 +2143,14 @@ export function RawVolumeViewport({
             ) : null}
           </header>
           <div className="raw-volume-stage" ref={syncContainer} aria-label="Interactive three-dimensional volume"
-            tabIndex={0} onKeyDown={onStageKeyDown} onPointerDown={invalidateFigureCapture}
-            onWheel={invalidateFigureCapture} onContextMenu={(event) => event.preventDefault()} />
+            tabIndex={0} onKeyDownCapture={onStageKeyDown} onPointerDown={(event) => {
+              event.currentTarget.focus({ preventScroll: true }); invalidateFigureCapture();
+            }} onContextMenu={(event) => event.preventDefault()} />
           <footer className="mpr-pane-footer" aria-label="3D display sampling">
-            <span>{activePayload ? `3D display · L${activePayload.level}` : "3D display unavailable"}</span>
-            <span>Rotating source XYZ axes · {activePayload?.frame ?? "image"} frame</span>
+            <span>{activePayload ? `${mode === "mpr" ? "MPR" : "Volume"} · L${activePayload.level}` : "3D display unavailable"}</span>
+            <span title={`Rotating source XYZ axes · ${activePayload?.frame ?? "image"} frame`}>
+              <span className="raw-volume-axis-detail">Rotating source XYZ axes · </span>{activePayload?.frame ?? "image"}<span className="raw-volume-axis-detail"> frame</span>
+            </span>
             {verifiedLabels && labelStyle.visible && <span title="Bounded voxel surface for display, not native measurement geometry">Labels: bounded surface</span>}
           </footer>
         </section>
@@ -2101,8 +2158,9 @@ export function RawVolumeViewport({
           <>
             <div
               className={`raw-volume-divider-v ${splitDrag.current?.type === "col" ? "is-dragging" : ""}`}
-              style={{ left: `${colSplit}%` }}
-              title="Drag to resize columns; double-click to reset"
+              tabIndex={0} role="separator" aria-label="Resize pane columns" aria-orientation="vertical"
+              aria-valuemin={20} aria-valuemax={80} aria-valuenow={colSplit} onKeyDown={event => resizeSplitByKey("col", event)}
+              title="Drag or use Left and Right to resize columns. Double-click or press Enter to reset."
               onPointerDown={(e) => handleSplitPointerDown("col", e)}
               onPointerMove={handleSplitPointerMove}
               onPointerUp={handleSplitPointerUp}
@@ -2111,8 +2169,9 @@ export function RawVolumeViewport({
             />
             <div
               className={`raw-volume-divider-h ${splitDrag.current?.type === "row" ? "is-dragging" : ""}`}
-              style={{ top: `${rowSplit}%` }}
-              title="Drag to resize rows; double-click to reset"
+              tabIndex={0} role="separator" aria-label="Resize pane rows" aria-orientation="horizontal"
+              aria-valuemin={20} aria-valuemax={80} aria-valuenow={rowSplit} onKeyDown={event => resizeSplitByKey("row", event)}
+              title="Drag or use Up and Down to resize rows. Double-click or press Enter to reset."
               onPointerDown={(e) => handleSplitPointerDown("row", e)}
               onPointerMove={handleSplitPointerMove}
               onPointerUp={handleSplitPointerUp}
@@ -2121,7 +2180,6 @@ export function RawVolumeViewport({
             />
             <div
               className={`raw-volume-divider-center ${splitDrag.current?.type === "both" ? "is-dragging" : ""}`}
-              style={{ left: `${colSplit}%`, top: `${rowSplit}%` }}
               title="Drag to resize both dimensions; double-click to reset"
               onPointerDown={(e) => handleSplitPointerDown("both", e)}
               onPointerMove={handleSplitPointerMove}
@@ -2132,6 +2190,19 @@ export function RawVolumeViewport({
           </>
         )}
       </div>
+      {meshError ? <p className="raw-volume-export-status" role="status">{meshError}</p> : null}
+      {exportError ? <p className="raw-volume-export-status raw-volume-export-error" role="alert">{exportError}</p> : null}
+      {exportStatus ? <p className="raw-volume-export-status" role="status">{exportStatus}</p> : null}
+      {onSelectLabel && (labelResult || labelsLoading || labelsError || labelError) ? <VolumeWorkspaceControls resultName={labelResult?.name} revisionShort={labelResult?.revision_hash.slice(0, 8)}
+        selectedObject={selectedLabel} readiness={labelsLoading ? "loading" : !labelResult ? "raw-only" : verifiedLabels ? "ready" : "unavailable"}
+        busy={sceneLocked} error={labelsError || labelError} labelsVisible={labelStyle.visible} labelOpacity={labelStyle.opacity} selectedOnly={labelStyle.selected_only}
+        canLocate={Boolean(verifiedLabels && selectedLabel)} canCorrect={Boolean(verifiedLabels && selectedLabel && onCorrectLabel)}
+        correctionReason={selectedLabel ? "Corrections open on an exact native source plane and create a new measured result." : null}
+        selectionHiddenReason={selectedLabel && clipEnabled ? "Clipping may hide the selected object. Locate object moves the crosshair; clipping stays unchanged." : undefined}
+        onVisibilityChange={(visible) => setLabelStyle(s => ({ ...s, visible }))} onOpacityChange={(opacity) => setLabelStyle(s => ({ ...s, opacity }))}
+        onSelectedOnlyChange={(selected_only) => setLabelStyle(s => ({ ...s, selected_only }))} onLocateObject={locateLabel}
+        onCorrectObject={() => { if (verifiedLabels && selectedLabel) onCorrectLabel?.(selectedLabel, Math.max(0, Math.min(verifiedLabels.payload.dimensions_xyz[2] - 1, (crosshair?.source[2] ?? verifiedLabels.payload.source_offset_xyz[2]) - verifiedLabels.payload.source_offset_xyz[2]))); }}
+        onClearSelection={() => onSelectLabel(null)} /> : null}
       {transfers.length > 0 ? <div className="raw-volume-channels" aria-label="Volume channels">{transfers.map((component) => {
         const defaults = volume?.context.components.find((item) => item.channel_index === component.channel_index);
         const histogram = contextHistograms.find((item) => item.channel_index === component.channel_index);
@@ -2163,6 +2234,12 @@ export function RawVolumeViewport({
         </details>;
       })}</div> : null}
       <footer className="raw-volume-status" aria-live="polite">
+        {volume?.focus ? <div className="raw-volume-segment" role="group" aria-label="Displayed volume extent">
+          <button type="button" aria-pressed={detailView === "context"} onClick={() => { invalidateFigureCapture(); setDetailView("context"); }}>Whole</button>
+          <button type="button" aria-pressed={detailView === "focus"} disabled={!focusContainsCrosshair}
+            title={focusContainsCrosshair ? "Show detail around the current crosshair" : "Move the crosshair into this focus region, or request new detail"}
+            onClick={() => { invalidateFigureCapture(); setDetailView("focus"); }}>Focus</button>
+        </div> : null}
         <span>{error ?? renderError ?? (loading ? "Loading bounded whole-volume detail…" : (contextState === "ready" ? caption : contextState === "lost" ? "Graphics context lost. Waiting for restoration…" : "Restoring volume renderer…") ?? "Choose a 3D scalar source.")}</span>
         {volume ? <small>Whole context · nearest whole extent · level {volume.context.level} · {volume.context.byte_length.toLocaleString()} bytes
           {volume.focus ? ` · Focus ${volume.focus.source_extent_xyzxyz.join(", ")} shown separately (${volume.focus.byte_length.toLocaleString()} bytes; ${focusUsesNativeSteps ? "native source steps" : "sampled source steps"})` : ""}</small> : null}

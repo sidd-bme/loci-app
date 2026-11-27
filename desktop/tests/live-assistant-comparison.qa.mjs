@@ -81,6 +81,38 @@ export function comparisonRequest(sourceId, approvedSelection, model) {
   };
 }
 
+export function inspectBeforeAdoption({ page, preview, previewJob, image, channel, hashText, checkpoint }) {
+  return async ({ card, originalApprove, pending }) => {
+    assert.equal(pending.explicit_approval_required, true);
+    assert.equal(pending.parameters_summary.preview_job_id, previewJob.id);
+    assert.equal(pending.parameters_summary.preview_id, preview.id);
+    assert.equal(pending.parameters_summary.preview_sha256, preview.preview_sha256);
+    assert.equal(pending.parameters_summary.png_sha256, image.sha256);
+    assert.equal(pending.parameters_summary.review_requirement, "visual-preview-inspection-required");
+    if (await originalApprove.count()) assert.equal(await originalApprove.isDisabled(), true, "Adoption allowed before visual inspection");
+    await card.getByRole("button", { name: "Inspect model preview", exact: true }).click();
+    const displayedPreview = page.getByRole("region", { name: "Agent preview comparison", exact: true });
+    const picture = displayedPreview.getByRole("img", { name: "Source with predicted model labels", exact: true });
+    await picture.waitFor();
+    assert.equal(await picture.getAttribute("data-preview-job"), previewJob.id);
+    const displayedSha = await waitFor(page, async () => {
+      const url = await picture.evaluate((img) => img.complete && img.naturalWidth > 0 ? img.src : null);
+      return url?.startsWith("data:image/png;base64,") && hashText(Buffer.from(url.split(",", 2)[1], "base64"));
+    }, (sha) => sha === image.sha256, "exact retained preview in the image stage", 15_000);
+    assert.equal(displayedSha, image.sha256);
+    const region = preview.source.selection;
+    await displayedPreview.getByText(`${region.width} × ${region.height} px at (${region.x}, ${region.y}) · Input C ${channel} · Z ${region.z} · T ${region.t} (zero-based)`, { exact: true }).waitFor();
+    await displayedPreview.getByText(`${preview.output.object_count} predicted objects · green outlines`, { exact: true }).waitFor();
+    await checkpoint("model-04-exact-preview-rendered");
+    const confirm = displayedPreview.getByRole("checkbox", { name: "I inspected this model preview", exact: true });
+    const approve = displayedPreview.getByRole("button", { name: "Approve submit_action", exact: true });
+    assert.equal(await confirm.isChecked(), false);
+    assert.equal(await approve.isDisabled(), true, "Adoption allowed before visual attestation");
+    await confirm.check();
+    return approve;
+  };
+}
+
 export async function runScopedModel({ page, source, model, approvedSelection, sdk, checkpoint, snapshot, record, submitAction, hashText }) {
   const discovered = await sdk.call("inspect_action", { operation: "model_list", request: {} });
   assert.equal(discovered.models.length, 1);
@@ -119,36 +151,9 @@ export async function runScopedModel({ page, source, model, approvedSelection, s
   assert.deepEqual(preview.source.selection, request.selection);
   assert.equal(preview.source.display.png_sha256, image.sha256);
   const previewBinding = { preview_id: preview.id, preview_sha256: preview.preview_sha256 };
-  const adoption = await submitAction("model_run", previewBinding, "onnx-adopt", async ({ card, originalApprove, pending }) => {
-    assert.equal(pending.explicit_approval_required, true);
-    assert.equal(pending.parameters_summary.preview_job_id, previewJob.id);
-    assert.equal(pending.parameters_summary.preview_id, preview.id);
-    assert.equal(pending.parameters_summary.preview_sha256, preview.preview_sha256);
-    assert.equal(pending.parameters_summary.png_sha256, image.sha256);
-    assert.equal(pending.parameters_summary.review_requirement, "visual-preview-inspection-required");
-    if (await originalApprove.count()) assert.equal(await originalApprove.isDisabled(), true, "Adoption allowed before visual inspection");
-    await card.getByRole("button", { name: "Inspect model preview", exact: true }).click();
-    const displayedPreview = page.getByRole("region", { name: "Agent preview comparison", exact: true });
-    const picture = displayedPreview.getByRole("img", { name: "Source with predicted model labels", exact: true });
-    await picture.waitFor();
-    assert.equal(await picture.getAttribute("data-preview-job"), previewJob.id);
-    const displayedSha = await waitFor(page, async () => {
-      const url = await picture.evaluate((img) => img.complete && img.naturalWidth > 0 ? img.src : null);
-      return url?.startsWith("data:image/png;base64,") && hashText(Buffer.from(url.split(",", 2)[1], "base64"));
-    }, (sha) => sha === image.sha256, "exact retained preview in the image stage", 15_000);
-    assert.equal(displayedSha, image.sha256);
-    const region = preview.source.selection;
-    const channel = preview.source.channel_mapping[0].source_channel;
-    await displayedPreview.getByText(`${region.width} × ${region.height} px at (${region.x}, ${region.y}) · Input C ${channel} · Z ${region.z} · T ${region.t} (zero-based)`, { exact: true }).waitFor();
-    await displayedPreview.getByText(`${preview.output.object_count} predicted objects · green outlines`, { exact: true }).waitFor();
-    await checkpoint("model-04-exact-preview-rendered");
-    const confirm = displayedPreview.getByRole("checkbox", { name: "I inspected this model preview", exact: true });
-    const approve = displayedPreview.getByRole("button", { name: "Approve submit_action", exact: true });
-    assert.equal(await confirm.isChecked(), false);
-    assert.equal(await approve.isDisabled(), true, "Adoption allowed before visual attestation");
-    await confirm.check();
-    return approve;
-  });
+  const adoption = await submitAction("model_run", previewBinding, "onnx-adopt", inspectBeforeAdoption({
+    page, preview, previewJob, image, channel: preview.source.channel_mapping[0].source_channel, hashText, checkpoint,
+  }));
   assert.equal(adoption.result_ids.length, 1);
   const id = adoption.result_ids[0];
   const result = (await snapshot()).results.find((item) => item.id === id);

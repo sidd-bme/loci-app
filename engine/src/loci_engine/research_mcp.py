@@ -9,6 +9,7 @@ import hashlib
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -59,6 +60,7 @@ from .agent_workflow_graph import (
     workflow_graph_inspect,
 )
 from .export import _rename_noreplace
+from .research_action_registry import ADOPTION_PREVIEWS
 from .research_jobs import cancel_job, public_job, reconcile_jobs, submit_job
 from .research_process import research_command
 from .research_project import ResearchProject, checked_id, parse_json, timestamp
@@ -428,8 +430,33 @@ class JobSupervisor:
         process.terminate()
         return True
 
-    def _watch(self, job_id: str, process: subprocess.Popen[bytes]) -> None:
+    def _watch(
+        self, job_id: str, process: subprocess.Popen[bytes], observe_cellpose_memory: bool = False
+    ) -> None:
+        failure = None
         while process.poll() is None:
+            if observe_cellpose_memory:
+                try:
+                    usage = subprocess.run(
+                        ["/bin/ps", "-o", "rss=", "-p", str(process.pid)],
+                        capture_output=True,
+                        timeout=1,
+                        check=False,
+                    )
+                    if process.poll() is not None:
+                        break
+                    if usage.returncode or not usage.stdout.strip().isdigit():
+                        raise ValueError
+                    if int(usage.stdout.strip()) * 1024 > self.policy.memory_bytes:
+                        failure = "Cellpose worker exceeded its granted process memory."
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    failure = "Cellpose worker memory could not be verified."
+                if failure:
+                    # The Popen handle is owned even during module imports, before
+                    # the disposable worker claims the durable job and records a PID.
+                    process.kill()
+                    process.wait()
+                    break
             try:
                 self._recheck()
             except (PermissionError, ValueError, OSError):
@@ -444,6 +471,17 @@ class JobSupervisor:
         while True:
             try:
                 project = ResearchProject(self.policy.project_path)
+                if failure:
+                    job = project.job(job_id)
+                    if job["state"] in {"queued", "running"}:
+                        project.update_job(
+                            job_id,
+                            expected_state=job["state"],
+                            state="failed",
+                            error=failure,
+                            finished_at=timestamp(),
+                            connection_timeout=0.0,
+                        )
                 self._reap(project, write_timeout=0.0, reconcile_other_jobs=False)
                 return
             except sqlite3.OperationalError as exc:
@@ -509,7 +547,13 @@ class JobSupervisor:
                 start_new_session=True,
             )
             self._children[job["id"]] = process
-        watcher = threading.Thread(target=self._watch, args=(job["id"], process), daemon=True)
+        observe_memory = sys.platform == "darwin" and operation in {
+            "cellpose_preview",
+            "cellpose_adopt",
+        }
+        watcher = threading.Thread(
+            target=self._watch, args=(job["id"], process, observe_memory), daemon=True
+        )
         watcher.start()
         return job
 
@@ -796,19 +840,32 @@ class PolicyAgent:
                 raise
         return workbench
 
-    def _measurements(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _measurements(
+        self, rows: list[dict[str, Any]], *, cellpose_channels: list[int] | None = None
+    ) -> list[dict[str, Any]]:
         output = []
+        numeric_keys = (
+            {f"source_channel_{channel}" for channel in cellpose_channels}
+            if cellpose_channels is not None
+            else None
+        )
         for original in rows:
             row = dict(original)
             if "geometry" not in self.policy.disclosures:
                 for key in list(row):
                     if key.startswith(("centroid", "bbox")):
                         row.pop(key)
-            if "source_names" not in self.policy.disclosures and "intensity" in row:
-                row["intensity"] = {
-                    f"channel_{index + 1}": values
-                    for index, values in enumerate(row["intensity"].values())
-                }
+            if "intensity" in row:
+                if numeric_keys is not None:
+                    if set(row["intensity"]) != numeric_keys:
+                        raise PermissionError(
+                            "Cellpose intensity keys differ from the checked raw channels"
+                        )
+                elif "source_names" not in self.policy.disclosures:
+                    row["intensity"] = {
+                        f"channel_{index + 1}": values
+                        for index, values in enumerate(row["intensity"].values())
+                    }
             output.append(row)
         return output
 
@@ -838,6 +895,21 @@ class PolicyAgent:
         if "tissue_model" in value and not self.policy.disclosures >= DISCLOSURES:
             value.pop("tissue_model", None)
             value.pop("host_runtime", None)
+        if "cellpose_preview" in value and not self.policy.disclosures >= DISCLOSURES:
+            # This immutable receipt binds the model, source geometry, raw-channel
+            # identities and the reviewed image. Return individual authorised fields.
+            value = {
+                key: value[key]
+                for key in (
+                    "model",
+                    "runtime",
+                    "geometry",
+                    "selection",
+                    "measurement_basis",
+                    "measurement_channels",
+                )
+                if key in value
+            }
         if "model_preview" in value and not self.policy.disclosures >= DISCLOSURES:
             for key in (
                 "model_preview",
@@ -967,7 +1039,7 @@ class PolicyAgent:
                 else job["request"].get("task_request")
             )
             authorize_action(self, workbench, job["operation"], request, mode="task")
-            if job["operation"] == "model_run":
+            if job["operation"] in ADOPTION_PREVIEWS:
                 self._require_model_run_human_approval(workbench, job, request)
             return job
         if job.get("operation") not in {"run_recipe", "preview_recipe"} or not isinstance(
@@ -999,6 +1071,7 @@ class PolicyAgent:
             "tissue_model" in result["provenance"]
             or result.get("kind") == "model-segmentation"
             or "model_preview" in result["provenance"]
+            or "cellpose_preview" in result["provenance"]
         ):
             from .agent_study import authorize_result
 
@@ -1321,6 +1394,8 @@ class PolicyAgent:
             if self.policy.delegation is not None:
                 output["delegation"] = dict(self.policy.delegation)
                 output["actions"] = sorted(self.policy.actions)
+                if self.policy.cellpose_scope and "geometry" in self.policy.disclosures:
+                    output["cellpose_scope"] = copy.deepcopy(self.policy.cellpose_scope)
                 names = sorted(self.policy.export_filenames)
                 output["export"] = {
                     "allowed": self.policy.export_root is not None,
@@ -1382,6 +1457,9 @@ class PolicyAgent:
             if "source_names" in self.policy.disclosures:
                 metadata = workbench.channel_metadata(source_id)
                 allowed = set(grant.c) | set(grant.measurement_channels)
+                scope = self.policy.cellpose_scope
+                if scope is not None and scope["source_id"] == source_id:
+                    allowed.update(scope["measurement_channels"])
                 output["name"] = source["name"]
                 output["channel_declarations"] = [
                     {**item, "original_name": metadata["original_names"][item["index"]]}
@@ -1536,7 +1614,12 @@ class PolicyAgent:
                 safe_summary["tissue_model"] = summary["tissue_model"]
             if "measurements" in self.policy.disclosures:
                 output.update(
-                    measurements=self._measurements(value["measurements"]),
+                    measurements=self._measurements(
+                        value["measurements"],
+                        cellpose_channels=value["provenance"]["measurement_channels"]
+                        if "cellpose_preview" in value["provenance"]
+                        else None,
+                    ),
                     total_rows=value["total_rows"],
                 )
             if "provenance" in self.policy.disclosures:
@@ -1915,7 +1998,7 @@ class PolicyAgent:
                 "AND json_extract(value, '$.policy_sha256')=? "
                 "AND json_extract(value, '$.inspected_preview.preview_id')=? "
                 "AND json_extract(value, '$.inspected_preview.preview_sha256')=? "
-                "AND json_extract(value, '$.action_name')='model_run' "
+                "AND json_extract(value, '$.action_name')=? "
                 "AND json_extract(value, '$.operation')='submit_action' LIMIT 1",
                 (
                     hashlib.sha256(job["request_key"].encode()).hexdigest(),
@@ -1923,6 +2006,7 @@ class PolicyAgent:
                     self.policy.content_sha256,
                     request.get("preview_id"),
                     request.get("preview_sha256"),
+                    job["operation"],
                 ),
             ).fetchone()
         approval = parse_json(row[0]) if row else None
@@ -1951,7 +2035,7 @@ class PolicyAgent:
         workbench = self._workbench("submit_action")
         try:
             normalized = authorize_action(self, workbench, operation, request, mode="task")
-            if operation == "model_run":
+            if operation in ADOPTION_PREVIEWS:
                 checked_key = checked_text(request_key, "Request key", 128)
                 with workbench.project.connection() as connection:
                     row = connection.execute(
@@ -1964,7 +2048,7 @@ class PolicyAgent:
                             "Repeated submission key belongs to a different owner"
                         )
                     if (
-                        existing_job.get("operation") == "model_run"
+                        existing_job.get("operation") == operation
                         and existing_job.get("request", {}).get("task_request") == normalized
                     ):
                         self._require_model_run_human_approval(workbench, existing_job, normalized)
@@ -1978,9 +2062,11 @@ class PolicyAgent:
                     )
                 with workbench.project.connection() as connection:
                     already_adopted = connection.execute(
-                        "SELECT 1 FROM results "
-                        "WHERE json_extract(record, '$.provenance.model_preview.id')=? LIMIT 1",
-                        (normalized["preview_id"],),
+                        "SELECT 1 FROM results WHERE json_extract(record, ?)=? LIMIT 1",
+                        (
+                            f"$.provenance.{ADOPTION_PREVIEWS[operation]}.id",
+                            normalized["preview_id"],
+                        ),
                     ).fetchone()
                 if already_adopted is not None:
                     raise ValueError(

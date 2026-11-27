@@ -364,8 +364,6 @@ try {
   // Complete the expensive bounded context preparation before the 11-second editorial clip starts.
   await page.getByRole("button", { name: "3D volume", exact: true }).click();
   const raw = await waitForVolume(page, byName[kidneyName]);
-  const exportPng = raw.getByRole("button", { name: /^Export PNG/ });
-  await exportPng.waitFor({ state: "visible", timeout: 120_000 });
   await page.waitForFunction(() => {
     const raw = document.querySelector(".raw-volume");
     const exportPng = [...(raw?.querySelectorAll("button") ?? [])].find((button) => /^Export PNG/.test(button.textContent ?? ""));

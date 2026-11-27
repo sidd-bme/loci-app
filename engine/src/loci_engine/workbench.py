@@ -1916,11 +1916,20 @@ class Workbench:
             return execute_adaptive(
                 self, request, job_id=job_id, publication_guard=publication_guard
             )
-        if operation == "cellpose_run":
-            from .research_cellpose import execute_cellpose
+        if operation in {
+            "cellpose_model_status",
+            "cellpose_preview",
+            "cellpose_adopt",
+            "cellpose_run",
+        }:
+            from .research_cellpose import execute_cellpose_operation
 
-            return execute_cellpose(
-                self, request, job_id=job_id, publication_guard=publication_guard
+            return execute_cellpose_operation(
+                self,
+                operation,
+                request,
+                job_id=job_id,
+                publication_guard=publication_guard,
             )
         if operation in {"tissue_preview", "tissue_run"}:
             from .research_histology import execute_tissue

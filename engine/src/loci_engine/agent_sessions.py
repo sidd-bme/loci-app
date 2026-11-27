@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from .agent_activity import MAX_TARGETS, collect_targets, response_targets, targets_stale
 from .quantitative import exact_keys
-from .research_action_registry import ACTION_NAMES, READ_ACTIONS, TASK_ACTIONS
+from .research_action_registry import ACTION_NAMES, ADOPTION_PREVIEWS, READ_ACTIONS, TASK_ACTIONS
 from .research_jobs import cancel_job
 from .research_operations import OPERATION_CATALOG
 from .research_project import (
@@ -335,7 +335,11 @@ def capability_map() -> dict[str, Any]:
                     " Also requires the verified BioImage.IO nuclei ONNX model in "
                     "policy.model_packages and the pinned ONNX CPU runtime in policy.runtimes."
                 )
-            if name == "model_run":
+            if name in {"cellpose_model_status", "cellpose_preview", "cellpose_adopt"}:
+                grant_note += (
+                    " Requires a verified Cellpose-SAM v2 checkpoint and pinned CPU runtime."
+                )
+            if name in ADOPTION_PREVIEWS:
                 grant_note += (
                     " Always requires a single-use human visual-review approval in Loci, "
                     "even in Full access mode."
@@ -1184,6 +1188,11 @@ def _extract_binding(
             params_summary["segmentation"] = {
                 k: seg[k] for k in ("method", "threshold", "min_size") if k in seg
             }
+    if action_name == "cellpose_preview":
+        params_summary.update(
+            profile_id=inner.get("profile_id"),
+            measurement_channels=inner.get("measurement_channels", []),
+        )
     if action_name == "model_preview":
         if isinstance(inner.get("model_id"), str):
             params_summary["model_id"] = inner["model_id"]
@@ -1208,13 +1217,14 @@ def _extract_binding(
             }
         if isinstance(inner.get("measurement_channels"), list):
             params_summary["measurement_channels"] = list(inner["measurement_channels"][:32])
-    elif action_name == "model_run" and isinstance(inner.get("preview_id"), str):
+    elif action_name in ADOPTION_PREVIEWS and isinstance(inner.get("preview_id"), str):
         preview_id = inner["preview_id"]
         params_summary["preview_id"] = preview_id
         if isinstance(inner.get("preview_sha256"), str):
             params_summary["preview_sha256"] = inner["preview_sha256"]
         params_summary["review_requirement"] = "visual-preview-inspection-required"
         with suppress(Exception):
+            preview_kind = ADOPTION_PREVIEWS[action_name]
             pdocs = workbench.project.documents("model_preview", document_id=preview_id)
             if pdocs:
                 receipt = pdocs[0]["data"]
@@ -1244,6 +1254,8 @@ def _extract_binding(
                     ):
                         if isinstance(pkg.get(key), str):
                             params_summary[out_key] = pkg[key]
+                if action_name == "cellpose_adopt":
+                    params_summary["profile_id"] = pkg.get("profile_id")
                 out = receipt.get("output", {})
                 if isinstance(out, dict) and type(out.get("object_count")) is int:
                     params_summary["object_count"] = out["object_count"]
@@ -1254,12 +1266,15 @@ def _extract_binding(
                     rows = connection.execute(
                         "SELECT json_extract(value, '$.job_id') FROM metadata "
                         "WHERE key LIKE 'task-preview:%' "
-                        "AND json_extract(value, '$.operation')='model_preview' "
+                        "AND json_extract(value, '$.operation')=? "
                         "AND json_extract(value, '$.output.preview.id')=? "
                         "AND json_extract(value, '$.output.preview.preview_sha256')=? "
                         "AND json_extract(value, '$.source_id')=? "
                         "AND json_extract(value, '$.source_sha256')=? LIMIT 2",
-                        (preview_id, inner.get("preview_sha256"), source_id, source_sha256),
+                        (
+                            preview_kind, preview_id, inner.get("preview_sha256"),
+                            source_id, source_sha256,
+                        ),
                     ).fetchall()
                 if len(rows) == 1:
                     params_summary["preview_job_id"] = checked_id(rows[0][0])
@@ -1399,7 +1414,7 @@ def check_or_await_approval(
     if (
         force_approval
         and operation == "submit_action"
-        and request_payload.get("operation") == "model_run"
+        and request_payload.get("operation") in ADOPTION_PREVIEWS
         and session_id is None
     ):
         raise AgentSessionApprovalError(
@@ -1435,12 +1450,19 @@ def check_or_await_approval(
     binding = _extract_binding(workbench, operation, request_payload)
     if (
         force_approval
-        and binding["action_name"] == "model_run"
+        and binding["action_name"] in ADOPTION_PREVIEWS
         and not binding["parameters_summary"].get("preview_job_id")
     ):
         raise AgentSessionApprovalError(
             "Run a fresh model preview with a retained overlay before requesting adoption."
         )
+    if force_approval and binding["action_name"] in ADOPTION_PREVIEWS:
+        preview_job = project.job(binding["parameters_summary"]["preview_job_id"])
+        if (
+            preview_job["operation"] != ADOPTION_PREVIEWS[binding["action_name"]]
+            or preview_job.get("owner") != agent.job_owner
+        ):
+            raise AgentSessionApprovalError("The preview belongs to a different policy or session")
     target_info = {
         k: binding[k]
         for k in ("action_name", "source_id", "result_id", "revision_hash", "destination_name")
@@ -1513,6 +1535,11 @@ def check_or_await_approval(
                 "policy_sha256": policy.content_sha256,
                 "operation": operation,
                 "request": request_payload,
+                **(
+                    {"request_key_sha256": model_request_key_sha256}
+                    if model_request_key_sha256 is not None
+                    else {}
+                ),
                 "targets": sorted(binding["targets"], key=canonical_json),
             }
         ).encode("utf-8")
@@ -1872,10 +1899,9 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 {"pending"} if action == "approve_request" else {"pending", "approved"}
             ):
                 raise ValueError(f"Approval request is already {approval['state']}")
-            if action == "approve_request" and approval.get("action_name") == "model_run":
+            if action == "approve_request" and approval.get("action_name") in ADOPTION_PREVIEWS:
                 import base64
 
-                from .research_models import verify_model_review_installation
                 from .research_task_preview import get_preview
 
                 inspected = request.get("inspected_preview")
@@ -1922,7 +1948,12 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 )
                 prefix = "data:image/png;base64,"
                 if (
-                    retained.get("operation") != "model_preview"
+                    retained.get("operation") != ADOPTION_PREVIEWS[approval["action_name"]]
+                    or project.job(inspected_jid).get("owner")
+                    != {
+                        "policy_sha256": approval["policy_sha256"],
+                        "session_id": approval["session_id"],
+                    }
                     or retained.get("adopted") is not False
                     or retained.get("source_id") != approval["source_id"]
                     or retained.get("source_sha256") != approval["source_sha256"]
@@ -1943,7 +1974,19 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                 png_bytes = base64.b64decode(overlay_url.removeprefix(prefix), validate=True)
                 if hashlib.sha256(png_bytes).hexdigest() != expected_png_sha:
                     raise ValueError("Retained model preview overlay PNG failed integrity check")
-                verify_model_review_installation(workbench, retained_doc)
+                if approval["action_name"] == "cellpose_adopt":
+                    if (
+                        retained_doc.get("preview_job_id") != inspected_jid
+                        or inspected_pid != inspected_jid
+                    ):
+                        raise ValueError("Cellpose receipt belongs to a different preview job")
+                    from .research_cellpose import verify_cellpose_review_installation
+
+                    verify_cellpose_review_installation(workbench, retained_doc)
+                else:
+                    from .research_models import verify_model_review_installation
+
+                    verify_model_review_installation(workbench, retained_doc)
                 approval["inspected_preview"] = {
                     "preview_id": inspected_pid,
                     "preview_sha256": inspected_sha,
@@ -1951,7 +1994,7 @@ def control_agent_session(workbench: Workbench, request: dict[str, Any]) -> dict
                     "png_sha256": expected_png_sha,
                 }
             elif action == "approve_request" and "inspected_preview" in request:
-                raise ValueError("inspected_preview is only valid for model_run approvals")
+                raise ValueError("inspected_preview is only valid for model adoption approvals")
             if action == "approve_request" and _target_is_stale(
                 project, approval, verify_sources=True
             ):

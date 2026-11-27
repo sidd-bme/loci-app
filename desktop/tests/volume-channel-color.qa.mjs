@@ -5,6 +5,7 @@ import { createReadStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { _electron as electron, expect } from "playwright/test";
+import { setVolumeDetailsOpen } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const projectRoot = path.resolve(import.meta.dirname, "../..");
@@ -117,8 +118,10 @@ async function setNumber(name, field, value) {
 async function exportFigure(label, expectedMode) {
   const target = path.join(runRoot, `${label}.loci-figure`);
   await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, target);
+  await setVolumeDetailsOpen(page);
   await page.getByRole("button", { name: "Export PNG…", exact: true }).click();
   await expect(page.locator(".raw-volume-export-status")).toContainText(`${label}.loci-figure`);
+  await setVolumeDetailsOpen(page, false);
   const manifest = JSON.parse(await fs.readFile(path.join(target, "manifest.json"), "utf8"));
   const png = await fs.readFile(path.join(target, "image.png"));
   assert.equal(manifest.schema_version, "loci.volume-figure/v2");
@@ -231,8 +234,10 @@ try {
       await setNumber(names[0], "gamma", 1);
       const preserved = report.exports[0];
       await app.evaluate(({ dialog }, filePath) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath }); }, preserved.target);
+      await setVolumeDetailsOpen(page);
       await page.getByRole("button", { name: "Export PNG…", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText("already exists");
+      await setVolumeDetailsOpen(page, false);
       assert.equal(await sha256(path.join(preserved.target, "manifest.json")), preserved.manifest_sha256);
       assert.equal(await sha256(path.join(preserved.target, "image.png")), preserved.image_sha256);
       await page.getByRole("button", { name: "MPR", exact: true }).click();

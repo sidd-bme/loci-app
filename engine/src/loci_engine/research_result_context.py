@@ -83,6 +83,7 @@ _FORBIDDEN_CLI_PROVENANCE = (
     "compartment_measurement",
     "model",
     "model_preview",
+    "cellpose_preview",
     "morphometrics",
     "perinuclear",
     "spatial",
@@ -392,16 +393,35 @@ def _channels(provenance: dict[str, Any]) -> dict[str, Any]:
             )
         if len(selected) > 64:
             raise ValueError("Too many context channels")
-        names = [
-            {
-                "index": index,
-                "name": _value(metadata["channels"][index].get("name")),
-                "source": f"{metadata_path}.channels[{index}].name",
-            }
-            for index in sorted(selected)
-            if 0 <= index < len(metadata["channels"])
-            and isinstance(metadata["channels"][index], dict)
-        ]
+        if metadata.get("scope") == "selected-channels":
+            if len(metadata["channels"]) > 64:
+                raise ValueError("Too many context channels")
+            by_index: dict[int, tuple[int, dict[str, Any]]] = {}
+            for pos, item in enumerate(metadata["channels"]):
+                idx = item.get("index") if isinstance(item, dict) else None
+                if type(idx) is not int or not 0 <= idx < 256 or idx in by_index:
+                    raise ValueError("Persisted selected channel metadata is invalid")
+                by_index[idx] = (pos, item)
+            names = [
+                {
+                    "index": index,
+                    "name": _value(by_index[index][1].get("name")),
+                    "source": f"{metadata_path}.channels[{by_index[index][0]}].name",
+                }
+                for index in sorted(selected)
+                if index in by_index
+            ]
+        else:
+            names = [
+                {
+                    "index": index,
+                    "name": _value(metadata["channels"][index].get("name")),
+                    "source": f"{metadata_path}.channels[{index}].name",
+                }
+                for index in sorted(selected)
+                if 0 <= index < len(metadata["channels"])
+                and isinstance(metadata["channels"][index], dict)
+            ]
     return {"segmentation": selection.get("c"), "measurement": indices, "names": names}
 
 

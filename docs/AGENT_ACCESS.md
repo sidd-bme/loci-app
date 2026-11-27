@@ -10,6 +10,20 @@
 
 The chat runs in your chosen assistant. Loci executes the granted operations in the study and records their inputs, outputs and review state. [Host setup](CLI.md#vision-assistants-and-local-mcp-access)
 
+## Find cells in one channel and measure another
+
+1. Open a multichannel image. Select a native plane, the region to inspect, and the channel that defines the cell boundaries. Set up **Cellpose-SAM v2** through **Model Zoo** if you have not installed the checkpoint.
+2. In **Connect an assistant**, choose **Analyze** and turn on **Use installed Cellpose-SAM v2**. Expand **Measure raw channels** and select the acquisition channels whose intensities you want per object. The Cellpose permission records the source, region, inference channel, Z plane, timepoint and measurement channels.
+3. Grant access. On macOS, **Open in Codex** opens the generated study workspace in the installed app when available. In Antigravity, choose **Copy workspace path** and add that folder to a new project. Run **First prompt** in the host to confirm the connection.
+4. Ask, for example, “Find the cells in this region with Cellpose. Show me the mask, then calculate the mean intensity of my measurement channel for each cell.” In Loci, open **Inspect model preview**. Review the boundaries and use **Approve once** to save the inspected prediction.
+5. Open the saved result to inspect individual cells and their measurements. Correcting a label creates a revision. Review and export the revision you intend to use.
+
+This workflow runs 2D Cellpose on CPU. Object intensities come from the selected raw acquisition planes. The predicted boundaries determine which pixels contribute to each measurement.
+
+The generated v8 policy exposes three Cellpose actions. `inspect_action("cellpose_model_status")` returns the installed checkpoint identity and CPU settings. `submit_action("cellpose_preview")` produces an overlay and a receipt for its exact source, inference settings, measurement channels and labels. `submit_action("cellpose_adopt")` takes the receipt ID and hash. Loci binds approval to the preview shown in the workbench and verifies the recomputed result before saving it.
+
+Read `analysis_context.cellpose_scope` for the granted selection and channels. Coordinates and channel indices in the protocol are zero-based. A whole-study grant for other methods still binds Cellpose to the chosen source and plane. [Installed model and publisher information](MODEL_LIBRARY.md#cellpose-sam-v2)
+
 ## Detached agent workspace
 
 The Agent session drawer can open as a separate native window, including on a

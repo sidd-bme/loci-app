@@ -27,8 +27,15 @@ STUDY_POLICY_SCHEMA = "loci.agent-policy/v4"
 SESSION_POLICY_SCHEMA = "loci.agent-policy/v5"
 TISSUE_POLICY_SCHEMA = "loci.agent-policy/v6"
 VOLUME_POLICY_SCHEMA = "loci.agent-policy/v7"
+CELLPOSE_POLICY_SCHEMA = "loci.agent-policy/v8"
 STUDY_POLICY_SCHEMAS = frozenset(
-    {STUDY_POLICY_SCHEMA, SESSION_POLICY_SCHEMA, TISSUE_POLICY_SCHEMA, VOLUME_POLICY_SCHEMA}
+    {
+        STUDY_POLICY_SCHEMA,
+        SESSION_POLICY_SCHEMA,
+        TISSUE_POLICY_SCHEMA,
+        VOLUME_POLICY_SCHEMA,
+        CELLPOSE_POLICY_SCHEMA,
+    }
 )
 VISION_POLICY_SCHEMAS = frozenset(
     {
@@ -37,6 +44,7 @@ VISION_POLICY_SCHEMAS = frozenset(
         SESSION_POLICY_SCHEMA,
         TISSUE_POLICY_SCHEMA,
         VOLUME_POLICY_SCHEMA,
+        CELLPOSE_POLICY_SCHEMA,
     }
 )
 PERMISSION_MODES = frozenset({"inspect_only", "ask_approval", "full_access"})
@@ -302,6 +310,7 @@ class AgentPolicy:
     permission_mode: str | None = None
     tissue_outputs: tuple[dict[str, Any], ...] | None = None
     volume_views: dict[str, Any] | None = None
+    cellpose_scope: dict[str, Any] | None = None
 
     def recheck(self) -> None:
         if self.delegation is not None:
@@ -439,21 +448,25 @@ def _validated_document(
     tuple[int, int] | None,
     frozenset[str],
 ]:
-    v7 = isinstance(document, dict) and document.get("schema") == VOLUME_POLICY_SCHEMA
+    v8 = isinstance(document, dict) and document.get("schema") == CELLPOSE_POLICY_SCHEMA
+    v7 = isinstance(document, dict) and (
+        document.get("schema") == VOLUME_POLICY_SCHEMA or (v8 and "volume_views" in document)
+    )
     v6 = isinstance(document, dict) and (
-        document.get("schema") == TISSUE_POLICY_SCHEMA or (v7 and "tissue_outputs" in document)
+        document.get("schema") == TISSUE_POLICY_SCHEMA
+        or ((v7 or v8) and "tissue_outputs" in document)
     )
     v5 = isinstance(document, dict) and (
         document.get("schema") == SESSION_POLICY_SCHEMA
-        or ((v6 or v7) and "permission_mode" in document)
+        or ((v6 or v7 or v8) and "permission_mode" in document)
     )
     v4 = isinstance(document, dict) and (
         document.get("schema") == STUDY_POLICY_SCHEMA
-        or ((v5 or v6 or v7) and "delegation" in document)
+        or ((v5 or v6 or v7 or v8) and "delegation" in document)
     )
     v3 = isinstance(document, dict) and (
         document.get("schema") in {VISION_POLICY_SCHEMA, STUDY_POLICY_SCHEMA}
-        or ((v5 or v6 or v7) and ("experimental_recipes" in document or v4))
+        or ((v5 or v6 or v7 or v8) and ("experimental_recipes" in document or v4))
     )
     v2 = isinstance(document, dict) and (
         document.get("schema")
@@ -462,7 +475,7 @@ def _validated_document(
             VISION_POLICY_SCHEMA,
             STUDY_POLICY_SCHEMA,
         }
-        or ((v5 or v6 or v7) and ("remote_grants" in document or v3))
+        or ((v5 or v6 or v7 or v8) and ("remote_grants" in document or v3))
     )
     extra = (
         ({"remote_grants"} if v2 else set())
@@ -471,6 +484,7 @@ def _validated_document(
         | ({"permission_mode"} if v5 else set())
         | ({"tissue_outputs"} if v6 else set())
         | ({"volume_views"} if v7 else set())
+        | ({"cellpose_scope"} if v8 else set())
     )
     root = _exact_keys(document, _TOP_LEVEL_KEYS | extra, "policy")
     if root["schema"] not in {POLICY_SCHEMA, REMOTE_POLICY_SCHEMA, *VISION_POLICY_SCHEMAS}:
@@ -650,6 +664,12 @@ def _validated_document(
         from .agent_experiments import validate_templates
 
         validate_templates(project, root, sources)
+    if v8:
+        from .agent_cellpose import validate_model_scope
+
+        if not v4 or root["delegation"]["result_scope"] != "granted-sources":
+            raise ValueError("Cellpose scope requires delegated study sources")
+        validate_model_scope(project, root["cellpose_scope"], sources)
     if v6:
         _validate_tissue_outputs(root, project, sources)
     return (
@@ -718,6 +738,7 @@ def load_policy(path: str | Path) -> AgentPolicy:
         permission_mode=document.get("permission_mode"),
         tissue_outputs=tuple(document["tissue_outputs"]) if "tissue_outputs" in document else None,
         volume_views=document.get("volume_views"),
+        cellpose_scope=document.get("cellpose_scope"),
     )
 
 
@@ -726,6 +747,7 @@ def write_policy(
 ) -> dict[str, Any]:
     """Atomically write a human-supplied policy specification as a private file."""
     study = project if isinstance(project, ResearchProject) else ResearchProject(project)
+    v8 = isinstance(specification, dict) and "cellpose_scope" in specification
     v7 = isinstance(specification, dict) and "volume_views" in specification
     v6 = isinstance(specification, dict) and "tissue_outputs" in specification
     v5 = isinstance(specification, dict) and "permission_mode" in specification
@@ -741,10 +763,13 @@ def write_policy(
         | ({"permission_mode"} if v5 else set())
         | ({"tissue_outputs"} if v6 else set())
         | ({"volume_views"} if v7 else set())
+        | ({"cellpose_scope"} if v8 else set())
     )
     _exact_keys(specification, expected, "policy specification")
     document = {
-        "schema": VOLUME_POLICY_SCHEMA
+        "schema": CELLPOSE_POLICY_SCHEMA
+        if v8
+        else VOLUME_POLICY_SCHEMA
         if v7
         else TISSUE_POLICY_SCHEMA
         if v6

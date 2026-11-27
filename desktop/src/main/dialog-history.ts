@@ -3,12 +3,9 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
-export type DialogHistoryKind = "import" | "export";
+export type DialogHistoryKind = "import" | "export" | "imageOpen";
 
-interface DialogHistory {
-  import?: string;
-  export?: string;
-}
+type DialogHistory = Partial<Record<DialogHistoryKind, string>>;
 
 let writeQueue: Promise<void> = Promise.resolve();
 
@@ -22,6 +19,7 @@ async function readHistory(): Promise<DialogHistory> {
     return {
       import: typeof record.import === "string" ? record.import : undefined,
       export: typeof record.export === "string" ? record.export : undefined,
+      imageOpen: typeof record.imageOpen === "string" ? record.imageOpen : undefined,
     };
   } catch {
     return {};

@@ -260,6 +260,20 @@ def submit_job(
             from .research_project import checked_id
 
             source_id = checked_id(request.get("source_id"))
+        elif operation == "cellpose_adopt":
+            from .quantitative import exact_keys
+            from .research_cellpose import cellpose_preview_request
+
+            exact_keys(request, {"preview_id", "preview_sha256"}, "cellpose adopt")
+            source_id = cellpose_preview_request(
+                workbench,
+                request.get("preview_id"),
+                request.get("preview_sha256"),
+            )["source_id"]
+        elif operation == "cellpose_preview":
+            from .research_project import checked_id
+
+            source_id = checked_id(request.get("source_id"))
         elif operation == "large_result_adopt":
             source_id = request.get("source_id")
             if not isinstance(source_id, str):

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { CELLPOSE_SAM_V2_SHA256 } from "../shared/model-registry";
 import { createHash, webcrypto } from "node:crypto";
 import type { ResearchAgentApprovalRecord } from "../shared/research-contracts";
 import wire from "./__fixtures__/agent-sessions-snapshot.json";
@@ -22,15 +23,18 @@ const preview = (overrides: Partial<SharedTaskPreview> = {}): SharedTaskPreview 
 });
 
 describe("AgentPreviewComparison", () => {
-  it("requires the exact painted overlay and a fresh inspection for each pending request", async () => {
+  it.each(["onnx", "cellpose"])("requires the exact painted %s overlay and a fresh inspection for each request", async family => {
     vi.stubGlobal("crypto", webcrypto);
     try {
       const digest = createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex");
-      const receipt = { schema: "loci.model-preview/v1", id: "preview-a", preview_sha256: "7".repeat(64),
-        source: { id: sourceId, sha256: sourceHash, selection: { x: 7, y: 11, width: 696, height: 520, z: 2, t: 4, level: 0 },
-          channel_mapping: [{source_channel: 3}], display: { png_sha256: digest } }, output: { object_count: 66 } };
-      const model = preview({ operation: "model_preview", output: { adopted: false, overlay_png: png, preview: receipt } });
-      const approval = { ...wire.approvals[0], operation: "submit_action", action_name: "model_run", state: "pending",
+      const cellpose = family === "cellpose";
+      const receipt = { schema: cellpose ? "loci.cellpose-preview/v1" : "loci.model-preview/v1", id: "preview-a", preview_sha256: "7".repeat(64),
+        ...(cellpose ? { package: { package_sha256: CELLPOSE_SAM_V2_SHA256 }, preview_job_id: preview().job_id } : {}),
+        source: { id: sourceId, sha256: sourceHash, selection: { x: 7, y: 11, width: 696, height: 520, z: 2, t: 4, level: 0, ...(cellpose ? { c: 3 } : {}) },
+          ...(cellpose ? { input_mapping: { mode: "source-channel", channel: 3 }, measurement_channels: [1] } : { channel_mapping: [{ source_channel: 3 }] }),
+          display: { png_sha256: digest } }, output: { object_count: 66 } };
+      const model = preview({ operation: cellpose ? "cellpose_preview" : "model_preview", output: { adopted: false, overlay_png: png, preview: receipt } });
+      const approval = { ...wire.approvals[0], operation: "submit_action", action_name: cellpose ? "cellpose_adopt" : "model_run", state: "pending",
         source_id: sourceId, source_sha256: sourceHash, expires_at: new Date(Date.now() + 60000).toISOString(),
         parameters_summary: { preview_job_id: model.job_id, preview_id: receipt.id, preview_sha256: receipt.preview_sha256 } } as ResearchAgentApprovalRecord;
       const onDecision = vi.fn().mockResolvedValue(undefined);
@@ -39,7 +43,8 @@ describe("AgentPreviewComparison", () => {
       const check = () => screen.getByRole("checkbox", { name: "I inspected this model preview" });
       const allow = () => screen.getByRole("button", { name: "Approve submit_action" });
       const image = await screen.findByRole("img", { name: "Source with predicted model labels" });
-      expect(screen.getByText("66 predicted objects · green outlines")).toBeVisible();
+      expect(screen.getByText(`66 predicted objects · ${cellpose ? "teal boundaries" : "green outlines"}`)).toBeVisible();
+      if (cellpose) expect(screen.getByText("Raw measurements · C 1 (zero-based)")).toBeVisible();
       expect(screen.getByText("696 × 520 px at (7, 11) · Input C 3 · Z 2 · T 4 (zero-based)")).toBeVisible();
       expect(check()).toBeDisabled();
       Object.defineProperties(image, { complete: { value: true }, naturalWidth: { value: 1 }, naturalHeight: { value: 1 } });
@@ -54,8 +59,10 @@ describe("AgentPreviewComparison", () => {
       view.rerender(<AgentPreviewComparison {...props} approval={{ ...approval, id: "another-request" }} />);
       expect(check()).not.toBeChecked();
       expect(allow()).toBeDisabled();
+      view.rerender(<AgentPreviewComparison {...props} approval={{ ...approval, action_name: cellpose ? "model_run" : "cellpose_adopt" }} />);
+      expect(check()).toBeDisabled();
       view.rerender(<AgentPreviewComparison {...props} preview={{ ...model, output_sha256: "8".repeat(64),
-        output: { ...model.output, preview: { ...receipt, source: { ...receipt.source, channel_mapping: [] } } } }} />);
+        output: { ...model.output, preview: { ...receipt, source: { ...receipt.source, channel_mapping: [], selection: { ...receipt.source.selection, c: undefined } } } } }} />);
       expect(screen.getByText(/source region or model input channel could not be verified/)).toBeVisible();
       expect(check()).toBeDisabled();
       view.rerender(<AgentPreviewComparison {...props} preview={{ ...model, output_sha256: "9".repeat(64),

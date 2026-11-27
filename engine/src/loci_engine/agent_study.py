@@ -51,6 +51,10 @@ def authorize_result(
             from .research_tissue_integration import authorize_retained
 
             authorize_retained(policy, workbench, record)
+        if "cellpose_preview" in provenance:
+            from .agent_cellpose import require_retained_pins
+
+            require_retained_pins(policy, record)
         if record.get("kind") == "model-segmentation" or "model_preview" in provenance:
             from .research_models import authorize_retained_model_result
 
@@ -92,7 +96,11 @@ def authorize_result(
                 )
             assert grant is not None
         else:
-            grant = source_scope(record["source_id"], selection, channels)
+            # Cellpose's separately granted raw channels were checked with the
+            # retained inference plane, before opening any scientific arrays.
+            grant = source_scope(
+                record["source_id"], selection, [] if "cellpose_preview" in provenance else channels
+            )
         if record["source_sha256"] != grant.sha256:
             raise PermissionError("Result source fingerprint exceeds the grant")
         if "paired_selection" in provenance:

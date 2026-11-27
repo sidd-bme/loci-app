@@ -36,15 +36,18 @@ export function worldToIndex(payload: MprPayload, world: Vec3): Vec3 {
   ) / payload.spacing_xyz[col]) as Vec3;
 }
 
+export function sourceGridPlanes(direction: MprPayload["direction_3x3"]): (MprPlane & { sourcePlane: string })[] {
+  const [x, y, z] = [0, 1, 2].map((axis) => direction.slice(axis * 3, axis * 3 + 3) as Vec3);
+  const minusZ = z.map((value) => -value) as Vec3;
+  return [
+    { sourcePlane: "XY", id: "axial", label: "XY plane", u: x, v: y, normal: z, edges: ["−X", "+X", "−Y", "+Y"] },
+    { sourcePlane: "XZ", id: "coronal", label: "XZ plane", u: x, v: minusZ, normal: y, edges: ["−X", "+X", "+Z", "−Z"] },
+    { sourcePlane: "YZ", id: "sagittal", label: "YZ plane", u: y, v: minusZ, normal: x, edges: ["−Y", "+Y", "+Z", "−Z"] },
+  ];
+}
+
 export function mprPlanes(payload: MprPayload): MprPlane[] {
-  if (payload.frame === "image") {
-    const basis = [0, 1, 2].map((axis) => payload.direction_3x3.slice(axis * 3, axis * 3 + 3) as Vec3);
-    return [
-      { id: "axial", label: "XY plane", u: basis[0], v: basis[1], normal: basis[2], edges: ["−X", "+X", "−Y", "+Y"] },
-      { id: "coronal", label: "XZ plane", u: basis[0], v: basis[2].map((x) => -x) as Vec3, normal: basis[1], edges: ["−X", "+X", "+Z", "−Z"] },
-      { id: "sagittal", label: "YZ plane", u: basis[1], v: basis[2].map((x) => -x) as Vec3, normal: basis[0], edges: ["−Y", "+Y", "+Z", "−Z"] },
-    ];
-  }
+  if (payload.frame === "image") return sourceGridPlanes(payload.direction_3x3);
   // Radiological convention, in the declared patient frame. These planes are
   // genuinely world-aligned even for oblique acquisition directions.
   const sign = payload.frame === "LPS" ? 1 : -1;

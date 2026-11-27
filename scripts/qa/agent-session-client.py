@@ -57,7 +57,9 @@ def response_record(response: Any) -> dict[str, Any]:
     }
 
 
-async def serve(worker: str, policy: str, client_name: str) -> None:
+async def serve(
+    worker: str, policy: str, client_name: str, model_home: str | None = None
+) -> None:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.types import Implementation
@@ -67,7 +69,19 @@ async def serve(worker: str, policy: str, client_name: str) -> None:
     seen: set[int] = set()
     tasks: set[asyncio.Task[None]] = set()
     parameters = StdioServerParameters(
-        command=worker, args=["--cli", "mcp", "--policy", policy]
+        command=worker,
+        args=["--cli", "mcp", "--policy", policy],
+        env=(
+            {
+                "LOCI_MODEL_HOME": model_home,
+                "OMP_NUM_THREADS": "2",
+                "MKL_NUM_THREADS": "2",
+                "OPENBLAS_NUM_THREADS": "2",
+                "VECLIB_MAXIMUM_THREADS": "2",
+            }
+            if model_home
+            else None
+        ),
     )
     async with (
         stdio_client(parameters) as streams,
@@ -167,8 +181,11 @@ if __name__ == "__main__":
     server.add_argument("worker")
     server.add_argument("policy")
     server.add_argument("--client-name", default="Loci packaged session QA")
+    server.add_argument(
+        "--model-home", help="Exact model home declared in the generated server config"
+    )
     args = parser.parse_args()
     if args.command == "fixture":
         fixture(args.directory)
     else:
-        asyncio.run(serve(args.worker, args.policy, args.client_name))
+        asyncio.run(serve(args.worker, args.policy, args.client_name, args.model_home))

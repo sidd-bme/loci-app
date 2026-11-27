@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import { _electron as electron } from "playwright";
 import { measureRafDuring, startProcessTreeRssSampler } from "./navigation-performance-qa-helpers.mjs";
+import { setVolumeDetailsOpen } from "./workbench-qa-helpers.mjs";
 
 const run = promisify(execFile);
 const desktopRoot = path.resolve(import.meta.dirname, "..");
@@ -670,24 +671,29 @@ try {
   captures.channelOpacity = await canvasCapture("09-channel-opacity");
   assert.notEqual(captures.channelOpacity.sha256, captures.singleChannel.sha256, "Channel opacity did not change the rendered view.");
 
-  await page.locator('details.raw-volume-rendering-detail > summary').click();
+  await setVolumeDetailsOpen(page);
   await page.getByLabel("Clip", { exact: true }).check();
   await page.getByLabel("Clipping axis", { exact: true }).selectOption("0");
   await page.getByLabel("Clipping position", { exact: true }).fill("62");
+  await setVolumeDetailsOpen(page, false);
   await page.waitForTimeout(120);
   captures.clipped = await canvasCapture("10-clipped-x");
   assert.notEqual(captures.clipped.sha256, captures.channelOpacity.sha256, "Clipping did not change the rendered view.");
 
   await page.getByRole("button", { name: "MPR", exact: true }).click();
+  await setVolumeDetailsOpen(page);
   await page.getByLabel("X slice", { exact: true }).fill("91");
   await page.getByLabel("Y slice", { exact: true }).fill("73");
   await page.getByLabel("Z slice", { exact: true }).fill("31");
+  await setVolumeDetailsOpen(page, false);
   await page.waitForTimeout(120);
   captures.mpr = await canvasCapture("11-mpr-crosshair");
   assert.notEqual(captures.mpr.sha256, captures.clipped.sha256, "MPR mode did not change the rendered view.");
 
+  await setVolumeDetailsOpen(page);
   const focusStart = performance.now();
   await page.getByRole("button", { name: "Detail at crosshair", exact: true }).click();
+  await setVolumeDetailsOpen(page, false);
   const focused = await waitFor(async () => {
     const value = await viewportState();
     return value.focusExtent && value.focusByteLength > 0 && value.status.includes("display") ? value : null;
@@ -834,6 +840,7 @@ try {
 
   await volumeMode.click();
   await wholeExtent.click();
+  await setVolumeDetailsOpen(page);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await volumeMode.getAttribute("aria-pressed"), "true");
   assert.equal(await wholeExtent.getAttribute("aria-pressed"), "true");
@@ -859,6 +866,7 @@ try {
 
   await mprMode.click();
   await focusExtentButton.click();
+  await setVolumeDetailsOpen(page);
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   assert.equal(await mprMode.getAttribute("aria-pressed"), "true");
   assert.equal(await focusExtentButton.getAttribute("aria-pressed"), "true");
@@ -883,6 +891,7 @@ try {
   "focused-MPR export receipt");
 
   const wholeBeforeCollision = await bundleFingerprint(wholeFigurePath);
+  await setVolumeDetailsOpen(page);
   await exportButton.click();
   const collisionError = page.locator(".raw-volume-export-error[role=alert]");
   await collisionError.waitFor({ state: "visible", timeout: 120_000 });

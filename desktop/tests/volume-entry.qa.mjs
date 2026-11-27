@@ -8,6 +8,7 @@ import { parseArgs } from "node:util";
 
 import { placeQaWindow } from "../../scripts/qa/display-placement.mjs";
 import { measureRafDuring, startProcessTreeRssSampler } from "./navigation-performance-qa-helpers.mjs";
+import { setVolumeDetailsOpen } from "./workbench-qa-helpers.mjs";
 
 const AXES = ["X", "Y", "Z"];
 const VOLUME_BUDGET = 128 * 1024 * 1024;
@@ -175,13 +176,13 @@ export function assertInitialMipContrast(overview, minimumContrast) {
     `Initial specimen foreground contrast is ${foreground.p90_minus_p10}, below ${minimumContrast}`);
 }
 
-async function sha256(file) {
+export async function sha256(file) {
   const hash = createHash("sha256");
   for await (const bytes of createReadStream(file)) hash.update(bytes);
   return hash.digest("hex");
 }
 
-async function inspectBundle(bundle) {
+export async function inspectBundle(bundle) {
   const executable = path.join(bundle, "Contents/MacOS/Loci");
   const resources = path.join(bundle, "Contents/Resources");
   const [identity, executableSha, asarSha, workerSha] = await Promise.all([
@@ -328,10 +329,10 @@ async function waitForPhase(page, phase, timeout) {
   return result;
 }
 
-async function sourcePosition(page, dimensions, requestedCenter) {
+export async function sourcePosition(page, dimensions, requestedCenter) {
   const center = [];
   for (const [axis, label] of AXES.entries()) {
-    const slice = page.getByRole("slider", { name: `${label} slice`, exact: true });
+    const slice = page.getByLabel(`${label} slice`, { exact: true });
     assert.equal(Number(await slice.getAttribute("min")), 0);
     assert.equal(Number(await slice.getAttribute("max")), dimensions[axis] - 1,
       `${label} slider disagrees with independently supplied native dimensions`);
@@ -360,7 +361,7 @@ async function sourcePosition(page, dimensions, requestedCenter) {
   return center;
 }
 
-async function captureVolume(app, page, directory, name, selector, { measureForeground = false } = {}) {
+export async function captureVolume(app, page, directory, name, selector, { measureForeground = false } = {}) {
   const filename = `${name}.png`;
   const stage = selector ?? page.getByLabel("Interactive three-dimensional volume", { exact: true }).locator("canvas");
   const png = await stage.screenshot({ path: path.join(directory, filename) });
@@ -416,7 +417,7 @@ export function assertNavigationFocus(state, expectedState, sourceSha256, crossh
   assert.deepEqual(crosshair, expectedCrosshair, "Navigation moved to a different source coordinate");
 }
 
-async function captureMprRaster(locator) {
+export async function captureMprRaster(locator) {
   return locator.evaluate(async (canvas) => {
     const { width, height, dataset: { renderBinding } } = canvas;
     const ctx = canvas.getContext("2d");
@@ -515,6 +516,7 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
   assert.notEqual(captures.pan.sampled_pixel_sha256, captures.orbit.sampled_pixel_sha256,
     "The pan did not change the displayed 3D pixels");
 
+  await setVolumeDetailsOpen(volume);
   const z = volume.getByRole("slider", { name: "Z slice", exact: true });
   const positions = focusSlicePositions(center[2], detail.focus.extent_xyzxyz);
   let current = center[2];
@@ -528,6 +530,7 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
     for (const position of positions) await step(() => moveTo(position));
   });
   report.phases.xy_slices.native_z_positions = positions;
+  await setVolumeDetailsOpen(volume, false);
   captures.resliced_xy = await captureVolume(app, page, directory, "navigation-resliced-xy", xy);
   captures.resliced_xy.raster = await captureMprRaster(xy);
   assertSignal(captures.resliced_xy, "Resliced navigation XY");
@@ -536,7 +539,10 @@ async function runNavigation(app, page, directory, fixture, center, detail, repo
   assert.notEqual(captures.resliced_xy.raster.rgba_sha256, captures.before_xy.raster.rgba_sha256,
     "Native Z navigation did not change the underlying XY slice pixels");
   await assertFocus([center[0], center[1], current]);
+  await setVolumeDetailsOpen(volume);
+  await z.focus();
   while (current !== center[2]) await moveTo(current + Math.sign(center[2] - current));
+  await setVolumeDetailsOpen(volume, false);
   await assertFocus(center);
 
   signal.throwIfAborted();
@@ -724,11 +730,12 @@ async function runCase(electron, bundle, fixture, route, outputRoot, timeout, di
     assertSignal(report.overview.image, "Overview");
     if (measureForeground) assertInitialMipContrast(report.overview, fixture.minInitialMipContrast);
 
+    await setVolumeDetailsOpen(page);
     const center = await sourcePosition(page, fixture.dimensions, fixture.center);
     report.focus_center_xyz = center;
-    await page.getByText("Rendering & detail", { exact: true }).click();
     await page.getByLabel("Detail span", { exact: true }).selectOption(fixture.span);
     await timedClick(page.getByRole("button", { name: "Detail at crosshair", exact: true }), "detail");
+    await setVolumeDetailsOpen(page, false);
     const focus = await waitForPhase(page, "focus", timeout);
     report.detail = {
       ...validateVolumeState(focus.state, fixture.dimensions, {

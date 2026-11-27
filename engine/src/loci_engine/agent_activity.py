@@ -327,7 +327,7 @@ def targets_stale(project, targets, *, verify_sources=False) -> bool:
                 ):
                     return True
             elif kind == "model_preview":
-                docs = project.documents("model_preview", document_id=identity)
+                docs = project.documents(kind, document_id=identity)
                 if not docs:
                     return True
                 doc = docs[0]
@@ -379,7 +379,7 @@ def response_targets(project, body):
     preview_item = body.get("preview")
     if (
         isinstance(preview_item, dict)
-        and preview_item.get("schema") == "loci.model-preview/v1"
+        and preview_item.get("schema") in {"loci.model-preview/v1", "loci.cellpose-preview/v1"}
         and _id(preview_item.get("id"))
     ):
         payload["preview_id"] = preview_item["id"]

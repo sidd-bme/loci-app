@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -216,6 +217,8 @@ def create_agent_access(
         "volume_views",
         "client",
         "allow_nuclei_model",
+        "allow_cellpose_model",
+        "cellpose_measurement_channels",
     }
     exact_keys(request, expected | optional, "agent access")
     if set(request) - optional != expected:
@@ -226,6 +229,11 @@ def create_agent_access(
     allow_nuclei_model = request.get("allow_nuclei_model", False)
     if type(allow_nuclei_model) is not bool:
         raise ValueError("Nuclei model access requires an explicit boolean")
+    allow_cellpose_model = request.get("allow_cellpose_model", False)
+    if type(allow_cellpose_model) is not bool:
+        raise ValueError("Cellpose model access requires an explicit boolean")
+    if "cellpose_measurement_channels" in request and not allow_cellpose_model:
+        raise ValueError("Additional measurement channels require explicit Cellpose model access")
     if "permission_mode" in request and request["permission_mode"] not in PERMISSION_MODES:
         raise ValueError("Choose inspect_only, ask_approval or full_access permission mode")
     for name in ("allow_preview", "allow_run", "allow_export"):
@@ -287,7 +295,8 @@ def create_agent_access(
         )
     if not isinstance(actions, list) or any(not isinstance(item, str) for item in actions):
         raise ValueError("Research actions must be an explicit list")
-    if actions or allow_nuclei_model:
+    if actions or allow_nuclei_model or allow_cellpose_model:
+        from .agent_cellpose import CELLPOSE_ACTIONS
         from .research_action_registry import ACTION_NAMES, TASK_ACTIONS
         from .research_models import MODEL_OPERATIONS
 
@@ -297,6 +306,10 @@ def create_agent_access(
             actions = [*actions, *sorted(MODEL_OPERATIONS - set(actions))]
         elif set(actions) & MODEL_OPERATIONS:
             raise ValueError("Model actions require explicit nuclei model access")
+        if allow_cellpose_model:
+            actions = [*actions, *sorted((CELLPOSE_ACTIONS | {"task_preview_get"}) - set(actions))]
+        elif set(actions) & CELLPOSE_ACTIONS:
+            raise ValueError("Cellpose actions require explicit Cellpose model access")
         if (
             delegation is None
             or delegation["result_scope"] != "granted-sources"
@@ -341,6 +354,30 @@ def create_agent_access(
         ):
             raise ValueError("Nuclei model access requires a single Z plane of a scalar source")
         nuclei_pins = _nuclei_model_pins(workbench)
+    cellpose_pins = None
+    measurement_channels = set(validated["recipe"]["measurement_channels"])
+    if allow_cellpose_model:
+        from .agent_cellpose import require_scalar_plane
+        from .research_cellpose import (
+            CELLPOSE_MIN_POLICY_MEMORY_BYTES,
+            _measurement_channels,
+            installed_cellpose_pins,
+        )
+
+        if memory < CELLPOSE_MIN_POLICY_MEMORY_BYTES:
+            raise ValueError("Cellpose model access requires at least 512 MiB of policy memory")
+        require_scalar_plane(source, selection)
+        declared = workbench.channel_metadata(source["id"])
+        raw_channels = _measurement_channels(
+            request.get("cellpose_measurement_channels", sorted(measurement_channels)),
+            len(declared["channels"]),
+        )
+        cellpose_scope = {
+            "source_id": source["id"],
+            "selection": dict(selection),
+            "measurement_channels": raw_channels,
+        }
+        cellpose_pins = installed_cellpose_pins()
     operations = ["inspect_source", "validate_recipe"]
     if "agent_metadata" in disclosures:
         operations.append("analysis_context")
@@ -390,7 +427,7 @@ def create_agent_access(
                 "c": sorted({selection["c"], *(interactive["channels"] if interactive else [])}),
                 "z": list(range(selection["z"], selection.get("z_stop", selection["z"] + 1))),
                 "level": [selection["level"]],
-                "measurement_channels": sorted(validated["recipe"]["measurement_channels"]),
+                "measurement_channels": sorted(measurement_channels),
             }
         ],
         "recipes": [
@@ -413,6 +450,10 @@ def create_agent_access(
         "limits": limits,
         "disclosures": disclosures,
     }
+    if cellpose_pins:
+        specification["cellpose_scope"] = cellpose_scope
+        specification["model_packages"].append(cellpose_pins[0])
+        specification["runtimes"].append(cellpose_pins[1])
     if nuclei_pins:
         specification["runtimes"].append(nuclei_pins[1])
     if interactive is not None:
@@ -496,6 +537,22 @@ def create_agent_access(
         if command[1:3] == ["-m", "loci_engine.research_cli"]:
             engine = Path(__file__).resolve().parents[2]
             stdio.update(cwd=str(engine), env={"PYTHONPATH": str(engine / "src")})
+        cellpose_workflow = ""
+        if cellpose_pins:
+            from .cellpose_backend import MODEL_HOME_ENV, _default_model_home
+
+            stdio.setdefault("env", {})[MODEL_HOME_ENV] = str(_default_model_home().resolve())
+            cellpose_workflow = (
+                "\nCellpose-SAM v2\n\n"
+                "Call inspect_action with cellpose_model_status to read the installed CPU profile "
+                "and settings. From analysis_context choose the granted crop, T, Z and inference "
+                "channel. List each raw measurement channel explicitly. Use validate_action and "
+                "submit_action with cellpose_preview, then poll the job and inspect its overlay "
+                "with task_preview_get. Submit cellpose_adopt with that preview ID and SHA-256. "
+                "Ask the researcher to inspect the overlay in Loci and approve that exact request. "
+                "Retry with the same submission key in this session. Read the saved revision and "
+                "raw measurements after the job succeeds.\n"
+            )
         config = {"mcpServers": {"loci-research": stdio}}
         host_documents = plugin_documents(stdio, receipt["policy_sha256"]) if include_plugin else {}
         host_receipt = {}
@@ -511,6 +568,8 @@ def create_agent_access(
             )
             host_documents.update(documents)
         for name, body in host_documents.items():
+            if name.endswith(("/AGENTS.md", "/SKILL.md")):
+                body += cellpose_workflow
             path = stage / name
             missing = []
             directory = path.parent
@@ -527,6 +586,11 @@ def create_agent_access(
                 stream.flush()
                 os.fsync(stream.fileno())
             _fsync_directory(path.parent)
+        if host_receipt:
+            workspace_config = stage / host_receipt[f"{client}_config_filename"]
+            host_receipt["workspace_config_sha256"] = hashlib.sha256(
+                workspace_config.read_bytes()
+            ).hexdigest()
         with (stage / "codex-config.toml").open("x", encoding="utf-8") as stream:
             os.chmod(stage / "codex-config.toml", 0o600)
             stream.write(codex_config(stdio))
@@ -577,6 +641,7 @@ def create_agent_access(
             "https://learn.chatgpt.com/docs/extend/mcp\n"
             "https://developers.openai.com/plugins/build/plugins\n"
         )
+        instructions += cellpose_workflow
         if delegation is not None:
             instructions += (
                 "\nDelegated result access\n\n"
@@ -670,6 +735,8 @@ def create_agent_access(
                 raise ValueError("An authorized source changed before grant publication")
         if nuclei_pins and _nuclei_model_pins(workbench) != nuclei_pins:
             raise ValueError("The verified nuclei model or CPU runtime changed before publication")
+        if cellpose_pins and installed_cellpose_pins() != cellpose_pins:
+            raise ValueError("Cellpose checkpoint or CPU runtime changed before publication")
         for directory in sorted(bundle_directories, key=lambda path: len(path.parts), reverse=True):
             _fsync_directory(directory)
         current_parent = parent.lstat()
@@ -708,6 +775,14 @@ def create_agent_access(
             "source_id": source["id"],
             "selection": selection,
             **({"nuclei_model_sha256": nuclei_pins[0]["sha256"]} if nuclei_pins else {}),
+            **(
+                {
+                    "cellpose_model_sha256": cellpose_pins[0]["sha256"],
+                    "cellpose_scope": cellpose_scope,
+                }
+                if cellpose_pins
+                else {}
+            ),
             **host_receipt,
             **({"plugin_filename": "plugin/plugin.json"} if include_plugin else {}),
             **({"delegation": specification["delegation"]} if delegation is not None else {}),

@@ -12,6 +12,7 @@ import type {
 } from "../shared/research-contracts";
 import { ResearchAgentPanel } from "./ResearchAgentPanel";
 import { AgentConnectionReceipt } from "./AgentConnectionReceipt";
+import { CELLPOSE_SAM_V2_SHA256 } from "../shared/model-registry";
 import sessionFixture from "./__fixtures__/agent-sessions-snapshot.json";
 
 afterEach(cleanup);
@@ -83,6 +84,60 @@ function renderPanel(
 }
 
 describe("ResearchAgentPanel", () => {
+  it("keeps Cellpose separate from Analyze and issues the exact measurement list on the selected plane", async () => {
+    const getCellposeStatus = vi.fn().mockResolvedValue({
+      profileId: "cellpose-sam-v2", ready: true, package: { exact: true },
+      model: { artifactId: "cpsam_v2", present: true, verified: true, expectedSha256: CELLPOSE_SAM_V2_SHA256 },
+    });
+    vi.stubGlobal("loci", { getCellposeStatus });
+    try {
+      const plane = { ...selection };
+      delete plane.z_stop;
+      const create = vi.fn().mockResolvedValue(null);
+      const operations: ResearchSnapshot["operations"] = {
+        classical_run: { summary: "Classical", mutates: true, agent_execution: "task" },
+        cellpose_model_status: { summary: "Installed Cellpose", mutates: false, agent_execution: "read" },
+        cellpose_preview: { summary: "Cellpose preview", mutates: false, agent_execution: "task" },
+        cellpose_adopt: { summary: "Adopt inspected preview", mutates: true, agent_execution: "task" },
+      };
+      const { props, rerender } = renderPanel(bridge(vi.fn().mockResolvedValue({ ...validation, selection: plane }), create),
+        source, plane, { ...recipe, measurement_channels: [0] });
+      rerender(<ResearchAgentPanel {...props} operations={operations} />);
+      expect(getCellposeStatus).not.toHaveBeenCalled();
+      const access = screen.getByLabelText("Assistant access level");
+      fireEvent.change(access, { target: { value: "analyze" } });
+      const optIn = await screen.findByLabelText("Use installed Cellpose-SAM v2");
+      const grant = screen.getByRole("button", { name: /Grant selected access/ });
+      expect(optIn).not.toBeChecked();
+      await waitFor(() => expect(grant).toBeEnabled());
+      fireEvent.click(grant);
+      await waitFor(() => expect(create).toHaveBeenCalledOnce());
+      expect(create.mock.calls[0][0].actions).toEqual(["classical_run"]);
+      expect(create.mock.calls[0][0]).not.toHaveProperty("cellpose_measurement_channels");
+      fireEvent.click(optIn);
+      fireEvent.click(screen.getByText("Measure raw channels (1)"));
+      fireEvent.click(screen.getByLabelText("Grant Cellpose measurement channel 1"));
+      fireEvent.click(screen.getByLabelText("Grant Cellpose measurement channel 2"));
+      await waitFor(() => expect(grant).toBeEnabled());
+      fireEvent.click(grant);
+      await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+      expect(create.mock.calls[1][0]).toMatchObject({
+        allow_cellpose_model: true, cellpose_measurement_channels: [1], actions: Object.keys(operations).sort(), selection: plane,
+      });
+      expect(create.mock.calls[1][0]).not.toHaveProperty("allow_nuclei_model");
+      fireEvent.change(access, { target: { value: "full" } });
+      expect(screen.getByLabelText("Use installed Cellpose-SAM v2")).not.toBeChecked();
+      getCellposeStatus.mockResolvedValue({ profileId: "cellpose-sam", ready: true, package: { exact: true },
+        model: { artifactId: "cpsam", present: true, verified: true, expectedSha256: "0".repeat(64) } });
+      rerender(<ResearchAgentPanel {...props} operations={operations} modelLibraryOpen />);
+      const choose = vi.fn();
+      rerender(<ResearchAgentPanel {...props} operations={operations} onChooseCellposeModel={choose} />);
+      fireEvent.click(await screen.findByText("Set up Cellpose in Model Zoo"));
+      expect(choose).toHaveBeenCalledOnce();
+      expect(screen.queryByLabelText("Use installed Cellpose-SAM v2")).toBeNull();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("adds the installed nuclei model only after a separate grant on a native plane", async () => {
     const plane = { ...selection };
     delete plane.z_stop;

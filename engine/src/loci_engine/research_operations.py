@@ -316,6 +316,20 @@ OPERATION_CATALOG = {
         "mutates": True,
         "summary": "Run the established adaptive 2D baseline on an exact selected source plane",
     },
+    "cellpose_model_status": {
+        "mutates": False,
+        "summary": "Inspect verified local Cellpose-SAM v2 checkpoint and CPU runtime readiness",
+    },
+    "cellpose_preview": {
+        "mutates": True,
+        "summary": (
+            "Preview an exact local Cellpose-SAM v2 segmentation without publishing a result"
+        ),
+    },
+    "cellpose_adopt": {
+        "mutates": True,
+        "summary": "Recompute, verify and adopt only an exact persisted Cellpose preview",
+    },
     "cellpose_run": {
         "mutates": True,
         "summary": "Run an exact provisioned Cellpose profile on a selected 2D source plane",
@@ -557,6 +571,8 @@ TASK_OPERATIONS = frozenset(
         "tissue_preview",
         "tissue_run",
         "model_run",
+        "cellpose_preview",
+        "cellpose_adopt",
         "cellpose_run",
         "classical_run",
         "model_preview",
@@ -592,6 +608,7 @@ PREVIEW_OPERATIONS = frozenset(
         "preview_recipe",
         "histology_preview",
         "model_preview",
+        "cellpose_preview",
         "registration_preview",
         "puncta_preview",
         "field_assay_preview",

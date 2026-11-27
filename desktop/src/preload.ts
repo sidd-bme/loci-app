@@ -337,6 +337,12 @@ const researchApi: ResearchDesktopApi = {
     ipcRenderer.invoke("loci-research:reveal-agent-setup", policySha256),
   copyAgentLaunch: (policySha256) =>
     ipcRenderer.invoke("loci-research:copy-agent-launch", policySha256),
+  copyAgentWorkspacePath: (policySha256) =>
+    ipcRenderer.invoke("loci-research:copy-agent-workspace-path", policySha256),
+  canOpenAgentHost: (policySha256) =>
+    ipcRenderer.invoke("loci-research:can-open-agent-host", policySha256),
+  openAgentHost: (policySha256) =>
+    ipcRenderer.invoke("loci-research:open-agent-host", policySha256),
   controlAgentSession: (request) =>
     ipcRenderer.invoke("loci-research:agent-session-control", request),
   importModel: (workingBytes, recoveryModelId) =>
