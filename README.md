@@ -1,16 +1,16 @@
 # <img src="desktop/assets/loci-mark-128.png" width="40" height="40" align="absmiddle" alt=""> Loci
 
-Loci is an open-source desktop workbench for biomedical imaging research. Explore images in their native planes, measure cells and tissue, and trace a reported value back to its source pixels, analysis settings and review history. Image viewing and core analysis run on your computer.
+Loci is an open-source desktop workbench for biomedical imaging. Explore optical sections, segment cells and measure tissue on your own computer. Trace a measurement back to its source image, analysis settings and review history.
 
 [Download the Apple silicon beta](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2) · [Try your first study](docs/workflows/FIRST_STUDY.md) · [Installation and checksum verification](docs/INSTALLATION.md)
 
-The public download is the unnotarized **v0.2.0-beta.2** prerelease. This tour shows features from newer development builds of the source tree. See the [release status](docs/RELEASE_STATUS.md) for the published build and its scope.
+The download is the unnotarized **v0.2.0-beta.2** prerelease. This tour shows the newer development build. [Release status](docs/RELEASE_STATUS.md)
 
 ![Human iPSC colony shown as a fluorescence projection, with an amber membrane network, aqua microtubules and violet nuclei](docs/media/tour/fluorescence.webp)
 
 Six optical sections of an Allen Institute human induced pluripotent stem cell (iPSC) colony, combined in a maximum-intensity projection. Plasma membrane appears in amber, GFP-labelled α-tubulin in aqua and DNA in violet. [Specimen and capture credits](docs/media/tour/README.md#fluorescence-and-cell-measurements)
 
-[Image views](#image-views) · [Measurement and review](#measurement-and-review) · [Model Zoo](#model-zoo) · [Assistant connection](#assistant-connection) · [Command line](#command-line) · [Installation and documentation](#installation-and-documentation)
+[Image views](#image-views) · [Measurement and review](#measurement-and-review) · [Model Zoo](#model-zoo) · [Assistant connection](#assistant-connection) · [Command line](#command-line) · [Film](#watch-optical-section) · [Installation and documentation](#installation-and-documentation)
 
 ## Image views
 
@@ -44,7 +44,7 @@ Play the 51-frame organoid movie and inspect the source at either endpoint of an
 
 ![Scalar digital holographic cell image with a saved line, endpoint handles and a distance readout](docs/media/tour/phase-microscopy.webp)
 
-**Draw & measure** saved a 13.589 µm distance between two user-selected points in a calibrated digital holographic image. The value describes the example line between those points. [Source and calibration](docs/media/tour/README.md#image-modes) · [Source-bound annotations](docs/USING_LOCI.md#draw-source-bound-annotations)
+In this calibrated digital holographic image, the saved line spans **13.589 µm** between two points selected with **Draw & measure**. [Source and calibration](docs/media/tour/README.md#image-modes) · [Source-bound annotations](docs/USING_LOCI.md#draw-source-bound-annotations)
 
 ## Measurement and review
 
@@ -77,16 +77,11 @@ Browse ten workflows in **File → Model Zoo…**. Filter by task or execution l
 
 ## Assistant connection
 
-In **Connect an assistant**, choose **Codex** or **Antigravity** and check which image, region, channels, planes and operations you are granting. With **Confirm changes in Loci**, inspect requested changes in the workbench before deciding whether to approve them. Grant access, open the generated workspace in the selected host and start the task in its chat. The Model Context Protocol (MCP) connection runs locally. The selected host and its provider can receive the scoped image content and study records you authorize. [Assistant walkthrough](docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant) · [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
-
-<details>
-<summary>See the native assistant setup</summary>
+Choose **Codex** or **Antigravity** in **Connect an assistant**. Select the image, region, channels, planes and operations to share, then open the generated workspace in the host. Prompt the assistant in its chat and follow its jobs in Loci. Choose **Confirm changes in Loci** to review changes before approving them. The Model Context Protocol (MCP) server runs locally. Your host and its provider can receive the image content and study records you authorize. [Assistant walkthrough](docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant) · [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
 
 ![Loci’s Connect an assistant panel with Codex selected and the Confirm changes in Loci setting visible before access is granted](docs/media/tour/assistant-connect.webp)
 
-</details>
-
-Follow the plan and actual jobs in **Agent workspace**. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, you can reopen saved steps, assessments and results and follow their evidence links to the work recorded in the study.
+**Agent workspace** keeps the plan beside the image. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, use the plan’s evidence links to reopen a result or inspect the assessment that refers to it.
 
 ![Agent workspace after disconnection, with two completed steps and a saved classical result linked from the plan](docs/media/tour/agent-plan.webp)
 
@@ -103,26 +98,21 @@ loci locate 4 --project colony.loci-study
 
 Save your own study and substitute its path and measurement bounds. The example uses µm² for area and µm for spacing. [CLI setup and object queries](docs/CLI.md#inspect-measured-objects)
 
-<details>
-<summary>See the packaged CLI output on the saved study</summary>
-
 ![Terminal output showing three of 19 matching cell rows and the native row and column returned for label 4](docs/media/tour/cli-objects.webp)
 
-</details>
+## Watch Optical Section
+
+*Optical Section* follows a light-sheet embryo volume, an assistant session on two H&E melanoma fields and a spatial analysis of lymphocytes relative to a tissue boundary. [Watch the film (2:04)](https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Download MP4 (18.6 MB)](https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Film credits and methods](docs/media/optical-section-credits.md)
 
 ## Installation and documentation
 
 The public Apple silicon beta comes with checksums. Verify the ZIP, unzip it and move `Loci.app` to Applications. If macOS blocks the first launch, use the documented steps in Privacy & Security. Windows x64, Linux and Intel Mac installers are unavailable for this prerelease. For current source features, follow the build guide. [Install the beta](docs/INSTALLATION.md) · [Build from source](docs/BUILDING.md) · [Windows x64 build](docs/BUILDING.md#local-windows-x64-qualification-package)
 
-| Your source | Where to start |
-| --- | --- |
-| Microscopy stacks and ordinary images | Open supported TIFF, BigTIFF, OME-TIFF, Imaris IMS, local OME-NGFF 0.4 / Zarr v2 stores, or single-frame PNG and JPEG. [Native formats and limits](docs/CAPABILITY_MATRIX.md) |
-| Whole slides and research volumes | Open supported Aperio SVS and Hamamatsu NDPI slides, scalar NIfTI and NRRD images, or conventional CT/MR DICOM series. [Slide support](docs/WHOLE_SLIDE_SUPPORT.md) · [Medical source formats](docs/USING_LOCI.md#medical-research-sources) |
-| Vendor microscopy files | Convert a supported selection from a CZI, ND2 or LIF series to OME-TIFF with the documented Bio-Formats runtime. [Vendor conversion](docs/VENDOR_CONVERSION.md) |
+- **Microscopy.** Open supported TIFF, BigTIFF, OME-TIFF, Imaris IMS, local OME-NGFF 0.4 / Zarr v2 stores, or single-frame PNG and JPEG. [Native formats and limits](docs/CAPABILITY_MATRIX.md)
+- **Whole slides and research volumes.** Open supported Aperio SVS and Hamamatsu NDPI slides, scalar NIfTI and NRRD images, or conventional CT/MR DICOM series. [Slide support](docs/WHOLE_SLIDE_SUPPORT.md) · [Medical source formats](docs/USING_LOCI.md#medical-research-sources)
+- **Vendor microscopy files.** Convert a supported selection from a CZI, ND2 or LIF series to OME-TIFF with the documented Bio-Formats runtime. [Vendor conversion](docs/VENDOR_CONVERSION.md)
 
 [First study](docs/workflows/FIRST_STUDY.md) · [User manual](docs/USING_LOCI.md) · [Documentation index](docs/README.md) · [Contribute](CONTRIBUTING.md)
-
-*Optical Section* follows a light-sheet embryo volume, an assistant session on two H&E melanoma fields and a spatial analysis of lymphocytes relative to a tissue boundary. [Watch the film (2:04)](https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Download MP4 (18.6 MB)](https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Film credits and methods](docs/media/optical-section-credits.md)
 
 Loci’s core is licensed under Apache-2.0. When citing Loci, include the release version or source commit and cite the datasets and models you used separately. [Releases](https://github.com/sidd-bme/loci-app/releases) · [Tour credits](docs/media/tour/README.md) · [Media archive](docs/media/README.md)
 
