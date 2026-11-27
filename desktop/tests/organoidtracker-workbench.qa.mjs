@@ -167,10 +167,15 @@ async function journey() {
       await filter.selectOption("low");
       const link = panel.getByText("Link 1 of 81 · Reported link probability 0.2162 · Marginal probability 0.7576", { exact: true });
       await link.waitFor();
-      const reported = link.getByTitle(`Reported link probability (full precision): ${firstLink.link_probability}`, { exact: true });
-      const marginal = link.getByTitle(`Marginal probability (full precision): ${firstLink.marginal_probability}`, { exact: true });
-      assert.equal(await reported.evaluate(element => element.value), String(firstLink.link_probability));
-      assert.equal(await marginal.evaluate(element => element.value), String(firstLink.marginal_probability));
+      for (const [label, value, displayed] of [
+        ["Reported link probability", firstLink.link_probability, "0.2162"],
+        ["Marginal probability", firstLink.marginal_probability, "0.7576"],
+      ]) {
+        const exactValue = await link.getByText(displayed, { exact: true }).evaluate(element => ({
+          tag: element.tagName, value: element.value, help: element.dataset.lociHelp ?? element.title,
+        }));
+        assert.deepEqual(exactValue, { tag: "DATA", value: String(value), help: `${label} (full precision): ${value}` });
+      }
       for (const [direction, node] of [["From", earlier], ["To", endpoint]]) {
         const t = node._time_point_number;
         const { x, y, z } = node;
