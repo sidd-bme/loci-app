@@ -14,7 +14,7 @@ Six optical sections of an Allen Institute human induced pluripotent stem cell (
 
 ## Image views
 
-Step through a Z stack one optical section at a time, or summarize a selected Z range with a maximum- or mean-intensity projection. Set channel visibility, colour and contrast independently of the raw values used for measurement. Detach a display panel or image viewer when you need room for a second view. [Display and navigation guide](docs/USING_LOCI.md#view-images-and-set-display)
+Step through a Z stack one optical section at a time, or summarize a selected Z range with a maximum- or mean-intensity projection. Set channel visibility, colour and contrast independently of the raw values used for measurement. Use **Compare A/B** for a side-by-side view, or detach the viewer and keep its controls on a second display. [Display and navigation guide](docs/USING_LOCI.md#view-images-and-set-display)
 
 ### Confocal stacks in 3D
 
@@ -62,7 +62,7 @@ On one BBBC039 U2OS field, the BioImage.IO nuclei model produced **66** objects 
 
 ### Repeat an analysis and keep its history
 
-- **Set the scope.** Declare the region, native channels, time point and Z range before running a method. Draw ROIs, run thresholding or watershed, measure puncta and channel intensity, or use calibrated masks for spatial assays. Record a transform when registering images to a common grid. [Quantification](docs/QUANTIFICATION.md) · [Spatial distance bands](docs/SPATIAL_DISTANCE_BANDS.md) · [Registration](docs/REGISTRATION.md)
+- **Set the scope.** Declare the region, native channels, time point and Z range before running a method. Draw ROIs, run thresholding or watershed, measure puncta and channel intensity, or measure cell density in distance bands along a tissue boundary. Record a transform when registering images to a common grid. [Quantification](docs/QUANTIFICATION.md) · [Spatial distance bands](docs/SPATIAL_DISTANCE_BANDS.md) · [Registration](docs/REGISTRATION.md)
 - **Reuse the method.** Set up processing, segmentation and measurement in the Workflow builder, preview a step and repeat a saved recipe across compatible study images. Run supported batch jobs locally or use an explicitly configured remote profile for eligible jobs. [Visual workflows](docs/WORKFLOWS.md) · [Remote compute](docs/REMOTE_WORKFLOW.md)
 - **Review and export.** Correct a label in a new revision and revisit the parent when needed. Review the exact revision you intend to share. Reviewed result bundles can include OME-TIFF labels, CSV measurement tables, geometry, settings and review history. Scientific data tables for selected result revisions have Python and R readers. [Result review and export](docs/USING_LOCI.md#inspect-provenance-review-and-export-one-result) · [Scientific data packages](docs/SCIENTIFIC_DATA_EXPORT.md)
 
@@ -81,7 +81,7 @@ Choose **Codex** or **Antigravity** in **Connect an assistant**. Select the imag
 
 ![Loci’s Connect an assistant panel with Codex selected and the Confirm changes in Loci setting visible before access is granted](docs/media/tour/assistant-connect.webp)
 
-**Agent workspace** keeps the plan beside the image. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, use the plan’s evidence links to reopen a result or inspect the assessment that refers to it.
+**Agent workspace** keeps the plan beside the image. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, use the plan’s evidence links to reopen a result or inspect its assessment. For 3D work, you can also grant the assistant access to move the crosshair or camera in the live viewer. [Shared 3D scene controls](docs/AGENT_ACCESS.md#shared-3d-scene-access)
 
 ![Agent workspace after disconnection, with two completed steps and a saved classical result linked from the plan](docs/media/tour/agent-plan.webp)
 
