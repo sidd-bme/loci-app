@@ -1,41 +1,129 @@
 # <img src="desktop/assets/loci-mark-128.png" width="40" height="40" align="absmiddle" alt=""> Loci
 
-Loci is an open-source desktop workbench for microscopy and bioimage analysis. Explore a fluorescence stack, segment cells and follow a measurement back to the pixels it came from. Viewing and core analysis run on your computer.
+Loci is an open-source desktop workbench for biomedical imaging research. Explore images in their native planes, measure cells and tissue, and trace a reported value back to its source pixels, analysis settings and review history. Image viewing and core analysis run on your computer.
 
-[Download v0.2.0-beta.2 for Apple silicon](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2) · [Try your first study](docs/workflows/FIRST_STUDY.md)
+[Download the Apple silicon beta](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2) · [Try your first study](docs/workflows/FIRST_STUDY.md) · [Installation and checksum verification](docs/INSTALLATION.md)
 
-The Mac beta is unnotarized. The screenshots and workflows below show the current source version. [Installation and verification](docs/INSTALLATION.md)
+The public download is the unnotarized **v0.2.0-beta.2** prerelease. This tour shows features from newer development builds of the source tree. See the [release status](docs/RELEASE_STATUS.md) for the published build and its scope.
 
-![Loci workbench showing a human iPS cell colony with amber membranes, aqua microtubules and violet nuclei](docs/media/ipsc-workbench.webp)
+![Human iPSC colony shown as a fluorescence projection, with an amber membrane network, aqua microtubules and violet nuclei](docs/media/tour/fluorescence.webp)
 
-*Six optical sections through a human iPS cell colony. A maximum-intensity projection shows plasma membrane in amber, GFP-labelled α-tubulin in aqua and DNA in violet.* [Specimen and capture credits](docs/media/README.md#current-readme)
+Six optical sections of an Allen Institute human induced pluripotent stem cell (iPSC) colony, combined in a maximum-intensity projection. Plasma membrane appears in amber, GFP-labelled α-tubulin in aqua and DNA in violet. [Specimen and capture credits](docs/media/tour/README.md#fluorescence-and-cell-measurements)
 
-Follow the same point through linked slices and a 3D view, or zoom from a whole-slide overview into the tissue. Adjust channel colours and contrast freely. Loci measures the raw image, keeps the original segmentation when you correct a label, and exports object tables with units and review status for use in Python or R. [Supported formats](docs/CAPABILITY_MATRIX.md) · [Scientific exports](docs/SCIENTIFIC_DATA_EXPORT.md)
+[Image views](#image-views) · [Measurement and review](#measurement-and-review) · [Model Zoo](#model-zoo) · [Assistant connection](#assistant-connection) · [Command line](#command-line) · [Installation and documentation](#installation-and-documentation)
 
-The Model Zoo covers ten workflows. Run Cellpose-SAM v2 locally with its supported runtime and weights, or bring in results from other tools, including StarDist labels, CARE-restored volumes and OrganoidTracker lineages. The guide identifies which models run in Loci and gives the terms for each. [Model Zoo guide](docs/MODEL_LIBRARY.md)
+## Image views
 
-## Do similar counts identify the same nuclei?
+Step through a Z stack one optical section at a time, or summarize a selected Z range with a maximum- or mean-intensity projection. Set channel visibility, colour and contrast independently of the raw values used for measurement. Detach a display panel or image viewer when you need room for a second view. [Display and navigation guide](docs/USING_LOCI.md#view-images-and-set-display)
 
-On one fluorescence image of U2OS cells, the BioImage.IO nuclei boundary model found **66** objects and thresholding with connected components found **67**. Only **56 pairs** matched at an intersection-over-union threshold of 0.50.
+### Confocal stacks in 3D
 
-![Loci comparing two nuclear segmentations of a U2OS fluorescence field, with a ring marking the selected unmatched label](docs/media/nuclei-comparison.webp)
+![Teal shaded rendering of an Arabidopsis ovule in Loci’s 3D volume viewer](docs/media/tour/volume-3d.webp)
 
-The ring marks model label 49. It has no matching object in the threshold result at that cutoff. Both overlays are predictions. A human reference would let you assess which better traces the nuclei. [Comparison and data credits](docs/media/README.md#current-readme)
+This 256 × 256 × 243 confocal volume of a wild-type *Arabidopsis thaliana* ovule is open directly from its Imaris IMS file. Normal shading brings out structure in the acquired intensity data. Rotate the volume, adjust opacity or clip it to look inside, then use the linked crosshair to find the same point in the source planes. [Volume and multiplanar views](docs/USING_LOCI.md#inspect-scalar-volumes-and-mpr)
 
-You can ask Codex or Antigravity to make this comparison through the Model Context Protocol (MCP). Choose the image and allowed operations in Loci, then ask in your assistant’s chat. Follow the plan in Loci, inspect the model preview before approving it, and open the saved comparison to step through the disagreements. [Assistant walkthrough](docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant) · [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
+### Whole-slide brightfield
 
-## Optical Section
+![Pale pink and purple H&E tissue at high magnification, with a navigator marking its location on the full slide and a 50 µm scale bar](docs/media/tour/whole-slide.webp)
 
-[![Watch Optical Section. The poster shows a crop of a melanoma tissue section from the film.](docs/media/optical-section-poster.webp)](https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4)
+Zoom from the overview of the 46,000 × 32,914 pixel Aperio CMU-1 slide to a level-zero region. The Navigator keeps the field in context as you move. Save regions of interest against the slide’s native coordinates for later inspection. [Whole-slide formats and analysis limits](docs/WHOLE_SLIDE_SUPPORT.md)
 
-The film moves from a light-sheet image of a mouse embryo to a recorded assistant session mapping tumor and stroma in two melanoma fields. A spatial analysis then counts lymphocytes on either side of the boundary. [Watch the film (2:04)](https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Download MP4 (18.6 MB)](https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Film credits and methods](docs/media/optical-section-credits.md)
+### Linked medical planes
 
-## Use and develop Loci
+![Linked axial, coronal and sagittal T1 MRI slices with a shared crosshair and a 3D orientation view](docs/media/tour/linked-mri.webp)
 
-The public download is for Apple silicon Macs. On Windows x64, build from source using the Windows guide. [Release status](docs/RELEASE_STATUS.md) · [Windows x64 build](docs/BUILDING.md#local-windows-x64-qualification-package)
+Moving the crosshair in one plane locates the same position in the others. This population-average ICBM152 T1 MRI is a NIfTI volume with 0.5 mm isotropic spacing. The physical orientation and millimetre coordinates come from the source geometry. [Medical research formats](docs/USING_LOCI.md#medical-research-sources)
 
-[User manual](docs/USING_LOCI.md) · [Documentation](docs/README.md) · [Build from source](docs/BUILDING.md) · [Contribute](CONTRIBUTING.md)
+### Time series and lineage
 
-When citing Loci, include the release version or source commit you used and cite the models and datasets separately. [Releases](https://github.com/sidd-bme/loci-app/releases)
+![Organoid fluorescence with a selected tracking endpoint on its source plane and a lineage table beside the image](docs/media/tour/organoid-lineage.webp)
 
-[Apache-2.0 licence](LICENSE) · [Notice](NOTICE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Media credits](docs/media/README.md) · [Security](SECURITY.md)
+Play the 51-frame organoid movie and inspect the source at either endpoint of an imported track link. This OrganoidTracker 2.0 example contains 6,802 detections and 6,665 links, with 48 candidate division parents. Loci retains the external graph’s link and marginal probabilities separately so you can check the evidence for a link against the original Z sections. [Lineage import and inspection](docs/ORGANOIDTRACKER.md)
+
+### Quantitative phase microscopy
+
+![Scalar digital holographic cell image with a saved line, endpoint handles and a distance readout](docs/media/tour/phase-microscopy.webp)
+
+**Draw & measure** saved a 13.589 µm distance between two user-selected points in a calibrated digital holographic image. The value describes the example line between those points. [Source and calibration](docs/media/tour/README.md#image-modes) · [Source-bound annotations](docs/USING_LOCI.md#draw-source-bound-annotations)
+
+## Measurement and review
+
+### Go from labels to measurements
+
+![Predicted whole-cell labels over a fluorescence field beside a cell area histogram and an area-versus-spacing scatter plot](docs/media/tour/cell-measurements.webp)
+
+In a second iPSC field, Cellpose-SAM v2 predicted 38 whole cells from a windowed three-channel RGB input at source Z40. The labels were imported on the original XY grid. Loci used the native calibration and scalar measurement channel to measure the labelled objects. Explore cell area (µm²) and nearest-centroid spacing (µm), filter the population and locate any matching label in the source field. [External labels](docs/EXTERNAL_LABELS.md) · [Object populations](docs/OBJECT_POPULATIONS.md)
+
+### Check where segmentation methods disagree
+
+![Hoechst-stained U2OS nuclei with an outline overlay and a ring on one unmatched object, beside a list of disagreements](docs/media/tour/compare-nuclei.webp)
+
+On one BBBC039 U2OS field, the BioImage.IO nuclei model produced **66** objects and classical connected components produced **67** (raw threshold 520, minimum area 20 pixels). At intersection-over-union ≥ 0.50, **56 pairs** matched, with 10 model-only and 11 threshold-only objects. The ring identifies model label 49, an unmatched object with an area of 851 px². This is a comparison between predictions on one field. Accuracy requires an independent reference. [Source and model credits](docs/media/tour/README.md#fluorescence-and-cell-measurements)
+
+### Repeat an analysis and keep its history
+
+- **Set the scope.** Declare the region, native channels, time point and Z range before running a method. Draw ROIs, run thresholding or watershed, measure puncta and channel intensity, or use calibrated masks for spatial assays. Record a transform when registering images to a common grid. [Quantification](docs/QUANTIFICATION.md) · [Spatial distance bands](docs/SPATIAL_DISTANCE_BANDS.md) · [Registration](docs/REGISTRATION.md)
+- **Reuse the method.** Set up processing, segmentation and measurement in the Workflow builder, preview a step and repeat a saved recipe across compatible study images. Run supported batch jobs locally or use an explicitly configured remote profile for eligible jobs. [Visual workflows](docs/WORKFLOWS.md) · [Remote compute](docs/REMOTE_WORKFLOW.md)
+- **Review and export.** Correct a label in a new revision and revisit the parent when needed. Review the exact revision you intend to share. Reviewed result bundles can include OME-TIFF labels, CSV measurement tables, geometry, settings and review history. Scientific data tables for selected result revisions have Python and R readers. [Result review and export](docs/USING_LOCI.md#inspect-provenance-review-and-export-one-result) · [Scientific data packages](docs/SCIENTIFIC_DATA_EXPORT.md)
+
+## Model Zoo
+
+![Model Zoo with task and execution filters above credited microscopy examples](docs/media/tour/model-zoo.webp)
+
+Browse ten workflows in **File → Model Zoo…**. Filter by task or execution location and inspect the original image and prediction wherever a paired example is available.
+
+- **Local.** Set up Cellpose-SAM v2, the BioImage.IO 2D nuclei boundary ONNX model or PUMA’s tissue nnU-Net profile with its supported runtime and weights. DynaCell predicts a normalized nuclear signal on compatible reconstructed Phase3D volumes of unperturbed WTC-11 iPSCs.
+- **External.** Bring in instance labels from μSAM, StarDist, PlantSeg or Mesmer, a separately restored CARE volume, or an OrganoidTracker 2.0 `.aut` v1 graph. [Inputs, runtime requirements and licence terms for each workflow](docs/MODEL_LIBRARY.md)
+
+## Assistant connection
+
+In **Connect an assistant**, choose **Codex** or **Antigravity** and check which image, region, channels, planes and operations you are granting. With **Confirm changes in Loci**, inspect requested changes in the workbench before deciding whether to approve them. Grant access, open the generated workspace in the selected host and start the task in its chat. The Model Context Protocol (MCP) connection runs locally. The selected host and its provider can receive the scoped image content and study records you authorize. [Assistant walkthrough](docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant) · [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
+
+<details>
+<summary>See the native assistant setup</summary>
+
+![Loci’s Connect an assistant panel with Codex selected and the Confirm changes in Loci setting visible before access is granted](docs/media/tour/assistant-connect.webp)
+
+</details>
+
+Follow the plan and actual jobs in **Agent workspace**. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, you can reopen saved steps, assessments and results and follow their evidence links to the work recorded in the study.
+
+![Agent workspace after disconnection, with two completed steps and a saved classical result linked from the plan](docs/media/tour/agent-plan.webp)
+
+This retained BBBC039 plan comes from an MCP test client run. The classical result contains 67 measurement rows. [Capture provenance](docs/media/tour/README.md#workflows)
+
+## Command line
+
+Use the `loci` command to inspect a saved study from a terminal. The same 38-cell result above was queried by area and nearest-centroid spacing. The first command found 19 matches and printed three. The second located label 4 at zero-based row **Y=91**, column **X=346**.
+
+```sh
+loci objects --project colony.loci-study --area 120:350 --spacing 10:40 --limit 3
+loci locate 4 --project colony.loci-study
+```
+
+Save your own study and substitute its path and measurement bounds. The example uses µm² for area and µm for spacing. [CLI setup and object queries](docs/CLI.md#inspect-measured-objects)
+
+<details>
+<summary>See the packaged CLI output on the saved study</summary>
+
+![Terminal output showing three of 19 matching cell rows and the native row and column returned for label 4](docs/media/tour/cli-objects.webp)
+
+</details>
+
+## Installation and documentation
+
+The public Apple silicon beta comes with checksums. Verify the ZIP, unzip it and move `Loci.app` to Applications. If macOS blocks the first launch, use the documented steps in Privacy & Security. Windows x64, Linux and Intel Mac installers are unavailable for this prerelease. For current source features, follow the build guide. [Install the beta](docs/INSTALLATION.md) · [Build from source](docs/BUILDING.md) · [Windows x64 build](docs/BUILDING.md#local-windows-x64-qualification-package)
+
+| Your source | Where to start |
+| --- | --- |
+| Microscopy stacks and ordinary images | Open supported TIFF, BigTIFF, OME-TIFF, Imaris IMS, local OME-NGFF 0.4 / Zarr v2 stores, or single-frame PNG and JPEG. [Native formats and limits](docs/CAPABILITY_MATRIX.md) |
+| Whole slides and research volumes | Open supported Aperio SVS and Hamamatsu NDPI slides, scalar NIfTI and NRRD images, or conventional CT/MR DICOM series. [Slide support](docs/WHOLE_SLIDE_SUPPORT.md) · [Medical source formats](docs/USING_LOCI.md#medical-research-sources) |
+| Vendor microscopy files | Convert a supported selection from a CZI, ND2 or LIF series to OME-TIFF with the documented Bio-Formats runtime. [Vendor conversion](docs/VENDOR_CONVERSION.md) |
+
+[First study](docs/workflows/FIRST_STUDY.md) · [User manual](docs/USING_LOCI.md) · [Documentation index](docs/README.md) · [Contribute](CONTRIBUTING.md)
+
+*Optical Section* follows a light-sheet embryo volume, an assistant session on two H&E melanoma fields and a spatial analysis of lymphocytes relative to a tissue boundary. [Watch the film (2:04)](https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Download MP4 (18.6 MB)](https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4) · [Film credits and methods](docs/media/optical-section-credits.md)
+
+Loci’s core is licensed under Apache-2.0. When citing Loci, include the release version or source commit and cite the datasets and models you used separately. [Releases](https://github.com/sidd-bme/loci-app/releases) · [Tour credits](docs/media/tour/README.md) · [Media archive](docs/media/README.md)
+
+[Licence](LICENSE) · [Notice](NOTICE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [Security](SECURITY.md)
