@@ -13,7 +13,7 @@
   <meta property="og:title" content="Loci · Microscopy, from image to measurement">
   <meta property="og:description" content="Explore microscopy in 2D, 3D and time, measure cells, and share reproducible work in an open-source desktop application.">
   <meta property="og:url" content="https://sidd-bme.github.io/loci-app/">
-  <meta property="og:image" content="https://sidd-bme.github.io/loci-app/media/loci-workbench-share.jpg">
+  <meta property="og:image" content="https://sidd-bme.github.io/loci-app/media/loci-workbench-share.jpg?v=2">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Loci's scientific imaging workbench displaying a fluorescent human stem-cell colony.">
@@ -32,7 +32,7 @@
   </script>
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="connection.css">
-  <noscript><style>.theme-switch { display: none; }</style></noscript>
+  <noscript><style>.theme-toggle { display: none; }</style></noscript>
   <script src="showcase.js" defer></script>
   <script src="connection.js" defer></script>
 </head>
@@ -56,10 +56,18 @@
         <a class="nav-download" href="#download">Download</a>
       </nav>
 
-      <div class="theme-switch" role="group" aria-label="Color theme">
-        <button type="button" class="theme-btn" data-theme-set="dark" aria-pressed="false">Black</button>
-        <button type="button" class="theme-btn" data-theme-set="light" aria-pressed="false">Light</button>
-      </div>
+      <button type="button" id="theme-toggle" class="theme-toggle" role="switch" aria-label="Dark theme" aria-checked="false">
+        <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" focusable="false">
+          <defs><mask id="eclipse-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32">
+            <rect width="32" height="32" fill="white"/>
+            <circle class="eclipse-shadow" cx="30" cy="3" r="9.7" fill="black"/>
+          </mask></defs>
+          <g class="sun-rays" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none">
+            <path d="M16 2.5v3.2 M16 26.3v3.2 M2.5 16h3.2 M26.3 16h3.2 M6.45 6.45l2.25 2.25 M23.3 23.3l2.25 2.25 M6.45 25.55l2.25-2.25 M23.3 8.7l2.25-2.25"/>
+          </g>
+          <g mask="url(#eclipse-mask)"><circle class="celestial-disc" cx="16" cy="16" r="6.6" fill="currentColor"/></g>
+        </svg>
+      </button>
       <details class="mobile-menu">
         <summary>Menu</summary>
         <nav aria-label="Site sections">
@@ -76,12 +84,12 @@
     <section id="top" class="hero" aria-labelledby="hero-heading">
       <div class="container masthead">
         <div class="hero-title">
-          <h1 id="hero-heading">Microscopy, from<br class="hero-break"> image to <em>measurement.</em></h1>
+          <h1 id="hero-heading">Microscopy, from image<br class="hero-break"> to measurement.</h1>
         </div>
         <div class="hero-intro">
-          <p>Loci is an open-source desktop workbench for life scientists. Explore specimens in 2D, 3D and time, measure cells, and keep the original images alongside each result.</p>
-          <div class="hero-actions"><a class="btn-primary" href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for Mac <span aria-hidden="true">↓</span></a><a class="text-link" href="#film">Watch Loci in use</a></div>
-          <p class="release-note">Apple silicon beta. This tour shows the newer <a href="https://github.com/sidd-bme/loci-app">development build</a>.</p>
+          <p>An open-source workbench for 2D, 3D and time-lapse imaging. Measure cells and trace results to the original data.</p>
+          <div class="hero-actions"><a class="btn-primary" href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for Mac <span aria-hidden="true">↓</span></a><a class="text-link" href="#film">Watch demos</a></div>
+          <p class="release-note">Apple silicon beta · Tour of the <a href="https://github.com/sidd-bme/loci-app">development build</a></p>
         </div>
       </div>
     </section>
@@ -100,7 +108,7 @@
             <a class="workbench-frame open-image" href="media/fluorescence.webp" aria-label="Enlarge the Fluorescence workbench" data-title="See each channel in context">
               <img src="media/fluorescence.webp" alt="Full Loci window showing a three-color human stem-cell colony and the fluorescence channel inspector." width="2048" height="1442" decoding="async" fetchpriority="high">
             </a>
-            <figcaption class="mode-caption"><h2>See each channel in context</h2><p>Set the display window for each channel, move through optical sections, or project a range of depths. The original intensities stay available for measurement.</p><p class="specimen-ref"><a href="https://bbbc.broadinstitute.org/BBBC034">Human iPSC colony · six-section projection</a></p><a class="expand-control" href="media/fluorescence.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>See each channel in context</h2><p>Adjust each channel, step through Z, or project a range. Measurements use the original intensities.</p><p class="specimen-ref"><a href="https://bbbc.broadinstitute.org/BBBC034">Human iPSC colony · six-section projection</a></p><a class="expand-control" href="media/fluorescence.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
         <article class="mode-panel" id="mode-volume-3d" data-mode-panel="volume-3d">
@@ -108,7 +116,7 @@
             <a class="workbench-frame open-image" href="media/volume-3d.webp" aria-label="Enlarge the 3D confocal workbench" data-title="Explore a volume in four linked views">
               <img src="media/volume-3d.webp" alt="Full Loci volume workspace with linked XY, XZ, YZ and 3D views of a confocal Arabidopsis ovule." width="2048" height="1442" decoding="async" loading="lazy">
             </a>
-            <figcaption class="mode-caption"><h2>Explore a volume in four linked views</h2><p>Orbit a stack or align it to a source plane. The crosshair marks the same voxel in the XY, XZ and YZ sections as you inspect the 3D view.</p><p class="specimen-ref"><a href="https://zenodo.org/records/4433202">Arabidopsis ovule · confocal IMS stack</a></p><a class="expand-control" href="media/volume-3d.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>Explore a volume in four linked views</h2><p>Orbit the stack or snap to a source plane. A shared crosshair marks the same voxel in the XY, XZ and YZ views.</p><p class="specimen-ref"><a href="https://zenodo.org/records/4433202">Arabidopsis ovule · confocal IMS stack</a></p><a class="expand-control" href="media/volume-3d.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
         <article class="mode-panel" id="mode-whole-slide" data-mode-panel="whole-slide">
@@ -116,7 +124,7 @@
             <a class="workbench-frame open-image" href="media/whole-slide.webp" aria-label="Enlarge the Whole-slide workbench" data-title="Move from tissue to individual cells">
               <img src="media/whole-slide.webp" alt="Full Loci window displaying a zoomed brightfield tissue section with its whole-slide navigator." width="1856" height="1307" decoding="async" loading="lazy">
             </a>
-            <figcaption class="mode-caption"><h2>Move from tissue to individual cells</h2><p>Use the slide overview to locate a region, then inspect it at native resolution. The navigator keeps your field in the context of the whole section.</p><p class="specimen-ref"><a href="https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/">CMU-1 · brightfield Aperio slide</a></p><a class="expand-control" href="media/whole-slide.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>Move from tissue to individual cells</h2><p>Pick a region in the slide overview, then zoom to native resolution. The navigator keeps the field in context.</p><p class="specimen-ref"><a href="https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/">CMU-1 · brightfield Aperio slide</a></p><a class="expand-control" href="media/whole-slide.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
         <article class="mode-panel" id="mode-linked-mri" data-mode-panel="linked-mri">
@@ -124,7 +132,7 @@
             <a class="workbench-frame open-image" href="media/linked-mri.webp" aria-label="Enlarge the Linked MRI workbench" data-title="Locate anatomy across planes">
               <img src="media/linked-mri.webp" alt="Full Loci window showing three orthogonal sections of the ICBM152 brain template and their shared location." width="1856" height="1307" decoding="async" loading="lazy">
             </a>
-            <figcaption class="mode-caption"><h2>Locate anatomy across planes</h2><p>Follow one physical coordinate through axial, coronal and sagittal sections. Spatial orientation and distances come from the volume geometry.</p><p class="specimen-ref"><a href="https://www.bic.mni.mcgill.ca/ServicesAtlases/ICBM152NLin2009">ICBM152 · population-average T1 MRI</a></p><a class="expand-control" href="media/linked-mri.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>Locate anatomy across planes</h2><p>Follow one physical coordinate through axial, coronal and sagittal sections. Distances use the source calibration.</p><p class="specimen-ref"><a href="https://www.bic.mni.mcgill.ca/ServicesAtlases/ICBM152NLin2009">ICBM152 · population-average T1 MRI</a></p><a class="expand-control" href="media/linked-mri.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
         <article class="mode-panel" id="mode-organoid-lineage" data-mode-panel="organoid-lineage">
@@ -132,7 +140,7 @@
             <a class="workbench-frame open-image" href="media/organoid-lineage.webp" aria-label="Enlarge the Time &amp; lineage workbench" data-title="Follow cells through time">
               <img src="media/organoid-lineage.webp" alt="Full Loci time-series view with the organoid image, lineage controls and a selected tracking link." width="1856" height="1307" decoding="async" loading="lazy">
             </a>
-            <figcaption class="mode-caption"><h2>Follow cells through time</h2><p>Play a time series and inspect an imported OrganoidTracker lineage. Select a link to visit its endpoints in the original movie and examine the reported confidence.</p><p class="specimen-ref"><a href="https://zenodo.org/records/13982844">Intestinal organoid · 51 time points</a></p><a class="expand-control" href="media/organoid-lineage.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>Follow cells through time</h2><p>Play the movie, select an imported lineage link, and inspect its endpoints and reported confidence on the source frames.</p><p class="specimen-ref"><a href="https://zenodo.org/records/13982844">OrganoidTracker · 51 time points</a></p><a class="expand-control" href="media/organoid-lineage.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
         <article class="mode-panel" id="mode-phase-microscopy" data-mode-panel="phase-microscopy">
@@ -140,7 +148,7 @@
             <a class="workbench-frame open-image" href="media/phase-microscopy.webp" aria-label="Enlarge the Quantitative phase workbench" data-title="Measure on a calibrated image">
               <img src="media/phase-microscopy.webp" alt="Full Loci window displaying an unstained cell field and the calibrated line measurement." width="1856" height="1307" decoding="async" loading="lazy">
             </a>
-            <figcaption class="mode-caption"><h2>Measure on a calibrated image</h2><p>Draw a line or a region on a scalar image. Loci stores its source coordinates and uses the image calibration to report physical distances and areas.</p><p class="specimen-ref"><a href="media/credits.html">Digital holographic microscopy · calibrated line</a></p><a class="expand-control" href="media/phase-microscopy.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
+            <figcaption class="mode-caption"><h2>Measure on a calibrated image</h2><p>Draw a line or region. Loci saves its source coordinates and reports calibrated distances and areas.</p><p class="specimen-ref"><a href="media/credits.html">Digital holographic microscopy · calibrated line</a></p><a class="expand-control" href="media/phase-microscopy.webp">Enlarge workbench <span aria-hidden="true">↗</span></a></figcaption>
           </figure>
         </article>
       </div>
@@ -158,10 +166,10 @@
       </figure>
     </div></section>
     <section id="film" class="section" aria-labelledby="film-heading"><div class="container">
-      <div class="section-intro"><h2 id="film-heading">Loci in motion</h2><p>Two short recordings follow a specimen through the actual workbench. Play either one or open it full screen for a closer look.</p></div>
+      <div class="section-intro"><h2 id="film-heading">Loci in motion</h2><p>Rotate a plant volume, then trace a plotted measurement back to its cell. Both recordings show the full Loci window.</p></div>
       <div class="films">
         <section class="clip" aria-labelledby="volume-film-title"><figure><video id="volume-film" data-tour-film controls playsinline preload="none" width="1366" height="962" aria-label="Orbit a confocal volume" poster="media/tour-films/volume-poster.webp"><source src="media/tour-films/volume-tour.mp4" type="video/mp4"><a href="media/tour-films/volume-tour.mp4">Open this film</a></video>
-          <figcaption><div class="film-title"><h3 id="volume-film-title">Orbit a confocal volume</h3><div class="film-transport"><span>10 seconds</span><button class="film-toggle" type="button" aria-controls="volume-film" aria-label="Play film: Orbit a confocal volume" hidden>Play</button></div></div><p>A shaded reconstruction of an <i>Arabidopsis</i> ovule turns in the 3D pane. The toolbar and scale stay in view.</p><a class="minor-link" href="media/tour-films/volume-tour.mp4">Open MP4</a></figcaption></figure></section>
+          <figcaption><div class="film-title"><h3 id="volume-film-title">Orbit a confocal volume</h3><div class="film-transport"><span>10 seconds</span><button class="film-toggle" type="button" aria-controls="volume-film" aria-label="Play film: Orbit a confocal volume" hidden>Play</button></div></div><p>A shaded reconstruction of an Arabidopsis ovule turns in the 3D pane. The toolbar and scale stay in view.</p><a class="minor-link" href="media/tour-films/volume-tour.mp4">Open MP4</a></figcaption></figure></section>
         <section class="clip" aria-labelledby="measurements-film-title"><figure><video id="measurements-film" data-tour-film controls playsinline preload="none" width="1366" height="962" aria-label="Find a measured cell" poster="media/tour-films/measurements-poster.webp"><source src="media/tour-films/measurements-tour.mp4" type="video/mp4"><a href="media/tour-films/measurements-tour.mp4">Open this film</a></video>
           <figcaption><div class="film-title"><h3 id="measurements-film-title">Find a measured cell</h3><div class="film-transport"><span>11 seconds</span><button class="film-toggle" type="button" aria-controls="measurements-film" aria-label="Play film: Find a measured cell" hidden>Play</button></div></div><p>From 38 predicted objects in a colony field, choosing a point in the plot locates cell 18 on the image and shows its measured area of 309.317 µm².</p><a class="minor-link" href="media/tour-films/measurements-tour.mp4">Open MP4</a></figcaption></figure></section>
       </div></div></section>
@@ -308,14 +316,14 @@
     </section>
 
     <section id="assistant" class="section" aria-labelledby="assistant-heading"><div class="container">
-      <div class="section-intro"><h2 id="assistant-heading">Work with a research assistant</h2><p>Give Codex or Antigravity access to a selected part of a study. An assistant can inspect images, run permitted analyses and return results for review in Loci.</p></div>
+      <div class="section-intro"><h2 id="assistant-heading">Connect an assistant</h2><p>Choose what Codex or Antigravity can see and do in a study. Inspect the model preview in Loci before approving the result.</p></div>
       <loci-connection><ol class="connection-fallback"><li>Ask an assistant to find cells using the membrane channel.</li><li>Choose the image, region, model and measurement channel to share.</li><li>Loci runs Cellpose locally.</li><li>The workbench retains the exact preview for inspection.</li><li>Inspect the overlay and approve the exact prediction.</li><li>Save the mask with its raw per-cell actin measurements.</li></ol></loci-connection>
       <div class="figure-foot"><p>Loci runs its Model Context Protocol (MCP) server on your computer. Your assistant and its provider can receive the content you authorize.</p><div><a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md">Connection guide</a> · <a href="media/connection/study-connection.gif">Open animated GIF</a></div></div>
       <details class="reveal"><summary>See setup and review in Loci</summary><div class="tool-plates"><figure><a class="open-image" href="media/assistant-connect.webp" data-title="Connect a study"><img src="media/assistant-connect.webp" width="1366" height="962" loading="lazy" decoding="async" alt="Loci’s assistant setup workspace showing the researcher’s access choices."><span>Connect a study <span aria-hidden="true">↗</span></span></a></figure>
 <figure><a class="open-image" href="media/cellpose-review.webp" data-title="Review a model preview"><img src="media/cellpose-review.webp" width="1366" height="962" loading="lazy" decoding="async" alt="Full Loci workbench showing the retained Cellpose preview for researcher inspection."><span>Review a model preview <span aria-hidden="true">↗</span></span></a></figure></div></details>
     </div></section>
     <section id="engineering" class="section" aria-labelledby="engineering-heading"><div class="container">
-      <div class="section-intro"><h2 id="engineering-heading">From a whole slide to a single pixel</h2><p>Three examples show how Loci handles large images, keeps imported relationships intact and carries calibration into a figure.</p></div>
+      <div class="section-intro"><h2 id="engineering-heading">Scale and precision</h2><p>A whole slide, a cell lineage and a fluorescence figure show what Loci preserves from source to output.</p></div>
       <dl class="metrics">
         <div><dt>1.51 <span>gigapixels</span></dt><dd>Navigate a 46,000 × 32,914-pixel Aperio slide, then inspect a native-resolution tissue region.</dd><dd><a href="https://github.com/sidd-bme/loci-app/blob/main/docs/WHOLE_SLIDE_SUPPORT.md">Whole-slide viewing</a></dd></div>
         <div><dt>6,665 <span>links</span></dt><dd>An imported organoid lineage preserves the links between 6,802 positions over 51 time points, with the reported confidence values.</dd><dd><a href="https://github.com/sidd-bme/loci-app/blob/main/docs/ORGANOIDTRACKER.md">Lineage import</a></dd></div>
@@ -323,7 +331,7 @@
       </dl>
     </div></section>
     <section id="compare" class="section comparison" aria-labelledby="compare-heading"><div class="container">
-      <div class="section-intro"><h2 id="compare-heading">Where Loci fits</h2><p>Labs often use several imaging tools. The choice depends on the data, the analysis, and how the next person will repeat it.</p></div>
+      <div class="section-intro"><h2 id="compare-heading">Where Loci fits</h2><p>Different tools suit different work. Compare their typical uses and how each supports repeatable analysis.</p></div>
       <table class="tool-table"><thead><tr><th scope="col">Software</th><th scope="col">Typical work</th><th scope="col">Repeating or extending it</th></tr></thead><tbody>
         <tr><th scope="row"><a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CAPABILITY_MATRIX.md">Loci</a></th><td>Local studies linking images, object measurements, model previews and reviewed exports.</td><td>Visual recipes, the Loci CLI, and study-scoped MCP for assistants.</td></tr>
         <tr><th scope="row"><a href="https://imaris.oxinst.com/products/imaris-packages">Imaris</a></th><td>Commercial 3D and 4D microscopy visualization, surfaces, spots and tracking.</td><td>Tracking, batch processing and extensions depend on the package and modules.</td></tr>
