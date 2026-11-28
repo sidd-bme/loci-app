@@ -20,7 +20,7 @@ Step through a Z stack one optical section at a time, or summarize a selected Z 
 
 ![Teal shaded rendering of an Arabidopsis ovule in Loci’s 3D volume viewer](docs/media/tour/volume-3d.webp)
 
-This 256 × 256 × 243 confocal volume of a wild-type *Arabidopsis thaliana* ovule is open directly from its Imaris IMS file. Normal shading brings out structure in the acquired intensity data. Rotate the volume, adjust opacity or clip it to look inside, then use the linked crosshair to find the same point in the source planes. [Volume and multiplanar views](docs/USING_LOCI.md#inspect-scalar-volumes-and-mpr)
+This 256 × 256 × 243 confocal volume of a wild-type *Arabidopsis thaliana* ovule is open directly from its Imaris IMS file. Normal shading brings out structure in the acquired intensity data. In the 3D pane, orbit freely or select **XY**, **XZ** or **YZ** to look along a source axis. Snapping or resetting the camera keeps the crosshair on the same voxel in all three sections. [Volume and multiplanar views](docs/USING_LOCI.md#inspect-scalar-volumes-and-mpr)
 
 ### Whole-slide brightfield
 
@@ -77,9 +77,13 @@ Browse ten workflows in **File → Model Zoo…**. Filter by task or execution l
 
 ## Assistant connection
 
-Choose **Codex** or **Antigravity** in **Connect an assistant**. Select the image, region, channels, planes and operations to share, then open the generated workspace in the host. Prompt the assistant in its chat and follow its jobs in Loci. Choose **Confirm changes in Loci** to review changes before approving them. The Model Context Protocol (MCP) server runs locally. Your host and its provider can receive the image content and study records you authorize. [Assistant walkthrough](docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant) · [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
+Choose **Codex** or **Antigravity** in **Connect an assistant** and select the image, region, channels and operations to share. On macOS, **Open in Codex** opens the study workspace in the installed app. For Antigravity, copy the workspace path and add that folder to a new project. Send the first prompt in the host chat and use **Check connection** in Loci to see which client connected. The Model Context Protocol (MCP) server runs locally. Your host and its provider can receive the image content and study records you authorize. [Host setup](docs/CLI.md#vision-assistants-and-local-mcp-access)
 
-![Loci’s Connect an assistant panel with Codex selected and the Confirm changes in Loci setting visible before access is granted](docs/media/tour/assistant-connect.webp)
+![The native assistant panel beside the membrane image, with Open in Codex and Check connection available for the granted workspace](docs/media/tour/assistant-connect.webp)
+
+**Find cells in one channel and measure another.** In this 256 × 256 pixel crop, Cellpose-SAM v2 predicted six objects from the membrane channel. The assistant requested per-object measurements from the raw β-actin channel. Inspect the boundaries in Loci before approving the save. A later correction keeps the original mask and remeasures the revised objects. [Multichannel assistant walkthrough](docs/AGENT_ACCESS.md#find-cells-in-one-channel-and-measure-another)
+
+![Six Cellpose predictions with teal boundaries on the membrane image. The preview identifies channel 0 as input and channel 1 for raw measurements, with a separate approval control.](docs/media/tour/cellpose-review.webp)
 
 **Agent workspace** keeps the plan beside the image. For the nuclei comparison, open the exact model preview before approving a save. After disconnecting, use the plan’s evidence links to reopen a result or inspect its assessment. For 3D work, you can also grant the assistant access to move the crosshair or camera in the live viewer. [Shared 3D scene controls](docs/AGENT_ACCESS.md#shared-3d-scene-access)
 
