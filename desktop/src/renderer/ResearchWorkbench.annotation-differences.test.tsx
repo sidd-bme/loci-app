@@ -205,6 +205,7 @@ function buildHarness(options?: {
   tamperPredRevision?: boolean;
   offlineSource?: boolean;
   delayLocate?: boolean;
+  differencePageBarrier?: Promise<void>;
 }) {
   const { pred, ref, agreement } = makeResults(options);
   const srcA = makeSource(SRC_A, SHA_A, "Specimen A", options?.offlineSource);
@@ -301,6 +302,7 @@ function buildHarness(options?: {
     }
     if (op === "annotation_evaluation_get") {
       if (req.table === "unmatched_prediction") {
+        if (options?.differencePageBarrier) await options.differencePageBarrier;
         return { result_id: AGR_ID, revision_hash: AGR_REV, table: "unmatched_prediction", iou_threshold: 0.5, offset: 0, total: 2, rows: [11, 22] };
       }
       if (req.table === "unmatched_reference") {
@@ -398,17 +400,30 @@ function openInfoTab(container: HTMLElement) {
 
 describe("Show me the differences workbench workflow", () => {
   it("opens an agent-linked agreement into Review, steps across signed differences on exact parent overlays with crop offset, and preserves comparison context", async () => {
-    const h = buildHarness();
-    render(<ResearchWorkbench api={h.api} onBack={vi.fn()} />);
+    let releaseDifferencePage!: () => void;
+    const differencePageBarrier = new Promise<void>((resolve) => { releaseDifferencePage = resolve; });
+    const h = buildHarness({ differencePageBarrier });
+    const { container } = render(<ResearchWorkbench api={h.api} onBack={vi.fn()} />);
     await screen.findByTestId("mock-viewport");
-
-    // Open the agent session drawer and click the linked annotation-agreement result
     fireEvent.click(await screen.findByRole("button", { name: "Agent session status" }));
+
+    // Activate the newly committed control while React may still have passive effects pending.
+    const firstClick = new MutationObserver(() => {
+      const trigger = container.querySelector<HTMLButtonElement>(".annotation-difference-trigger:enabled");
+      if (!trigger) return;
+      firstClick.disconnect();
+      trigger.click();
+    });
+    firstClick.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+
     fireEvent.click(await screen.findByRole("button", { name: `Open result ${AGR_ID}` }));
 
     // Lands directly in Info/Review with the saved annotation agreement and Show me the differences
     expect(await screen.findByRole("region", { name: "Saved annotation agreement" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Show me the differences" }));
+    expect(await screen.findByText("Locating…")).toBeVisible();
+    expect(h.execute).toHaveBeenCalledWith("annotation_evaluation_get", expect.objectContaining({ table: "unmatched_prediction" }));
+    expect(screen.getByTestId("mock-viewport").dataset.resultOverlay).toBe(`${AGR_ID}:${AGR_REV}`);
+    await act(async () => releaseDifferencePage());
 
     // Locates first unmatched prediction (label 11 at local [4,5], crop origin (10,20) => native (15.5, 24.5))
     await waitFor(() => {
