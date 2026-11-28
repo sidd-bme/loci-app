@@ -9,7 +9,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ViewerRequestQueue } from "../main/viewer-request-queue";
 import ResearchWorkbench from "./ResearchWorkbench";
 import { dispatchWorkbenchCommand } from "./workbench-commands";
@@ -1908,36 +1908,43 @@ describe("ResearchWorkbench", () => {
         if (operation === "save_source_view") savedViews.push(structuredClone(request));
         return output;
       });
-      render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />);
-      main = await screen.findByRole("main", { name: "Research workspace" });
-      await openTool("View", "Display");
-      const low = await screen.findByLabelText("Channel 1 low");
-      await waitFor(() => expect(low).toHaveValue("0"));
+      // Install the clock before the viewer schedules any display saves or frames.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+      onTestFinished(() => { vi.useRealTimers(); });
+      await act(async () => { render(<ResearchWorkbench api={desktop} onBack={vi.fn()} />); });
+      main = screen.getByRole("main", { name: "Research workspace" });
+      const taskGroups = within(screen.getByRole("navigation", { name: "Task groups" }));
+      const low = screen.getByLabelText("Channel 1 low");
+      expect(low).toHaveValue("0");
       blockWrite = true;
       blockRefinement = true;
       fireEvent.change(low, { target: { value: "7" } });
       fireEvent.keyDown(low, { key: "Enter" });
-      await waitFor(() => expect(pendingTile).toBe(true));
-      // The picker must drain the queued or in-flight display write before
-      // acquiring the main-process lock.
-      await openTool("Analyze", "Analyze");
+      await act(async () => { vi.advanceTimersToNextFrame(); });
+      expect(pendingTile).toBe(true);
+      // The picker must drain the queued display write before acquiring the main-process lock.
+      expect(finishWrite).toBeUndefined();
+      fireEvent.click(taskGroups.getByRole("button", { name: "Analyze" }));
       fireEvent.click(screen.getByText("Import existing labels", { selector: "summary" }));
       const viewer = screen.getByLabelText("Image viewer: Specimen");
       const camera = viewer.getAttribute("data-camera");
       const cacheBytes = Number(viewer.getAttribute("data-cache-bytes"));
-      fireEvent.click(screen.getByRole("button", { name: "Import labels" }));
-      expect(main).toHaveAttribute("inert");
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Import labels" }));
+        expect(main).toHaveAttribute("inert");
+        expect(labelsImportPreview).not.toHaveBeenCalled();
+      });
+      expect(finishWrite).toBeTypeOf("function");
       expect(labelsImportPreview).not.toHaveBeenCalled();
-      await waitFor(() => expect(finishWrite).toBeTypeOf("function"));
       await act(async () => { finishWrite(); });
-      await waitFor(() => expect(labelsImportPreview).toHaveBeenCalledOnce());
+      expect(labelsImportPreview).toHaveBeenCalledOnce();
       const request = labelsImportPreview.mock.calls[0][0];
       expect(request).toEqual(expect.objectContaining({ source_id: active.sources[0].id,
         source_sha256: active.sources[0].sha256,
         selection: { x: 0, y: 0, width: 64, height: 48, t: 0, c: 0, z: 1, level: 0 } }));
       await act(async () => { rejectTile(new Error("Wait for the study to finish opening.")); });
-      // Model time spent choosing a file, longer than the 400ms autosave.
-      if (outcome === "success") await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1200)); });
+      // Cross the 400 ms autosave deadline while the native picker is open.
+      await act(async () => { await vi.advanceTimersByTimeAsync(1200); });
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       expect(viewer).toHaveAttribute("data-camera", camera);
       expect(Number(viewer.getAttribute("data-cache-bytes"))).toBeGreaterThanOrEqual(cacheBytes);
@@ -1946,9 +1953,9 @@ describe("ResearchWorkbench", () => {
         if (outcome === "error") rejectPicker(new Error("Unsupported label dtype"));
         else finishPicker(outcome === "cancel" ? null : labelsPreview(request));
       });
-      await waitFor(() => expect(main).not.toHaveAttribute("inert"));
+      expect(main).not.toHaveAttribute("inert");
       if (outcome === "success") {
-        expect(await screen.findByAltText("Checked label overlay on the selected source plane")).toBeVisible();
+        expect(screen.getByAltText("Checked label overlay on the selected source plane")).toBeVisible();
         expect(screen.getByRole("button", { name: "Import on this plane" })).toBeEnabled();
       } else {
         expect(screen.queryByRole("button", { name: "Import on this plane" })).not.toBeInTheDocument();
@@ -1956,21 +1963,23 @@ describe("ResearchWorkbench", () => {
         if (outcome === "error") expect(screen.getByRole("alert")).toHaveTextContent("Unsupported label dtype");
         else expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       }
-      await openTool("View", "Display");
-      expect(screen.getByLabelText("Channel 1 low")).toHaveValue("7");
+      fireEvent.click(taskGroups.getByRole("button", { name: "View" }));
+      const restoredLow = screen.getByLabelText("Channel 1 low");
+      expect(restoredLow).toHaveValue("7");
       expect(screen.getByLabelText("Image viewer: Specimen")).toBe(viewer);
       expect(viewer).toHaveAttribute("data-camera", camera);
-      fireEvent.change(screen.getByLabelText("Channel 1 low"), { target: { value: "8" } });
-      fireEvent.keyDown(screen.getByLabelText("Channel 1 low"), { key: "Enter" });
-      await waitFor(() => expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
+      fireEvent.change(restoredLow, { target: { value: "8" } });
+      fireEvent.keyDown(restoredLow, { key: "Enter" });
+      await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+      expect(desktop.execute).toHaveBeenCalledWith("save_source_view", expect.objectContaining({
         source_id: active.sources[0].id, source_sha256: active.sources[0].sha256,
         state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
-      })));
-      await waitFor(() => expect(savedViews.at(-1)).toEqual(expect.objectContaining({
+      }));
+      expect(savedViews.at(-1)).toEqual(expect.objectContaining({
         expected_revision: Number(savedViews.find((request) =>
           (request.state as { channels: Array<{ low: number }> }).channels[0].low === 7)!.expected_revision) + 1,
         state: expect.objectContaining({ channels: expect.arrayContaining([expect.objectContaining({ low: 8 })]) }),
-      })));
+      }));
       expect(duringPicker).toEqual([]);
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     },

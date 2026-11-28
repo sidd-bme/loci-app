@@ -6,6 +6,7 @@
  * Optional LOCI_QA_ASSISTANT=codex (default antigravity). For another public
  * BBBC039 plane, supply LOCI_QA_BBBC039_SHA256 and LOCI_QA_THRESHOLD.
  * Set LOCI_QA_ONNX_PACKAGE to the pinned local package to run two-method QA.
+ * For the CPU Cellpose journey, set LOCI_QA_BBBC034_SOURCE and LOCI_QA_CELLPOSE_CHECKPOINT.
  * Run with --preflight and without the display preload for headless validation.
  */
 import assert from "node:assert/strict";
@@ -18,6 +19,7 @@ import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { _electron as electron } from "playwright";
 
+import { cellposePreflight, runAgentCellpose } from "./live-assistant-cellpose.qa.mjs";
 import { close, executableFile, noUiError, plainFile, projectRoot, requiredPath, run, sha256 } from "./research-model-workbench.qa.mjs";
 import { selectResultSection, selectWorkbenchTool, setSelectionField, sourceRowByName, waitForSnapshot } from "./workbench-qa-helpers.mjs";
 import {
@@ -34,8 +36,8 @@ const hashText = (text) => createHash("sha256").update(text).digest("hex");
 
 // Reuse the same official Python SDK controller as agent-sessions.qa.mjs. The
 // caller verifies the exact generated command and arguments before spawning it.
-function startSdk(python, helper, worker, policy, name = clientId) {
-  const child = spawn(python, [helper, "serve", worker, policy, "--client-name", name],
+function startSdk(python, helper, worker, policy, name = clientId, modelHome) {
+  const child = spawn(python, [helper, "serve", worker, policy, "--client-name", name, ...(modelHome ? ["--model-home", modelHome] : [])],
     { stdio: ["pipe", "pipe", "pipe"] });
   let diagnostic = "";
   child.stderr.setEncoding("utf8").on("data", (text) => { diagnostic = (diagnostic + text).slice(-4096); });
@@ -99,8 +101,9 @@ async function preflight() {
   assert.equal(process.platform, "darwin", "This journey requires a macOS Loci package");
   const appBundle = await fs.realpath(requiredPath("LOCI_PACKAGED_APP"));
   const python = requiredPath("LOCI_QA_PYTHON");
-  const fixture = requiredPath("LOCI_QA_BBBC039_SOURCE");
-  const expectedHash = process.env.LOCI_QA_BBBC039_SHA256 ?? fixtureHash;
+  const cellpose = await cellposePreflight();
+  const fixture = cellpose?.fixture ?? requiredPath("LOCI_QA_BBBC039_SOURCE");
+  const expectedHash = cellpose?.sourceHash ?? process.env.LOCI_QA_BBBC039_SHA256 ?? fixtureHash;
   const sourceCommit = process.env.LOCI_QA_SOURCE_COMMIT;
   const assistant = process.env.LOCI_QA_ASSISTANT ?? "antigravity";
   assert.ok(["antigravity", "codex"].includes(assistant));
@@ -109,6 +112,7 @@ async function preflight() {
   const threshold = Number(process.env.LOCI_QA_THRESHOLD ?? 520);
   assert.ok(Number.isFinite(threshold) && threshold > 0 && threshold <= 65535);
   const comparison = await comparisonPreflight();
+  assert.ok(!(comparison && cellpose), "Choose one packaged model scenario");
   if (comparison) assert.equal(expectedHash, fixtureHash, "Two-method QA uses the pinned full BBBC039 plane");
   const contents = path.join(appBundle, "Contents");
   const worker = path.join(contents, "Resources/loci-engine/loci-engine");
@@ -117,7 +121,7 @@ async function preflight() {
   const identityFile = path.join(contents, "Resources/loci-build-identity.json");
   const helper = path.join(projectRoot, "scripts/qa/agent-session-client.py");
   const loader = path.join(projectRoot, "scripts/qa/secondary-display-loader.mjs");
-  await Promise.all([plainFile(fixture, "Public BBBC039 plane"), executableFile(python, "Python"),
+  await Promise.all([plainFile(fixture, "Public fixture"), executableFile(python, "Python"),
     executableFile(worker, "Packaged worker"), executableFile(executable, "Packaged app")]);
   const identity = await json(identityFile);
   assert.equal(identity.sourceRevision, sourceCommit);
@@ -125,13 +129,13 @@ async function preflight() {
   const [{ stdout }, actualHash, ...hashes] = await Promise.all([
     run(python, ["-c", "from importlib.metadata import version; from mcp.client.stdio import stdio_client; print(version('mcp'))"], { timeout: 15_000 }),
     sha256(fixture), ...[executable, asar, worker, identityFile, helper, loader, import.meta.filename,
-      path.join(import.meta.dirname, "live-assistant-comparison.qa.mjs")].map(sha256),
+      path.join(import.meta.dirname, "live-assistant-comparison.qa.mjs"), ...(cellpose ? [path.join(import.meta.dirname, "live-assistant-cellpose.qa.mjs"), cellpose.verifier] : [])].map(sha256),
   ]);
-  assert.equal(actualHash, expectedHash, "Public BBBC039 plane differs from the pin");
-  const build = Object.fromEntries(["executable", "asar", "worker", "identity", "sdk_helper", "display_loader", "journey", "comparison_driver"]
+  assert.equal(actualHash, expectedHash, "Public fixture differs from the pin");
+  const build = Object.fromEntries(["executable", "asar", "worker", "identity", "sdk_helper", "display_loader", "journey", "comparison_driver", ...(cellpose ? ["cellpose_driver", "numerical_verifier"] : [])]
     .map((name, index) => [`${name}_sha256`, hashes[index]]));
   return { python, worker, executable, helper, loader, fixture, fixtureName: path.basename(fixture),
-    expectedHash, threshold, assistant, sourceCommit, sdkVersion: stdout.trim(), build, comparison };
+    expectedHash, threshold, assistant, sourceCommit, sdkVersion: stdout.trim(), build, comparison, cellpose };
 }
 
 // Explicitly serialize portable portions of actual snapshots. The private study,
@@ -206,9 +210,11 @@ async function journey(config) {
   const evidence = path.join(output, "portable");
   const local = path.join(output, "local");
   await Promise.all([fs.mkdir(evidence), fs.mkdir(local)]);
-  const study = path.join(local, "BBBC039 assistant study.loci-study");
+  const title = config.cellpose ? "BBBC034 Cellpose study" : "BBBC039 assistant study";
+  const study = path.join(local, title + ".loci-study");
+  const exportDir = path.join(local, "reviewed-export");
   const access = path.join(local, "setup");
-  const ungrantedAccess = config.comparison ? path.join(local, "setup-without-model") : null;
+  const ungrantedAccess = (config.comparison || config.cellpose) ? path.join(local, "setup-without-model") : null;
   const profile = path.join(local, "profile");
   const input = path.join(local, config.fixtureName);
   const policyPath = path.join(access, "agent-policy.json");
@@ -218,7 +224,8 @@ async function journey(config) {
   const receipt = {
     schema: "loci.live-assistant-study-qa/v1", status: "running", started_at: new Date().toISOString(),
     source_commit: config.sourceCommit, build: config.build, selected_host: config.assistant,
-    fixture: { dataset: "BBBC039v1", license: "CC0", source_url: "https://bbbc.broadinstitute.org/BBBC039",
+    fixture: { ...(config.cellpose ? { dataset: "BBBC034v1", license: "CC BY 4.0", source_url: "https://bbbc.broadinstitute.org/BBBC034" }
+      : { dataset: "BBBC039v1", license: "CC0", source_url: "https://bbbc.broadinstitute.org/BBBC039" }),
       name: config.fixtureName, sha256: config.expectedHash },
     scope: { controls: "Playwright on packaged macOS with profile-scoped picker substitution",
       execution_approval: "Actual native Loci approval clicked by the harness",
@@ -233,7 +240,7 @@ async function journey(config) {
   let rendererErrorCount = 0;
   async function record(filename, record) {
     const body = JSON.stringify(record, null, 2) + "\n";
-    for (const location of [local, config.fixture, config.worker, config.comparison?.directory].filter(Boolean))
+    for (const location of [local, config.fixture, config.worker, config.cellpose?.weights, config.comparison?.directory].filter(Boolean))
       assert.ok(!body.includes(location), "A local path was present in the portable evidence");
     await fs.writeFile(path.join(evidence, filename), body);
     return { filename, sha256: await sha256(path.join(evidence, filename)) };
@@ -250,25 +257,12 @@ async function journey(config) {
     await save();
   }
 
-  try {
-    await save();
-    await fs.copyFile(config.fixture, input);
-    assert.equal(await sha256(input), config.expectedHash);
-    await cli("create", "--project", study, "--title", "BBBC039 assistant study");
-    const imported = await cli("import", "--project", study, input);
-    assert.equal(imported.sources.length, 1);
-    const source = imported.sources[0];
-    const dimensions = source.metadata.dimensions;
-    assert.equal(source.sha256, config.expectedHash);
-    assert.deepEqual([dimensions.c, dimensions.z, dimensions.t], [1, 1, 1], "Use a single-channel, single-plane fixture");
-    const sourceTarget = { kind: "source", id: source.id, sha256: source.sha256 };
-
-    stage = "researcher-grant";
+  async function launch() {
     app = await electron.launch({ executablePath: config.executable, args: [`--user-data-dir=${profile}`], timeout: 120_000 });
     page = await app.firstWindow();
     page.setDefaultTimeout(30_000);
     page.on("pageerror", () => { rendererErrorCount++; });
-    displayId = (await assertSidecar(app)).id;
+    displayId = (await assertSidecar(app, displayId)).id;
     await app.evaluate(({ dialog, app }, targets) => {
       if (app.getPath("userData") !== targets.profile) throw new Error("QA picker substitution requires the isolated profile");
       const verify = (args, title) => {
@@ -276,6 +270,7 @@ async function journey(config) {
       };
       const unexpected = () => { throw new Error("Unexpected native QA dialog"); };
       const destinations = [targets.ungrantedAccess, targets.access].filter(Boolean);
+      const exports = targets.exportDir ? [targets.exportDir, targets.exportDir + "-corrected"] : [];
       dialog.showOpenDialog = async (...args) => {
         if (targets.modelPackage && args.at(-1)?.title === targets.modelPickerTitle)
           return { canceled: false, filePaths: [targets.modelPackage] };
@@ -283,17 +278,45 @@ async function journey(config) {
         return { canceled: false, filePaths: [targets.study] };
       };
       dialog.showSaveDialog = async (...args) => {
+        if (targets.exportDir && args.at(-1)?.title === "Export reviewed result bundle") {
+          const filePath = exports.shift();
+          if (!filePath) throw new Error("Unexpected extra reviewed export");
+          return { canceled: false, filePath };
+        }
         verify(args, targets.setupTitle);
         const filePath = destinations.shift();
         if (!filePath) throw new Error("Unexpected repeat assistant grant");
         return { canceled: false, filePath };
       };
       for (const name of ["showOpenDialogSync", "showSaveDialogSync", "showMessageBox", "showMessageBoxSync", "showErrorBox"]) dialog[name] = unexpected;
-    }, { profile, study, access, ungrantedAccess, openTitle, setupTitle, modelPickerTitle, modelPackage: config.comparison?.directory });
+    }, { profile, study, access, ungrantedAccess, exportDir: config.cellpose && exportDir, openTitle, setupTitle, modelPickerTitle, modelPackage: config.comparison?.directory });
+  }
+
+  try {
+    await save();
+    await fs.copyFile(config.fixture, input);
+    assert.equal(await sha256(input), config.expectedHash);
+    await cli("create", "--project", study, "--title", title);
+    const imported = await cli("import", "--project", study, input);
+    assert.equal(imported.sources.length, 1);
+    const source = imported.sources[0];
+    const dimensions = source.metadata.dimensions;
+    assert.equal(source.sha256, config.expectedHash);
+    assert.deepEqual([dimensions.c, dimensions.z, dimensions.t], [config.cellpose ? 3 : 1, 1, 1], "Check native channels and singleton Z/T");
+    const sourceTarget = { kind: "source", id: source.id, sha256: source.sha256 };
+
+    stage = "researcher-grant";
+    if (config.cellpose) {
+      const modelDir = path.join(profile, "models/cellpose/4.2.1.1");
+      await fs.mkdir(modelDir, { recursive: true });
+      await fs.copyFile(config.cellpose.weights, path.join(modelDir, "cpsam_v2"));
+    }
+    await launch();
     await page.getByRole("button", { name: "Open study", exact: true }).click();
     await sourceRowByName(page, source.name);
     await selectWorkbenchTool(page, "Display");
-    for (const [label, value] of [["X", 0], ["Y", 0], ["Width", dimensions.x], ["Height", dimensions.y]])
+    const region = config.cellpose?.region ?? { x: 0, y: 0, width: dimensions.x, height: dimensions.y };
+    for (const [label, value] of [["Width", region.width], ["Height", region.height], ["X", region.x], ["Y", region.y]])
       await setSelectionField(page, label, value);
     let installedModel;
     if (config.comparison) {
@@ -317,10 +340,11 @@ async function journey(config) {
     await panel.getByLabel("Assistant client", { exact: true }).selectOption(config.assistant);
     await panel.getByLabel("Assistant access level", { exact: true }).selectOption("analyze");
     await panel.getByLabel("Session permission mode", { exact: true }).selectOption("ask_approval");
-    if (installedModel) {
-      const grantModel = panel.getByRole("checkbox", { name: "Use installed nuclei ONNX model", exact: true });
+    if (installedModel || config.cellpose) {
+      const modelLabel = config.cellpose ? "Use installed Cellpose-SAM v2" : "Use installed nuclei ONNX model";
+      const grantModel = panel.getByRole("checkbox", { name: modelLabel, exact: true });
       await grantModel.waitFor();
-      assert.equal(await grantModel.isChecked(), false, "Analyze must require a separate ONNX opt-in");
+      assert.equal(await grantModel.isChecked(), false, "Analyze must require a separate model opt-in");
       await checkpoint("model-03-ungranted-by-default");
       await grant.click();
       await setup.getByRole("status").filter({ hasText: /^Waiting for your assistant$/ }).waitFor();
@@ -329,7 +353,8 @@ async function journey(config) {
       sdk = startSdk(config.python, config.helper, config.worker, ungrantedPolicy, `${clientId} without model grant`);
       assert.equal((await sdk.read()).initialized, false);
       assert.equal((await sdk.request({ action: "initialize" })).initialized, true);
-      const refusal = await sdk.callResponse("submit_action", {
+      const refusal = config.cellpose ? await sdk.callResponse("inspect_action", { operation: "cellpose_model_status", request: {} }, true)
+        : await sdk.callResponse("submit_action", {
         operation: "model_preview", request: comparisonRequest(source.id, ungranted.selection, installedModel),
         request_key: "onnx-without-native-grant",
       }, true);
@@ -338,13 +363,19 @@ async function journey(config) {
       assert.deepEqual(denied.jobs, []);
       assert.deepEqual(denied.agent_sessions.approvals, []);
       receipt.model_prerequisite = {
-        without_model_opt_in: "MCP preview denied before approval or job creation",
+        without_model_opt_in: "Model operation denied before approval or job creation",
         policy_sha256: await sha256(ungrantedPolicy),
       };
       await sdk.close();
       sdk = null;
       await panel.getByText("Create another grant", { exact: true }).click();
       await grantModel.check();
+      if (config.cellpose) {
+        await panel.getByText(/^Measure raw channels \(\d+\)$/).click();
+        await panel.getByLabel("Grant Cellpose measurement channel 1", { exact: true }).uncheck();
+        await panel.getByLabel("Grant Cellpose measurement channel 2", { exact: true }).check();
+        assert.equal(await panel.getByLabel("Grant Cellpose measurement channel 3", { exact: true }).isChecked(), false);
+      }
     }
     await panel.getByLabel("Exact recipe validation", { exact: true }).waitFor();
     await grant.click();
@@ -352,12 +383,12 @@ async function journey(config) {
     stage = "configuration-ready";
     await fs.access(policyPath).catch(async () => {
       // A previous setup receipt can still exist while creating the new bundle.
-      await waitForSnapshot(page, (s) => s?.agent_sessions?.policies.length === (config.comparison ? 2 : 1), "created assessor policy");
+      await waitForSnapshot(page, (s) => s?.agent_sessions?.policies.length === (ungrantedAccess ? 2 : 1), "created assessor policy");
     });
     await setup.getByRole("status").filter({ hasText: /^Waiting for your assistant$/ }).waitFor();
     const policy = await json(policyPath);
     const policySha = await sha256(policyPath);
-    assert.equal(policy.schema, "loci.agent-policy/v5");
+    assert.equal(policy.schema, config.cellpose ? "loci.agent-policy/v8" : "loci.agent-policy/v5");
     assert.equal(policy.permission_mode, "ask_approval");
     assert.equal(policy.delegation.client_id, config.assistant);
     for (const name of ["submit_recipe", "result", "review_history", "agent_task_read", "agent_task_write"])
@@ -369,7 +400,7 @@ async function journey(config) {
     assert.equal(request.recipe.segmentation.method, "components");
     assert.equal(request.recipe.segmentation.threshold, config.threshold);
     assert.deepEqual([request.selection.level, request.selection.x, request.selection.y, request.selection.width, request.selection.height],
-      [0, 0, 0, dimensions.x, dimensions.y]);
+      [0, region.x, region.y, region.width, region.height]);
     const configFile = path.join(access, config.assistant === "codex"
       ? "codex-workspace/.codex/config.toml" : "antigravity-workspace/.agents/mcp_config.json");
     const serverId = `loci-research-${policySha.slice(0, 12)}`;
@@ -377,7 +408,9 @@ async function journey(config) {
       "import json, sys, tomllib; from pathlib import Path; print(json.dumps(tomllib.loads(Path(sys.argv[1]).read_text())['mcp_servers']))",
       configFile], { timeout: 15_000 })).stdout) : (await json(configFile)).mcpServers;
     assert.deepEqual(Object.keys(mcpServers), [serverId]);
-    assert.deepEqual(mcpServers[serverId], { command: config.worker, args: ["--cli", "mcp", "--policy", policyPath] });
+    const server = mcpServers[serverId];
+    assert.deepEqual(server, { command: config.worker, args: ["--cli", "mcp", "--policy", policyPath],
+      ...(config.cellpose ? { env: { LOCI_MODEL_HOME: path.join(profile, "models") } } : {}) });
     const promptDetails = setup.getByText("View first prompt", { exact: true });
     await promptDetails.click();
     const prompt = await setup.getByRole("textbox", { name: "First prompt", exact: true }).inputValue();
@@ -396,7 +429,7 @@ async function journey(config) {
     assert.equal(ready.agent_sessions.connected_count, 0);
     assert.equal(ready.agent_sessions.policies.find((item) => item.policy_sha256 === policySha).state, "configuration_ready");
     assert.ok(!ready.agent_sessions.sessions.some((item) => item.policy_sha256 === policySha));
-    if (!config.comparison) {
+    if (!ungrantedAccess) {
       assert.equal(ready.agent_sessions.status, "configuration_ready");
       await page.getByRole("button", { name: "Agent session status", exact: true })
         .getByText("Agent bundle ready · Not connected", { exact: true }).waitFor();
@@ -404,7 +437,7 @@ async function journey(config) {
     await checkpoint("01-configuration-ready", ready);
 
     stage = "mcp-initialize";
-    sdk = startSdk(config.python, config.helper, config.worker, policyPath);
+    sdk = startSdk(config.python, config.helper, server.command, server.args[3], clientId, server.env?.LOCI_MODEL_HOME);
     const transport = await sdk.read();
     assert.equal(transport.initialized, false);
     assert.equal(transport.mcp_sdk, config.sdkVersion);
@@ -432,6 +465,91 @@ async function journey(config) {
     await drawer.getByRole("switch", { name: "Follow agent", exact: true }).check();
     await checkpoint("02-live-sdk-session");
     await closeDrawer();
+
+    async function submitAction(operation, request, requestKey, beforeApproval) {
+      const response = sdk.call("submit_action", { operation, request, request_key: requestKey });
+      response.catch(() => {});
+      const isApproval = (item) => item.operation === "submit_action" && item.action_name === operation &&
+        item.session_id === session.session_id && item.state === "pending";
+      const state = await Promise.race([
+        waitForSnapshot(page, (s) => s?.agent_sessions?.approvals.some(isApproval), `${operation} execution approval`),
+        response.then(() => { throw new Error(`${operation} returned before researcher approval`); }),
+      ]);
+      const pending = state.agent_sessions.approvals.find(isApproval);
+      assert.equal(pending.policy_sha256, policySha);
+      assert.equal(pending.source_id, source.id);
+      assert.equal(pending.source_sha256, source.sha256);
+      assert.ok(!state.jobs.some((item) => item.operation === operation), "Job started before approval");
+      await openDrawer();
+      const card = drawer.getByLabel("Pending approval for submit_action", { exact: true });
+      await card.waitFor();
+      const originalApprove = card.getByRole("button", { name: "Approve submit_action", exact: true });
+      const approve = beforeApproval ? await beforeApproval({ card, originalApprove, pending }) : originalApprove;
+      await approve.scrollIntoViewIfNeeded();
+      await checkpoint(`model-approval-${operation}`);
+      await approve.click();
+      const { job } = await response;
+      if (await drawer.isVisible()) await closeDrawer();
+      const completed = await pollJob(sdk, job.id, ["cellpose_preview", "cellpose_adopt"].includes(operation) ? 420_000 : 90_000);
+      const actual = await snapshot();
+      const durableJob = actual.jobs.find((item) => item.id === job.id);
+      const consumed = actual.agent_sessions.approvals.find((item) => item.id === pending.id);
+      assert.equal(durableJob.owner.session_id, session.session_id);
+      assert.equal(durableJob.operation, operation);
+      assert.equal(durableJob.state, "succeeded");
+      assert.equal(consumed.state, "consumed");
+      assert.equal(consumed.decided_by, "human");
+      if (["model_run", "cellpose_adopt"].includes(operation)) assert.deepEqual(consumed.inspected_preview, {
+        preview_id: request.preview_id,
+        preview_sha256: request.preview_sha256,
+        preview_job_id: pending.parameters_summary.preview_job_id,
+        png_sha256: pending.parameters_summary.png_sha256,
+      });
+      await record(`model-approval-${operation}-consumed.json`, {
+        id: pending.id, action_name: operation, policy_sha256: pending.policy_sha256, session_id: pending.session_id,
+        request_hash: pending.request_hash, source_id: pending.source_id, source_sha256: pending.source_sha256,
+        state: consumed.state, decided_by: consumed.decided_by, job_id: job.id,
+        ...(consumed.inspected_preview ? { inspected_preview: consumed.inspected_preview } : {}),
+      });
+      return completed;
+    }
+
+    if (config.cellpose) {
+      stage = "cellpose-preview-adoption-export";
+      receipt.cellpose = await runAgentCellpose({ page, source, sdk, submitAction, snapshot, checkpoint,
+        record, hashText, config, selection: request.selection, exportDir, policy });
+      await sdk.close();
+      sdk = null;
+      stage = "cellpose-cold-reopen";
+      await close(app);
+      app = null;
+      await launch();
+      await page.locator("main.image-first-empty, main.image-first-workbench").waitFor();
+      if (await page.locator("main.image-first-empty").count())
+        await page.getByRole("button", { name: "Open study", exact: true }).click();
+      const revisions = [
+        { ...receipt.cellpose.result, native_record_sha256: receipt.cellpose.native_record_sha256 },
+        receipt.cellpose.corrected,
+      ];
+      const reopened = await waitForSnapshot(page, s => revisions.every(row => s?.results.some(r => r.id === row.id)),
+        "cold reopened Cellpose study and correction");
+      assert.equal(reopened.project.id, ready.project.id);
+      for (const revision of revisions) {
+        const restored = await page.evaluate(id => window.lociResearch.execute("result", { result_id: id }), revision.id);
+        assert.equal(restored.result.revision_hash, revision.revision_hash);
+        assert.equal(restored.result.review?.disposition, "reviewed");
+        assert.equal(hashText(JSON.stringify(restored)), revision.native_record_sha256);
+        await page.locator(`.research-sources [data-result-id="${revision.id}"]`).click();
+        await page.locator(`.image-viewport[data-viewer-source="${source.id}"][data-result-overlay="${revision.id}:${revision.revision_hash}"][data-prepared="true"]`).waitFor();
+      }
+      await checkpoint("cellpose-cold-reopen", reopened);
+      assert.equal(rendererErrorCount, 0);
+      assert.equal(await sha256(input), source.sha256);
+      assert.equal(await sha256(config.fixture), source.sha256);
+      assert.equal(await sha256(config.cellpose.weights), config.cellpose.weightsHash);
+      receipt.status = "passed";
+      return;
+    }
 
     stage = "publish-plan";
     const taskId = randomUUID().replaceAll("-", "");
@@ -489,53 +607,6 @@ async function journey(config) {
     let comparison;
     if (config.comparison) {
       stage = "scoped-model-and-comparison";
-      const submitAction = async (operation, request, requestKey, beforeApproval) => {
-        const response = sdk.call("submit_action", { operation, request, request_key: requestKey });
-        response.catch(() => {});
-        const isApproval = (item) => item.operation === "submit_action" && item.action_name === operation &&
-          item.session_id === session.session_id && item.state === "pending";
-        const state = await Promise.race([
-          waitForSnapshot(page, (s) => s?.agent_sessions?.approvals.some(isApproval), `${operation} execution approval`),
-          response.then(() => { throw new Error(`${operation} returned before researcher approval`); }),
-        ]);
-        const pending = state.agent_sessions.approvals.find(isApproval);
-        assert.equal(pending.policy_sha256, policySha);
-        assert.equal(pending.source_id, source.id);
-        assert.equal(pending.source_sha256, source.sha256);
-        assert.ok(!state.jobs.some((item) => item.operation === operation), "Job started before approval");
-        await openDrawer();
-        const card = drawer.getByLabel("Pending approval for submit_action", { exact: true });
-        await card.waitFor();
-        const originalApprove = card.getByRole("button", { name: "Approve submit_action", exact: true });
-        const approve = beforeApproval ? await beforeApproval({ card, originalApprove, pending }) : originalApprove;
-        await approve.scrollIntoViewIfNeeded();
-        await checkpoint(`model-approval-${operation}`);
-        await approve.click();
-        const { job } = await response;
-        if (await drawer.isVisible()) await closeDrawer();
-        const completed = await pollJob(sdk, job.id, 90_000);
-        const actual = await snapshot();
-        const durableJob = actual.jobs.find((item) => item.id === job.id);
-        const consumed = actual.agent_sessions.approvals.find((item) => item.id === pending.id);
-        assert.equal(durableJob.owner.session_id, session.session_id);
-        assert.equal(durableJob.operation, operation);
-        assert.equal(durableJob.state, "succeeded");
-        assert.equal(consumed.state, "consumed");
-        assert.equal(consumed.decided_by, "human");
-        if (operation === "model_run") assert.deepEqual(consumed.inspected_preview, {
-          preview_id: request.preview_id,
-          preview_sha256: request.preview_sha256,
-          preview_job_id: pending.parameters_summary.preview_job_id,
-          png_sha256: pending.parameters_summary.png_sha256,
-        });
-        await record(`model-approval-${operation}-consumed.json`, {
-          id: pending.id, action_name: operation, policy_sha256: pending.policy_sha256, session_id: pending.session_id,
-          request_hash: pending.request_hash, source_id: pending.source_id, source_sha256: pending.source_sha256,
-          state: consumed.state, decided_by: consumed.decided_by, job_id: job.id,
-          ...(consumed.inspected_preview ? { inspected_preview: consumed.inspected_preview } : {}),
-        });
-        return completed;
-      };
       const ctx = { page, source, sdk, checkpoint, snapshot, record, submitAction, hashText };
       const prediction = await runScopedModel({ ...ctx, model: installedModel, approvedSelection: request.selection });
       comparison = await compareSavedMethods({ ...ctx, classical: nativeResult, prediction: prediction.result });
@@ -630,7 +701,7 @@ const config = await preflight();
 if (process.argv.includes("--preflight")) {
   console.log(JSON.stringify({ status: "preflight-passed", source_commit: config.sourceCommit,
     fixture: config.fixtureName, fixture_sha256: config.expectedHash, sdk: config.sdkVersion,
-    model_package_sha256: config.comparison?.package_sha256 }));
+    model_package_sha256: config.comparison?.package_sha256, cellpose_weights_sha256: config.cellpose?.weightsHash }));
 } else {
   await journey(config);
 }

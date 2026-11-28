@@ -1,6 +1,6 @@
 # Images in the workbench tour
 
-The desktop screenshots in the [project README](../../../README.md) were captured on 27 November 2026 from the running Apple silicon development build 77. The interface uses Loci’s native Graphite and Black themes. The images were cropped or resized for reading on GitHub. The CLI capture uses the packaged command against a saved local study. The [public binary](../../RELEASE_STATUS.md) has its own release and feature history.
+The [project README](../../../README.md) shows the running Apple silicon development app. The volume and MRI views were captured on 28 November 2026 with build 78. The assistant connection and Cellpose preview were captured with build 78 on 27 November. The remaining views show build 77 on 27 November. The interface uses Loci’s native Graphite and Black themes. The images were cropped or resized for reading on GitHub. The CLI capture uses the packaged command against a saved local study. The [public binary](../../RELEASE_STATUS.md) has its own release and feature history.
 
 ## Fluorescence and cell measurements
 
@@ -19,7 +19,8 @@ The desktop screenshots in the [project README](../../../README.md) were capture
 ## Workflows
 
 - [Model Zoo](model-zoo.webp). Crop of the current ten-entry catalog showing its search, filters and first row of credited examples. Each entry identifies its model source, example and execution route. The [example credits](../README.md#model-zoo) and [model guide](../../MODEL_LIBRARY.md) identify the image and model terms separately.
-- [Connect an assistant](assistant-connect.webp). The native study-access panel is open on the BBBC034 colony above, with Codex selected and the confirmation setting visible. This is the setup screen before authorization. [Image credit and CC BY 4.0 terms](https://bbbc.broadinstitute.org/BBBC034) · [Setup and scope](../../AGENT_ACCESS.md)
+- [Connect an assistant](assistant-connect.webp). The researcher has granted Codex access to a region of the BBBC034v1 colony-center field. The panel shows how to open the workspace and check for a connected client. The screenshot was taken before that client connected. [Image credit and CC BY 4.0 terms](https://bbbc.broadinstitute.org/BBBC034) · [Setup and scope](../../AGENT_ACCESS.md)
+- [Cellpose preview and review](cellpose-review.webp). On BBBC034v1 colony-center section 40, the 256 × 256 crop starts at source pixel (320, 192). Cellpose-SAM v2 predicted six objects from the membrane channel (C0). Loci measured the original β-actin intensity (C1) in each mask. The next saved revision removed one object. The screenshot shows the boundaries before approval. [BBBC034v1 and CC BY 4.0 terms](https://bbbc.broadinstitute.org/BBBC034) · [Checkpoint](https://huggingface.co/mouseland/cellpose-sam/blob/7c61431b5fbb078f3296754bd15d9f51b320f837/cpsam_v2)
 - [Agent workspace](agent-plan.webp). The retained plan was produced through an MCP test client on the BBBC039 study. The screenshot shows the plan after disconnection, including the classical result with 67 measurement rows. The two branded CLI hosts were also exercised separately with scoped study access. [BBBC039v1, CC0](https://bbbc.broadinstitute.org/BBBC039) · [Assistant workflow](../../AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant)
 
 The two-minute film has its own [specimen, source and music credits](../optical-section-credits.md).

@@ -1,6 +1,8 @@
 import { researcherScopeLabel, sourceChannelLabel } from "./research-scope-labels";
 import type { ReactNode } from "react";
 import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
+import { CELLPOSE_SAM_V2_SHA256 } from "../shared/model-registry";
+import { AgentCellposeGrant, useInstalledAgentCellpose } from "./AgentCellposeGrant";
 import { AgentConnectionReceipt } from "./AgentConnectionReceipt";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -112,10 +114,11 @@ function exactReceipt(
   exportScope: "listed" | "directory" = "listed",
   permissionMode?: ResearchAgentPermissionMode,
   volumeViews?: VolumeViewGrant,
+  cellposeGranted = false,
 ): ResearchAgentAccessReceipt {
   const receipt = value as ResearchAgentAccessReceipt;
   const baseSchema = delegation ? "loci.agent-policy/v4" : interactive ? "loci.agent-policy/v3" : "loci.agent-policy/v1";
-  const expectedSchema = volumeViews ? "loci.agent-policy/v7" : permissionMode ? "loci.agent-policy/v5" : baseSchema;
+  const expectedSchema = cellposeGranted ? "loci.agent-policy/v8" : volumeViews ? "loci.agent-policy/v7" : permissionMode ? "loci.agent-policy/v5" : baseSchema;
   if (
     !receipt ||
     receipt.schema !== expectedSchema ||
@@ -169,6 +172,8 @@ export function ResearchAgentPanel({
   onOpenWorkspace,
   nucleiModelReady = false,
   onChooseNucleiModel,
+  onChooseCellposeModel,
+  modelLibraryOpen = false,
   imageTools,
   configurationValid = true,
 }: {
@@ -188,6 +193,8 @@ export function ResearchAgentPanel({
   onOpenWorkspace?: () => void;
   nucleiModelReady?: boolean;
   onChooseNucleiModel?: () => void;
+  onChooseCellposeModel?: () => void;
+  modelLibraryOpen?: boolean;
   imageTools?: (fileOnly: boolean) => ReactNode;
 }): React.JSX.Element {
   const [allowPreview, setAllowPreview] = useState(false);
@@ -200,6 +207,8 @@ export function ResearchAgentPanel({
   const [allowRun, setAllowRun] = useState(false);
   const [allowWorkflowGraph, setAllowWorkflowGraph] = useState(false);
   const [allowNucleiModel, setAllowNucleiModel] = useState(false);
+  const [allowCellpose, setAllowCellpose] = useState(false);
+  const [chosenCellposeChannels, setChosenCellposeChannels] = useState<number[] | null>(null);
   const [allowTaskRecords, setAllowTaskRecords] = useState(false);
   const [allowExport, setAllowExport] = useState(false);
   const [allowReview, setAllowReview] = useState(false);
@@ -235,9 +244,17 @@ export function ResearchAgentPanel({
   const canOfferModel = actionMode === "analyze" && operations?.model_preview?.agent_execution === "task" &&
     operations?.model_run?.agent_execution === "task";
   const grantModel = Boolean(canOfferModel && nucleiModelReady && allowNucleiModel);
+  const canOfferCellpose = client !== "web" && actionMode === "analyze" &&
+    operations?.cellpose_model_status?.agent_execution === "read" &&
+    operations?.cellpose_preview?.agent_execution === "task" && operations?.cellpose_adopt?.agent_execution === "task";
+  const cellposeStatus = useInstalledAgentCellpose(canOfferCellpose && !modelLibraryOpen);
+  const grantCellpose = canOfferCellpose && cellposeStatus === "ready" && allowCellpose;
+  const cellposeChannels = chosenCellposeChannels ?? [...new Set(recipe.measurement_channels)].sort((a, b) => a - b);
   const modelActions = ["model_list", "model_preview", "model_run"];
+  const cellposeActions = ["cellpose_model_status", "cellpose_preview", "cellpose_adopt"];
   const actions = actionMode === "none" ? [] : actionChoices.filter(([name, item]) =>
-    (actionMode === "analyze" || item.agent_execution === "read") && (grantModel || !modelActions.includes(name)))
+    (actionMode === "analyze" || item.agent_execution === "read") && (grantModel || !modelActions.includes(name)) &&
+    (grantCellpose || !cellposeActions.includes(name)))
     .map(([name]) => name).sort();
   const [validatedScope, setValidatedScope] = useState<string | null>(null);
   const validationGeneration = useRef(0);
@@ -252,6 +269,7 @@ export function ResearchAgentPanel({
   const validationFingerprint = JSON.stringify([source.id, source.sha256, selection, agentRecipe]);
   const grantFingerprint = JSON.stringify([
     validationFingerprint, allowPreview, allowRun, allowWorkflowGraph, allowTaskRecords, grantModel, allowExport, disclosures,
+    grantCellpose ? cellposeChannels : null,
     exportNameText, cpuSeconds, memoryMiB, concurrency, allowImage, allowDisplay, allowHandoff,
     displayChannels, handoffNameText, experiment, thresholdRange, sizeRange,
     allowReview, resultScope, expiryHours, client, permissionMode,
@@ -273,6 +291,10 @@ export function ResearchAgentPanel({
     setReceipt(null);
   }, [grantFingerprint]);
   useEffect(() => { setAllowNucleiModel(false); }, [source.id, source.sha256, nucleiModelReady, actionMode]);
+  useEffect(() => {
+    setAllowCellpose(false);
+    setChosenCellposeChannels(null);
+  }, [source.id, source.sha256, actionMode, client, modelLibraryOpen]);
   useEffect(() => {
     setAllowPreview(false);
     setPreset("custom"); setPermissionMode("default"); setSourceMode("selected"); setActionMode("none"); setExportMode("listed");
@@ -339,9 +361,14 @@ export function ResearchAgentPanel({
     : memory === null || memory * MIB < NUCLEI_MODEL_INSTALL.workingBytes ? "Set the memory limit to at least 2048 MiB for this model."
     : selection.z_stop !== undefined || selection.level !== 0 || ["RGB", "RGBA"].includes(source.metadata.sample_semantics?.toUpperCase() ?? "")
       ? "Select one native Z plane of a scalar image." : null;
+  const cellposeUnavailable = !allowRun || permissionMode === "inspect_only" ? "Allow analysis jobs to use Cellpose."
+    : selection.z_stop !== undefined || selection.level !== 0 ||
+      ["RGB", "RGBA"].includes(source.metadata.sample_semantics?.toUpperCase() ?? "") || (source.metadata.dimensions?.s ?? 1) !== 1
+      ? "Select one native plane and an acquisition channel for Cellpose." : null;
   const canCreate = Boolean(
     configurationValid && api.createAgentAccess && validation && validatedScope === validationFingerprint &&
-    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && volumeValid && (!grantModel || !modelUnavailable) && !busy && !localBusy,
+    limitsValid && exportValid && operationValid && interactiveValid && delegationValid && volumeValid &&
+    (!grantModel || !modelUnavailable) && (!allowCellpose || (grantCellpose && !cellposeUnavailable)) && !busy && !localBusy,
   );
 
   const anticipatedOperations = [...new Set([
@@ -408,6 +435,7 @@ export function ResearchAgentPanel({
     setActionMode(analyze ? "analyze" : actionChoices.length ? "inspect" : "none");
     setAllowPreview(analyze); setAllowRun(analyze); setAllowReview(full); setAllowExport(full);
     setAllowNucleiModel(false);
+    setAllowCellpose(false); setChosenCellposeChannels(null);
     setAllowTaskRecords(analyze); setAllowWorkflowGraph(false);
     setExportMode(full ? "directory" : "listed");
     setAllowImage(true); setAllowDisplay(analyze); setAllowHandoff(false); setExperiment(false);
@@ -425,6 +453,7 @@ export function ResearchAgentPanel({
     const request: ResearchAgentAccessRequest = {
       ...(client === "antigravity" || client === "codex" ? { client } : {}),
       ...(grantModel ? { allow_nuclei_model: true } : {}),
+      ...(grantCellpose ? { allow_cellpose_model: true, cellpose_measurement_channels: cellposeChannels } : {}),
       source_id: source.id,
       selection,
       recipe: agentRecipe,
@@ -459,6 +488,9 @@ export function ResearchAgentPanel({
         const value = await api.createAgentAccess!(request);
         if (value !== null && value.nuclei_model_sha256 !== (grantModel ? NUCLEI_MODEL_INSTALL.packageSha256 : undefined))
           throw new Error("The model identity in the new grant did not match the selected package.");
+        if (value !== null && (value.cellpose_model_sha256 !== (grantCellpose ? CELLPOSE_SAM_V2_SHA256 : undefined) ||
+            !same(value.cellpose_scope, grantCellpose ? { source_id: source.id, selection, measurement_channels: cellposeChannels } : undefined)))
+          throw new Error("The Cellpose grant did not match the selected model, plane, or measurement channels.");
         if (client === "antigravity" && value !== null && (
           value.antigravity_workspace !== "antigravity-workspace" ||
           value.antigravity_config_filename !== "antigravity-workspace/.agents/mcp_config.json"
@@ -477,6 +509,7 @@ export function ResearchAgentPanel({
           exportMode,
           resolvedPermissionMode,
           volumeViews,
+          grantCellpose,
         );
       }, "Could not create bounded local agent access.");
       if (output && generation === creationGeneration.current && currentGrant.current === authorizedGrant) {
@@ -505,7 +538,9 @@ export function ResearchAgentPanel({
         {connectedHere ? "View connected assistant" : "Manage existing access"}
       </button>}
       {receipt && <AgentConnectionReceipt key={receipt.policy_sha256} receipt={receipt} sessions={agentSessions}
-        client={client} onCheck={onCheckConnection} onReveal={api.revealAgentSetup} onCopyLaunch={api.copyAgentLaunch} onOpenWorkspace={onOpenWorkspace} />}
+        client={client} onCheck={onCheckConnection} onReveal={api.revealAgentSetup} onCopyLaunch={api.copyAgentLaunch}
+        onCanOpenHost={api.canOpenAgentHost} onOpenHost={api.openAgentHost} onCopyWorkspacePath={api.copyAgentWorkspacePath}
+        onOpenWorkspace={onOpenWorkspace} />}
       <GrantSettings key={receipt ? `settings-${receipt.policy_sha256}` : "new-grant"} className="research-agent-grant-settings">
       {receipt && <summary>Create another grant</summary>}
       <label>Access level<select aria-label="Assistant access level" value={preset} onChange={(event) => applyPreset(event.target.value)}>
@@ -525,6 +560,10 @@ export function ResearchAgentPanel({
           Use installed nuclei ONNX model</label>
         {grantModel && (modelUnavailable ? <p role="alert">{modelUnavailable}</p> : <p>Inspect the predicted outlines in Loci before accepting a result.</p>)}
       </> : onChooseNucleiModel && <button onClick={onChooseNucleiModel}>Choose a nuclei model in Model Zoo</button>)}
+      {canOfferCellpose && <AgentCellposeGrant source={source} availability={cellposeStatus} selected={allowCellpose}
+        channels={cellposeChannels} unavailableReason={cellposeUnavailable} onSelect={setAllowCellpose}
+        onChannels={setChosenCellposeChannels} onChooseModel={onChooseCellposeModel} />}
+      {grantCellpose && !cellposeUnavailable && <p>Cellpose uses {sourceChannelLabel(source, selection.c)} on Z {selection.z + 1}, T {selection.t + 1} of {source.name}. Inspect the outlines before saving.</p>}
       <section className="research-agent-card" aria-label="Exact agent source and scope">
         <h3>Source and scope</h3>
         <dl className="research-kv">

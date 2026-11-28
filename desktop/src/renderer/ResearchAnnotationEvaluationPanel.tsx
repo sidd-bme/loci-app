@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowUpRight, ChevronLeft, ChevronRight, Crosshair, Layers, Snowflake } from "lucide-react";
 import type { ResearchDesktopApi, ResearchJob, ResearchResult, ResearchSnapshot, ResearchSource } from "../shared/research-contracts";
 import { sanitizeRendererError } from "./ContextHelp";
@@ -355,20 +355,21 @@ function DifferenceStepper({ api, result, record, snapshot, parents, activeDiffe
   const [error, setError] = useState("");
   const pages = useRef(new Map<string, Page>());
   const stepToken = useRef(0);
-  const mounted = useRef(true);
+  const mounted = useRef(false);
   const identity = `${result.id}:${result.revision_hash}`;
   const current = useRef({ identity, api });
   current.current = { identity, api };
 
-  useEffect(() => {
+  // Establish the request scope before the committed trigger can accept input.
+  useLayoutEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; stepToken.current++; };
-  }, []);
-
-  useEffect(() => {
     pages.current.clear();
-    stepToken.current++;
+    setLoading(false);
     setError("");
+    return () => {
+      mounted.current = false;
+      stepToken.current++;
+    };
   }, [identity, api]);
 
   useEffect(() => {

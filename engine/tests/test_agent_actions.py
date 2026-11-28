@@ -14,6 +14,7 @@ from test_research_agent_setup import access_request
 from test_research_mcp import stdio_parameters
 
 from loci_engine.agent_actions import authorize_action
+from loci_engine.agent_cellpose import CELLPOSE_ACTIONS
 from loci_engine.agent_policy import load_policy, write_policy
 from loci_engine.research_action_registry import ACTION_NAMES, READ_ACTIONS, TASK_ACTIONS
 from loci_engine.research_agent_setup import create_agent_access
@@ -177,7 +178,7 @@ def test_whole_study_grant_pins_only_the_explicit_source_snapshot(tmp_path):
                 "result_scope": "granted-sources",
                 "allow_review": True,
             },
-            actions=sorted(ACTION_NAMES - MODEL_OPERATIONS),
+            actions=sorted(ACTION_NAMES - MODEL_OPERATIONS - CELLPOSE_ACTIONS),
             source_scope={"mode": "study-sources", "sources": bindings},
         ),
         directory,
@@ -185,7 +186,7 @@ def test_whole_study_grant_pins_only_the_explicit_source_snapshot(tmp_path):
     policy = load_policy(directory / "agent-policy.json")
     assert receipt["sources"] == bindings
     assert not policy.model_packages
-    assert not (set(policy.actions) & MODEL_OPERATIONS)
+    assert not (set(policy.actions) & (MODEL_OPERATIONS | CELLPOSE_ACTIONS))
     assert set(policy.sources) == {first["id"], second["id"]}
     assert policy.sources[first["id"]].t == (0, 1)
     assert policy.sources[first["id"]].c == (0, 1)

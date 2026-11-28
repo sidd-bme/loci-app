@@ -10,11 +10,12 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .profiles import DEFAULT_PROFILE_ID
+from .profiles import CELLPOSE_PROFILE_ID, CELLPOSE_SETTINGS_CONTRACT, DEFAULT_PROFILE_ID
 from .research_operations import OPERATION_CATALOG
 from .research_recipe_guide import recipe_guide
 
 SCHEMA = "loci.action-registry/v1"
+ADOPTION_PREVIEWS = {"model_run": "model_preview", "cellpose_adopt": "cellpose_preview"}
 ID = {"type": "string", "pattern": "^[a-f0-9]{32}$"}
 SHA = {"type": "string", "pattern": "^[a-f0-9]{64}$"}
 NUMBER = {"type": "number"}
@@ -128,6 +129,31 @@ REQUESTS = {
             ),
             "profile_id": {"const": DEFAULT_PROFILE_ID},
             "settings": ADAPTIVE_SETTINGS,
+            "measurement_channels": _array(INDEX, 0, 32),
+            "working_bytes": MEMORY,
+        }
+    ),
+    "cellpose_model_status": _object({}),
+    "cellpose_adopt": _object({"preview_id": ID, "preview_sha256": SHA}),
+    "cellpose_preview": _object(
+        {
+            "source_id": ID,
+            "selection": _object(
+                {
+                    **{name: INDEX for name in ("x", "y", "t", "c", "z", "level")},
+                    "width": {"type": "integer", "minimum": 1},
+                    "height": {"type": "integer", "minimum": 1},
+                }
+            ),
+            "profile_id": {"const": CELLPOSE_PROFILE_ID},
+            "settings": _object(
+                {
+                    setting.key: {"const": "cpu"}
+                    if setting.key == "device"
+                    else {"type": setting.value_type}
+                    for setting in CELLPOSE_SETTINGS_CONTRACT
+                }
+            ),
             "measurement_channels": _array(INDEX, 0, 32),
             "working_bytes": MEMORY,
         }
@@ -819,6 +845,7 @@ READ_ACTIONS = frozenset(
         "spatial_density_list",
         "spatial_density_query",
         "task_preview_get",
+        "cellpose_model_status",
         "model_list",
     }
 )
@@ -828,12 +855,14 @@ PREVIEW_ACTIONS = frozenset(
         "exploration_preview",
         "exploration_compare",
         "tissue_model_preview",
+        "cellpose_preview",
         "model_preview",
     }
 )
 PUBLICATION_ACTIONS = frozenset(
     {
         "tissue_model_run",
+        "cellpose_adopt",
         "model_run",
         "run_recipe",
         "classical_run",
@@ -930,7 +959,7 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                     else "saved-comparison-receipt"
                     if name == "exploration_compare"
                     else "saved-model-preview-receipt"
-                    if name == "model_preview"
+                    if name in {"model_preview", "cellpose_preview"}
                     else "none"
                     if name in READ_ACTIONS or name in PREVIEW_ACTIONS
                     else "saved-wound-report"
@@ -951,8 +980,13 @@ def action_guide(operation: str | None = None) -> dict[str, Any]:
                         else []
                     ),
                     *(
+                        ["pinned-cellpose-sam-v2-checkpoint-and-cpu-runtime"]
+                        if name in {"cellpose_preview", "cellpose_adopt", "cellpose_model_status"}
+                        else []
+                    ),
+                    *(
                         ["single-use-human-visual-review-approval"]
-                        if name == "model_run"
+                        if name in {"model_run", "cellpose_adopt"}
                         else []
                     ),
                 ],

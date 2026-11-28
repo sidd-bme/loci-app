@@ -3,6 +3,8 @@ import { checkedMethodInput, checkedMethodRights } from "../shared/controlled-me
 import type { ScientificExportPreview, ScientificExportReceipt } from "../shared/scientific-export-contracts";
 import { app, clipboard, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
+import { findCodexDesktop, openCodexDesktop } from "./agent-host-handoff";
+import { bindAgentSetup, checkAgentSetup, type AgentSetupBinding, type PublishedAgentSetupReceipt } from "./agent-setup-binding";
 import { openModelLibraryLink } from "./model-library-links";
 import { NUCLEI_MODEL_INSTALL } from "../shared/nuclei-model-install";
 import { withNucleiModelPackage } from "./nuclei-model-download";
@@ -26,6 +28,7 @@ import {
 import { checkedGraphStatus, graphJson } from "../shared/workflow-graph-contracts";
 import { assertResearchRequestBound } from "./research-request-limits";
 import { prepareLegacyProjectImport } from "./legacy-project-adapter";
+import { rememberedDialogDirectory, rememberDialogDirectory } from "./dialog-history";
 import {
   assertExportReceiptContained,
   canonicalizeBatchRoot,
@@ -184,6 +187,10 @@ interface PickedResearchSources {
   importRoot?: string;
 }
 
+interface NativePickedResearchSources extends PickedResearchSources {
+  dialogDirectory: string;
+}
+
 type DroppedResearchSelection =
   | { route: "files"; picked: PickedResearchSources }
   | { route: "ome_zarr"; picked: PickedResearchSources }
@@ -315,7 +322,9 @@ export class ResearchBridge {
   private readonly sessions = new ManagedResearchSessionStore(app.getPath("userData"));
   private project: string | null = null;
   private sessionId: string | null = null;
-  private agentSetup: { policy: string; folder: string; dev: number; ino: number; client?: "antigravity" | "codex" } | null = null;
+  private agentSetup: AgentSetupBinding | null = null;
+  private agentHostOpening = false;
+  private agentPolicyRevocation = 0;
   private running: { id: string; project: string; graphRunId?: string } | null = null;
   private switching = false;
   private closing = false;
@@ -516,7 +525,7 @@ export class ResearchBridge {
     };
   }
 
-  private async pickedSources(kind: unknown, singleVolume = false): Promise<PickedResearchSources | null> {
+  private async pickedSources(kind: unknown, singleVolume = false): Promise<NativePickedResearchSources | null> {
     const options = this.pickerOptions(kind);
     if (singleVolume) {
       const acceptsDirectories = process.platform === "darwin";
@@ -527,16 +536,21 @@ export class ResearchBridge {
       options.properties = acceptsDirectories ? ["openFile", "openDirectory"] : ["openFile"];
       if (acceptsDirectories) options.filters?.[0]?.extensions.push("zarr");
     }
+    const defaultPath = await rememberedDialogDirectory("imageOpen");
+    if (defaultPath) options.defaultPath = defaultPath;
     const picked = await dialog.showOpenDialog(options);
     if (picked.canceled || picked.filePaths.length === 0) return null;
     if (singleVolume && picked.filePaths.length !== 1)
       throw new Error("Choose one image file or OME-Zarr store to open in 3D.");
+    const firstPath = picked.filePaths[0];
     if (kind === "folder") {
-      const paths = await collectImageFolder(picked.filePaths[0]);
-      return { paths, importRoot: picked.filePaths[0], relativePaths: paths.map((item) =>
-        path.relative(picked.filePaths[0], item).split(path.sep).join("/")) };
+      const paths = await collectImageFolder(firstPath);
+      return { paths, importRoot: firstPath, dialogDirectory: firstPath, relativePaths: paths.map((item) =>
+        path.relative(firstPath, item).split(path.sep).join("/")) };
     }
-    return { paths: picked.filePaths, relativePaths: picked.filePaths.map((item) => path.basename(item)) };
+    // A store is an image source too. Start beside it, outside its internal arrays.
+    return { paths: picked.filePaths, dialogDirectory: path.dirname(firstPath),
+      relativePaths: picked.filePaths.map((item) => path.basename(item)) };
   }
 
   private async choose(create: boolean): Promise<unknown> {
@@ -585,7 +599,7 @@ export class ResearchBridge {
     try {
       const picked = await this.pickedSources(kind);
       if (!picked) return await this.snapshot();
-      return await this.importSelectedPaths(picked, kind);
+      return await this.importNativeSelection(picked, kind);
     } finally {
       this.switching = false;
     }
@@ -605,9 +619,9 @@ export class ResearchBridge {
       const route = singleVolume ? await this.volumeImportKind(picked.paths[0]) : kind;
       if (this.closing || this.viewDocumentEpoch !== epoch)
         throw new Error("The selected image no longer belongs to the active opening request.");
-      if (!singleVolume) return await this.importSelectedPaths(picked, route);
+      if (!singleVolume) return await this.importNativeSelection(picked, route);
       // Keep the durable import protected even while its worker finishes earlier reads.
-      const pending = this.importSelectedPaths(picked, route, true, preview);
+      const pending = this.importNativeSelection(picked, route, true, preview);
       this.directVolumeImport = pending;
       return await pending;
     } catch (error) {
@@ -709,6 +723,15 @@ export class ResearchBridge {
     if (stat?.isFile()) return "files";
     if (stat?.isDirectory() && path.extname(selected).toLowerCase() === ".zarr") return "ome_zarr";
     throw new Error("Choose an image file or an OME-Zarr directory ending in .zarr.");
+  }
+
+  private async importNativeSelection(
+    picked: NativePickedResearchSources, kind: unknown, directVolume = false, preview?: VolumePreviewOpening | null,
+  ): Promise<unknown> {
+    const result = await this.importSelectedPaths(picked, kind, directVolume, preview);
+    // Preference I/O cannot turn a completed import into a failure.
+    await rememberDialogDirectory("imageOpen", picked.dialogDirectory).catch(() => undefined);
+    return result;
   }
 
   private async importSelectedPaths(picked: PickedResearchSources, kind: unknown, directVolume = false, preview?: VolumePreviewOpening | null): Promise<unknown> {
@@ -1098,6 +1121,8 @@ export class ResearchBridge {
       "model_preview",
       "classical_run",
       "cellpose_run",
+      "cellpose_preview",
+      "cellpose_adopt",
       "correct_result",
       "labels_import",
       "roi_add",
@@ -2317,42 +2342,80 @@ export class ResearchBridge {
         });
         if (picked.canceled || !picked.filePath) return null;
         if (this.requireProject() !== project) throw new Error("The active study changed.");
-        const receipt = await this.control.request<{ policy_sha256: string; antigravity_workspace?: string; codex_workspace?: string }>("research_agent_access", {
+        const receipt = await this.control.request<PublishedAgentSetupReceipt>("research_agent_access", {
           project, request, destination: picked.filePath, export_root: exportRoot,
         }, 0);
-        const stat = await fs.lstat(picked.filePath).catch(() => null);
-        const client = receipt?.antigravity_workspace === "antigravity-workspace" && request.client === "antigravity" ? "antigravity"
-          : receipt?.codex_workspace === "codex-workspace" && request.client === "codex" ? "codex" : undefined;
-        this.agentSetup = stat?.isDirectory() && /^[a-f0-9]{64}$/.test(receipt.policy_sha256)
-          ? { policy: receipt.policy_sha256, folder: picked.filePath, dev: stat.dev, ino: stat.ino, client } : null;
-        return receipt;
+        this.agentSetup = await bindAgentSetup(picked.filePath, project, request.client, receipt).catch(() => null);
+        if (!receipt) return receipt;
+        const { workspace_config_sha256: _configDigest, ...publicReceipt } = receipt;
+        return publicReceipt;
       } finally { this.switching = false; }
     });
-    const selectedAgentSetup = async (policy: unknown) => {
+    const selectedAgentSetup = (policy: unknown, extra: unknown[]) => {
+      if (extra.length) throw new Error("Choose an exact assistant grant.");
       const setup = this.agentSetup;
-      if (!setup || setup.policy !== policy)
+      if (!setup || setup.policy !== policy || setup.project !== this.project || this.switching || this.closing)
         throw new Error("This setup folder is no longer selected.");
-      const stat = await fs.lstat(setup.folder).catch(() => null);
-      if (this.agentSetup !== setup || !stat?.isDirectory() || stat.dev !== setup.dev || stat.ino !== setup.ino)
-        throw new Error("The setup folder moved or changed.");
-      const directory = setup.client ? path.join(setup.folder, setup.client + "-workspace") : setup.folder;
-      if (setup.client && !(await fs.lstat(directory).catch(() => null))?.isDirectory())
-        throw new Error("The assistant workspace moved or changed.");
-      if (this.agentSetup !== setup) throw new Error("The active study changed.");
-      return { directory, client: setup.client };
+      return setup;
     };
-    handle("reveal-agent-setup", async (policy) => {
-      const { directory } = await selectedAgentSetup(policy);
+    const assertCurrentSetup = (setup: AgentSetupBinding) => {
+      if (selectedAgentSetup(setup.policy, []) !== setup) throw new Error("The active assistant setup changed.");
+    };
+    const checkedAgentWorkspace = async (setup: AgentSetupBinding) => {
+      assertCurrentSetup(setup);
+      if (!setup.workspace) throw new Error("This setup has no assistant workspace.");
+      const revocation = this.agentPolicyRevocation;
+      const snapshot = await this.engineSnapshot(setup.project);
+      const grant = snapshot.agent_sessions?.policies.find(item => item.policy_sha256 === setup.policy && item.project_id === setup.projectId);
+      if (grant?.revoked !== false)
+        throw new Error("This assistant grant is no longer available. Check access in Loci.");
+      const directory = await checkAgentSetup(setup, true);
+      if (this.agentPolicyRevocation !== revocation)
+        throw new Error("This assistant grant is no longer available. Check access in Loci.");
+      assertCurrentSetup(setup);
+      return directory;
+    };
+    handle("reveal-agent-setup", async (policy, ...extra) => {
+      const setup = selectedAgentSetup(policy, extra);
+      const directory = await checkAgentSetup(setup, false);
+      assertCurrentSetup(setup);
       shell.showItemInFolder(directory);
     });
-    handle("copy-agent-launch", async (policy) => {
-      const { directory, client } = await selectedAgentSetup(policy);
-      if (!client || /[\x00-\x1f\x7f]/u.test(directory)) throw new Error("Open the setup folder to connect this assistant.");
+    handle("copy-agent-launch", async (policy, ...extra) => {
+      const setup = selectedAgentSetup(policy, extra);
+      const directory = await checkedAgentWorkspace(setup);
+      if (CONTROL_CHARACTER.test(directory)) throw new Error("Open the setup folder to connect this assistant.");
       const windows = process.platform === "win32";
       const quoted = "'" + directory.replaceAll("'", windows ? "''" : "'\\''") + "'";
-      const command = client === "codex" ? `codex -C ${quoted}`
+      const command = setup.workspace?.client === "codex" ? `codex -C ${quoted}`
         : windows ? `Set-Location -LiteralPath ${quoted} -ErrorAction Stop; agy` : `cd -- ${quoted} && agy`;
       clipboard.writeText(command);
+    });
+    handle("copy-agent-workspace-path", async (policy, ...extra) => {
+      const directory = await checkedAgentWorkspace(selectedAgentSetup(policy, extra));
+      if (CONTROL_CHARACTER.test(directory)) throw new Error("Use Show setup folder to find this workspace.");
+      clipboard.writeText(directory);
+    });
+    handle("can-open-agent-host", async (policy, ...extra) => {
+      const setup = selectedAgentSetup(policy, extra);
+      if (setup.workspace?.client !== "codex") return false;
+      const bundle = await findCodexDesktop();
+      if (!bundle) return false;
+      await checkedAgentWorkspace(setup);
+      return true;
+    });
+    handle("open-agent-host", async (policy, ...extra) => {
+      const setup = selectedAgentSetup(policy, extra);
+      if (setup.workspace?.client !== "codex") return false;
+      if (this.agentHostOpening) throw new Error("This assistant workspace is already opening.");
+      this.agentHostOpening = true;
+      try {
+        const bundle = await findCodexDesktop(true);
+        if (!bundle) return false;
+        const directory = await checkedAgentWorkspace(setup);
+        await openCodexDesktop(bundle, directory);
+        return true;
+      } finally { this.agentHostOpening = false; }
     });
     handle("agent-session-control", async (value) => {
       const project = this.requireProject();
@@ -2374,6 +2437,8 @@ export class ResearchBridge {
       ]);
       if (typeof request.action !== "string" || !validActions.has(request.action))
         throw new Error("Invalid agent session control action.");
+      if (request.action === "revoke_policy" && request.policy_sha256 === this.agentSetup?.policy)
+        this.agentPolicyRevocation += 1;
       return await this.control.request("research_agent_session_control", {
         project,
         request,

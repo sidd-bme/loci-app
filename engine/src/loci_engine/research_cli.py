@@ -427,7 +427,8 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                     raise PermissionError(
                         "The execution policy changed before this process started"
                     )
-                owner = project.job(args.job).get("owner")
+                job = project.job(args.job)
+                owner = job.get("owner")
                 if (
                     not isinstance(owner, dict)
                     or owner.get("policy_sha256") != policy.content_sha256
@@ -444,6 +445,21 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
                         "The execution resource limits differ from the pinned policy"
                     )
                 guard = policy_agent._recheck_session
+                if sys.platform == "darwin" and job["operation"] in {
+                    "cellpose_preview",
+                    "cellpose_adopt",
+                }:
+                    import resource
+
+                    def guard() -> None:
+                        policy_agent._recheck_session()
+                        # macOS reports ru_maxrss in bytes. The peak also covers
+                        # transient model allocations between supervisor samples.
+                        if resource.getrusage(resource.RUSAGE_SELF).ru_maxrss > policy.memory_bytes:
+                            raise PermissionError(
+                                "Cellpose worker exceeded its granted process memory"
+                            )
+
             return run_job(
                 workbench, args.job, publication_guard=guard, max_concurrency=args.max_concurrency
             )

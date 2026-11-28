@@ -990,8 +990,10 @@ def _prune_unadopted_model_previews(
         connection.execute("BEGIN IMMEDIATE")
         # Choose and delete victims against the same job, approval and result state.
         connection.execute(
-            "DELETE FROM documents WHERE kind='model_preview' AND id IN ("
-            "SELECT id FROM documents WHERE kind='model_preview' AND id NOT IN ("
+            "DELETE FROM documents WHERE kind='model_preview' "
+            "AND json_extract(record, '$.data.schema')=? AND id IN ("
+            "SELECT id FROM documents WHERE kind='model_preview' "
+            "AND json_extract(record, '$.data.schema')=? AND id NOT IN ("
             "SELECT json_extract(record, '$.provenance.model_preview.id') FROM results "
             "WHERE json_type(record, '$.provenance.model_preview.id')='text' UNION "
             "SELECT json_extract(record, '$.request.task_request.preview_id') FROM jobs "
@@ -1003,7 +1005,7 @@ def _prune_unadopted_model_previews(
             "AND json_extract(value, '$.state') IN ('pending','approved') "
             "AND json_type(value, '$.parameters_summary.preview_id')='text') "
             "ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
-            (max(1, limit),),
+            (PREVIEW_SCHEMA, PREVIEW_SCHEMA, max(1, limit)),
         )
 
 

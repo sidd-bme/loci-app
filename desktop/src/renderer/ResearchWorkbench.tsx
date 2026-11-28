@@ -125,7 +125,7 @@ import type { AgentWorkspaceNavigationRequest } from "../shared/agent-workspace-
 import { AgentSnapshotFence, waitForAgentNavigation } from "./agent-workspace-host";
 import { useAgentWorkspaceHost } from "./use-agent-workspace-host";
 import { useAgentWorkflowTargets, type AgentWorkflowNavigation } from "./agent-workspace-workflows";
-import { modelApprovalTarget, requiresModelInspection } from "./agent-model-approval";
+import { isModelPreview, modelApprovalTarget, requiresModelInspection } from "./agent-model-approval";
 import { AgentPreviewComparison, matchesModelApproval, type SharedTaskPreview } from "./AgentPreviewComparison";
 import { AgentResultTracker, useWorkspaceSnapshotPolling } from "./agent-session-refresh";
 import { AgentSourceActivityTracker, agentResultTarget, agentSourceTarget, agentSourceView } from "./agent-navigation";
@@ -2960,7 +2960,7 @@ export default function ResearchWorkbench({
       setError("Finish the current edit or operation before inspecting a preview."); return false;
     }
     const job = snapshot.jobs.find((item) => item.id === target.id && item.state === "succeeded");
-    if (!job || !["workflow_preview", "exploration_preview", "exploration_compare", "model_preview"].includes(job.operation)) {
+    if (!job || !isModelPreview(job.operation) && !["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation)) {
       setError("The recorded preview task is unavailable."); return false;
     }
     const token = ++previewReadToken.current;
@@ -2976,7 +2976,7 @@ export default function ResearchWorkbench({
     try {
       if (preview.job_id !== job.id || preview.operation !== job.operation) throw new Error("The preview does not match its task.");
       const exact = agentSourceTarget(snapshot, { kind: "source", id: preview.source_id, sha256: preview.source_sha256 });
-      if (preview.operation === "model_preview" && (preview.request_sha256 !== job.request_hash ||
+      if (isModelPreview(preview.operation) && (preview.request_sha256 !== job.request_hash ||
           job.request.source_id !== exact.id || (target.sha256 && target.sha256 !== job.request_hash))) throw new Error("The model preview task changed.");
       if (approvalId) {
         const approval = snapshot.agent_sessions?.approvals.find(item => item.id === approvalId);
@@ -4063,7 +4063,7 @@ export default function ResearchWorkbench({
   const agentWorkflowTargets = useAgentWorkflowTargets(api, snapshot, exportDraftStudy, presenting && Boolean(nativeAgentApi) && !documentSwitching);
   const agentCurrentTargets = useMemo(() => agentWorkflowTargets.map(({ version: _version, ...target }) => target), [agentWorkflowTargets]);
   const inspectableAgentPreviewIds = useMemo(() => snapshot?.jobs.filter(job => job.state === "succeeded" &&
-    ["workflow_preview", "exploration_preview", "exploration_compare", "model_preview"].includes(job.operation)).map(job => job.id) ?? [], [snapshot?.jobs]);
+    (isModelPreview(job.operation) || ["workflow_preview", "exploration_preview", "exploration_compare"].includes(job.operation))).map(job => job.id) ?? [], [snapshot?.jobs]);
   const [agentWorkflowNavigation, setAgentWorkflowNavigation] = useState<AgentWorkflowNavigation | null>(null);
   const agentWorkflowCompletion = useRef<{ requestId: string; resolve(): void; reject(error: Error): void } | null>(null);
   const finishAgentWorkflow = useCallback((requestId: string, error?: string) => {
@@ -5878,6 +5878,8 @@ export default function ResearchWorkbench({
             onCheckConnection={refreshAgentConnection}
             nucleiModelReady={installedNucleiMatch?.state === "ready"}
             onChooseNucleiModel={() => setModelLibraryState({ initialModelId: "bioimageio-nuclei-boundary-onnx" })}
+            onChooseCellposeModel={() => setModelLibraryState({ initialModelId: "cellpose-sam-v2" })}
+            modelLibraryOpen={modelLibraryOpen}
             onOpenWorkspace={() => {
               if (agentWorkspace.detached) agentWorkspace.focus();
               else setWorkspaceOpenRequest(value => value + 1);

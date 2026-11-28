@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ResearchAgentApprovalRecord, ResearchAgentControlRequest } from "../shared/research-contracts";
 import { X } from "lucide-react";
+import { CELLPOSE_SAM_V2_SHA256 } from "../shared/model-registry";
+import { isModelPreview, previewForAdoption } from "./agent-model-approval";
 import "./AgentPreviewComparison.css";
 
 export interface SharedTaskPreview {
@@ -139,7 +141,7 @@ type ReviewProps = {
 
 export function matchesModelApproval(preview: SharedTaskPreview, approval: ResearchAgentApprovalRecord): boolean {
   const receipt = record(preview.output.preview);
-  return preview.operation === "model_preview" && approval.state === "pending" &&
+  return approval.operation === "submit_action" && preview.operation === previewForAdoption(approval.action_name) && approval.state === "pending" &&
     preview.job_id === approval.parameters_summary.preview_job_id &&
     preview.source_id === approval.source_id && preview.source_sha256 === approval.source_sha256 &&
     receipt?.id === approval.parameters_summary.preview_id && receipt?.preview_sha256 === approval.parameters_summary.preview_sha256;
@@ -149,13 +151,24 @@ function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPr
   const receipt = record(preview.output.preview);
   const source = record(receipt?.source);
   const display = record(source?.display);
+  const cellpose = preview.operation === "cellpose_preview";
+  const selection = record(source?.selection);
+  const input = record(source?.input_mapping);
   const mapping = source?.channel_mapping;
-  const inputChannel = Array.isArray(mapping) && mapping.length === 1 ? record(mapping[0])?.source_channel : undefined;
-  const region = checkedSelection({ ...record(source?.selection), c: inputChannel });
+  const inputChannel = cellpose
+    ? input?.mode === "source-channel" && input.channel === selection?.c ? input.channel : undefined
+    : Array.isArray(mapping) && mapping.length === 1 ? record(mapping[0])?.source_channel : undefined;
+  const measured = source?.measurement_channels;
+  const measuredChannels = Array.isArray(measured) && measured.length <= 32 && new Set(measured).size === measured.length &&
+    measured.every(channel => Number.isSafeInteger(channel) && channel >= 0) ? measured : null;
+  const region = checkedSelection({ ...selection, c: inputChannel });
   const count = record(receipt?.output)?.object_count;
   const digest = display?.png_sha256;
+  const receiptMatchesModel = cellpose ? receipt?.schema === "loci.cellpose-preview/v1" &&
+    record(receipt.package)?.package_sha256 === CELLPOSE_SAM_V2_SHA256 && receipt.preview_job_id === preview.job_id && measuredChannels !== null :
+    receipt?.schema === "loci.model-preview/v1";
   const data = cellsFor(preview).length === 1 && preview.output.adopted === false &&
-    receipt?.schema === "loci.model-preview/v1" && text(receipt.id) && text(receipt.preview_sha256) && hash.test(receipt.preview_sha256) &&
+    receiptMatchesModel && receipt && text(receipt.id) && text(receipt.preview_sha256) && hash.test(receipt.preview_sha256) &&
     source?.id === preview.source_id && source?.sha256 === preview.source_sha256 && text(digest) && hash.test(digest)
     ? pngData(preview.output.overlay_png) : null;
   const [verifiedImage, setVerifiedImage] = useState<{ data: string; digest: string } | null>(null);
@@ -209,13 +222,15 @@ function ModelPreview({ preview, approval, onDecision }: { preview: SharedTaskPr
                 image.getBoundingClientRect().width > 0 && image.getBoundingClientRect().height > 0) setPainted(true);
           }));
         }} />
-      <figcaption>{Number.isSafeInteger(count) && Number(count) >= 0 ? `${count} predicted objects` : "Predicted objects"} · green outlines</figcaption>
+      <figcaption>{Number.isSafeInteger(count) && Number(count) >= 0 ? `${count} predicted objects` : "Predicted objects"} · {cellpose ? "teal boundaries" : "green outlines"}</figcaption>
     </figure></div> : <p role="status">{data && !failed ? "Verifying model preview…" : "The exact source-bound model preview is unavailable."}</p>}
     {region ? <p className="agent-preview-scope">
       {String(region.width)} × {String(region.height)} px at ({String(region.x)}, {String(region.y)}) ·
       {" "}Input C {String(region.c)} · Z {String(region.z)} · T {String(region.t)} (zero-based)
       {Number(region.level) > 0 && ` · Level ${region.level}`}
     </p> : <p className="agent-preview-scope">The source region or model input channel could not be verified.</p>}
+    {cellpose && measuredChannels && <p className="agent-preview-scope">Raw measurements · {measuredChannels.length
+      ? measuredChannels.map(channel => `C ${channel}`).join(", ") + " (zero-based)" : "No intensity channels"}</p>}
     {approval && <div className="agent-preview-toolbar">
       <label><input type="checkbox" disabled={!canInspect || saving} checked={checked}
         onChange={event => setChecked(event.target.checked)} />I inspected this model preview</label>
@@ -259,10 +274,10 @@ export function AgentPreviewComparison({ preview, sourceLabel, onClose, approval
   return <section className="agent-preview-comparison" aria-label="Agent preview comparison"
     onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Escape") { event.preventDefault(); onClose(); } }}>
     <header className="agent-preview-header">
-      <h2>{preview.operation === "model_preview" ? "Model preview" : "Agent preview"} on {sourceLabel}</h2>
+      <h2>{preview.operation === "cellpose_preview" ? "Cellpose-SAM v2 preview" : isModelPreview(preview.operation) ? "Model preview" : "Agent preview"} on {sourceLabel}</h2>
       <button type="button" ref={close} aria-label="Close preview comparison" onClick={onClose}><X size={16} aria-hidden="true" /></button>
     </header>
-    {preview.operation === "model_preview" ? <ModelPreview key={JSON.stringify([previewKey, preview.source_id, preview.source_sha256,
+    {isModelPreview(preview.operation) ? <ModelPreview key={JSON.stringify([previewKey, preview.operation, preview.source_id, preview.source_sha256,
       approval?.id, approval?.request_hash, approval?.session_id, approval?.policy_sha256, approval?.expires_at])}
       preview={preview} approval={approval} onDecision={onDecision} /> : <><div className="agent-preview-toolbar">
       {cells.length > 1 && <label>Preview cell<select aria-label="Preview cell" value={cellIndex}

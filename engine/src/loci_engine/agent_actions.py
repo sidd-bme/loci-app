@@ -6,6 +6,7 @@ import math
 import re
 from typing import Any
 
+from .agent_cellpose import CELLPOSE_ACTIONS, authorize_cellpose
 from .agent_policy import DISCLOSURES, AgentPolicy
 from .quantitative import DEFAULT_WORKING_BYTES, exact_keys, integer
 from .research_action_registry import READ_ACTIONS, REQUESTS, TASK_ACTIONS
@@ -194,6 +195,9 @@ def authorize_action(
 
         _schema_check(request, contract)
         preflight(workbench, operation, request, policy=policy)
+    elif operation in CELLPOSE_ACTIONS:
+        _schema_check(request, contract)
+        authorize_cellpose(agent, workbench, operation, request)
     elif operation == "model_list":
         _schema_check(request, contract)
     elif operation in {"model_preview", "model_run"}:
@@ -434,6 +438,8 @@ def authorize_action(
         "tissue_model_run",
         "model_preview",
         "model_run",
+        "cellpose_preview",
+        "cellpose_adopt",
     }:
         policy.require_runtime(runtime_record())
     policy.recheck()
@@ -464,6 +470,15 @@ def inspect_action(agent, workbench, operation, request):
         from .agent_shared_workflows import inspect_shared_action
 
         output = inspect_shared_action(agent, workbench, operation, request)
+    if operation == "task_preview_get" and output["preview"]["operation"] == "cellpose_preview":
+        from .agent_cellpose import verify_task_preview
+
+        verify_task_preview(workbench, request["job_id"], output["preview"])
+    if operation == "cellpose_model_status" and output["ready"]:
+        # The native read can inform a previously granted host that installation is
+        # unavailable. An available runtime must match the originally verified pin.
+        agent.policy.require_runtime(output["runtime"])
+        agent.policy.require_model(output["model"])
     if operation == "correction_info":
         result = agent._authorize_result(workbench, request["result_id"])
         if not result["provenance"].get("derived_measurement_arrays") and not result[
@@ -471,6 +486,8 @@ def inspect_action(agent, workbench, operation, request):
         ].get("stain_separation"):
             grant = agent.policy.sources[result["source_id"]]
             allowed = set(grant.c) | set(grant.measurement_channels)
+            if "cellpose_preview" in result["provenance"] and agent.policy.cellpose_scope:
+                allowed.update(agent.policy.cellpose_scope["measurement_channels"])
             output["measurement_channels"] = [
                 item for item in output["measurement_channels"] if item["index"] in allowed
             ]

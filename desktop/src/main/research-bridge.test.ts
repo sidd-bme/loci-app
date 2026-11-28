@@ -2,6 +2,7 @@
 
 import { promises as fs } from "node:fs";
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { crc32, deflateSync } from "node:zlib";
@@ -17,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   openExternal: vi.fn(),
   showItemInFolder: vi.fn(),
   writeClipboard: vi.fn(),
+  findCodexDesktop: vi.fn(),
+  openCodexDesktop: vi.fn(),
   prepareLegacy: vi.fn(),
   prepareNuclei: vi.fn(),
   clients: [] as Array<{ request: ReturnType<typeof vi.fn>; cancelCurrent: ReturnType<typeof vi.fn>;
@@ -51,6 +54,10 @@ vi.mock("./legacy-project-adapter", () => ({
 }));
 vi.mock("./nuclei-model-download", () => ({
   withNucleiModelPackage: (...args: unknown[]) => mocks.prepareNuclei(...args),
+}));
+vi.mock("./agent-host-handoff", () => ({
+  findCodexDesktop: mocks.findCodexDesktop,
+  openCodexDesktop: mocks.openCodexDesktop,
 }));
 
 import type { StatisticsFigureExportRequest } from "../shared/statistics-figure-contracts";
@@ -300,11 +307,44 @@ async function createAndInspect() {
   return await call("vendor-inspect") as { grant_id: string; source_sha256: string };
 }
 
+async function createAgentSetup(client: "codex" | "antigravity", overrides: Record<string, unknown> = {}) {
+  const project = path.join(root, "Agent setup.loci-study");
+  mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+  await call("create");
+  const parent = await fs.realpath(root);
+  const folder = path.join(parent, "Researcher's setup #1");
+  const policyFile = path.join(folder, "agent-policy.json");
+  const projectId = "a".repeat(32);
+  const policyBytes = JSON.stringify({ project_id: projectId });
+  const workspaceName = `${client}-workspace`;
+  const workspace = path.join(folder, workspaceName);
+  const configFilename = `${workspaceName}/${client === "codex" ? ".codex/config.toml" : ".agents/mcp_config.json"}`;
+  const configFile = path.join(folder, configFilename);
+  const configBytes = "test workspace config bytes\n";
+  await fs.mkdir(path.dirname(configFile), { recursive: true });
+  await fs.writeFile(policyFile, policyBytes, { mode: 0o600 });
+  await fs.writeFile(configFile, configBytes, { mode: 0o600 });
+  const policy = createHash("sha256").update(policyBytes).digest("hex");
+  mocks.save.mockResolvedValueOnce({ canceled: false, filePath: folder });
+  mocks.request.mockResolvedValueOnce({
+    project_id: projectId, policy_sha256: policy,
+    [`${client}_workspace`]: workspaceName, [`${client}_config_filename`]: configFilename,
+    workspace_config_sha256: createHash("sha256").update(configBytes).digest("hex"), ...overrides,
+  });
+  const receipt = await call("agent-access", { client });
+  const journal = (changes = {}) => ({ agent_sessions: { policies: [
+    { project_id: projectId, policy_sha256: policy, revoked: false, ...changes },
+  ] } });
+  return { folder, project, policyFile, policy, workspace, configFile, journal, receipt };
+}
+
 describe("native research bridge", () => {
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "loci-research-bridge-"));
     process.env.LOCI_RESEARCH_BRIDGE_TEST_ROOT = root;
     vi.clearAllMocks();
+    mocks.findCodexDesktop.mockReset().mockResolvedValue(null);
+    mocks.openCodexDesktop.mockReset().mockResolvedValue(undefined);
     mocks.handlers.clear();
     mocks.clients.length = 0;
     mocks.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
@@ -889,19 +929,11 @@ describe("native research bridge", () => {
   });
 
   it("reveals only the original setup folder selected for this study", async () => {
-    const project = path.join(root, "Agent setup.loci-study");
-    const folder = path.join(root, "Researcher's setup");
-    const policy = "a".repeat(64);
-    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
-    await call("create");
-    const workspace = path.join(folder, "antigravity-workspace");
-    await fs.mkdir(workspace, { recursive: true });
-    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: folder });
-    mocks.request.mockResolvedValueOnce({ policy_sha256: policy, antigravity_workspace: "antigravity-workspace" });
-    await call("agent-access", { client: "antigravity" });
+    const { folder, policy, workspace, journal } = await createAgentSetup("antigravity");
     await expect(call("reveal-agent-setup", folder)).rejects.toThrow("no longer selected");
     await call("reveal-agent-setup", policy);
     expect(mocks.showItemInFolder).toHaveBeenCalledWith(workspace);
+    mocks.request.mockResolvedValueOnce(journal());
     await call("copy-agent-launch", policy);
     const quoted = "'" + workspace.replaceAll("'", process.platform === "win32" ? "''" : "'\\''") + "'";
     expect(mocks.writeClipboard).toHaveBeenCalledWith(process.platform === "win32"
@@ -912,6 +944,90 @@ describe("native research bridge", () => {
     mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "Different.loci-study") });
     await call("create");
     await expect(call("reveal-agent-setup", policy)).rejects.toThrow("no longer selected");
+  });
+
+  it("hands off only the validated Codex workspace for the current registered grant", async () => {
+    const setup = await createAgentSetup("codex");
+    expect(setup.receipt).not.toHaveProperty("workspace_config_sha256");
+    expect(await call("can-open-agent-host", setup.policy)).toBe(false);
+    expect(await call("open-agent-host", setup.policy)).toBe(false);
+    await expect(call("open-agent-host", sha)).rejects.toThrow("no longer selected");
+    await expect(call("open-agent-host", setup.policy, "/injected/project")).rejects.toThrow("exact assistant grant");
+    const appBundle = "/Applications/ChatGPT.app";
+    mocks.findCodexDesktop.mockResolvedValue(appBundle);
+    mocks.request.mockResolvedValueOnce(setup.journal());
+    expect(await call("can-open-agent-host", setup.policy)).toBe(true);
+    expect(mocks.openCodexDesktop).not.toHaveBeenCalled();
+    mocks.request.mockResolvedValueOnce(setup.journal());
+    expect(await call("open-agent-host", setup.policy)).toBe(true);
+    expect(mocks.findCodexDesktop).toHaveBeenLastCalledWith(true);
+    expect(mocks.openCodexDesktop).toHaveBeenCalledExactlyOnceWith(appBundle, setup.workspace);
+  });
+
+  it.each(["revoked", "different study", "edited config", "edited policy", "replaced workspace", "replaced config directory"] as const)(
+    "rejects a Codex handoff for %s", async (change) => {
+      const setup = await createAgentSetup("codex");
+      mocks.findCodexDesktop.mockResolvedValue("/Applications/ChatGPT.app");
+      if (change === "edited config") await fs.appendFile(setup.configFile, "modified");
+      if (change === "edited policy") await fs.appendFile(setup.policyFile, "modified");
+      if (change === "replaced workspace" || change === "replaced config directory") {
+        const directory = change === "replaced workspace" ? setup.workspace : path.dirname(setup.configFile);
+        await fs.rename(directory, directory + ".original");
+        await fs.cp(directory + ".original", directory, { recursive: true });
+      }
+      mocks.request.mockResolvedValueOnce(setup.journal(change === "revoked" ? { revoked: true } :
+        change === "different study" ? { project_id: "b".repeat(32) } : {}));
+      const error = change === "revoked" || change === "different study" ? "no longer available" : "moved or changed";
+      await expect(call("open-agent-host", setup.policy)).rejects.toThrow(error);
+      expect(mocks.openCodexDesktop).not.toHaveBeenCalled();
+    },
+  );
+
+  it("copies the selected Antigravity workspace path without dispatching a desktop open", async () => {
+    const setup = await createAgentSetup("antigravity");
+    expect(await call("can-open-agent-host", setup.policy)).toBe(false);
+    expect(await call("open-agent-host", setup.policy)).toBe(false);
+    expect(mocks.findCodexDesktop).not.toHaveBeenCalled();
+    mocks.request.mockResolvedValueOnce(setup.journal());
+    await call("copy-agent-workspace-path", setup.policy);
+    expect(mocks.writeClipboard).toHaveBeenCalledExactlyOnceWith(setup.workspace);
+    mocks.request.mockResolvedValueOnce(setup.journal({ revoked: true }));
+    await expect(call("copy-agent-launch", setup.policy)).rejects.toThrow("no longer available");
+    expect(mocks.writeClipboard).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not bind a different host's workspace or a cancelled setup picker", async () => {
+    const setup = await createAgentSetup("codex", { codex_workspace: "antigravity-workspace" });
+    await expect(call("open-agent-host", setup.policy)).rejects.toThrow("no longer selected");
+    mocks.save.mockResolvedValueOnce({ canceled: true });
+    expect(await call("agent-access", { client: "codex" })).toBeNull();
+    await expect(call("open-agent-host", setup.policy)).rejects.toThrow("no longer selected");
+    expect(mocks.findCodexDesktop).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending native handoff when the study changes during host discovery", async () => {
+    const setup = await createAgentSetup("codex");
+    let found!: (bundle: string) => void;
+    mocks.findCodexDesktop.mockImplementationOnce(() => new Promise(resolve => { found = resolve; }));
+    const opening = call("open-agent-host", setup.policy);
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: path.join(root, "New study.loci-study") });
+    await call("create");
+    found("/Applications/ChatGPT.app");
+    await expect(opening).rejects.toThrow("no longer selected");
+    expect(mocks.openCodexDesktop).not.toHaveBeenCalled();
+  });
+
+  it("cancels a pending native handoff when the exact policy is revoked during validation", async () => {
+    const setup = await createAgentSetup("codex");
+    mocks.findCodexDesktop.mockResolvedValue("/Applications/ChatGPT.app");
+    let finishSnapshot!: (snapshot: unknown) => void;
+    mocks.request.mockImplementationOnce(() => new Promise(resolve => { finishSnapshot = resolve; }));
+    const opening = call("open-agent-host", setup.policy);
+    await vi.waitFor(() => expect(finishSnapshot).toBeTypeOf("function"));
+    await call("agent-session-control", { action: "revoke_policy", policy_sha256: setup.policy });
+    finishSnapshot(setup.journal());
+    await expect(opening).rejects.toThrow("no longer available");
+    expect(mocks.openCodexDesktop).not.toHaveBeenCalled();
   });
 
   it("preflights every workflow target before any batch submission", async () => {
@@ -1532,7 +1648,82 @@ describe("native research bridge", () => {
     await expect(call("open-images", "files")).resolves.toBeNull();
     expect(mocks.request).not.toHaveBeenCalled();
     await expect(fs.lstat(path.join(root, "sessions"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(path.join(root, "dialog-history.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(call("session-state")).resolves.toEqual({ status: "empty" });
+  });
+
+  it("remembers the first file's directory across a cold bridge and another study", async () => {
+    const directory = await fs.mkdtemp(path.join(root, "images-"));
+    const files = [path.join(directory, "field.tif"), path.join(root, "another.png")];
+    await Promise.all(files.map(file => fs.writeFile(file, "image fixture")));
+    const snapshot = nativeSnapshot([]);
+    mocks.clients[1].request.mockImplementation(async (method, params) => {
+      if (method === "research_create") await createEngineStudy(params.path);
+      return snapshot;
+    });
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: files });
+    await expect(call("open-images", "files")).resolves.toEqual(snapshot);
+    expect(mocks.clients[1].request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({ paths: files }), 0);
+    const canonical = await fs.realpath(directory);
+    expect(JSON.parse(await fs.readFile(path.join(root, "dialog-history.json"), "utf8"))).toEqual({ imageOpen: canonical });
+
+    await bridge.dispose();
+    bridge = new ResearchBridge();
+    bridge.register(() => {});
+    const study = path.join(root, "Other.loci-study");
+    await createEngineStudy(study);
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [study] });
+    await call("open");
+    expect(mocks.open.mock.lastCall?.[0]).not.toHaveProperty("defaultPath");
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await call("import", "dicom");
+    expect(mocks.open).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: "Select all files from one DICOM image series", defaultPath: canonical,
+    }));
+  });
+
+  it("preserves image history through cancelled and rejected selections", async () => {
+    const oldFolder = await fs.realpath(await fs.mkdtemp(path.join(root, "previous-")));
+    const history = path.join(root, "dialog-history.json");
+    const saved = JSON.stringify({ imageOpen: oldFolder });
+    await fs.writeFile(history, saved);
+    const source = path.join(root, "invalid.tif");
+    await fs.writeFile(source, "invalid image");
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [source] });
+    await expect(call("open-images", "files")).resolves.toBeNull();
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [source] });
+    mocks.request.mockImplementation(async (method, params) => {
+      if (method === "research_create") await createEngineStudy(params.path);
+      if (method === "research_import") throw new Error("Invalid image");
+    });
+    await expect(call("open-images", "files")).rejects.toThrow("Invalid image");
+    expect(await fs.readFile(history, "utf8")).toBe(saved);
+    expect(mocks.open.mock.calls.map(([options]) => options.defaultPath)).toEqual([oldFolder, oldFolder]);
+  });
+
+  it("opens an explicit OME-Zarr selection when the saved location is gone and remembers the store's parent", async () => {
+    const history = path.join(root, "dialog-history.json");
+    const store = path.join(root, "acquisition", "stack.ome.zarr");
+    await fs.mkdir(store, { recursive: true });
+    await fs.writeFile(history, JSON.stringify({ imageOpen: path.join(root, "unmounted") }));
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [store] });
+    await call("open-images", "ome_zarr");
+    expect(mocks.open.mock.lastCall?.[0]).not.toHaveProperty("defaultPath");
+    expect(mocks.request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({
+      paths: [store], kind: "ome_zarr",
+    }), 0);
+    expect(JSON.parse(await fs.readFile(history, "utf8"))).toEqual({
+      imageOpen: await fs.realpath(path.dirname(store)),
+    });
+  });
+
+  it("returns the imported snapshot when dialog history cannot be written", async () => {
+    const source = path.join(root, "field.tif");
+    await fs.writeFile(source, "image fixture");
+    await fs.mkdir(path.join(root, "dialog-history.json"));
+    mocks.open.mockResolvedValueOnce({ canceled: false, filePaths: [source] });
+    await expect(call("open-images", "files")).resolves.toEqual({});
+    expect(mocks.open.mock.lastCall?.[0]).not.toHaveProperty("defaultPath");
   });
 
   it("uses the normal file import with an exact receipt for a single native 3D selection", async () => {
@@ -1566,6 +1757,9 @@ describe("native research bridge", () => {
     expect(viewer.request).toHaveBeenCalledExactlyOnceWith("research_import", expect.objectContaining({
       paths: [selected], relative_paths: [name], kind: "ome_zarr", include_import_receipt: true,
     }), 0);
+    expect(JSON.parse(await fs.readFile(path.join(root, "dialog-history.json"), "utf8"))).toEqual({
+      imageOpen: await fs.realpath(root),
+    });
   });
 
   it("keeps the exact direct source on one reader process for defaults, volume and focus", async () => {
@@ -2054,6 +2248,9 @@ describe("native research bridge", () => {
       import_root: folder,
       kind: "files",
     }), 0);
+    mocks.open.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    await expect(call("open-volume-image")).resolves.toBeNull();
+    expect(mocks.open).toHaveBeenLastCalledWith(expect.objectContaining({ defaultPath: await fs.realpath(folder) }));
   });
 
   it("excludes prior Loci export bundles while retaining ordinary similarly named folders", async () => {
@@ -2973,6 +3170,7 @@ describe("native research bridge", () => {
     expect(mocks.request).toHaveBeenLastCalledWith("research_import", expect.objectContaining({
       paths: [source],
     }), 0);
+    await expect(fs.lstat(path.join(root, "dialog-history.json"))).rejects.toMatchObject({ code: "ENOENT" });
 
     const outside = path.join(root, "outside.tif");
     const linked = path.join(root, "linked.tif");

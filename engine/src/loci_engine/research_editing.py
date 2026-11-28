@@ -35,13 +35,28 @@ def _raw_channels(
     result: dict[str, Any],
     channels: list[int],
     working_bytes: int,
+    *,
+    max_channels: int = 16,
 ) -> dict[str, np.ndarray]:
     from .workbench import geometry_from_dict
 
     provenance = result["provenance"]
     geometry = geometry_from_dict(provenance["geometry"])
-    if not isinstance(channels, list) or len(channels) > 16 or len(set(channels)) != len(channels):
-        raise ValueError("Choose at most 16 distinct source measurement channels")
+    if (
+        not isinstance(channels, list)
+        or len(channels) > max_channels
+        or len(set(channels)) != len(channels)
+    ):
+        raise ValueError(f"Choose at most {max_channels} distinct source measurement channels")
+    saved_meta = provenance.get("channel_metadata")
+    if isinstance(saved_meta, dict) and saved_meta.get("scope") == "selected-channels":
+        allowed_indices = {
+            integer(item.get("index"), "channel index", 0, 255)
+            for item in saved_meta.get("channels", [])
+            if isinstance(item, dict)
+        }
+        if any(ch not in allowed_indices for ch in channels):
+            raise ValueError("Measurement channel exceeds the retained scoped channel declarations")
     values = {}
     derived = provenance.get("derived_measurement_arrays")
     if derived is not None:
@@ -146,11 +161,33 @@ def _measurements(
         channels = {name: stains[..., index] for index, name in enumerate(names)}
     else:
         executed = provenance.get("recipe", provenance.get("cellpose", {}))
+        requested_channels = provenance.get(
+            "measurement_channels", executed.get("measurement_channels", [])
+        )
+        is_cellpose = (
+            parent.get("kind") == "cellpose-segmentation"
+            or "cellpose_preview" in provenance
+            or (
+                isinstance(provenance.get("segmentation"), dict)
+                and provenance["segmentation"].get("method") == "cellpose"
+            )
+        )
+        max_channels = 32 if is_cellpose else 16
+        if is_cellpose and isinstance(requested_channels, list):
+            aggregate_bytes = sum(int(item["bytes"]) for item in parent["arrays"].values()) + int(
+                labels.size
+            ) * (96 + 8 * len(requested_channels))
+            if aggregate_bytes > working_bytes:
+                raise ValueError(
+                    f"Edited Cellpose raw measurement channels require {aggregate_bytes} bytes, "
+                    f"exceeding the aggregate working-memory budget of {working_bytes} bytes"
+                )
         channels = _raw_channels(
             workbench,
             parent,
-            provenance.get("measurement_channels", executed.get("measurement_channels", [])),
+            requested_channels,
             working_bytes,
+            max_channels=max_channels,
         )
     rows = measure_objects(labels, geometry, channels, working_bytes=working_bytes)
     executed = provenance.get("recipe", provenance.get("cellpose", {}))
@@ -197,12 +234,14 @@ def execute_edit(
         )
         provenance = result["provenance"]
         if "tissue_model" in provenance:
-            names = []
-            basis = "selected-tissue-region-geometry-only"
+            channel_entries = []
         elif provenance.get("derived_measurement_arrays"):
             prefix = _derived_prefix(provenance)
             names = [prefix + ":" + name for name in provenance["derived_measurement_arrays"]]
             basis = prefix + " scalar values"
+            channel_entries = [
+                {"index": index, "name": name, "basis": basis} for index, name in enumerate(names)
+            ]
         elif provenance.get("stain_separation"):
             names = [
                 "hematoxylin-basis",
@@ -211,12 +250,28 @@ def execute_edit(
                 else "DAB-basis",
             ]
             basis = "declared-stain-coordinate-values"
+            channel_entries = [
+                {"index": index, "name": name, "basis": basis} for index, name in enumerate(names)
+            ]
         else:
             saved = provenance.get("channel_metadata") or workbench.channel_metadata(
                 result["source_id"]
             )
-            names = [item["name"] for item in saved["channels"]]
             basis = "raw-source-channel-values"
+            if isinstance(saved, dict) and saved.get("scope") == "selected-channels":
+                channel_entries = [
+                    {
+                        "index": integer(item.get("index"), "channel index", 0, 255),
+                        "name": item["name"],
+                        "basis": basis,
+                    }
+                    for item in saved["channels"]
+                ]
+            else:
+                channel_entries = [
+                    {"index": index, "name": item["name"], "basis": basis}
+                    for index, item in enumerate(saved["channels"])
+                ]
         response = {
             "result_id": result["id"],
             "revision_hash": result["revision_hash"],
@@ -225,9 +280,7 @@ def execute_edit(
             if labels is not None
             else result["arrays"]["image"]["shape"],
             "label_ids": [int(v) for v in np.unique(labels) if v] if labels is not None else [],
-            "measurement_channels": [
-                {"index": index, "name": name, "basis": basis} for index, name in enumerate(names)
-            ],
+            "measurement_channels": channel_entries,
             "parent_id": result["parent_id"],
             "derived_measurement_arrays": result["provenance"].get("derived_measurement_arrays"),
         }

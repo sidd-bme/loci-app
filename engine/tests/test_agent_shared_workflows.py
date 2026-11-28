@@ -88,8 +88,12 @@ def test_execution_contract_distinguishes_preview_from_mutation():
         "exploration_compare",
         "tissue_model_preview",
         "model_preview",
+        "cellpose_preview",
     } == PREVIEW_ACTIONS
     guide = {item["operation"]: item for item in action_guide()["actions"]}
+    assert guide["cellpose_model_status"]["execution_kind"] == "inspection"
+    assert guide["cellpose_preview"]["execution_kind"] == "preview-task"
+    assert guide["cellpose_adopt"]["execution_kind"] == "publication-task"
     assert guide["workflow_preview"]["execution_kind"] == "preview-task"
     assert guide["tissue_model_preview"]["execution_kind"] == "preview-task"
     assert guide["tissue_model_run"]["execution_kind"] == "publication-task"

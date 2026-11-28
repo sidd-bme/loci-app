@@ -73,6 +73,8 @@ For exact format subsets and resource limits, see the [capability matrix](CAPABI
    - **Convert image format**: open the conversion route for supported study or vendor images.
    - **New empty study**: open an empty workspace before importing sources.
 
+After a successful image import, the next image picker opens in the same directory, including after restarting Loci or switching studies. **Open folder** remembers the folder you chose. Opening an OME-Zarr store remembers its parent, where you can select a sibling store. Cancelling preserves the last successful location.
+
 ### Save studies and recover sessions
 
 Opening a valid source creates a managed local session that autosaves derived work as you go. The status indicator in the header distinguishes an **Autosaved session** from a **Saved locally** named study.
@@ -296,14 +298,15 @@ only 2D opens with a reason.
 
 - **Four panes** (default) shows three linked orthogonal slice views beside the 3D pane. Patient-frame sources display **axial**, **coronal**, and **sagittal** views in radiological orientation (including reslicing oblique acquisitions); generic microscopy sources display **XY**, **XZ**, and **YZ**. Drag the crosshair to synchronize all panes, scroll or press `↑`/`↓` in a slice pane to step through slices, and use each pane's **Expand** / **Restore** button. Choose **3D view** for a single large 3D canvas.
 - **Volume and MPR.** In **Volume**, choose **Blend** for opacity compositing or **Normal Shading** to light the volume. **MIP**, **Average** and **MinIP** project the brightest, mean and darkest sampled intensities along each ray, respectively. **MPR** shows intersecting source-grid planes. X, Y and Z follow the acquisition axes, including for oblique data.
-- **Rendering & detail:** Expand **Rendering & detail** to adjust 3D **Quality**, toggle a display-only **Clip** plane (**Axis** X/Y/Z and **Position**), or request higher local resolution with **Detail span** (a cube of 32, 64 or 96 voxels, or a 256 × 256 × 64 XYZ field) and **Detail at crosshair**. Once loaded, switch between **Whole** and **Focus**. The status line reports whether every native step fits the active channel and memory budget. A late focus response preserves your crosshair; moving outside the focus box returns to **Whole**. Focus refines display only and never modifies source data.
-- **Controls & sampling:** Expand **Controls & sampling** for inline navigation hints. In Volume mode, left-drag (or `Alt`-drag) orbits, right-drag or `Shift`-drag pans, scroll/pinch zooms, arrow keys orbit, `+`/`-` zoom, and `R` resets the camera. Raw slice views use bounded linear resampling; verified label overlays use nearest-pixel native sampling, and 3D label surfaces are bounded voxel display approximations. Always use source-space tools for quantitative measurements.
+- **Orient the 3D pane.** Click **XY**, **XZ** or **YZ** in its header to face that acquisition plane. XY places +X to the right and +Y down. XZ and YZ place +X and +Y to the right, respectively, with +Z up. These buttons follow the source affine, including oblique and reflected axes in a patient frame. Snapping keeps the camera pivot, zoom and linked source indices. **Reset camera** restores the fitted pose for the active **Whole** or **Focus** extent.
+- **Navigate the 3D pane.** Drag with the primary mouse button or a pressed trackpad to orbit. Right-drag or `Shift`-drag to pan. Use a wheel, two-finger vertical scroll, pinch or `Ctrl`-drag to zoom. With the 3D canvas focused, arrow keys orbit in **Volume**. In **MPR**, arrows step the source X/Y indices and Page Up/Down steps Z. In either mode, `Shift` plus an arrow pans, `+`/`-` zooms, and `R` resets the active camera.
+- **Rendering & detail** opens the settings panel. Use **Source crosshair** to set level-zero X, Y and Z and read the physical coordinates and unit. Adjust volume **Quality**, set a **Clip** axis and position, or use **Detail at crosshair** to request a 32-, 64- or 96-voxel cube or a 256 × 256 × 64 XYZ field. Once loaded, select **Whole** or **Focus** below the panes. The status line reports the focus sampling. Moving outside the focus region returns to **Whole**. The **Controls & sampling** guide describes raw linear resampling, nearest-native label overlays and bounded 3D label surfaces. Press Escape to close settings and return focus to the toolbar.
 
 ### Volume channels, histograms, and PNG figures
 
 Expand a volume channel to change colour, **Low**, **High**, **Gamma**, opacity, visibility, or **Reset channel**. Its histogram is a deterministic sample of the whole-volume context at the current T and display level—it stays stable when toggling **Whole** and **Focus**. **Trim 1–99%** remains binned display clipping only.
 
-Choose **Export PNG…** in the volume toolbar to save a `.loci-figure` directory atomically (`image.png` and `manifest.json`).
+Choose **Rendering & detail → Export PNG…** to save a `.loci-figure` directory atomically (`image.png` and `manifest.json`).
 
 > **3D figure export scope:** **Export PNG…** captures only the 3D pane at its current screen resolution (the three separate slice panes are excluded; hide labels to export a raw-volume figure). The manifest records source binding, payload fingerprints, representation, camera, transfer functions, shading, clipping, MPR indices/grids when applicable, Loci and VTK software identities, and PNG SHA-256. It intentionally omits scale bars under perspective and contains no original-value pixel arrays.
 

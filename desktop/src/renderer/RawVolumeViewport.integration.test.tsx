@@ -7,7 +7,9 @@ import type vtkCamera from "@kitware/vtk.js/Rendering/Core/Camera";
 import type vtkRenderer from "@kitware/vtk.js/Rendering/Core/Renderer";
 import type vtkRenderWindowInteractor from "@kitware/vtk.js/Rendering/Core/RenderWindowInteractor";
 import type { vtkGenericRenderWindow } from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
-import type { VolumeSceneAdapter } from "./volume-scene-types";
+import type { VolumeSceneAdapter, VolumeViewDocument, VolumeViewState } from "./volume-scene-types";
+import { checkedVolumeViewState, VolumeSceneBridge } from "./volume-scene-bridge";
+import type { Vec3 } from "./mpr-reslice";
 import { controlAnimationFrames, headlessVtkWindow } from "./test/vtk-lifecycle";
 
 const vtk = vi.hoisted(() => ({
@@ -230,6 +232,24 @@ function focusAt(low: 0 | 2): RawVolumePayload {
   return value;
 }
 
+function openRenderingDetails() {
+  const summary = screen.getByLabelText("Rendering & detail", { selector: "summary" });
+  if (!summary.closest("details")!.open) fireEvent.click(summary);
+  return summary;
+}
+
+function headlessRenderWindows() {
+  const windows: vtkGenericRenderWindow[] = [];
+  vtk.headlessWindows = windows;
+  const frames = controlAnimationFrames();
+  const dispose = () => {
+    cleanup();
+    vtk.headlessWindows = null;
+    vi.unstubAllGlobals();
+  };
+  return { windows, frames, dispose };
+}
+
 describe("RawVolumeViewport lifecycle", () => {
   afterEach(cleanup);
 
@@ -251,6 +271,7 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(handle.current!.snapshot()?.state).toEqual(target);
     expect(handle.current!.snapshot()?.liveEpoch).toBe(before.liveEpoch);
     act(() => handle.current!.lock(false));
+    openRenderingDetails();
     fireEvent.change(screen.getByLabelText("Z slice"), { target: { value: "1" } });
     expect(handle.current!.snapshot()?.state.crosshair_source_xyz).toEqual([1, 0, 1]);
     expect(handle.current!.snapshot()!.liveEpoch).toBeGreaterThan(before.liveEpoch);
@@ -302,23 +323,38 @@ describe("RawVolumeViewport lifecycle", () => {
   it("keeps primary volume actions visible and advanced settings collapsed until requested", async () => {
     const display = vi.fn(), refine = vi.fn();
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }}
-      onDisplayChange={display} onRequestRefinement={refine} />);
+      onDisplayChange={display} onRequestRefinement={refine} onSelectLabel={vi.fn()} onExportFigure={vi.fn()} />);
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
     const initialCameraResets = vtk.resetCamera.mock.calls.length;
     expect(screen.getByRole("button", { name: "Four panes" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Reset camera" })).toBeTruthy();
-    expect(screen.getByLabelText("3D rendering mode")).toBeTruthy();
+    const toolbar = screen.getByRole("group", { name: "Volume view controls" });
+    const grid = toolbar.nextElementSibling!;
+    expect(grid.classList.contains("raw-volume-panes")).toBe(true);
+    const pane = within(grid as HTMLElement).getByRole("region", { name: "3D view" });
+    for (const name of ["Reset camera", ...["XY", "XZ", "YZ"].map(axis => `View along source ${axis}`)]) {
+      expect(within(pane).getByRole("button", { name })).toBeTruthy();
+      expect(within(toolbar).queryByRole("button", { name })).toBeNull();
+    }
+    expect(screen.queryByLabelText("Volume labels and selection")).toBeNull();
+    expect(within(toolbar).getByLabelText("3D rendering mode")).toBeTruthy();
     const summary = screen.getByText("Rendering & detail", { exact: true });
     const disclosure = summary.closest("details")!;
     expect(disclosure.open).toBe(false);
     expect(screen.getByLabelText("3D rendering quality").closest("details")).toBe(disclosure);
     expect(screen.getByLabelText("Detail span").closest("details")).toBe(disclosure);
+    expect(screen.getByLabelText("Z slice").closest("details")).toBe(disclosure);
+    expect(screen.getByText("Export PNG…").closest("details")).toBe(disclosure);
     fireEvent.click(summary);
     expect(disclosure.open).toBe(true);
     fireEvent.change(screen.getByRole("slider", { name: "3D rendering quality" }), { target: { value: "80" } });
     expect(display).toHaveBeenCalledWith(expect.objectContaining({ quality: 80 }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Clip" }));
-    fireEvent.click(summary);
+    fireEvent.keyDown(screen.getByRole("checkbox", { name: "Clip" }), { key: "Escape" });
+    expect(disclosure.open).toBe(false);
+    expect(document.activeElement).toBe(disclosure.querySelector("summary"));
+    openRenderingDetails();
+    fireEvent.pointerDown(pane);
+    fireEvent.pointerUp(pane);
     expect(disclosure.open).toBe(false);
     expect(screen.getByText(/Clip Z ·/)).toBeTruthy();
     expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
@@ -351,6 +387,7 @@ describe("RawVolumeViewport lifecycle", () => {
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
     await waitFor(() => expect(vtk.addVolume).toHaveBeenCalledOnce());
     const initialCameraResets = vtk.resetCamera.mock.calls.length;
+    openRenderingDetails();
     const summary = screen.getByText("Controls & sampling", { exact: true });
     expect(summary.closest("details")!.open).toBe(false);
     expect(within(screen.getByLabelText("Interactive three-dimensional volume")).queryByText(/Left-drag/)).toBeNull();
@@ -361,7 +398,7 @@ describe("RawVolumeViewport lifecycle", () => {
     fireEvent.click(summary);
     expect(summary.closest("details")!.open).toBe(true);
     expect(screen.getByText(/Drag the crosshair/)).toBeTruthy();
-    expect(screen.getByText(/resliced display samples, not native measurements/)).toBeTruthy();
+    expect(screen.getByText(/Use native source data for measurements/)).toBeTruthy();
     expect(vtk.resetCamera).toHaveBeenCalledTimes(initialCameraResets);
   });
 
@@ -369,6 +406,186 @@ describe("RawVolumeViewport lifecycle", () => {
     vtk.failInitialization = true;
     render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
     expect(await screen.findByText("No compatible graphics device")).toBeTruthy();
+  });
+
+  it.each([
+    { frame: "RAS" as const, handedness: 1, parallel: false },
+    { frame: "LPS" as const, handedness: -1, parallel: true },
+  ])("faces all source planes in oblique $frame geometry and resets only the active camera", async ({ frame, handedness, parallel }) => {
+    const rig = headlessRenderWindows();
+    const payload = sparseContext();
+    const x: Vec3 = [2 / 3, 2 / 3, -1 / 3], y: Vec3 = [-2 / 3, 1 / 3, -2 / 3];
+    const z: Vec3 = [-handedness / 3, 2 * handedness / 3, 2 * handedness / 3];
+    payload.frame = frame; payload.unit = "mm"; payload.t = 2;
+    payload.direction_3x3 = [...x, ...y, ...z];
+    for (let row = 0; row < 3; row++) {
+      payload.affine_4x4[row] = [x[row] * payload.spacing_xyz[0], y[row] * payload.spacing_xyz[1],
+        z[row] * payload.spacing_xyz[2], payload.origin_xyz[row]];
+    }
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    const notify = vi.fn();
+    try {
+      render(<RawVolumeViewport volume={{ schema_version: 1, context: payload, focus: null }} sceneHandleRef={handle} onSceneChange={notify} />);
+      await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+      const camera = rig.windows[0].getRenderer().getActiveCamera();
+      const state = () => handle.current!.snapshot()!.state;
+      const fitted = state().camera!;
+      // A noncentral native crosshair, different representation and customized
+      // splitter must all survive camera commands, including Reset.
+      const settings = openRenderingDetails();
+      fireEvent.change(screen.getByLabelText("X slice"), { target: { value: "1" } });
+      fireEvent.click(settings);
+      fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+      fireEvent.keyDown(screen.getByRole("separator", { name: "Resize pane columns" }), { key: "ArrowLeft" });
+      camera.setParallelProjection(parallel);
+      const stage = screen.getByLabelText("Interactive three-dimensional volume");
+      fireEvent.keyDown(stage, { key: "ArrowRight", shiftKey: true });
+      fireEvent.keyDown(stage, { key: "+" });
+      const before = state(), distance = camera.getDistance(), scale = camera.getParallelScale();
+      expect(before.camera!.focal_point_xyz).not.toEqual(fitted.focal_point_xyz);
+      expect(before.crosshair_source_xyz).toEqual([1, 0, 3]);
+      expect(before.layout.col_split).toBe(49);
+      const slice = screen.getByLabelText("Axial resliced image");
+      const sliceBinding = slice.dataset.renderBinding;
+      const expectVector = (actual: ArrayLike<number>, expected: number[]) =>
+        expected.forEach((value, index) => expect(actual[index]).toBeCloseTo(value, 10));
+      const pane = within(screen.getByRole("region", { name: "3D view" }));
+      for (const [name, right, up, back] of [
+        ["XY", x, y.map(n => -n), z.map(n => -handedness * n)],
+        ["XZ", x, z, y.map(n => -handedness * n)],
+        ["YZ", y, z, x.map(n => handedness * n)],
+      ] as const) {
+        notify.mockClear();
+        fireEvent.click(pane.getByRole("button", { name: `View along source ${name}` }));
+        expectVector(camera.getViewMatrix(), right);
+        expectVector(camera.getViewUp(), up);
+        expectVector(camera.getViewPlaneNormal(), back);
+        expect(camera.getDistance()).toBeCloseTo(distance, 10);
+        expect(camera.getParallelScale()).toBe(scale);
+        expect(state().camera).toMatchObject({ projection: before.camera!.projection, focal_point_xyz: before.camera!.focal_point_xyz, view_angle_degrees: fitted.view_angle_degrees });
+        expect({ ...state(), camera: null }).toEqual({ ...before, camera: null });
+        expect(notify).toHaveBeenCalled();
+      }
+      fireEvent.click(pane.getByRole("button", { name: "Reset camera" }));
+      const reset = state();
+      expect(reset.camera).toMatchObject({ ...fitted, clipping_range: expect.any(Array) });
+      expect({ ...reset, camera: null }).toEqual({ ...before, camera: null });
+      expect(screen.getByLabelText("Axial resliced image")).toBe(slice);
+      expect(slice.dataset.renderBinding).toBe(sliceBinding);
+      expect(rig.windows).toHaveLength(1);
+    } finally { rig.dispose(); }
+  });
+
+  it("handles wheel and trackpad pinch once on the 3D canvas and leaves slice scrolling independent", async () => {
+    const rig = headlessRenderWindows();
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    try {
+      render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} sceneHandleRef={handle} />);
+      await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+      const generic = rig.windows[0], camera = generic.getRenderer().getActiveCamera();
+      const canvas = generic.getApiSpecificRenderWindow().getCanvas()!;
+      const nativeVtkWheel = vi.fn();
+      generic.getInteractor().onMouseWheel(nativeVtkWheel);
+      const start = handle.current!.snapshot()!;
+      const distance = camera.getDistance();
+      const scroll = (deltaY: number, ctrlKey = false, deltaMode = 0) => {
+        const event = new WheelEvent("wheel", { deltaY, ctrlKey, deltaMode, bubbles: true, cancelable: true });
+        fireEvent(canvas, event);
+        expect(event.defaultPrevented).toBe(true);
+      };
+      scroll(-40);
+      expect(camera.getDistance()).toBeCloseTo(distance / Math.exp(0.1), 10);
+      expect(handle.current!.snapshot()!.busy).toBe(true);
+      const zoomed = camera.getDistance();
+      scroll(0.25, true);
+      expect(camera.getDistance()).toBeCloseTo(zoomed * Math.exp(0.0025), 10);
+      expect(handle.current!.snapshot()!.liveEpoch).toBeGreaterThan(start.liveEpoch);
+      camera.setParallelProjection(true);
+      const scale = camera.getParallelScale(), fixedDistance = camera.getDistance();
+      scroll(1, false, WheelEvent.DOM_DELTA_LINE);
+      expect(camera.getParallelScale()).toBeCloseTo(scale * Math.exp(16 * 0.0025), 10);
+      expect(camera.getDistance()).toBe(fixedDistance);
+      expect(nativeVtkWheel).not.toHaveBeenCalled();
+      expect(handle.current!.snapshot()!.state.crosshair_source_xyz).toEqual(start.state.crosshair_source_xyz);
+      await waitFor(() => expect(handle.current!.snapshot()!.busy).toBe(false));
+      expect(generic.getInteractor().isAnimating()).toBe(false);
+      const after = handle.current!.snapshot()!.state.camera;
+      act(() => handle.current!.lock(true));
+      scroll(-32, true);
+      fireEvent.keyDown(canvas.parentElement!, { key: "r" });
+      expect(handle.current!.snapshot()!.state.camera).toEqual(after);
+      act(() => handle.current!.lock(false));
+      fireEvent.wheel(screen.getByLabelText("XY plane slice navigation"), { deltaY: -1 });
+      expect(handle.current!.snapshot()!.state.crosshair_source_xyz[2]).toBe(0);
+      expect(camera.getDistance()).toBe(fixedDistance);
+      expect(camera.getParallelScale()).toBe(after!.parallel_scale);
+    } finally { rig.dispose(); }
+  });
+
+  it("saves the snapped VTK camera through the shared bridge and restores it on a new renderer", async () => {
+    const rig = headlessRenderWindows();
+    const payload = { ...context(), source_id: "1".repeat(32) };
+    const volume = { schema_version: 1 as const, context: payload, focus: null };
+    const handle: { current: VolumeSceneAdapter | null } = { current: null };
+    // Simulate the native document boundary, including JSON serialization.
+    // The viewport, camera, bridge and cold-start apply path are real.
+    let document: VolumeViewDocument = { schema: "loci.volume-view/v1", source_id: payload.source_id,
+      source_sha256: payload.source_sha256, geometry_sha256: "b".repeat(64), revision: 0, display_revision: 7, state: null };
+    const execute = vi.fn(async (operation: string, request: Record<string, unknown>) => {
+      if (operation === "volume_view_presence") return request;
+      if (operation === "save_volume_view") {
+        expect(request).toMatchObject({ expected_revision: document.revision, expected_display_revision: document.display_revision });
+        document = { ...document, revision: document.revision + 1, state: checkedVolumeViewState(request.state) };
+      } else if (operation !== "volume_view") throw new Error(`Unexpected operation ${operation}`);
+      return JSON.parse(JSON.stringify(document));
+    });
+    const bridgeFor = (viewId: string) => new VolumeSceneBridge({ api: { execute }, adapter: handle.current!,
+      flushDisplay: async () => 7, binding: { sourceId: payload.source_id, sourceSha256: payload.source_sha256, viewId } });
+    let bridge: VolumeSceneBridge | undefined;
+    try {
+      const first = render(<RawVolumeViewport volume={volume} sceneHandleRef={handle} />);
+      await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+      bridge = bridgeFor("volume-first");
+      await bridge.start();
+      const fitted = handle.current!.snapshot()!.state.camera!;
+      const stage = screen.getByLabelText("Interactive three-dimensional volume");
+      fireEvent.keyDown(stage, { key: "ArrowUp", shiftKey: true });
+      fireEvent.keyDown(stage, { key: "+" });
+      fireEvent.click(screen.getByRole("button", { name: "View along source YZ" }));
+      const snap = handle.current!.snapshot()!;
+      expect(snap.state.camera!.position_xyz).not.toEqual(fitted.position_xyz);
+      const saved = await bridge.save(snap);
+      expect(saved.revision).toBe(1);
+      expect(saved.state).toEqual(JSON.parse(JSON.stringify(snap.state)));
+      await bridge.dispose();
+      first.unmount();
+
+      render(<RawVolumeViewport volume={volume} sceneHandleRef={handle} />);
+      await waitFor(() => expect(handle.current?.snapshot()?.available).toBe(true));
+      expect(rig.windows).toHaveLength(2);
+      expect(handle.current!.snapshot()!.state.camera).toEqual(fitted);
+      bridge = bridgeFor("volume-reopened");
+      let restoring!: Promise<void>;
+      await act(async () => { restoring = bridge!.start(); });
+      rig.frames.step();
+      await restoring;
+      const restored = handle.current!.snapshot()!;
+      expect(restored.state).toEqual(saved.state);
+      expect(Array.from(rig.windows[1].getRenderer().getActiveCamera().getPosition())).toEqual(saved.state!.camera!.position_xyz);
+
+      // Agent-applied camera and crosshair are captured under the same epoch.
+      const target: VolumeViewState = { ...restored.state, camera: fitted, crosshair_source_xyz: [0, 0, 0] };
+      act(() => handle.current!.lock(true));
+      let applying!: Promise<void>;
+      act(() => { applying = handle.current!.apply(target); });
+      rig.frames.step();
+      await applying;
+      expect(handle.current!.snapshot()).toMatchObject({ state: target, liveEpoch: restored.liveEpoch, available: true });
+      act(() => handle.current!.lock(false));
+    } finally {
+      await bridge?.dispose();
+      rig.dispose();
+    }
   });
 
   it.each([
@@ -456,7 +673,7 @@ describe("RawVolumeViewport lifecycle", () => {
 
   it("links three verified slice panes and expands/restores each without recreating the 3D camera", async () => {
     const rendered = render(<RawVolumeViewport volume={{ schema_version: 1, context: context(), focus: null }} />);
-    await screen.findByLabelText("XY plane resliced image");
+    const xyCanvas = await screen.findByLabelText("XY plane resliced image");
     expect(screen.getByLabelText("XZ plane resliced image")).toBeTruthy();
     expect(screen.getByLabelText("YZ plane resliced image")).toBeTruthy();
     const stage = screen.getByLabelText("Interactive three-dimensional volume");
@@ -470,10 +687,11 @@ describe("RawVolumeViewport lifecycle", () => {
     fireEvent.keyDown(screen.getByLabelText("XY plane slice navigation"), { key: "ArrowDown" });
     expect(screen.getByLabelText("Z source index").textContent).toBe("0");
     fireEvent.click(screen.getByRole("button", { name: /^3D view$/ }));
-    expect(screen.queryByLabelText("XY plane resliced image")).toBeNull();
+    expect(xyCanvas.closest("[hidden]")).toBeTruthy();
     expect(screen.getByLabelText("Interactive three-dimensional volume").contains(vtk.canvas)).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Four panes" }));
-    await screen.findByLabelText("XY plane resliced image");
+    expect(screen.getByLabelText("XY plane resliced image")).toBe(xyCanvas);
+    expect(xyCanvas.closest("[hidden]")).toBeNull();
     expect(screen.getByLabelText("Interactive three-dimensional volume").contains(vtk.canvas)).toBe(true);
     expect(vtk.resetCamera).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Swap 3D view position" }));
@@ -506,6 +724,7 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(screen.getByText(/World 10.800, 20.000, 32.500 um/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    openRenderingDetails();
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
     await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
     expect(exportFigure.mock.calls[0][0].manifest).toMatchObject({
@@ -533,6 +752,7 @@ describe("RawVolumeViewport lifecycle", () => {
     rendered.rerender(<RawVolumeViewport volume={{ schema_version: 1, context: whole, focus: focusAt(2) }} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "Focus" }).getAttribute("aria-pressed")).toBe("true"));
     expect(rendered.container.querySelector(".raw-volume")?.getAttribute("data-active-view")).toBe("level-zero-focus");
+    openRenderingDetails();
     fireEvent.change(screen.getByRole("slider", { name: "X slice" }), { target: { value: "0" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Whole" }).getAttribute("aria-pressed")).toBe("true"));
     expect(screen.getByLabelText("X source index").textContent).toBe("0");
@@ -759,6 +979,7 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(screen.getByText(/World 11.200, 20.000, 37.500 um/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "MPR" }));
+    openRenderingDetails();
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
     await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
     expect(exportFigure.mock.calls[0][0].manifest.mpr).toEqual({
@@ -768,6 +989,7 @@ describe("RawVolumeViewport lifecycle", () => {
       world_xyz: [10.8, 20, 35],
     });
 
+    openRenderingDetails();
     fireEvent.change(screen.getByRole("slider", { name: "X slice" }), { target: { value: "5" } });
     mounted.rerender(viewport(coarse));
     await expectCrosshair([5, 0, 3]);
@@ -784,12 +1006,12 @@ describe("RawVolumeViewport lifecycle", () => {
     const rendered = render(<RawVolumeViewport volume={initial} />);
     await waitFor(() => expect(vtk.resetCamera).toHaveBeenCalledTimes(1));
     expect(vtk.render).toHaveBeenCalled();
-    expect(vtk.addMouseManipulator.mock.calls.slice(0, 4).map(([item]) => item.values)).toEqual([
+    expect(vtk.addMouseManipulator.mock.calls.slice(0, 3).map(([item]) => item.values)).toEqual([
       { button: 1, useFocalPointAsCenterOfRotation: true },
       { button: 3 },
       { button: 1, shift: true },
-      { dragEnabled: false, scrollEnabled: true },
     ]);
+    expect(vtk.addMouseManipulator.mock.calls.some(([item]) => item.values.scrollEnabled)).toBe(false);
     expect(vtk.interactorSetStyle).toHaveBeenCalled();
     expect(vtk.axesSetUserMatrix).toHaveBeenCalledWith([
       1, 0, 0, 0,
@@ -880,6 +1102,7 @@ describe("RawVolumeViewport lifecycle", () => {
     expect(vtk.addVolume).not.toHaveBeenCalled();
     expect(vtk.render).toHaveBeenCalledTimes(rendersAtLoss);
     expect(screen.getByText(/Graphics context lost/)).toBeTruthy();
+    openRenderingDetails();
     const exportButton = screen.getByRole("button", { name: "Export PNG…" });
     expect(exportButton.hasAttribute("disabled")).toBe(true);
     fireEvent.click(exportButton);
@@ -1068,6 +1291,7 @@ describe("RawVolumeViewport lifecycle", () => {
       .toBe("//VTK::CustomColorMix");
 
     fireEvent.change(screen.getByLabelText("3D rendering mode"), { target: { value: "normal_shading" } });
+    openRenderingDetails();
     fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
     await waitFor(() => expect(exportFigure).toHaveBeenCalledOnce());
     expect(exportFigure.mock.calls[0][0].manifest).toMatchObject({

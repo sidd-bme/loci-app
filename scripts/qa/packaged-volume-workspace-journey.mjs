@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { placeQaWindow } from './display-placement.mjs';
-import { createEmptyStudy, fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField, waitForSnapshot } from '../../desktop/tests/workbench-qa-helpers.mjs';
+import { createEmptyStudy, fileMenuAction, revealExternalLabels, selectWorkbenchTool, setSelectionField, setVolumeDetailsOpen, waitForSnapshot } from '../../desktop/tests/workbench-qa-helpers.mjs';
 
 const repo = path.resolve(import.meta.dirname, '../..'), require = createRequire(path.join(repo, 'desktop/package.json'));
 const { _electron: electron } = require('playwright'), exec = promisify(execFile), env = process.env;
@@ -165,9 +165,11 @@ async function clearObjectSelection() {
 }
 async function selectMpr() {
   await page.getByRole('button', { name: 'Four panes', exact: true }).click();
+  await setVolumeDetailsOpen(page);
   for (const [i, axis] of ['X', 'Y', 'Z'].entries()) {
     await range(axis + ' slice', fixture.probe_source_xyz[i]);
   }
+  await setVolumeDetailsOpen(page, false);
   const [x, y, z] = fixture.probe_source_xyz, [nx, ny, nz] = fixture.source_dimensions_xyz;
   for (const [plane, u, v] of [['XY plane', x / (nx - 1), y / (ny - 1)], ['XZ plane', x / (nx - 1), 1 - z / (nz - 1)], ['YZ plane', y / (ny - 1), 1 - z / (nz - 1)]]) {
     await clearObjectSelection();
@@ -248,10 +250,10 @@ try {
   const labelControls = page.getByRole('region', { name: 'Volume labels and selection', exact: true });
   await labelControls.getByLabel('Selected only', { exact: true }).check(); await range('Label opacity', 70);
   await wait(() => scene(), v => selected(v) && v.state.labels.selected_only && v.state.labels.opacity === .7, 'label presentation controls persisted');
-  await page.locator('details.raw-volume-rendering-detail > summary').click();
+  await setVolumeDetailsOpen(page);
   await page.getByLabel('Clip', { exact: true }).check();
   await wait(() => scene(), v => v.state?.clipping.enabled, 'clipping state persisted independently of selection');
-  await page.locator('details.raw-volume-rendering-detail > summary').click();
+  await setVolumeDetailsOpen(page, false);
   const beforeLocate = await scene(); await page.getByRole('button', { name: 'Locate object', exact: true }).click();
   const located = await wait(() => scene(), v => selected(v) && v.revision > beforeLocate.revision, 'explicit locate persisted');
   const targetRow = fixture.rows.find(r => r.label === fixture.target_label);

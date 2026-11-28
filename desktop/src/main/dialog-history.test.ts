@@ -30,29 +30,43 @@ describe("dialog history", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  it("keeps microscopy and export locations separate", async () => {
-    const imports = path.join(root, "images");
+  it("keeps image-open history separate from existing import and export locations", async () => {
+    const imports = path.join(root, "imports");
     const exports = path.join(root, "exports");
-    await Promise.all([imports, exports].map((directory) =>
+    const images = path.join(root, "images");
+    await Promise.all([imports, exports, images].map((directory) =>
       fs.mkdir(directory, { recursive: true })));
 
     await Promise.all([
       rememberDialogDirectory("import", imports),
       rememberDialogDirectory("export", exports),
     ]);
+    await expect(rememberedDialogDirectory("imageOpen")).resolves.toBeUndefined();
+    await rememberDialogDirectory("imageOpen", images);
 
-    const [canonicalImports, canonicalExports] = await Promise.all([
+    const [canonicalImports, canonicalExports, canonicalImages] = await Promise.all([
       fs.realpath(imports),
       fs.realpath(exports),
+      fs.realpath(images),
     ]);
     await expect(rememberedDialogDirectory("import")).resolves.toBe(canonicalImports);
     await expect(rememberedDialogDirectory("export")).resolves.toBe(canonicalExports);
+    await expect(rememberedDialogDirectory("imageOpen")).resolves.toBe(canonicalImages);
     const stored = JSON.parse(await fs.readFile(path.join(root, "dialog-history.json"), "utf8"));
     expect(stored).toEqual({
       import: canonicalImports,
       export: canonicalExports,
+      imageOpen: canonicalImages,
     });
     expect((await fs.stat(path.join(root, "dialog-history.json"))).mode & 0o077).toBe(0);
+  });
+
+  it("ignores malformed history, invalid fields and paths pointing at files", async () => {
+    const history = path.join(root, "dialog-history.json");
+    for (const contents of ["{", '{"imageOpen":5}', '{"imageOpen":"relative/path"}', JSON.stringify({ imageOpen: history })]) {
+      await fs.writeFile(history, contents);
+      await expect(rememberedDialogDirectory("imageOpen")).resolves.toBeUndefined();
+    }
   });
 
   it("does not return a removed or relative directory", async () => {

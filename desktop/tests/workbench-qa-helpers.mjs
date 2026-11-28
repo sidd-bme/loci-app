@@ -120,6 +120,12 @@ export async function fileMenuAction(page, name) {
   await menu.getByRole("button", { name, exact: true }).click();
 }
 
+export async function setVolumeDetailsOpen(scope, open = true) {
+  const details = scope.locator("details.raw-volume-rendering-detail");
+  if ((await details.getAttribute("open") !== null) !== open)
+    await details.locator(":scope > summary").click();
+}
+
 export async function setSelectionField(page, label, value) {
   const input = page.getByLabel(label, { exact: true });
   if (!(await input.count()) && ["Z", "T"].includes(label)) {

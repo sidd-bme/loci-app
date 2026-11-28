@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fileMenuAction, selectWorkbenchTool } from "./workbench-qa-helpers.mjs";
+import { fileMenuAction, selectWorkbenchTool, setVolumeDetailsOpen } from "./workbench-qa-helpers.mjs";
 import { execFile } from "node:child_process";
 import { isDeepStrictEqual, promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -347,10 +347,11 @@ try {
   await (await controller(first.label)).getByRole("button", { name: "3D", exact: true }).click();
   await pageA.locator(".raw-volume-stage canvas").first().waitFor({ timeout: 60000 });
   await until(async () => await pageA.locator(".raw-volume").getAttribute("data-source-id") === a.id &&
-    await pageA.getByRole("button", { name: /Export PNG/ }).isEnabled(), "verified volume ready");
+    await pageA.locator(".raw-volume").getByText("Export PNG…", { exact: true }).isEnabled(), "verified volume ready");
   await pageA.getByRole("button", { name: "3D view", exact: true }).click();
   await pageA.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await capture(pageA, "06-detached-volume");
+  await setVolumeDetailsOpen(pageA);
   await pageA.getByRole("button", { name: /Export PNG/ }).click();
   await until(async () => fs.stat(path.join(figure, "manifest.json")).then(() => true, () => false), "detached figure export");
   const manifest = JSON.parse(await fs.readFile(path.join(figure, "manifest.json"), "utf8"));
@@ -456,7 +457,7 @@ try {
   await until(async () => await medicalPage.getByLabel("3D rendering mode", { exact: true }).inputValue() === "mip", "main mode reaches image renderer");
   await medicalPage.getByLabel("3D rendering mode", { exact: true }).selectOption("normal_shading");
   await until(async () => await medicalControls.getByLabel(`${medicalEntry.label} volume mode`, { exact: true }).inputValue() === "normal_shading", "image mode reaches main controls");
-  await until(async () => await medicalPage.getByRole("button", { name: /Export PNG/ }).isEnabled(), "medical volume ready for capture");
+  await until(async () => await medicalPage.locator(".raw-volume").getByText("Export PNG…", { exact: true }).isEnabled(), "medical volume ready for capture");
   await medicalPage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await capture(medicalPage, "11-medical-volume");
   passed.push("medical scalar volume uses declared LPS geometry, independently checked native window/level and bidirectional 3D render controls");
@@ -476,7 +477,7 @@ try {
   await selectWorkbenchTool(main, "Display");
   await main.locator("details.source-information > summary").click();
   await main.getByLabel("Open as", { exact: true }).selectOption("volume");
-  await main.getByRole("button", { name: /Export PNG/ }).waitFor({ timeout: 60000 });
+  await main.locator(".raw-volume").getByText("Export PNG…", { exact: true }).waitFor({ state: "attached", timeout: 60000 });
   await main.getByLabel("3D rendering mode", { exact: true }).selectOption("mip");
   const volumeChannel = main.locator("details.raw-volume-channel").first();
   if (!await volumeChannel.evaluate(node => node.open)) await volumeChannel.locator(":scope > summary").click();
@@ -490,7 +491,7 @@ try {
   const volumeSeed = (await volumePage.evaluate(() => window.lociImageWindows.presentation())).presentation;
   assert.equal(volumeSeed.volumeDisplay.renderMode, "mip");
   assert.equal(volumeSeed.channels[0].opacity, 0.61);
-  await until(async () => await volumePage.getByRole("button", { name: /Export PNG/ }).isEnabled(), "transferred volume rendered");
+  await until(async () => await volumePage.locator(".raw-volume").getByText("Export PNG…", { exact: true }).isEnabled(), "transferred volume rendered");
   assert.equal(await volumePage.locator(".raw-volume-opacity output").first().textContent(), "0.61");
   assert.equal(await main.getByLabel(`${volumeEntry.label} channel 1 opacity value`, { exact: true }).textContent(), "0.61");
   await capture(volumePage, "13-transferred-main-volume");
