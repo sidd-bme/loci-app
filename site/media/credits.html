@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    try {
+      const theme = localStorage.getItem("loci-theme");
+      if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
+    } catch {}
+  </script>
+  <link rel="stylesheet" href="../style.css">
+  <title>Specimens and image credits · Loci</title>
+  <link rel="icon" href="loci-mark.png">
+  <style>
+    main, nav, footer { width: min(47rem, calc(100% - 3rem)); margin-inline: auto; }
+    header { border-bottom: 1px solid var(--line); }
+    nav { display: flex; gap: .7rem; align-items: center; min-height: 4.5rem; }
+    nav img { width: 1.8rem; height: 1.8rem; }
+    nav a { color: var(--ink); font-weight: 600; text-decoration: none; }
+    main { padding-block: clamp(3rem, 8vw, 6rem); }
+    h1 { font-size: clamp(2.5rem, 7vw, 4.5rem); line-height: 1.03; letter-spacing: -.055em; margin: 0 0 1.25rem; }
+    h2 { font-size: clamp(1.35rem, 3vw, 1.75rem); line-height: 1.18; letter-spacing: -.035em; margin: 0; }
+    section { border-top: 1px solid var(--line-strong); padding-top: 1.5rem; margin-top: 2.5rem; }
+    p { max-width: 66ch; margin-block: .85rem; line-height: 1.62; color: var(--ink-secondary); }
+    a, summary { color: var(--accent); text-underline-offset: .2em; }
+    summary { cursor: pointer; }
+    pre { white-space: pre-wrap; font: inherit; font-size: .92rem; padding-left: 1rem; border-left: 2px solid var(--line-strong); }
+    footer { padding-bottom: 3rem; }
+  </style>
+</head>
+<body>
+<header><nav aria-label="Back to the showcase"><img src="loci-mark.png" alt=""><a href="../">Loci · Product tour</a></nav></header>
+<main>
+<h1>Specimens and image credits</h1>
+<p>These are real research specimens. The interactive fluorescence example uses windowed display values. The desktop views come from Loci running on public datasets. Each dataset has its own terms.</p>
+<section id="fluorescence"><h2>Human stem-cell colony</h2>
+<p>Derek Thirstrup and the Microscopy &amp; Image Analysis Team at the Allen Institute for Cell Science contributed BBBC034v1 (2018) to the Broad Bioimage Benchmark Collection. The interactive specimen uses field AICS_12_134. Amber shows the plasma membrane, aqua shows mEGFP-tagged α-tubulin, and violet shows DNA. The opening image is a maximum-intensity projection over native sections 15–20 inclusive. The depth control shows individual sections.</p>
+<p>The acquisition has 0.065 µm XY spacing and a 0.29 µm Z step. The browser uses three independently windowed 8-bit display channels. The colony-center measurement example comes from a separate acquisition with EGFP β-actin and Hoechst. <a href="https://bbbc.broadinstitute.org/BBBC034">Source and contributor credit</a> · <a href="https://cell-catalog.allencell.org/cell-line/aics-12-105/">Cell line</a> · <a href="https://doi.org/10.1038/nmeth.2083">BBBC publication</a> · <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> · <a href="specimen.json">Display settings</a></p></section>
+<section id="volume"><h2>Confocal plant volume</h2>
+<p>Célia Baroux, Ethel Mendocilla-Sato and Daphné Autran deposited the wild-type <i>Arabidopsis thaliana</i> ovule for the study by Hernández-Lagana and colleagues. Loci rendered the EM_C_81 acquisition with normal shading and a teal display color. <a href="https://zenodo.org/records/4433202">Dataset and CC0 terms</a></p></section>
+<section id="slide"><h2>Whole-slide histology</h2>
+<p>CMU-1 is an Aperio slide distributed by the OpenSlide project. Loci rendered the selected tissue region from the 46,000 × 32,914 pixel slide. <a href="https://openslide.cs.cmu.edu/download/openslide-testdata/Aperio/">OpenSlide data and CC0 terms</a></p></section>
+<section id="mri"><h2>Linked anatomical MRI</h2>
+<p>The ICBM152 2009b nonlinear asymmetric T1 template is a population average with 0.5 mm isotropic spacing. Credit to Louis Collins, the McConnell Brain Imaging Centre, the Montreal Neurological Institute and McGill University. <a href="https://www.mcgill.ca/bic/icbm152-152-nonlinear-atlases-version-2009">Dataset</a> · <a href="https://www.sciencedirect.com/science/article/pii/S1053811910010062">Fonov et al., 2011</a> · <a href="https://www.sciencedirect.com/science/article/pii/S1053811909708845">Fonov et al., 2009</a></p>
+<details><summary>Read the MNI permission notice</summary><pre>Copyright (C) 1993-2004 Louis Collins, McConnell Brain
+Imaging Centre, Montreal Neurological Institute, McGill University.
+Permission to use, copy, modify, and distribute this software and
+its documentation for any purpose and without fee is hereby granted,
+provided that the above copyright notice appear in all copies.  The
+authors and McGill University make no representations about the
+suitability of this software for any purpose.  It is provided "as
+is" without express or implied warranty.  The authors are not
+responsible for any data loss, equipment damage, property loss, or
+injury to subjects or patients resulting from the use or misuse of
+this software package.</pre></details></section>
+<section id="lineage"><h2>Organoid lineages</h2>
+<p>Max Betjes and colleagues released the time-lapse movie and its OrganoidTracker 2.0 graph. Loci displays the imported positions, daughter links and probability fields on the original time series. <a href="https://doi.org/10.5281/zenodo.13982844">Dataset and CC BY 4.0 terms</a> · <a href="https://doi.org/10.1038/s41592-025-02845-6">Method</a></p></section>
+<section id="phase"><h2>Digital holographic microscopy</h2>
+<p>The phase image is the cell example from Paul Müller, Mirjam Schürmann, Salvatore Girardo, Gheorghe Cojoc and Jochen Guck. Loci read the original intensities and 0.107 µm pixel spacing. <a href="https://doi.org/10.1364/OE.26.010729">Original study</a> · <a href="https://scikit-image.org/docs/stable/api/skimage.data.html#skimage.data.cell">Image and CC0 terms</a></p></section>
+<section id="nuclei"><h2>U2OS nuclei</h2>
+<p>Juan C. Caicedo and colleagues contributed the Hoechst-labelled U2OS images in BBBC039v1. The workbench comparison uses A06, site 6. It compares two segmentation predictions on that field. <a href="https://bbbc.broadinstitute.org/BBBC039">Source and CC0 terms</a> · <a href="https://doi.org/10.5281/zenodo.6647674">Nuclei-boundary model</a></p></section>
+<section><h2>Application, model examples and film</h2>
+<p>Loci’s workbench and terminal renderings are part of its open-source software. Model weights and example images carry the terms of their publishers. The film <i>Optical Section</i> credits its specimens, contributors and soundtrack separately. <a href="https://github.com/sidd-bme/loci-app/blob/main/LICENSE">Apache-2.0 licence</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/NOTICE">Notices</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/media/README.md#model-zoo">Catalog image credits</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/media/optical-section-credits.md">Film credits</a></p></section>
+<section><h2>Typography</h2><p>Instrument Sans by the Instrument Sans Project Authors. <a href="../fonts/OFL.txt">SIL Open Font License 1.1</a></p></section>
+</main><footer><a href="../">Return to Loci</a></footer>
+</body></html>

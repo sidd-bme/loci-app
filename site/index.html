@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loci | Scientific imaging workbench</title>
+  <meta name="description" content="Loci is an open-source desktop workbench for biomedical imaging. Explore optical sections, compare segmentation methods, measure raw channels, and keep every revision traceable.">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <link rel="canonical" href="https://sidd-bme.github.io/loci-app/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Loci | Scientific imaging workbench">
+  <meta property="og:description" content="Explore a calibrated image, compare segmentations and trace a measurement back to its source. Take a tour of the open-source desktop workbench.">
+  <meta property="og:url" content="https://sidd-bme.github.io/loci-app/">
+  <meta property="og:image" content="https://sidd-bme.github.io/loci-app/media/loci-workbench-share.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Loci's scientific imaging workbench displaying a fluorescent human stem-cell colony.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="media/loci-mark.png" type="image/png">
+  <link rel="preload" href="fonts/instrument-sans-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('loci-theme');
+        if (saved === 'dark' || saved === 'light') {
+          document.documentElement.dataset.theme = saved;
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="style.css">
+  <script src="showcase.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header" id="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#top" aria-label="Loci home">
+        <img src="media/loci-mark.png" width="28" height="28" alt="" decoding="async">
+        <span class="brand-name">Loci</span>
+      </a>
+
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#modes">Workbench</a>
+        <a href="#workflows">Analysis</a>
+        <a href="#specimen">Try a stack</a>
+        <a href="#assistant">Assistant</a>
+        <a href="#engineering">Engineering</a>
+        <a href="#film">Film</a>
+        <a class="nav-download" href="#download">Download</a>
+      </nav>
+
+      <div class="theme-switch" role="group" aria-label="Color theme">
+        <button type="button" class="theme-btn" data-theme-set="dark" aria-pressed="false">Black</button>
+        <button type="button" class="theme-btn" data-theme-set="light" aria-pressed="false">Light</button>
+      </div>
+      <details class="mobile-menu">
+        <summary>Menu</summary>
+        <nav aria-label="Site sections">
+          <a href="#modes">Workbench</a><a href="#workflows">Analysis</a>
+          <a href="#specimen">Try a real stack</a><a href="#assistant">Assistant</a>
+          <a href="#engineering">Engineering</a><a href="#film">Film</a>
+          <a href="#download">Download</a><a href="https://github.com/sidd-bme/loci-app">GitHub repository</a>
+        </nav>
+      </details>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-heading">
+      <div class="container hero-layout">
+        <div class="hero-content">
+          <h1 id="hero-heading"><span class="hero-wordmark">Loci</span><span class="hero-description">Scientific imaging on your desktop.</span></h1>
+          <p class="hero-lead">Open a slide, follow a cell through a stack, or measure fluorescence across a field. This open-source workbench keeps the source images, masks and measurements together in one local study.</p>
+          <div class="hero-actions">
+            <a class="btn-primary" href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download for Mac</a>
+            <a class="hero-demo-link" href="#specimen">Try a real stack <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="hero-note">Apple silicon · Unnotarized v0.2.0-beta.2<br>This tour shows the newer development build. <a href="#download">Install guide</a></p>
+        </div>
+        <section class="hero-workbench" id="modes" aria-labelledby="modes-heading">
+          <h2 id="modes-heading">Inside the workbench</h2>
+        <nav class="mode-tabs" id="mode-tabs" aria-label="Image modalities">
+          <a class="mode-tab" href="#mode-fluorescence" data-mode="fluorescence">Fluorescence</a>
+          <a class="mode-tab" href="#mode-volume-3d" data-mode="volume-3d">3D confocal</a>
+          <a class="mode-tab" href="#mode-whole-slide" data-mode="whole-slide">Whole-slide</a>
+          <a class="mode-tab" href="#mode-linked-mri" data-mode="linked-mri">Linked MRI</a>
+          <a class="mode-tab" href="#mode-organoid-lineage" data-mode="organoid-lineage">Time &amp; lineage</a>
+          <a class="mode-tab" href="#mode-phase-microscopy" data-mode="phase-microscopy">Quantitative phase</a>
+        </nav>
+
+        <div class="mode-panels" id="mode-panels">
+          <article class="mode-panel" id="mode-fluorescence" data-mode-panel="fluorescence">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/fluorescence.webp">
+                <img class="hero-image" src="media/fluorescence.webp" width="1640" height="1155" decoding="async" fetchpriority="high" alt="Human iPSC colony shown as a fluorescence projection inside Loci, with amber plasma membranes, aqua microtubules, violet nuclei, and native scale bar">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Move through individual optical sections or project a Z range. Display settings leave the raw measurement channels intact.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Multichannel fluorescence projections</h3>
+                  <p>Step through a Z stack one optical section at a time, or project a selected Z range with maximum or mean intensity. Six native sections (Z15–20) of Allen Institute field AICS_12_134 are shown with plasma membrane in amber, GFP-labelled α-tubulin in aqua, and DNA in violet while preserving underlying scalar channels for measurement.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Calibration</dt>
+                    <dd class="tabular">0.065 µm XY · 0.29 µm Z</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/fluorescence.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md#view-images-and-set-display">Display guide</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+
+          <article class="mode-panel" id="mode-volume-3d" data-mode-panel="volume-3d">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/volume-3d.webp">
+                <img src="media/volume-3d.webp" width="1580" height="1272" loading="lazy" decoding="async" alt="Teal shaded 3D volume rendering of an Arabidopsis thaliana ovule in Loci with XY, XZ, and YZ axis snap controls">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Orbit a confocal volume or snap to a source plane. The crosshair follows the same voxel across all four views.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Calibrated confocal stacks in 3D</h3>
+                  <p>Open this 256 × 256 × 243 confocal volume of a wild-type <em>Arabidopsis thaliana</em> ovule directly from its Imaris IMS file. Normal shading brings out structure in the acquired intensity data. Orbit freely or select XY, XZ, or YZ to align with a source axis while keeping the crosshair anchored on the same voxel across all sections.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Native grid</dt>
+                    <dd class="tabular">256 × 256 × 243 voxels (IMS)</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/volume-3d.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md#inspect-scalar-volumes-and-mpr">Volume and MPR guide</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+
+          <article class="mode-panel" id="mode-whole-slide" data-mode-panel="whole-slide">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/whole-slide.webp">
+                <img src="media/whole-slide.webp" width="1640" height="1155" loading="lazy" decoding="async" alt="H&amp;E whole-slide brightfield tissue at high magnification in Loci with a Navigator overview thumbnail and 50 micrometre scale bar">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Pan from a whole-slide overview to the native tissue pixels. The Navigator shows where the field sits on the slide.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Whole-slide brightfield</h3>
+                  <p>Zoom from the full overview of the 46,000 × 32,914 pixel Aperio CMU-1 H&amp;E slide to a level-zero field. The Navigator keeps the field oriented in slide context as you pan, and saved regions of interest stay bound to native slide coordinates for later inspection.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Slide extent</dt>
+                    <dd class="tabular">46,000 × 32,914 px (Aperio SVS)</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/whole-slide.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/WHOLE_SLIDE_SUPPORT.md">Whole-slide support</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+
+          <article class="mode-panel" id="mode-linked-mri" data-mode-panel="linked-mri">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/linked-mri.webp">
+                <img src="media/linked-mri.webp" width="1640" height="1082" loading="lazy" decoding="async" alt="Linked axial, coronal, and sagittal T1 MRI slices in Loci with a shared crosshair and 3D orientation pane">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Move the crosshair to see the same physical position in the axial, coronal and sagittal planes.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Linked anatomical planes</h3>
+                  <p>Moving the crosshair in one plane locates the same coordinate in the other two. This population-average ICBM152 T1 MRI opens from NIfTI at 0.5 mm isotropic spacing, deriving physical orientation and millimetre coordinates directly from the source geometry.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Geometry</dt>
+                    <dd class="tabular">0.5 mm isotropic (NIfTI, LPS)</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/linked-mri.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md#medical-research-sources">Medical research formats</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+
+          <article class="mode-panel" id="mode-organoid-lineage" data-mode-panel="organoid-lineage">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/organoid-lineage.webp">
+                <img src="media/organoid-lineage.webp" width="1600" height="1175" loading="lazy" decoding="async" alt="Organoid fluorescence time series in Loci with a highlighted tracking endpoint on its source plane beside the lineage inspector">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Select a lineage link to see its endpoints in the original time series and inspect the tracker’s reported confidence.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Time series and lineage graphs</h3>
+                  <p>Play the 51-frame organoid movie and jump to the source Z section at either endpoint of an imported track link. This OrganoidTracker 2.0 study holds 6,802 detections, 6,665 links, and 48 candidate division parents. Link and marginal probabilities remain stored separately so each track can be audited against raw pixels.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Imported graph</dt>
+                    <dd class="tabular">51 frames · 6,802 detections · 6,665 links</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/organoid-lineage.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/ORGANOIDTRACKER.md">Lineage import guide</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+
+          <article class="mode-panel" id="mode-phase-microscopy" data-mode-panel="phase-microscopy">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/phase-microscopy.webp">
+                <img src="media/phase-microscopy.webp" width="1480" height="1042" loading="lazy" decoding="async" alt="Scalar digital holographic microscopy cell image in Loci with a saved source-bound line measuring 13.589 micrometres">
+              </a>
+              <figcaption class="mode-caption">
+                <p class="mode-action">Draw a line between two points on the source grid. Loci uses the acquisition spacing to report a distance in micrometres.</p>
+                <details class="mode-notes"><summary>Specimen details</summary>
+                <div class="mode-copy">
+                  <h3>Quantitative phase microscopy</h3>
+                  <p>Draw source-bound points, lines, and regions directly against native pixel coordinates. On this calibrated 550 × 660 digital holographic cell image (0.107 µm XY spacing), the saved line spans 13.589 µm between two endpoints placed with Draw &amp; measure.</p>
+                </div>
+                <dl class="mode-meta">
+                  <div>
+                    <dt>Saved distance</dt>
+                    <dd class="tabular">13.589 µm (0.107 µm XY spacing)</dd>
+                  </div>
+                  <div>
+                    <dt>Reference</dt>
+                    <dd>
+                      <a href="media/phase-microscopy.webp">Full-size view</a> ·
+                      <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md#draw-source-bound-annotations">Source-bound annotations</a>
+                    </dd>
+                  </div>
+                </dl>
+                </details>
+              </figcaption>
+            </figure>
+          </article>
+        </div>
+        </section>
+      </div>
+    </section>
+
+    <section class="band-secondary workflows-band" id="workflows" aria-labelledby="workflows-heading">
+      <div class="container">
+        <div class="section-intro">
+          <h2 id="workflows-heading">From segmentation to a reviewed result</h2>
+          <p>Run a classical method or a model on a selected field. Compare the masks, inspect an individual object and follow its measurements back to the source pixels.</p>
+        </div>
+
+        <div class="editorial-spread">
+          <figure class="editorial-figure spread-media">
+            <a class="figure-link" href="media/compare-nuclei.webp">
+              <img src="media/compare-nuclei.webp" width="1640" height="1155" loading="lazy" decoding="async" alt="Hoechst-stained U2OS nuclei in Loci showing 56 matched pairs at IoU at least 0.50 between ONNX and classical masks with unmatched model label 49 ringed">
+            </a>
+          </figure>
+          <div class="spread-copy">
+            <h3>Inspect where segmentation methods disagree</h3>
+            <p>On one Hoechst-stained U2OS field, the BioImage.IO nuclei model found <strong>66 objects</strong> and thresholding found <strong>67</strong>. At an intersection-over-union of at least 0.50, 56 pairs matched. Ten objects appeared only in the model mask and eleven only in the threshold mask.</p>
+            <p>Select a difference to find it in the image. The ring marks an 851-pixel object present only in the model mask. This example measures agreement between two predictions.</p>
+            <p class="inline-links">
+              <a href="media/compare-nuclei.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md#compare-two-segmentation-methods-with-your-assistant">Disagreement walkthrough</a>
+            </p>
+          </div>
+        </div>
+
+        <div class="editorial-spread editorial-spread-reverse" id="object-measurements">
+          <figure class="editorial-figure spread-media">
+            <a class="figure-link" href="media/cell-measurements.webp">
+              <img src="media/cell-measurements.webp" width="1580" height="963" loading="lazy" decoding="async" alt="38 predicted Cellpose-SAM v2 whole-cell labels over a human iPSC field beside a calibrated cell area histogram and nearest-centroid spacing scatter plot">
+            </a>
+          </figure>
+          <div class="spread-copy">
+            <h3>Measure calibrated populations on native pixels</h3>
+            <p>On this human iPSC field, an external Cellpose-SAM v2 run produced 38 cell labels. Loci measured area and nearest-centroid spacing from the labels on the calibrated XY grid at Z40. Raw channel intensity is available for the same objects.</p>
+            <p>Filter any range in the histogram or scatter plot to inspect a subpopulation and locate the exact label back in the source image.</p>
+            <p class="inline-links">
+              <a href="media/cell-measurements.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/EXTERNAL_LABELS.md">External labels</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/OBJECT_POPULATIONS.md">Object populations</a>
+            </p>
+          </div>
+        </div>
+
+        <figure class="export-example">
+          <a class="figure-link" href="media/channel-figure.webp">
+            <img src="media/channel-figure.webp" width="1600" height="497" loading="lazy" decoding="async" alt="Exported membrane and beta-actin channels in grayscale beside their magenta and green merge, with a calibrated 20 micrometre scale bar">
+          </a>
+          <figcaption>
+            <h3>Make a figure from the channels you measured</h3>
+            <p>Here the membrane and β-actin from the stem-cell field are readable separately in grayscale and together in a colour merge. Loci exports the selected display windows with a calibrated scale bar. The original channel values remain available for measurement.</p>
+          </figcaption>
+        </figure>
+
+      </div>
+    </section>
+
+    <section class="band-primary specimen-band" id="specimen" data-specimen-state="idle" aria-labelledby="specimen-heading">
+      <div class="container">
+        <div class="section-intro">
+          <h2 id="specimen-heading">Step through a real optical stack</h2>
+          <p>Move through nine of the 52 optical sections in this 66.56 µm-wide human iPSC field. Switch membrane, tubulin and DNA on or off. The browser uses windowed 8-bit images. Loci measures the native 16-bit source.</p>
+        </div>
+
+        <div class="specimen-layout">
+          <figure class="specimen-stage">
+            <div class="specimen-frame" id="specimen-frame">
+              <img
+                id="specimen-fallback"
+                class="specimen-fallback"
+                src="media/specimen/initial.webp"
+                loading="lazy"
+                width="1024"
+                height="1024"
+                alt="Human iPSC colony fluorescence at native optical section Z16 (+4.64 micrometres) showing amber plasma membrane, aqua GFP alpha-tubulin, and violet DNA"
+                decoding="async"
+              >
+              <canvas
+                id="specimen-canvas"
+                class="specimen-canvas"
+                width="1024"
+                height="1024"
+                hidden
+                role="img"
+                aria-label="Composited optical section of a human iPSC colony"
+              ></canvas>
+              <div class="scale-bar" id="specimen-scale-bar" aria-hidden="true">
+                <span class="scale-bar-line"></span>
+                <span class="scale-bar-label">10 µm</span>
+              </div>
+            </div>
+            <figcaption class="specimen-caption" id="specimen-caption">
+              Displayed: native Z16 (+4.64 µm relative to Z0) · 1024 × 1024 px (66.56 × 66.56 µm) · 3 of 3 channels visible.
+            </figcaption>
+            <a class="specimen-projection" href="media/hero.webp">View the maximum-intensity projection of Z15–20 ↗</a>
+          </figure>
+
+          <div class="specimen-controls" aria-label="Optical section controls">
+            <div class="readout-group">
+              <div class="readout-pair">
+                <span class="readout-label">Displayed section</span>
+                <span class="readout-value tabular" id="specimen-displayed-z">Z16</span>
+              </div>
+              <div class="readout-pair">
+                <span class="readout-label">Relative depth</span>
+                <span class="readout-value tabular" id="specimen-displayed-um">+4.64 µm</span>
+              </div>
+            </div>
+
+            <div class="slider-group">
+              <div class="slider-header">
+                <label class="control-label" for="specimen-z">Optical section (Z)</label>
+                <span class="slider-selection tabular" id="specimen-pending" aria-live="polite">
+                  <noscript>Interactive controls require JavaScript. Showing native Z16.</noscript>
+                </span>
+              </div>
+              <input
+                id="specimen-z"
+                class="z-slider"
+                type="range"
+                min="0"
+                max="8"
+                step="1"
+                value="2"
+                disabled
+                aria-valuetext="Native Z16, +4.64 micrometres"
+              >
+              <div class="slider-bounds tabular" aria-hidden="true">
+                <span id="specimen-z-min">Z8</span>
+                <span id="specimen-z-mid">52 native sections</span>
+                <span id="specimen-z-max">Z40</span>
+              </div>
+            </div>
+
+            <fieldset class="channel-group" id="specimen-channels">
+              <legend class="control-label">Fluorescence channels</legend>
+              <div class="channel-list" id="specimen-channel-list">
+                <label class="channel-toggle">
+                  <input type="checkbox" data-channel-id="membrane" checked disabled>
+                  <span class="channel-swatch" style="--swatch: #FF993F;" aria-hidden="true"></span>
+                  <span class="channel-meta">
+                    <span class="channel-name">Plasma membrane</span>
+                    <span class="channel-detail tabular">CellMask Deep Red · 500–2380</span>
+                  </span>
+                </label>
+                <label class="channel-toggle">
+                  <input type="checkbox" data-channel-id="tubulin" checked disabled>
+                  <span class="channel-swatch" style="--swatch: #29DBBF;" aria-hidden="true"></span>
+                  <span class="channel-meta">
+                    <span class="channel-name">GFP α-tubulin</span>
+                    <span class="channel-detail tabular">mEGFP-tagged TUBA1B · 470–1430</span>
+                  </span>
+                </label>
+                <label class="channel-toggle">
+                  <input type="checkbox" data-channel-id="dna" checked disabled>
+                  <span class="channel-swatch" style="--swatch: #A477FB;" aria-hidden="true"></span>
+                  <span class="channel-meta">
+                    <span class="channel-name">DNA</span>
+                    <span class="channel-detail tabular">DNA fluorescence channel · 124–171</span>
+                  </span>
+                </label>
+              </div>
+              <button type="button" class="text-action" id="specimen-reset" hidden>Show all channels</button>
+            </fieldset>
+
+            <dl class="specimen-facts">
+              <div>
+                <dt>Calibration</dt>
+                <dd class="tabular" id="specimen-spacing">0.065 × 0.065 × 0.29 µm</dd>
+              </div>
+              <div>
+                <dt>Hero projection</dt>
+                <dd>Separate per-channel maximum over Z15–20 inclusive (shown at top)</dd>
+              </div>
+              <div>
+                <dt>Specimen credit</dt>
+                <dd>
+                  Allen Institute for Cell Science, Thirstrup et al. (2018),
+                  <a href="https://bbbc.broadinstitute.org/BBBC034">BBBC034v1</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band-secondary workflows-band" id="assistant" aria-labelledby="assistant-heading">
+      <div class="container">
+        <div class="section-intro">
+          <h2 id="assistant-heading">An assistant in the workbench</h2>
+          <p>Connect Codex or Antigravity to a study through the Model Context Protocol (MCP). Ask for an analysis in the host chat and watch its requests, previews and results appear inside Loci.</p>
+        </div>
+        <div class="figure-pair figure-pair-spaced">
+          <article class="pair-item">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/cellpose-review.webp">
+                <img src="media/cellpose-review.webp" width="1366" height="962" loading="lazy" decoding="async" alt="Six Cellpose-SAM v2 predictions with teal boundaries on a 256 by 256 membrane crop, listing channel 0 input, channel 1 raw measurements, and a separate approval control">
+              </a>
+            </figure>
+            <h3>Segment one channel and measure another</h3>
+            <p>In a 256 × 256 membrane crop, Cellpose-SAM v2 predicted six cells. Loci measured their β-actin intensity on a separately granted raw channel. A researcher inspected the overlay before saving the result. Editing a label creates a new revision with updated measurements.</p>
+            <p class="inline-links">
+              <a href="media/cellpose-review.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md#find-cells-in-one-channel-and-measure-another">Multichannel assistant walkthrough</a>
+            </p>
+          </article>
+
+          <article class="pair-item">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/assistant-connect.webp">
+                <img src="media/assistant-connect.webp" width="1366" height="962" loading="lazy" decoding="async" alt="Loci Connect an assistant panel beside a membrane fluorescence field with Open in Codex and Check connection controls">
+              </a>
+            </figure>
+            <h3>Work in Loci from Codex or Antigravity</h3>
+            <p>Choose Codex or Antigravity in Connect an assistant and grant only the image, region, channels, and operations you authorize. On macOS, Open in Codex launches the study workspace directly. For Antigravity, open the generated workspace folder. The MCP server runs locally, and for 3D volumes you can also grant live crosshair and camera controls.</p>
+            <p class="inline-links">
+              <a href="media/assistant-connect.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CLI.md#vision-assistants-and-local-mcp-access">Host setup</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md#shared-3d-scene-access">Shared 3D controls</a>
+            </p>
+          </article>
+        </div>
+
+        <div class="figure-pair figure-pair-spaced">
+          <article class="pair-item">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/agent-plan.webp">
+                <img src="media/agent-plan.webp" width="1360" height="1101" loading="lazy" decoding="async" alt="Loci Agent workspace after disconnection showing completed steps and a linked 67-row classical BBBC039 nuclei result">
+              </a>
+            </figure>
+            <h3>Retained plans and evidence links</h3>
+            <p>Agent workspace keeps the task plan, jobs, and evidence links beside the image. After disconnecting, reopen any saved result (such as the 67-row classical nuclei analysis shown here) and read its recorded assessment and limitations.</p>
+            <p class="inline-links">
+              <a href="media/agent-plan.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md">Agent access guide</a>
+            </p>
+          </article>
+
+          <article class="pair-item">
+            <figure class="editorial-figure">
+              <a class="figure-link" href="media/cli-objects.webp">
+                <img src="media/cli-objects.webp" width="1460" height="910" loading="lazy" decoding="async" alt="Terminal output from the loci command showing three of 19 matching cell rows and native row Y=91, column X=346 for label 4">
+              </a>
+            </figure>
+            <h3>Inspect saved studies from the command line</h3>
+            <p>Query measured objects in a saved <code>.loci-study</code> from any terminal. Against the 38-cell colony result above, the first command finds 19 cells matching area (µm²) and spacing (µm) bounds. The second locates label 4 at zero-based row Y=91, column X=346.</p>
+            <pre class="cli-block"><code>loci objects --project colony.loci-study --area 120:350 --spacing 10:40 --limit 3
+loci locate 4 --project colony.loci-study</code></pre>
+            <p class="inline-links">
+              <a href="media/cli-objects.webp">Full-size view</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CLI.md#inspect-measured-objects">CLI reference</a>
+            </p>
+          </article>
+        </div>
+
+        <div class="panorama-block">
+          <figure class="editorial-figure">
+            <a class="figure-link" href="media/model-zoo.webp">
+              <img src="media/model-zoo.webp" width="1540" height="617" loading="lazy" decoding="async" alt="Loci Model Zoo catalog showing search, task and execution filters above credited microscopy examples">
+            </a>
+          </figure>
+          <div class="panorama-text">
+            <h3>Ten local and external workflows in Model Zoo</h3>
+            <div class="two-col-prose">
+              <div>
+                <p><strong>Local runtimes.</strong> Provision Cellpose-SAM v2, the BioImage.IO 2D nuclei boundary ONNX model, or PUMA's tissue nnU-Net profile with verified checkpoints and supported runtimes. DynaCell runs local CPU prediction of normalized nuclear signal on compatible reconstructed Phase3D volumes of unperturbed WTC-11 iPSCs.</p>
+              </div>
+              <div>
+                <p><strong>External handoff.</strong> Import native instance labels from μSAM, StarDist, PlantSeg, or Mesmer, open a separately restored CARE volume alongside its raw acquisition, or inspect OrganoidTracker 2.0 <code>.aut</code> v1 lineage graphs. Local installations require an explicit choice. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/MODEL_LIBRARY.md">Model library and licence terms</a></p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band-secondary engineering-band" id="engineering" aria-labelledby="engineering-heading">
+      <div class="container">
+        <div class="section-intro">
+          <h2 id="engineering-heading">What travels with a result</h2>
+          <p>A saved study records the source, geometry, method, measurements and review decision. Reopen the study to inspect how a particular result was produced.</p>
+        </div>
+
+        <div class="ledger" aria-label="Core engineering guarantees">
+          <div class="ledger-row">
+            <h3>Immutable sources and explicit axes</h3>
+            <p>Original TIFF, OME-TIFF, IMS, OME-Zarr, SVS, NDPI, NIfTI, NRRD, and DICOM inputs remain untouched on disk. Axes (C, Z, Y, X, T), physical calibration, pyramid levels, and registration transforms stay attached to the data. Display contrast and pseudocolor never alter raw intensity quantification. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CAPABILITY_MATRIX.md">Capability matrix</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/QUANTIFICATION.md">Quantification</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/REGISTRATION.md">Registration</a></p>
+          </div>
+
+          <div class="ledger-row">
+            <h3>Spatial measurements and batch recipes</h3>
+            <p>Draw source-bound ROIs, quantify puncta and channel intensity, or measure cell density in distance bands along a tissue boundary. Chain ordered preprocessing, segmentation, and measurement steps in the Workflow builder, preview on a crop, and repeat saved recipes across compatible study images locally or on an explicitly configured remote compute profile. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/SPATIAL_DISTANCE_BANDS.md">Spatial bands</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/WORKFLOWS.md">Visual workflows</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/REMOTE_WORKFLOW.md">Remote compute</a></p>
+          </div>
+
+          <div class="ledger-row">
+            <h3>Revisions and export integrity</h3>
+            <p>Manual label edits create a new revision while retaining the original mask and measurements for audit. Review the exact revision you intend to share and publish atomic bundles containing OME-TIFF labels, CSV tables, geometry, settings, and review history, with Python and R readers for scientific data packages. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md#inspect-provenance-review-and-export-one-result">Review and export</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/SCIENTIFIC_DATA_EXPORT.md">Scientific data packages</a></p>
+          </div>
+
+          <div class="ledger-row">
+            <h3>Model identity and assistant permissions</h3>
+            <p>For supported local models, Loci checks package hashes and runtime compatibility and shows the publisher’s terms. A researcher chooses which images, regions, channels and operations an assistant may use. Saving an assistant’s model prediction requires approval of the inspected preview. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/MODEL_LIBRARY.md">Model library</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md">Agent access</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CLI.md">CLI guide</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/SECURITY.md">Security</a></p>
+          </div>
+        </div>
+
+        <div class="comparison-block">
+          <div class="comparison-header">
+            <h3>How Loci fits alongside other tools</h3>
+            <p>Researchers can automate each of these tools. Here is one documented way to work with each, starting with Loci’s study-scoped connection.</p>
+          </div>
+
+          <div class="table-wrap" role="region" aria-label="Comparison of documented desktop bioimaging automation paths" tabindex="0">
+            <table class="comparison-table">
+              <thead>
+                <tr>
+                  <th scope="col">Software</th>
+                  <th scope="col">Documented automation path</th>
+                  <th scope="col">Primary documentation</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <th scope="row">Loci</th>
+                  <td>Policy-scoped local MCP server and <code>loci</code> CLI with explicit rendered preview approval before model saves and parent-preserving label revisions.</td>
+                  <td><a href="https://github.com/sidd-bme/loci-app/blob/main/docs/AGENT_ACCESS.md">Agent access guide</a></td>
+                </tr>
+                <tr>
+                  <th scope="row">QuPath</th>
+                  <td>Command history → Create script converts recorded interactive steps into editable Groovy scripts for batch execution.</td>
+                  <td><a href="https://qupath.readthedocs.io/en/stable/docs/scripting/workflows_to_scripts.html">Workflows to scripts</a></td>
+                </tr>
+                <tr>
+                  <th scope="row">Fiji / ImageJ</th>
+                  <td>Plugins → Macros → Record captures interactive desktop commands into executable ImageJ macros and scripts.</td>
+                  <td><a href="https://imagej.net/ij/docs/menus/plugins.html">Plugins menu reference</a></td>
+                </tr>
+                <tr>
+                  <th scope="row">napari</th>
+                  <td>Python-native multidimensional viewer and layer model driven directly from Python scripts, notebooks, and plugins.</td>
+                  <td><a href="https://napari.org/stable/getting_started/layers.html">Using layers</a></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="band-primary film-band" id="film" aria-labelledby="film-heading">
+      <div class="container">
+        <div class="section-intro">
+          <h2 id="film-heading">Watch Optical Section</h2>
+          <p>A two-minute, four-second film following a light-sheet mouse embryo volume, a recorded assistant session on two H&amp;E melanoma fields, and spatial lymphocyte analysis relative to a tissue boundary.</p>
+        </div>
+
+        <figure class="film-figure">
+          <div class="film-frame">
+            <video
+              controls
+              preload="none"
+              playsinline
+              poster="media/film-poster.webp"
+              width="1600"
+              height="900"
+              aria-label="Optical Section film, 2 minutes 4 seconds"
+            >
+              <source src="https://cdn.jsdelivr.net/gh/sidd-bme/loci-app@3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4" type="video/mp4">
+              <source src="https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4" type="video/mp4">
+              <p>Inline MP4 playback is unavailable in this browser. <a href="https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4">Download Optical Section (MP4, 18.6 MB)</a>.</p>
+            </video>
+          </div>
+          <figcaption class="film-links">
+            <a href="https://github.com/sidd-bme/loci-app/raw/3fbe1c4cfd36f8b9cb8c199270a75d151cac3981/docs/media/optical-section.mp4">Direct MP4 download (18.6 MB)</a> ·
+            <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/media/optical-section-credits.md">Film credits and methods</a>
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="band-secondary download-band" id="download" aria-labelledby="download-heading">
+      <div class="container">
+        <div class="download-grid">
+          <div class="download-main">
+            <h2 id="download-heading">Install the Apple silicon beta</h2>
+            <p>The published binary is <strong>v0.2.0-beta.2</strong> for Apple silicon macOS, distributed as an ad-hoc-signed, unnotarized prerelease with SHA-256 checksums. Verify the ZIP archive, unzip it, and move <code>Loci.app</code> to Applications. If macOS blocks the first launch, follow the Privacy &amp; Security steps in the installation guide.</p>
+            <div class="download-action">
+              <a class="btn-primary" href="https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2">Download v0.2.0-beta.2</a>
+            </div>
+            <p class="inline-links">
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/INSTALLATION.md">Installation &amp; checksums</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/RELEASE_STATUS.md">Release status</a> ·
+              <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/workflows/FIRST_STUDY.md">Try your first study</a>
+            </p>
+            <p class="platform-note">No Windows x64, Linux, or Intel Mac installer is published for this prerelease. Newer capabilities shown on this page, including the updated 3D volume navigation, ten-entry Model Zoo, and live Codex or Antigravity assistant workflows, are in the current development source tree. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/BUILDING.md">Build from source</a></p>
+          </div>
+
+          <div class="download-formats">
+            <h3>Supported image formats</h3>
+            <dl class="format-list">
+              <div>
+                <dt>Microscopy</dt>
+                <dd>TIFF, BigTIFF, OME-TIFF, Imaris IMS, local OME-NGFF 0.4 / Zarr v2 stores, and single-frame PNG or JPEG. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/CAPABILITY_MATRIX.md">Native formats and limits</a></dd>
+              </div>
+              <div>
+                <dt>Whole slides and research volumes</dt>
+                <dd>Aperio SVS and Hamamatsu NDPI slides, scalar NIfTI and NRRD images, and conventional CT/MR DICOM series. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/WHOLE_SLIDE_SUPPORT.md">Slide support</a></dd>
+              </div>
+              <div>
+                <dt>Vendor microscopy files</dt>
+                <dd>Convert supported selections from CZI, ND2, or LIF series to OME-TIFF with the documented Bio-Formats runtime. <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/VENDOR_CONVERSION.md">Vendor conversion</a></dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <div class="footer-top">
+        <div class="footer-brand">
+          <div class="footer-brand-row">
+            <img src="media/loci-mark.png" width="24" height="24" alt="" decoding="async">
+            <span class="brand-name">Loci</span>
+          </div>
+          <p>Open-source research software for biomedical imaging. Apache-2.0 core. When citing Loci, include the release version or source commit and cite datasets and models separately.</p>
+        </div>
+
+        <nav class="footer-links" aria-label="Documentation and repository">
+          <a href="https://github.com/sidd-bme/loci-app">GitHub repository</a>
+          <a href="https://github.com/sidd-bme/loci-app/releases">Releases</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/USING_LOCI.md">User manual</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/README.md">Documentation index</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/CONTRIBUTING.md">Contribute</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/LICENSE">Licence</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/NOTICE">Notice</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+          <a href="https://github.com/sidd-bme/loci-app/blob/main/SECURITY.md">Security</a>
+        </nav>
+      </div>
+
+      <p class="footer-credit"><a href="media/credits.html">Specimens, licences and image credits</a> · <a href="https://github.com/sidd-bme/loci-app/blob/main/docs/media/optical-section-credits.md">Film credits</a></p>
+    </div>
+  </footer>
+</body>
+</html>
