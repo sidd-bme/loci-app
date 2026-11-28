@@ -1,0 +1,90 @@
+{
+  "source": {
+    "dataset": "BBBC034v1, human iPSC colony center",
+    "credit": "Thirstrup et al. (2018), Allen Institute for Cell Science Microscopy & Image Analysis Team, via the Broad Bioimage Benchmark Collection",
+    "url": "https://bbbc.broadinstitute.org/BBBC034",
+    "image_license": "CC BY 4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "publisher_z_index": 40,
+    "extracted_plane_z_index": 0,
+    "crop_xywh_zero_based": [
+      320,
+      192,
+      256,
+      256
+    ],
+    "xy_pitch_um": [
+      0.10833333333333334,
+      0.10833333333333334
+    ]
+  },
+  "display": {
+    "encoding": "8-bit display pixels in lossless WebP",
+    "transform": "Linear window with clipping and nearest integer rounding. Channel windows act independently. Contour pixels are replaced by display ink after windowing.",
+    "native_dimensions_xy": [
+      256,
+      256
+    ],
+    "focus_outline": {
+      "label": 6,
+      "stroke_native_pixels": 2,
+      "placement": "Inside the original label mask, measured by four-neighbour distance to the exterior",
+      "ink_rgb": [
+        130,
+        255,
+        210
+      ],
+      "ink_opacity": 1,
+      "fill_opacity": 0
+    },
+    "membrane.webp": {
+      "source_channel": 0,
+      "channel": "CellMask Deep Red plasma membrane",
+      "window_raw": [
+        825,
+        2450
+      ]
+    },
+    "labels.webp": {
+      "source_channel": 0,
+      "window_raw": [
+        825,
+        2450
+      ],
+      "overlay": "Six original adopted prediction masks, with one-pixel gray outlines for labels 1–5 and a two-pixel mint outline for label 6",
+      "other_outline_rgb": [
+        193,
+        206,
+        216
+      ]
+    },
+    "actin.webp": {
+      "source_channel": 1,
+      "channel": "EGFP beta-actin",
+      "window_raw": [
+        500,
+        1030
+      ],
+      "overlay": "The same two-pixel mint outline of label 6"
+    }
+  },
+  "model": {
+    "name": "Cellpose-SAM v2",
+    "checkpoint": "cpsam_v2",
+    "package_version": "4.2.1.1",
+    "credit": "Pachitariu, Rariden & Stringer",
+    "citation_url": "https://doi.org/10.1101/2025.04.28.651001",
+    "checkpoint_repository_url": "https://huggingface.co/mouseland/cellpose-sam",
+    "license_note": "Checkpoint repository declares BSD-3-Clause. Maintainers report CC BY-NC training data.",
+    "maintainer_url": "https://github.com/MouseLand/cellpose"
+  },
+  "measurement_example": {
+    "label": 6,
+    "pixels": 1298,
+    "source_channel": 1,
+    "mean_raw": 827.1563944530046,
+    "unit": "raw intensity counts (uint16 source values)",
+    "touches_crop_edge": false
+  },
+  "scope": "Workflow example from one field. Five predicted masks intersect the crop edge. The colony-center field lacks reference annotations."
+}

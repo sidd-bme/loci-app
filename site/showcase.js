@@ -5,18 +5,6 @@
   const MAX_DECODED_CACHE = 4;
   const THEME_STORAGE_KEY = 'loci-theme';
 
-  function initHeaderScroll() {
-    const header = document.getElementById('site-header');
-    if (!header) return;
-
-    const update = () => {
-      header.classList.toggle('is-scrolled', window.scrollY > 18);
-    };
-
-    update();
-    window.addEventListener('scroll', update, { passive: true });
-  }
-
   function initThemeToggle() {
     const buttons = Array.from(document.querySelectorAll('[data-theme-set]'));
     if (buttons.length === 0) return;
@@ -658,6 +646,7 @@
     });
 
     tabList.setAttribute('role', 'tablist');
+    panelsWrap.classList.add('is-enhanced');
 
     tabs.forEach((tab) => {
       const mode = tab.dataset.mode;
@@ -683,9 +672,10 @@
         const panel = panelByMode.get(tab.dataset.mode);
         if (panel) {
           panel.hidden = !isSelected;
+          panel.inert = !isSelected;
         }
-        if (isSelected && focusTab) {
-          tab.focus({ preventScroll: true });
+        if (isSelected) {
+          if (focusTab) tab.focus({ preventScroll: true });
           const strip = tabList.getBoundingClientRect();
           const button = tab.getBoundingClientRect();
           if (button.left < strip.left) tabList.scrollLeft += button.left - strip.left;
@@ -715,6 +705,7 @@
 
     tabs.forEach((tab, index) => {
       tab.addEventListener('click', (event) => {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
         event.preventDefault();
         activateMode(tab.dataset.mode, { updateHash: true, focusTab: false });
       });
@@ -765,7 +756,76 @@
     });
   }
 
-  initHeaderScroll();
+  function initFullWindowView() {
+    const dialog = document.getElementById('image-dialog');
+    if (!dialog || typeof dialog.showModal !== 'function') return;
+    const title = dialog.querySelector('#dialog-title');
+    const image = dialog.querySelector('.dialog-stage img');
+    const original = dialog.querySelector('.original-image');
+    const close = dialog.querySelector('.close-image');
+    const zoom = dialog.querySelector('.zoom-image');
+    const stage = image.parentElement;
+    function setActualPixels(enabled) {
+      zoom.setAttribute('aria-pressed', String(enabled));
+      stage.classList.toggle('actual-pixels', enabled);
+      stage.tabIndex = enabled ? 0 : -1;
+      stage.scrollLeft = enabled ? (stage.scrollWidth - stage.clientWidth) / 2 : 0;
+      stage.scrollTop = enabled ? (stage.scrollHeight - stage.clientHeight) / 2 : 0;
+    }
+    zoom.addEventListener('click', () => setActualPixels(!stage.classList.contains('actual-pixels')));
+    let trigger;
+    document.querySelectorAll('a.open-image, a.expand-control').forEach(link => {
+      link.addEventListener('click', event => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        trigger = link;
+        setActualPixels(false);
+        const figureLink = link.closest('figure').querySelector('.open-image');
+        title.textContent = figureLink.dataset.title;
+        original.href = link.href;
+        image.alt = figureLink.querySelector('img').alt;
+        image.src = link.href;
+        dialog.showModal();
+        close.focus({ preventScroll: true });
+      });
+    });
+    close.addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', event => {
+      if (event.target !== dialog) return;
+      const rect = dialog.getBoundingClientRect();
+      if (event.clientX < rect.left || event.clientX > rect.right ||
+          event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+    });
+    dialog.addEventListener('close', () => trigger?.focus({ preventScroll: true }));
+  }
+
+  function initFilms() {
+    const films = Array.from(document.querySelectorAll('video[data-tour-film]'));
+    for (const film of films) {
+      const toggle = film.closest('.clip').querySelector('.film-toggle');
+      const title = film.getAttribute('aria-label');
+      function syncToggle() {
+        const label = film.ended ? 'Replay' : film.paused ? 'Play' : 'Pause';
+        toggle.textContent = label;
+        toggle.setAttribute('aria-label', label + ' film: ' + title);
+      }
+      toggle.hidden = false;
+      toggle.addEventListener('click', () => {
+        if (film.paused || film.ended) film.play().catch(syncToggle);
+        else film.pause();
+      });
+      for (const event of ['play', 'pause', 'ended', 'error']) film.addEventListener(event, syncToggle);
+      film.addEventListener('play', () => {
+        for (const other of films) if (film !== other && !other.paused) other.pause();
+      });
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) films.forEach(film => film.pause());
+    });
+  }
+
+  initFullWindowView();
+  initFilms();
   initThemeToggle();
   initSpecimenExplorer();
   initModeExplorer();

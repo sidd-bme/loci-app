@@ -1,6 +1,6 @@
 # Images in the workbench tour
 
-The [project README](../../../README.md) and [interactive workbench tour](https://sidd-bme.github.io/loci-app/) use the same captures from the running Apple silicon development app, build 79 on 28 November 2026. The images were cropped or resized for display. The CLI capture uses the packaged command against a saved local study. The [public binary](../../RELEASE_STATUS.md) has its own release and feature history.
+The [project README](../../../README.md) and [interactive workbench tour](https://sidd-bme.github.io/loci-app/) use the same captures from the running Apple silicon development app, build 79 on 28 November 2026. The workbench stills show the complete application window, resized for display. The website also includes two short recordings made for the tour and a three-panel measurement figure. The CLI capture uses the packaged command against a saved local study. The [public binary](../../RELEASE_STATUS.md) has its own release and feature history.
 
 ## Fluorescence and cell measurements
 

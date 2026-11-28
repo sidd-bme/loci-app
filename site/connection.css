@@ -1,0 +1,427 @@
+loci-connection {
+  display: block;
+  container: loci-connection / inline-size;
+  font-family: var(--font-sans, "Instrument Sans", system-ui, sans-serif);
+  color: var(--ink, CanvasText);
+}
+
+loci-connection .lc-figure {
+  --lc-paper: var(--bg, Canvas);
+  --lc-mute: var(--ink-secondary, CanvasText);
+  --lc-accent: var(--accent, LinkText);
+  --lc-line: color-mix(in srgb, currentColor 23%, transparent);
+  --lc-hairline: color-mix(in srgb, currentColor 13%, transparent);
+  --lc-grid: color-mix(in srgb, currentColor 7%, transparent);
+  --lc-ease: cubic-bezier(.22, 1, .36, 1);
+  margin: 0;
+  border: 1px solid var(--lc-line);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--lc-paper);
+  text-align: left;
+  line-height: 1.4;
+}
+
+loci-connection .lc-map {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 14px 20px 18px;
+}
+
+loci-connection .lc-zone {
+  position: relative;
+  z-index: 1;
+  justify-self: start;
+  align-self: center;
+  margin: 0 12px 4px;
+  padding: 2px 0;
+  font-size: .8125rem;
+  font-weight: 600;
+  color: var(--lc-mute);
+}
+
+loci-connection .lc-zone-host {
+  grid-area: 1 / 1;
+}
+
+loci-connection .lc-zone-study {
+  grid-area: 1 / 2 / 2 / 5;
+}
+
+loci-connection .lc-study {
+  position: absolute;
+  z-index: -2;
+  inset: 9px 9px 9px calc(25% + 4px);
+  border: 1px solid var(--lc-hairline);
+  border-radius: 8px;
+  background-image:
+    linear-gradient(to right, var(--lc-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--lc-grid) 1px, transparent 1px);
+  background-position: -1px -1px;
+  background-size: 24px 24px;
+}
+
+loci-connection .lc-nodes {
+  display: grid;
+  grid-area: 2 / 1 / 3 / -1;
+  grid-template-columns: subgrid;
+  grid-template-rows: auto auto;
+  row-gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+loci-connection .lc-node {
+  display: grid;
+  grid-template-rows: 88px auto;
+  justify-items: center;
+  align-content: start;
+  min-width: 0;
+  padding: 8px 9px 4px;
+  text-align: center;
+}
+
+loci-connection [data-node="request"] { grid-area: 1 / 1; }
+loci-connection [data-node="grant"] { grid-area: 1 / 2; }
+loci-connection [data-node="run"] { grid-area: 1 / 3; }
+loci-connection [data-node="preview"] { grid-area: 1 / 4; }
+loci-connection [data-node="review"] { grid-area: 2 / 3; }
+loci-connection [data-node="save"] { grid-area: 2 / 2; }
+
+loci-connection .lc-label {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 3px 6px 4px;
+  border-radius: 4px;
+  background: var(--lc-paper);
+}
+
+loci-connection .lc-label span:first-child {
+  font-size: .9375rem;
+  font-weight: 650;
+}
+
+loci-connection .lc-label span + span {
+  color: var(--lc-mute);
+  font-size: .8125rem;
+  text-wrap: balance;
+}
+
+loci-connection .lc-art {
+  display: block;
+  width: 114.78px;
+  height: 88px;
+  overflow: visible;
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  stroke-width: 1.3;
+}
+
+loci-connection .lc-plate {
+  fill: var(--lc-paper);
+  stroke: color-mix(in srgb, currentColor 47%, transparent);
+}
+
+loci-connection .lc-specimen {
+  fill: color-mix(in srgb, var(--lc-accent) 8%, var(--lc-paper));
+}
+
+loci-connection .lc-fine {
+  stroke: color-mix(in srgb, currentColor 46%, transparent);
+}
+
+loci-connection .lc-bright {
+  stroke: currentColor;
+  stroke-width: 1.55;
+}
+
+loci-connection .lc-junction {
+  fill: currentColor;
+}
+
+loci-connection .lc-plane-grid {
+  opacity: .58;
+}
+
+loci-connection .lc-filaments {
+  opacity: .67;
+  stroke-width: 1.05;
+}
+
+loci-connection .lc-sweep {
+  opacity: var(--lc-scan-opacity, 0);
+  translate: var(--lc-scan-offset, 0 0);
+}
+
+loci-connection .lc-seal {
+  opacity: .54;
+}
+
+loci-connection .lc-review-ring {
+  stroke: var(--lc-accent);
+  opacity: var(--lc-review-opacity, 0);
+  transform-box: fill-box;
+  transform-origin: center;
+  scale: var(--lc-review-scale, 1);
+}
+
+loci-connection .lc-result-row {
+  stroke: var(--lc-accent);
+  stroke-width: 1.55;
+  stroke-dasharray: 1 1;
+  visibility: hidden;
+}
+
+loci-connection [data-counting] .lc-result-row {
+  visibility: visible;
+}
+
+loci-connection [data-counting] .lc-result-bars {
+  opacity: .23;
+}
+
+loci-connection .lc-routes {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+loci-connection .lc-rail { stroke: var(--lc-line); }
+loci-connection .lc-arrow { stroke: var(--lc-mute); opacity: .62; }
+loci-connection .lc-trace { stroke: var(--lc-accent); stroke-width: 1.5; }
+loci-connection .lc-arrow-complete { stroke: var(--lc-accent); opacity: 1; }
+loci-connection .lc-signal { fill: var(--lc-accent); }
+loci-connection .lc-signal-ring {
+  fill: none;
+  stroke: var(--lc-accent);
+  opacity: .42;
+}
+
+loci-connection [data-state="current"] .lc-bright,
+loci-connection [data-state="complete"] :is(.lc-contours, .lc-seal, .lc-result-bars) {
+  stroke: var(--lc-accent);
+}
+
+loci-connection [data-state="current"] .lc-plate {
+  stroke: color-mix(in srgb, var(--lc-accent) 75%, var(--lc-paper));
+}
+
+loci-connection [data-state="current"] .lc-junction {
+  fill: var(--lc-accent);
+}
+
+loci-connection [data-state="current"] .lc-label span:first-child {
+  color: var(--lc-accent);
+}
+
+loci-connection :is([data-state="complete"], [data-state="current"]) .lc-seal {
+  opacity: 1;
+}
+
+loci-connection [data-playing] .lc-art :is(.lc-plate, .lc-bright, .lc-junction, .lc-seal) {
+  transition: stroke 300ms var(--lc-ease), fill 300ms var(--lc-ease), opacity 300ms var(--lc-ease);
+}
+
+loci-connection .lc-footer {
+  border-top: 1px solid var(--lc-hairline);
+  margin: 0;
+  padding: 13px 20px 15px;
+}
+
+loci-connection .lc-caption {
+  display: flex;
+  align-items: center;
+  min-block-size: 2.6em;
+  margin-block-end: 10px;
+  font-size: .9375rem;
+  text-wrap: pretty;
+}
+
+loci-connection .lc-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+
+loci-connection .lc-steps {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+  width: min(100%, 480px);
+}
+
+loci-connection .lc-controls button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--lc-mute);
+  font: inherit;
+  font-size: .8125rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+loci-connection .lc-controls .lc-play {
+  flex: 0 0 87px;
+  gap: 6px;
+  border-color: var(--lc-line);
+  color: var(--ink, CanvasText);
+}
+
+loci-connection .lc-play svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+loci-connection .lc-controls button[hidden] {
+  display: none;
+}
+
+loci-connection .lc-controls button:hover {
+  background: var(--lc-grid);
+}
+
+loci-connection .lc-controls button[aria-current="step"] {
+  background: color-mix(in srgb, var(--lc-accent) 11%, transparent);
+  color: var(--lc-accent);
+  border-color: color-mix(in srgb, var(--lc-accent) 40%, transparent);
+}
+
+loci-connection .lc-controls button:focus-visible {
+  outline: 2px solid var(--lc-accent);
+  outline-offset: 2px;
+}
+
+@container loci-connection (max-width: 660px) {
+  loci-connection .lc-map {
+    grid-template-columns: 1fr;
+    grid-template-rows: 24px 74px 29px repeat(5, 74px);
+    padding: 10px 12px 14px;
+  }
+
+  loci-connection .lc-nodes {
+    grid-area: 1 / 1 / -1 / -1;
+    grid-template-rows: subgrid;
+    gap: 0;
+  }
+
+  loci-connection .lc-zone-host { grid-area: 1 / 1; }
+  loci-connection .lc-zone-study { grid-area: 3 / 1; }
+
+  loci-connection [data-node="request"] { grid-area: 2 / 1; }
+  loci-connection [data-node="grant"] { grid-area: 4 / 1; }
+  loci-connection [data-node="run"] { grid-area: 5 / 1; }
+  loci-connection [data-node="preview"] { grid-area: 6 / 1; }
+  loci-connection [data-node="review"] { grid-area: 7 / 1; }
+  loci-connection [data-node="save"] { grid-area: 8 / 1; }
+
+  loci-connection .lc-zone {
+    margin-inline: 11px;
+  }
+
+  loci-connection .lc-study {
+    inset: 107px 6px 6px;
+  }
+
+  loci-connection .lc-zone-study {
+    padding-inline: 3px;
+    margin-inline-start: 84px;
+    background: var(--lc-paper);
+  }
+
+  loci-connection .lc-node {
+    grid-template: 1fr / 84px minmax(0, 1fr);
+    justify-items: start;
+    align-items: center;
+    padding: 0 7px 0 1px;
+    text-align: left;
+  }
+
+  loci-connection .lc-art {
+    width: 78px;
+    height: 60px;
+  }
+
+  loci-connection .lc-label {
+    justify-items: start;
+  }
+
+  loci-connection .lc-footer {
+    padding-inline: 13px;
+  }
+
+  loci-connection .lc-caption {
+    min-block-size: 4.2em;
+  }
+}
+
+@container loci-connection (max-width: 455px) {
+  loci-connection .lc-controls {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  loci-connection .lc-steps {
+    width: 100%;
+    gap: 0;
+  }
+
+  loci-connection .lc-steps button:focus-visible {
+    outline-offset: -2px;
+  }
+
+  loci-connection .lc-controls .lc-play {
+    margin-inline-start: auto;
+  }
+}
+
+@container loci-connection (max-width: 330px) {
+  loci-connection .lc-steps {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  loci-connection [data-playing] .lc-art * {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  loci-connection .lc-figure {
+    --lc-paper: Canvas;
+    --lc-mute: CanvasText;
+    --lc-accent: LinkText;
+    --lc-line: GrayText;
+    --lc-hairline: GrayText;
+  }
+
+  loci-connection .lc-controls button[aria-current="step"] {
+    border: 2px solid Highlight;
+  }
+}

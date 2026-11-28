@@ -18,7 +18,7 @@ Step through a Z stack one optical section at a time, or summarize a selected Z 
 
 ### Confocal stacks in 3D
 
-![Teal shaded rendering of an Arabidopsis ovule in Loci’s 3D volume viewer](site/media/volume-3d.webp)
+![Full Loci window showing linked sections and a teal 3D rendering of an Arabidopsis ovule](site/media/volume-3d.webp)
 
 This 256 × 256 × 243 confocal volume of a wild-type *Arabidopsis thaliana* ovule is open directly from its Imaris IMS file. Normal shading brings out structure in the acquired intensity data. In the 3D pane, orbit freely or select **XY**, **XZ** or **YZ** to look along a source axis. Snapping or resetting the camera keeps the crosshair on the same voxel in all three sections. [Volume and multiplanar views](docs/USING_LOCI.md#inspect-scalar-volumes-and-mpr)
 

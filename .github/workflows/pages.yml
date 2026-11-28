@@ -6,11 +6,13 @@ on:
     paths:
       - 'site/**'
       - 'scripts/qa/check_showcase.py'
+      - 'scripts/qa/showcase-interactions.mjs'
       - '.github/workflows/pages.yml'
   pull_request:
     paths:
       - 'site/**'
       - 'scripts/qa/check_showcase.py'
+      - 'scripts/qa/showcase-interactions.mjs'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -24,8 +26,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
       - run: python3 scripts/qa/check_showcase.py
       - run: node --check site/showcase.js
+      - run: node --check site/connection.js
+      - run: node --check scripts/qa/showcase-interactions.mjs
+      - name: Install locked browser test dependencies
+        run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+      - name: Exercise the showcase under its project URL
+        run: |
+          mkdir -p "$RUNNER_TEMP/loci-pages"
+          ln -s "$GITHUB_WORKSPACE/site" "$RUNNER_TEMP/loci-pages/loci-app"
+          python3 -m http.server 8079 --bind 127.0.0.1 --directory "$RUNNER_TEMP/loci-pages" > "$RUNNER_TEMP/showcase-http.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+          curl --retry 10 --retry-connrefused --retry-delay 1 --silent --fail http://127.0.0.1:8079/loci-app/ > /dev/null
+          node scripts/qa/showcase-interactions.mjs --base http://127.0.0.1:8079/loci-app/ --out "$RUNNER_TEMP/showcase-evidence"
+      - name: Retain diagnostics if an interaction fails
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: showcase-interactions
+          path: |
+            ${{ runner.temp }}/showcase-evidence/
+            ${{ runner.temp }}/showcase-http.log
+          retention-days: 7
 
   publish:
     needs: verify
