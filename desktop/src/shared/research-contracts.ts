@@ -1049,6 +1049,7 @@ export interface ResearchDesktopApi {
     basename: string; sha256: string; width: number; height: number; sampling: string;
     format?: "png" | "tiff"; dtype?: "uint8" | "uint16"; channels?: number;
     display_revision?: string;
+    layout?: "merge" | "channels-and-merge-row" | "channels-and-merge-column";
   } | null>;
   exportStatisticsFigure?(request: StatisticsFigureExportRequest): Promise<StatisticsFigureExportReceipt | null>;
   exportVolumeFigure?(request: VolumeFigureExportRequest): Promise<VolumeFigureExportReceipt | null>;

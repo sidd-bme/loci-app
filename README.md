@@ -60,6 +60,12 @@ In a second iPSC field, Cellpose-SAM v2 predicted 38 whole cells from a windowed
 
 On one BBBC039 U2OS field, the BioImage.IO nuclei model produced **66** objects and classical connected components produced **67** (raw threshold 520, minimum area 20 pixels). At intersection-over-union ≥ 0.50, **56 pairs** matched, with 10 model-only and 11 threshold-only objects. The ring identifies model label 49, an unmatched object with an area of 851 px². This is a comparison between predictions on one field. Accuracy requires an independent reference. [Source and model credits](docs/media/tour/README.md#fluorescence-and-cell-measurements)
 
+### Export individual channels and their merge
+
+![Two grayscale fluorescence channels from a stem-cell field beside their magenta and green merge and a 20 µm scale bar](docs/media/tour/channel-figure.webp)
+
+This figure shows plasma membrane and β-actin from the same native section. In **Display → Export rendered image**, choose grayscale channels and a merge, then set a row or column layout. Loci includes the display windows and can add a calibrated scale bar to the PNG or 16-bit rendered TIFF. Quantitative measurements still use the original channel values. [Channel figures](docs/CHANNEL_FIGURES.md) · [Source credit](docs/media/tour/README.md#fluorescence-and-cell-measurements)
+
 ### Repeat an analysis and keep its history
 
 - **Set the scope.** Declare the region, native channels, time point and Z range before running a method. Draw ROIs, run thresholding or watershed, measure puncta and channel intensity, or measure cell density in distance bands along a tissue boundary. Record a transform when registering images to a common grid. [Quantification](docs/QUANTIFICATION.md) · [Spatial distance bands](docs/SPATIAL_DISTANCE_BANDS.md) · [Registration](docs/REGISTRATION.md)

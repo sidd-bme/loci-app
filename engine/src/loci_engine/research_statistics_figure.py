@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import PIL
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
+from .figure_fonts import verified_figure_font as _font
 from .models import ENGINE_VERSION
 from .quantitative import integer
 from .research_population import population_query
@@ -228,45 +229,6 @@ def _label(metric: dict) -> str:
     return f"{metric['label']} ({unit})" if unit else metric["label"]
 
 
-def _font(size: int, labels: list[str]) -> tuple[Any, dict]:
-    if any(len(label) > 1024 for label in labels) or any(
-        ord(c) < 32 or ord(c) == 127 for label in labels for c in label
-    ):
-        raise ValueError("Metric labels contain unsupported control characters")
-    candidates = [
-        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-        Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts/arial.ttf",
-    ]
-    for file in candidates:
-        if not file.is_file() or file.is_symlink():
-            continue
-        with file.open("rb") as stream:
-            data = stream.read(32 * 1024 * 1024 + 1)
-        if len(data) > 32 * 1024 * 1024:
-            continue
-        font = ImageFont.truetype(io.BytesIO(data), size=size)
-        missing = {
-            (font.getmask(character).size, bytes(font.getmask(character)))
-            for character in ("\ufffd", "\U0010ffff")
-        }
-        if any(
-            (font.getmask(character).size, bytes(font.getmask(character))) in missing
-            for text in labels
-            for character in text
-            if not character.isspace()
-        ):
-            continue
-        return font, {
-            "family": font.getname()[0],
-            "style": font.getname()[1],
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "svg_font_policy": "named-local-font-no-external-resources",
-        }
-    raise ValueError("No installed verified font supports all actual metric labels and units")
-
-
 def generate_figure(
     population: dict, request: dict, application_version: str
 ) -> tuple[dict[str, bytes], dict]:
@@ -309,6 +271,7 @@ def generate_figure(
     # 8 pt fonts and 0.5 pt lines retain physical size across preset dimensions.
     font_size = round(8 / 72 * DPI)
     font, font_identity = _font(font_size, [x_label, y_label, "0123456789.e+-"])
+    font_identity["svg_font_policy"] = "named-local-font-no-external-resources"
     image = Image.new("RGB", (width, height), "white")
     raster = ImageDraw.Draw(image)
     root = ET.Element(

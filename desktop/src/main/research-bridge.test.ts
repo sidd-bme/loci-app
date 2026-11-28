@@ -1393,6 +1393,50 @@ describe("native research bridge", () => {
     }, 0);
   });
 
+  it("forwards split grayscale channel figure options through export-source-view", async () => {
+    const project = path.join(root, "Study.loci-study");
+    const destination = path.join(root, "Split figure.png");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: project });
+    await call("create");
+    mocks.save.mockResolvedValueOnce({ canceled: false, filePath: destination });
+    const request = {
+      source_id: "b".repeat(32),
+      source_sha256: sha,
+      format: "png",
+      view: {
+        source_id: "b".repeat(32),
+        overview: true,
+        max_edge: 1024,
+        t: 0,
+        z: 0,
+        c: 0,
+        channels: [
+          { channel: 0, low: 0, high: 255, gamma: 1, visible: true, color: "#00ffff", opacity: 1 },
+          { channel: 1, low: 0, high: 255, gamma: 1, visible: true, color: "#ff00ff", opacity: 1 },
+        ],
+        figure: {
+          dpi: 300,
+          scale_bar: true,
+          channel_legend: false,
+          layout: "channels-and-merge-row",
+          invert_grayscale: true,
+          channel_labels: [
+            { channel: 0, name: "Channel 1", color: "#00ffff" },
+            { channel: 1, name: "Channel 2", color: "#ff00ff" },
+          ],
+        },
+      },
+    };
+
+    await call("export-source-view", request);
+
+    expect(mocks.request).toHaveBeenLastCalledWith("research_source_rendered_export", {
+      project,
+      request,
+      destination,
+    }, 0);
+  });
+
   it("cancels a volume-figure picker without publishing artifacts", async () => {
     const project = path.join(root, "Study.loci-study");
     const request = volumeFigureRequest();
