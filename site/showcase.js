@@ -6,56 +6,37 @@
   const THEME_STORAGE_KEY = 'loci-theme';
 
   function initThemeToggle() {
-    const buttons = Array.from(document.querySelectorAll('[data-theme-set]'));
-    if (buttons.length === 0) return;
+    const toggle = document.getElementById('theme-toggle');
+    if (!toggle) return;
+    const root = document.documentElement;
+    const systemLight = window.matchMedia?.('(prefers-color-scheme: light)');
 
-    const mediaQuery =
-      typeof window.matchMedia === 'function'
-        ? window.matchMedia('(prefers-color-scheme: light)')
-        : null;
-
-    function getResolvedTheme() {
-      const explicit = document.documentElement.dataset.theme;
-      if (explicit === 'dark' || explicit === 'light') return explicit;
-      return mediaQuery && mediaQuery.matches ? 'light' : 'dark';
+    function sync() {
+      const dark = root.dataset.theme ? root.dataset.theme === 'dark' : !systemLight?.matches;
+      toggle.setAttribute('aria-checked', String(dark));
+      toggle.title = dark ? 'Switch to light theme' : 'Switch to dark theme';
     }
-
-    function syncButtons() {
-      const current = getResolvedTheme();
-      buttons.forEach((btn) => {
-        const isCurrent = btn.dataset.themeSet === current;
-        btn.setAttribute('aria-pressed', String(isCurrent));
-      });
-    }
-
-    buttons.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const next = btn.dataset.themeSet;
-        if (next !== 'dark' && next !== 'light') return;
-        document.documentElement.dataset.theme = next;
-        try {
-          localStorage.setItem(THEME_STORAGE_KEY, next);
-        } catch {
-          // Storage may be unavailable in restricted contexts.
-        }
-        syncButtons();
-      });
-    });
-
-    if (mediaQuery) {
-      const onSystemChange = () => {
-        if (!document.documentElement.dataset.theme) {
-          syncButtons();
-        }
-      };
-      if (typeof mediaQuery.addEventListener === 'function') {
-        mediaQuery.addEventListener('change', onSystemChange);
-      } else if (typeof mediaQuery.addListener === 'function') {
-        mediaQuery.addListener(onSystemChange);
+    sync();
+    toggle.dataset.ready = '';
+    toggle.addEventListener('click', () => {
+      const next = toggle.getAttribute('aria-checked') === 'true' ? 'light' : 'dark';
+      toggle.dataset.animated = '';
+      root.dataset.theme = next;
+      sync();
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, next);
+      } catch {
+        // The explicit choice still applies to this page when storage is unavailable.
       }
-    }
-
-    syncButtons();
+    });
+    if (systemLight?.addEventListener) systemLight.addEventListener('change', sync);
+    else systemLight?.addListener(sync);
+    window.addEventListener('storage', event => {
+      if (event.key !== THEME_STORAGE_KEY && event.key !== null) return;
+      if (event.newValue === 'light' || event.newValue === 'dark') root.dataset.theme = event.newValue;
+      else delete root.dataset.theme;
+      sync();
+    });
   }
 
   function parseHexColor(hex) {

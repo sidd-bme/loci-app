@@ -243,6 +243,20 @@ async function activeTab(page, tab) {
 }
 
 async function exerciseTabs(page, evidence) {
+  const readingLayout = await page.locator('h1, .section-intro h2, .hero-intro > p:first-child').evaluateAll(elements => elements.map(el => {
+    const style = getComputedStyle(el);
+    return {
+      tag: el.tagName,
+      text: el.textContent.trim(),
+      fontSize: parseFloat(style.fontSize),
+      lines: Math.round(el.getBoundingClientRect().height / parseFloat(style.lineHeight)),
+    };
+  }));
+  const lineLimits = { H1: page.viewportSize().width < 740 ? 3 : 2, H2: 2, P: 4 };
+  for (const block of readingLayout) {
+    assert.ok(block.fontSize >= 16 && block.lines > 0 && block.lines <= lineLimits[block.tag],
+      `Unexpected text layout (${block.fontSize}px, ${block.lines} lines): ${block.text}`);
+  }
   const tabs = page.getByRole('tablist').getByRole('tab');
   assert.equal(await tabs.count(), 6);
   await tabs.first().scrollIntoViewIfNeeded();
@@ -348,23 +362,58 @@ async function exerciseMobileMenu(page) {
 }
 
 async function exerciseTheme(page) {
-  const dark = page.locator('button[data-theme-set="dark"]:visible');
-  const light = page.locator('button[data-theme-set="light"]:visible');
-  assert.equal(await dark.getAttribute('aria-pressed'), 'true');
-  assert.equal(await light.getAttribute('aria-pressed'), 'false');
+  const toggle = page.getByRole('switch', { name: 'Dark theme', exact: true });
+  assert.equal(await toggle.count(), 1);
+  assert.equal(await toggle.getAttribute('aria-checked'), 'true');
+  assert.equal(await toggle.getAttribute('title'), 'Switch to light theme');
+  const initialBox = await toggle.boundingBox();
+  assert.ok(initialBox.width >= 44 && initialBox.height >= 44, 'the icon has a full touch target');
+  const headingType = await page.locator('#hero-heading').evaluate(async heading => {
+    await document.fonts.ready;
+    return {
+      loaded: [...document.fonts].some(face => face.family === 'Instrument Sans' && face.status === 'loaded'),
+      runs: [heading, ...heading.querySelectorAll('*')].map(node => {
+        const style = getComputedStyle(node);
+        return { family: style.fontFamily.split(',')[0].replace(/["']/g, ''), style: style.fontStyle };
+      }),
+    };
+  });
+  assert.equal(headingType.loaded, true, 'the self-hosted heading font loaded');
+  for (const run of headingType.runs) assert.deepEqual(run, { family: 'Instrument Sans', style: 'normal' });
   const colors = () => page.locator('body').evaluate(node => {
     const style = getComputedStyle(node);
     return [style.backgroundColor, style.color];
   });
   const before = await colors();
-  await light.press('Enter');
-  assert.equal(await light.getAttribute('aria-pressed'), 'true');
-  assert.equal(await dark.getAttribute('aria-pressed'), 'false');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.waitForFunction(() => document.getElementById('theme-toggle').getAttribute('aria-checked') === 'false');
+  assert.notDeepEqual(await colors(), before, 'the system preference applies before an explicit choice');
+  await toggle.press('Space');
+  assert.equal(await toggle.getAttribute('aria-checked'), 'true');
   await twoFrames(page);
-  assert.notDeepEqual(await colors(), before, 'theme control changes the actual palette');
+  assert.deepEqual(await colors(), before, 'Space activates the dark palette');
+  assert.deepEqual(await toggle.boundingBox(), initialBox, 'the icon reserves the same space');
+  assert.equal(await toggle.locator('.eclipse-shadow').evaluate(node => getComputedStyle(node).transitionDuration), '0s', 'reduced motion is immediate');
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForFunction(() => document.querySelector('button[data-theme-set="light"][aria-pressed="true"]'));
-  assert.notDeepEqual(await colors(), before, 'selected theme survives reload');
+  await page.waitForFunction(() => document.getElementById('theme-toggle').getAttribute('aria-checked') === 'true');
+  assert.deepEqual(await colors(), before, 'the explicit choice survives reload');
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await toggle.press('Enter');
+  assert.equal(await toggle.getAttribute('aria-checked'), 'false');
+  assert.equal(await toggle.getAttribute('title'), 'Switch to dark theme');
+  const moving = toggle.locator('.eclipse-shadow');
+  assert.ok(await moving.evaluate(node => parseFloat(getComputedStyle(node).transitionDuration)) > 0, 'motion-enabled switch animates');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.sun-rays')).opacity === '1');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  assert.equal(await toggle.getAttribute('aria-checked'), 'false', 'system changes respect the saved override');
+  const peer = await page.context().newPage();
+  try {
+    await peer.goto(base.href, { waitUntil: 'domcontentloaded' });
+    await peer.getByRole('switch', { name: 'Dark theme', exact: true }).click();
+    await page.waitForFunction(() => document.getElementById('theme-toggle').getAttribute('aria-checked') === 'true');
+  } finally {
+    await peer.close();
+  }
 }
 
 async function exerciseHistory(page, evidence) {
