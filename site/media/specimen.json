@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "width": 1024,
+  "height": 1024,
+  "spacingUm": {
+    "x": 0.065,
+    "y": 0.065,
+    "z": 0.29
+  },
+  "fieldSizeUm": {
+    "width": 66.56,
+    "height": 66.56
+  },
+  "field": {
+    "x": 0,
+    "y": 0,
+    "width": 1024,
+    "height": 1024,
+    "pyramidLevel": 0
+  },
+  "initialSectionIndex": 2,
+  "fallback": "specimen/initial.webp",
+  "fallbackBytes": 1530988,
+  "fallbackSha256": "cc2788b42f5e680dfa4d3e4323c52defdd4f84af2ba69964f2d5d8577e947577",
+  "hero": {
+    "src": "hero.webp",
+    "operation": "Per-channel maximum of native optical sections, then windowing and additive pseudocolor",
+    "zIndexFirst": 15,
+    "zIndexLastInclusive": 20,
+    "field": {
+      "x": 0,
+      "y": 0,
+      "width": 1024,
+      "height": 1024,
+      "pyramidLevel": 0
+    },
+    "encoding": "Lossy WebP for presentation",
+    "bytes": 617418,
+    "sha256": "929320dbb63aa5e9ecf4ef6c26f03a3b279684f317cd8068d890f56b4acb8d94"
+  },
+  "channels": [
+    {
+      "id": "membrane",
+      "label": "Plasma membrane",
+      "marker": "CellMask Deep Red",
+      "component": "r",
+      "sourceChannelIndex": 0,
+      "color": "#FF993F",
+      "window": [
+        500,
+        2380
+      ]
+    },
+    {
+      "id": "tubulin",
+      "label": "GFP α-tubulin",
+      "marker": "mEGFP-tagged TUBA1B",
+      "component": "g",
+      "sourceChannelIndex": 1,
+      "color": "#29DBBF",
+      "window": [
+        470,
+        1430
+      ]
+    },
+    {
+      "id": "dna",
+      "label": "DNA",
+      "marker": "DNA fluorescence channel",
+      "component": "b",
+      "sourceChannelIndex": 2,
+      "color": "#A477FB",
+      "window": [
+        124,
+        171
+      ]
+    }
+  ],
+  "sections": [
+    {
+      "zIndex": 8,
+      "zUm": 2.32,
+      "src": "specimen/z08.webp",
+      "bytes": 1493720,
+      "sha256": "4e5bbb740a603c7ab7cb10e61f557418010711db83114d17221fc30c5aef8e31"
+    },
+    {
+      "zIndex": 12,
+      "zUm": 3.48,
+      "src": "specimen/z12.webp",
+      "bytes": 1548098,
+      "sha256": "b0fa7d3ee9551409075a8c9060048aed2dda9bcee5699bfc2bae5ae3212bed27"
+    },
+    {
+      "zIndex": 16,
+      "zUm": 4.64,
+      "src": "specimen/z16.webp",
+      "bytes": 1325176,
+      "sha256": "935579051338237a7e167cfbe50f03124b78549d64581dbafd9950dfe68f588b"
+    },
+    {
+      "zIndex": 20,
+      "zUm": 5.8,
+      "src": "specimen/z20.webp",
+      "bytes": 1158064,
+      "sha256": "3412634a11b6458951674d3840a932e6d408815072925387bf827e5e7cfcc911"
+    },
+    {
+      "zIndex": 24,
+      "zUm": 6.96,
+      "src": "specimen/z24.webp",
+      "bytes": 1068964,
+      "sha256": "4b3ccfbe3419a0380174be66ae4aeb95ba7e1bf7ea17e992c1fddec67f42a49a"
+    },
+    {
+      "zIndex": 28,
+      "zUm": 8.12,
+      "src": "specimen/z28.webp",
+      "bytes": 1036020,
+      "sha256": "94efa09d241bb5cc61922536a53b6b073662a21db0cb29f62f8e149f2cfedf3d"
+    },
+    {
+      "zIndex": 32,
+      "zUm": 9.28,
+      "src": "specimen/z32.webp",
+      "bytes": 1122718,
+      "sha256": "604d3f0e3e400df2ef102bdb10529e7455cd5702834206069b540d3150ae5427"
+    },
+    {
+      "zIndex": 36,
+      "zUm": 10.44,
+      "src": "specimen/z36.webp",
+      "bytes": 1163024,
+      "sha256": "f582f34c86dc2023f7d12a384b7cebc0ac60a903031d44dd017dd5b2347171b0"
+    },
+    {
+      "zIndex": 40,
+      "zUm": 11.6,
+      "src": "specimen/z40.webp",
+      "bytes": 606988,
+      "sha256": "9dbd860297f5c12860839b8f7231faf69ae2b641a4f02684e7f1499eba097789"
+    }
+  ],
+  "display": {
+    "sectionEncoding": "Opaque lossless RGB WebP, no embedded color profile",
+    "windowing": "Each RGB component stores one channel's native uint16 value clipped to its window, then mapped linearly to 0–255 and rounded",
+    "gamma": 1,
+    "compositing": "For each output color component, sum the enabled intensity bytes multiplied by their color weights (color byte / 255), round and clamp to 0–255",
+    "zReference": "zUm is relative to native Z0; sampled 0-based Z indices are optical sections 0.29 µm apart in the acquisition",
+    "limitations": "The web images are windowed, 8-bit display derivatives. Use the source TIFFs for measurement. Sections are sampled without interpolation. The hero combines signal from different depths. Brightfield is omitted."
+  },
+  "source": {
+    "id": "AICS_12_134",
+    "label": "Human induced pluripotent stem cells",
+    "dataset": "BBBC034v1",
+    "url": "https://bbbc.broadinstitute.org/BBBC034",
+    "archiveUrl": "https://data.broadinstitute.org/bbbc/BBBC034/BBBC034_v1_dataset.zip",
+    "license": "CC BY 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "credit": "Thirstrup et al. (2018), Allen Institute for Cell Science Microscopy & Image Analysis Team, via the Broad Bioimage Benchmark Collection. Loci prepared the display views.",
+    "collectionCitationUrl": "https://doi.org/10.1038/nmeth.2083",
+    "cellLineUrl": "https://cell-catalog.allencell.org/cell-line/aics-12-105/",
+    "axes": "CZYX",
+    "shape": [
+      4,
+      52,
+      1024,
+      1024
+    ],
+    "dtype": "uint16",
+    "fingerprint": {
+      "algorithm": "SHA-256",
+      "sha256": "6ce49ab9d0ad5ab2ea996aeabce4593148846895cd3fa4bd14e7b9e758b8b52a",
+      "object": "Four-channel OME-TIFF lossless assembly of publisher TIFFs"
+    },
+    "publisherFiles": [
+      {
+        "sourceChannelIndex": 0,
+        "name": "AICS_12_134_C=0.tif",
+        "sha256": "b205ac04bd2a3d0941bbbd183194c326fdcea5e612d75b4523981503b7fca365",
+        "archiveCrc32": "8a4bb7bd"
+      },
+      {
+        "sourceChannelIndex": 1,
+        "name": "AICS_12_134_C=1.tif",
+        "sha256": "80d1a9d5bbf10efa755e5a57dc34fc4e49ebbc6507e3f1c9c7c2b5dff717bb29",
+        "archiveCrc32": "9cfb0570"
+      },
+      {
+        "sourceChannelIndex": 2,
+        "name": "AICS_12_134_C=2.tif",
+        "sha256": "4260f548337847d9f9ab828da074e37ecd049f477f00fc5299ef9bf48b2e5de1",
+        "archiveCrc32": "375dc1f2"
+      },
+      {
+        "sourceChannelIndex": 3,
+        "name": "AICS-12_134_C=3.tif",
+        "sha256": "1453d2086b1b2062d1c674ebce2adfe95dedb63525085bbcb89375d1e7a30fbf",
+        "archiveCrc32": "f016405a"
+      }
+    ]
+  }
+}

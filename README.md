@@ -2,7 +2,7 @@
 
 Loci is an open-source desktop workbench for biomedical imaging. Explore optical sections, segment cells and measure tissue on your own computer. Trace a measurement back to its source image, analysis settings and review history.
 
-[Download the Apple silicon beta](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2) · [Try your first study](docs/workflows/FIRST_STUDY.md) · [Installation and checksum verification](docs/INSTALLATION.md)
+[Download the Apple silicon beta](https://github.com/sidd-bme/loci-app/releases/tag/v0.2.0-beta.2) · [Interactive product tour](https://sidd-bme.github.io/loci-app/) · [Try your first study](docs/workflows/FIRST_STUDY.md) · [Installation and checksum verification](docs/INSTALLATION.md)
 
 The download is the unnotarized **v0.2.0-beta.2** prerelease. This tour shows the newer development build. [Release status](docs/RELEASE_STATUS.md)
 
