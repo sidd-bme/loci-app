@@ -407,4 +407,148 @@ describe("SourceExportPanel", () => {
 
     expect(screen.getByLabelText("Rendered export DPI")).toHaveValue("500");
   });
+
+  it("supports separate named grayscale channels alongside a merge in row or column layout and resets on source switch", async () => {
+    const scalar: ResearchSource = {
+      ...sources[0],
+      metadata: {
+        ...sources[0].metadata,
+        sample_semantics: "none",
+        channel_names: ["Acquisition A", "Acquisition B"],
+      },
+    };
+    const secondScalar: ResearchSource = {
+      ...sources[1],
+      metadata: {
+        ...sources[1].metadata,
+        sample_semantics: "none",
+        channel_names: ["Second A", "Second B"],
+      },
+    };
+    const exportSourceView = vi.fn().mockResolvedValue({
+      basename: "split-figure.png",
+      sha256: "e".repeat(64),
+      width: 1200,
+      height: 500,
+      sampling: "full-extent overview",
+      layout: "channels-and-merge-row",
+    });
+    const api = bridge(exportSourceView);
+    const view = render(<SourceExportPanel
+      api={api}
+      source={scalar}
+      selection={selection}
+      channels={channels}
+      channelNames={["Declared Nuclei", ""]}
+      projection="max"
+      onError={vi.fn()}
+    />);
+    fireEvent.click(screen.getByText("Export rendered image"));
+
+    const layoutSelect = screen.getByLabelText("Rendered export layout");
+    expect(layoutSelect).toHaveValue("merge");
+    fireEvent.change(layoutSelect, { target: { value: "channels-and-merge-row" } });
+    expect(layoutSelect).toHaveValue("channels-and-merge-row");
+    expect(screen.getByText(/For raw values, use Export scientific data/)).toBeVisible();
+    expect(screen.getByLabelText("Channel 1 panel label")).toHaveValue("Declared Nuclei");
+    expect(screen.getByLabelText("Channel 2 panel label")).toHaveValue("Acquisition B");
+    expect(screen.getByText("Window 10–1000 · γ 1")).toBeVisible();
+    expect(screen.getByText("Window 20–800 · γ 1.2")).toBeVisible();
+
+    fireEvent.click(screen.getByLabelText("Invert grayscale channel panels"));
+    expect(screen.getByText("Window 10–1000 · γ 1")).toBeVisible();
+
+    fireEvent.change(layoutSelect, { target: { value: "channels-and-merge-column" } });
+    fireEvent.click(screen.getByRole("button", { name: "Export PNG…" }));
+    await waitFor(() => expect(exportSourceView).toHaveBeenCalledWith(expect.objectContaining({
+      view: expect.objectContaining({
+        figure: {
+          dpi: 300,
+          scale_bar: false,
+          channel_legend: false,
+          layout: "channels-and-merge-column",
+          invert_grayscale: true,
+          channel_labels: [
+            { channel: 0, name: "Declared Nuclei", color: "#ffffff" },
+            { channel: 1, name: "Acquisition B", color: "#ff00ff" },
+          ],
+        },
+      }),
+    })));
+
+    view.rerender(<SourceExportPanel
+      api={api}
+      source={secondScalar}
+      selection={selection}
+      channels={channels}
+      projection="max"
+      onError={vi.fn()}
+    />);
+    expect(screen.getByLabelText("Rendered export layout")).toHaveValue("merge");
+    expect(screen.queryByLabelText("Invert grayscale channel panels")).not.toBeInTheDocument();
+  });
+
+  it("refuses split grayscale panels for RGB sources and disables split export when fewer than two scalar channels are visible", () => {
+    const rgbSource: ResearchSource = {
+      ...sources[0],
+      metadata: { ...sources[0].metadata, sample_semantics: "RGB" },
+    };
+    const api = bridge(vi.fn());
+    const rgbView = render(<SourceExportPanel
+      api={api}
+      source={rgbSource}
+      selection={selection}
+      channels={[channels[0]]}
+      projection="plane"
+      onError={vi.fn()}
+    />);
+    fireEvent.click(screen.getByText("Export rendered image"));
+    expect(screen.queryByLabelText("Rendered export layout")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Export PNG…" })).toBeEnabled();
+    rgbView.unmount();
+
+    const scalarSource: ResearchSource = {
+      ...sources[0],
+      metadata: { ...sources[0].metadata, sample_semantics: "none" },
+    };
+    const scalarView = render(<SourceExportPanel
+      api={api}
+      source={scalarSource}
+      selection={selection}
+      channels={channels}
+      projection="max"
+      onError={vi.fn()}
+    />);
+    fireEvent.click(screen.getByText("Export rendered image"));
+    const layoutSelect = screen.getByLabelText("Rendered export layout");
+    fireEvent.change(layoutSelect, { target: { value: "channels-and-merge-row" } });
+    expect(screen.getByRole("button", { name: "Export PNG…" })).toBeEnabled();
+
+    scalarView.rerender(<SourceExportPanel
+      api={api}
+      source={scalarSource}
+      selection={selection}
+      channels={[channels[0], { ...channels[1], visible: false }]}
+      projection="max"
+      onError={vi.fn()}
+    />);
+    expect(layoutSelect).toHaveAccessibleDescription(
+      "Show at least two channels to include grayscale panels.",
+    );
+    expect(screen.getByRole("button", { name: "Export PNG…" })).toBeDisabled();
+
+    fireEvent.change(layoutSelect, { target: { value: "merge" } });
+    expect(screen.getByRole("button", { name: "Export PNG…" })).toBeEnabled();
+  });
+
+  it("shows an automatic window when scalar display bounds are unresolved", () => {
+    const source = { ...sources[0], metadata: { ...sources[0].metadata, sample_semantics: "none" } };
+    render(<SourceExportPanel api={bridge(vi.fn())} source={source} selection={selection}
+      channels={[{ ...channels[0], low: undefined, high: undefined }, channels[1]]}
+      projection="plane" onError={vi.fn()} />);
+    fireEvent.click(screen.getByText("Export rendered image"));
+    fireEvent.change(screen.getByLabelText("Rendered export layout"), { target: { value: "channels-and-merge-row" } });
+    expect(screen.getByText("Automatic window · γ 1")).toBeVisible();
+    expect(screen.getByText("Window 20–800 · γ 1.2")).toBeVisible();
+  });
 });

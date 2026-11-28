@@ -468,6 +468,7 @@ Open **View → Image & channels → Export rendered image** to export the curre
 | **TIFF · 16-bit display** | **Whole selected plane** (full resolution) or **Analysis region** (source pixels) | Rendered 16-bit RGB display image with rendering provenance |
 
 - **Resolution (DPI):** Enter a whole number from `72` to `1200` (initial default `300`, configurable in **Settings → Saving & export**). DPI sets output metadata and print layout—never source resolution or detail.
+- **Grayscale channels and merge.** Show at least two scalar channels, then choose a row or column under **Layout**. Each grayscale panel shows the same field and uses its channel’s display window. Check the panel names before export. **Invert grayscale panels** gives dark signal on white and leaves the merge in its original colors. [Channel figure guide](CHANNEL_FIGURES.md)
 - **Scale bar & channel legend:** Enable **Include calibrated scale bar** when trustworthy physical X/Y geometry is declared (unavailable for RGBA or uncalibrated sources). Enable **Include channel legend** for visible scalar channels and enter clear user labels. Both sit in a dedicated footer outside source pixels—they are not burned over image data or treated as vector annotations.
 
 > **Choose the right artifact:** Use **Export result** or **Export scientific data** for downstream arrays, labels, measurements, and provenance; use annotation interchange for vector ROIs; use **Export rendered image** only for presentation figures. Never substitute a display figure for raw-value scientific data.

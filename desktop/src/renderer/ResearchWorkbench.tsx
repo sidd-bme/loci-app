@@ -5531,7 +5531,7 @@ export default function ResearchWorkbench({
             onReset={resetSourceDisplay}
             onCompare={setCompareDefault}
             onAuto={autoSourceDisplay}
-          /></fieldset><SourceExportPanel api={api} source={source} selection={shownSelection} channels={channels} defaultDpi={preferences.figureDpi}
+          /></fieldset><SourceExportPanel api={api} source={source} selection={shownSelection} channels={channels} channelNames={segmentationChannelNames} defaultDpi={preferences.figureDpi}
             projection={resolvedProjection} onError={setError} /></>
         )}
         {source && !configurationValid && <div role="status" className="research-number-status">

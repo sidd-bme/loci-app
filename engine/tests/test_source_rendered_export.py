@@ -2,6 +2,8 @@ import base64
 import hashlib
 import io
 import json
+from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -549,7 +551,7 @@ def test_footer_memory_is_bounded_before_raster_allocation(monkeypatch):
 
     monkeypatch.setattr(rendered_export_module.np, "full", refuse_allocation)
     with pytest.raises(ValueError, match="bounded footer size"):
-        rendered_export_module._render_footer(
+        rendered_export_module._plan_footer(
             width=1_000_000,
             image_height=200,
             channels=3,
@@ -575,5 +577,1092 @@ def test_png_quantization_provenance_only_claims_actual_uint16_rgb_conversion(tm
         assert provenance["canvas_quantization"] == (
             "uint16-fixed-range-nearest-v1" if rgb and dtype == np.uint16 else None
         )
+    finally:
+        workbench.close()
+
+
+def _multichannel_split_fixture(tmp_path):
+    path = tmp_path / "split-source.ome.tiff"
+    height, width = 128, 192
+    yy, xx = np.indices((height, width), dtype=np.uint16)
+    planes = np.zeros((3, height, width), dtype=np.uint16)
+    planes[0] = ((xx * 500 + yy * 200) % 60_000).astype(np.uint16)
+    planes[1] = (((width - 1 - xx) * 400 + yy * 150) % 50_000 + 5_000).astype(np.uint16)
+    planes[2] = 42_000
+    tifffile.imwrite(
+        path,
+        planes,
+        ome=True,
+        metadata={
+            "axes": "CYX",
+            "PhysicalSizeX": 0.5,
+            "PhysicalSizeXUnit": "µm",
+            "PhysicalSizeY": 0.5,
+            "PhysicalSizeYUnit": "µm",
+            "Channel": {"Name": ["Channel Alpha", "Channel Beta", "Hidden Gamma"]},
+        },
+    )
+    workbench = Workbench(ResearchProject.create(tmp_path / "split.loci-study", "Split"))
+    source = workbench.import_native(str(path))
+    channels = workbench.execute("viewer_defaults", {"source_id": source["id"]})["channels"]
+    channels[0].update(
+        low=1_000.0, high=51_000.0, gamma=1.5, color="#ff00ff", opacity=1.0, visible=True
+    )
+    channels[1].update(
+        low=5_000.0, high=55_000.0, gamma=0.8, color="#00ff00", opacity=0.75, visible=True
+    )
+    channels[2].update(
+        low=0.0, high=65_535.0, gamma=1.0, color="#00ffff", opacity=1.0, visible=False
+    )
+    return workbench, source, path, planes, channels
+
+
+def _expected_gray_and_merge(planes, channels, *, bit_depth: int, invert: bool):
+    maximum = 255 if bit_depth == 8 else 65_535
+    dtype = np.uint8 if bit_depth == 8 else np.uint16
+    visible = [entry for entry in channels if entry["visible"] and entry["opacity"] > 0]
+    composite = np.zeros((*planes.shape[1:], 3), dtype=np.float64)
+    grays = {}
+    for entry in visible:
+        ch = entry["channel"]
+        norm = np.clip(
+            (planes[ch].astype(np.float64) - entry["low"]) / (entry["high"] - entry["low"]),
+            0.0,
+            1.0,
+        )
+        norm = np.power(norm, 1.0 / entry["gamma"]) * entry["opacity"]
+        gray = np.rint(np.clip(norm, 0.0, 1.0) * maximum).astype(dtype)
+        if invert:
+            gray = (maximum - gray.astype(np.int32)).astype(dtype)
+        grays[ch] = np.repeat(gray[..., None], 3, axis=-1)
+        rgb = np.array(
+            [int(entry["color"][i : i + 2], 16) / 255.0 for i in (1, 3, 5)],
+            dtype=np.float64,
+        )
+        composite += norm[..., None] * rgb
+    merge = np.rint(np.clip(composite, 0.0, 1.0) * maximum).astype(dtype)
+    return grays, merge
+
+
+@pytest.mark.parametrize("export_format", ["png", "tiff"])
+@pytest.mark.parametrize("layout", ["channels-and-merge-row", "channels-and-merge-column"])
+@pytest.mark.parametrize("invert", [False, True])
+def test_split_channel_figure_exact_pixel_mapping_determinism_and_merge_parity(
+    tmp_path, monkeypatch, export_format, layout, invert
+):
+    workbench, source, source_path, planes, channels = _multichannel_split_fixture(tmp_path)
+    before_bytes = source_path.read_bytes()
+    before_mtime = source_path.stat().st_mtime_ns
+    try:
+        selection = {
+            "x": 16,
+            "y": 12,
+            "width": 160,
+            "height": 96,
+            "level": 0,
+            "c": 0,
+            "z": 0,
+            "t": 0,
+        }
+        labels = [
+            {"channel": 0, "name": "Channel Alpha", "color": "#ff00ff"},
+            {"channel": 1, "name": "Channel Beta", "color": "#00ff00"},
+        ]
+        view = {
+            "source_id": source["id"],
+            "selection": selection,
+            "channels": channels,
+            "figure": {
+                "dpi": 300,
+                "scale_bar": True,
+                "channel_legend": True,
+                "layout": layout,
+                "invert_grayscale": invert,
+                "channel_labels": labels,
+            },
+        }
+        suffix = "png" if export_format == "png" else "tiff"
+        target_a = tmp_path / f"split-a.{suffix}"
+        target_b = tmp_path / f"split-b.{suffix}"
+        target_merge = tmp_path / f"merge-only.{suffix}"
+
+        base_req = {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "format": export_format,
+            "view": view,
+        }
+        with monkeypatch.context() as patch:
+            if export_format == "png":
+                original_save = Image.Image.save
+
+                def save_to_disk(image, stream, **options):
+                    assert stream.fileno() >= 0
+                    return original_save(image, stream, **options)
+
+                patch.setattr(Image.Image, "save", save_to_disk)
+            receipt_a = export_rendered_source(workbench, base_req, target_a)
+        receipt_b = export_rendered_source(workbench, base_req, target_b)
+        merge_view = {
+            "source_id": source["id"],
+            "selection": selection,
+            "channels": channels,
+        }
+        export_rendered_source(
+            workbench,
+            {
+                "source_id": source["id"],
+                "source_sha256": source["sha256"],
+                "format": export_format,
+                "view": merge_view,
+            },
+            target_merge,
+        )
+
+        # Determinism: exact identical bytes and provenance hash.
+        assert target_a.read_bytes() == target_b.read_bytes()
+        assert receipt_a["sha256"] == receipt_b["sha256"]
+        assert receipt_a["provenance_sha256"] == receipt_b["provenance_sha256"]
+        assert receipt_a["layout"] == layout
+
+        bit_depth = 8 if export_format == "png" else 16
+        crop = planes[:, 12:108, 16:176]
+        expected_grays, expected_merge = _expected_gray_and_merge(
+            crop, channels, bit_depth=bit_depth, invert=invert
+        )
+        if export_format == "png":
+            with Image.open(target_a) as img:
+                raster = np.asarray(img)
+                provenance = json.loads(img.info["Loci rendering provenance"])
+            with Image.open(target_merge) as merge_img:
+                standalone_merge = np.asarray(merge_img)
+        else:
+            with tifffile.TiffFile(target_a) as tif:
+                raster = tif.pages[0].asarray()
+                provenance = json.loads(tif.pages[0].description)
+            standalone_merge = tifffile.imread(target_merge)
+
+        figure = provenance["figure"]
+        panels = figure["panels"]
+        assert figure["layout"] == layout
+        assert figure["invert_grayscale"] is invert
+        assert "universally color-blind-safe" in figure["accessibility_note"]
+        assert "not original-value quantitative data" in provenance["meaning"]
+        assert str(tmp_path) not in json.dumps(provenance)
+        assert [p["kind"] for p in panels] == ["grayscale", "grayscale", "merge"]
+        assert [p["name"] for p in panels] == ["Channel Alpha", "Channel Beta", "Merge"]
+        assert panels[0]["channel"] == 0 and panels[1]["channel"] == 1
+        assert panels[0]["window"] == {
+            "low": 1000.0,
+            "high": 51000.0,
+            "gamma": 1.5,
+            "opacity": 1.0,
+        }
+        assert panels[1]["window"] == {
+            "low": 5000.0,
+            "high": 55000.0,
+            "gamma": 0.8,
+            "opacity": 0.75,
+        }
+        assert "gray" in panels[0]["window_label"] and "1000-51000" in panels[0]["window_label"]
+
+        for idx, panel in enumerate(panels):
+            px, py, pw, ph = panel["raster_xywh"]
+            assert (pw, ph) == (160, 96)
+            panel_pixels = raster[py : py + ph, px : px + pw]
+            if panel["kind"] == "grayscale":
+                np.testing.assert_array_equal(panel_pixels, expected_grays[panel["channel"]])
+                if invert:
+                    border_val = 34 if bit_depth == 8 else 34 * 257
+                    expected_border = np.array(
+                        [border_val, border_val, border_val], dtype=raster.dtype
+                    )
+                    np.testing.assert_array_equal(raster[py - 1, px], expected_border)
+                    np.testing.assert_array_equal(raster[py + ph, px], expected_border)
+                    np.testing.assert_array_equal(raster[py, px - 1], expected_border)
+                    np.testing.assert_array_equal(raster[py, px + pw], expected_border)
+            else:
+                assert idx == 2
+                np.testing.assert_array_equal(panel_pixels, expected_merge)
+                np.testing.assert_array_equal(panel_pixels, standalone_merge)
+
+        if layout == "channels-and-merge-row":
+            assert (
+                panels[0]["raster_xywh"][1]
+                == panels[1]["raster_xywh"][1]
+                == panels[2]["raster_xywh"][1]
+            )
+            assert (
+                panels[0]["raster_xywh"][0]
+                < panels[1]["raster_xywh"][0]
+                < panels[2]["raster_xywh"][0]
+            )
+        else:
+            assert (
+                panels[0]["raster_xywh"][0]
+                == panels[1]["raster_xywh"][0]
+                == panels[2]["raster_xywh"][0]
+            )
+            assert (
+                panels[0]["raster_xywh"][1]
+                < panels[1]["raster_xywh"][1]
+                < panels[2]["raster_xywh"][1]
+            )
+
+        scale = figure["footer"]["scale_bar"]
+        assert scale["applies_to"] == "each-panel"
+        assert scale["bar_xywh"][2] < 160
+        sx, sy, sw, sh = scale["bar_xywh"]
+        assert np.all(raster[sy : sy + sh, sx : sx + sw] == 0)
+        assert workbench.project.list_results() == []
+    finally:
+        workbench.close()
+    assert source_path.read_bytes() == before_bytes
+    assert source_path.stat().st_mtime_ns == before_mtime
+
+
+def test_row_and_standalone_scale_bars_use_the_same_panel_width_at_high_dpi():
+    geometry = {"unit": "um", "axes": "YX", "affine": np.diag([0.8, 0.8, 1.0, 1.0]).tolist()}
+    options = rendered_export_module._FigureOptions(1200, True, False, ())
+    for footer_width in (160, 842):
+        footer = rendered_export_module._plan_footer(
+            width=footer_width,
+            image_height=120,
+            channels=3,
+            bit_depth=8,
+            options=options,
+            geometry=geometry,
+            legend=(),
+            scale_reference_width=160,
+        )
+        assert footer is not None
+        scale = footer.record["scale_bar"]
+        assert scale["label"] == "20 µm"
+        assert scale["bar_xywh"][2] == 25
+        assert scale["represented_length_um"] == 20.0
+        x, y, w, h = scale["bar_xywh"]
+        offset_y = y - footer.record["offset_y"]
+        assert np.all(footer.render()[offset_y : offset_y + h, x : x + w] == 0)
+
+
+def test_scientific_symbols_are_printed_as_distinct_glyphs(tmp_path):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    try:
+        for channel in channels[:2]:
+            channel.update(low=0, high=50_000, gamma=1, opacity=1)
+        labels = [
+            {"channel": index, "name": name, "color": channels[index]["color"]}
+            for index, name in enumerate(["α", "β"])
+        ]
+        view = {
+            "source_id": source["id"],
+            "overview": True,
+            "channels": channels,
+            "figure": {
+                "layout": "channels-and-merge-row",
+                "scale_bar": True,
+                "channel_labels": labels,
+            },
+        }
+        request = {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "format": "png",
+            "view": view,
+        }
+        dest = tmp_path / "scientific-symbols.png"
+        export_rendered_source(workbench, request, dest)
+        with Image.open(dest) as image:
+            figure = json.loads(image.info["Loci rendering provenance"])["figure"]
+            raster = np.array(image)
+        headers = []
+        for panel in figure["panels"][:2]:
+            x, y, w, h = panel["header_xywh"]
+            headers.append(raster[y : y + h, x : x + w])
+        # Identical numeric captions leave the Greek letter as the sole difference.
+        assert not np.array_equal(*headers)
+        assert len(figure["header_font"]["sha256"]) == 64
+        assert len(figure["footer"]["font"]["sha256"]) == 64
+        assert "µm" in figure["footer"]["scale_bar"]["label"]
+
+        labels[0]["name"] = "\U0010ffff"
+        refused = tmp_path / "missing-glyph.png"
+        with pytest.raises(ValueError, match="font"):
+            export_rendered_source(workbench, request, refused)
+        assert not refused.exists()
+    finally:
+        workbench.close()
+
+
+@pytest.mark.parametrize(
+    ("export_format", "overview", "projection"),
+    [("png", True, "max"), ("png", False, "mean"), ("tiff", False, "mean")],
+)
+def test_split_channel_projection_skips_inactive_planes_and_preserves_display(
+    tmp_path, monkeypatch, export_format, overview, projection
+):
+    path = tmp_path / "zstack.ome.tiff"
+    data = np.full((6, 3, 72, 96), 65_535, dtype=np.uint16)
+    data[1] = np.array([1_000, 20_000, 5_000])[:, None, None]
+    data[4] = np.array([6_000, 12_000, 18_000])[:, None, None]
+    tifffile.imwrite(path, data, ome=True, metadata={"axes": "CZYX"})
+    workbench = Workbench(ResearchProject.create(tmp_path / "proj.loci-study", "Proj"))
+    source = workbench.import_native(str(path))
+    channels = workbench.execute("viewer_defaults", {"source_id": source["id"]})["channels"]
+    for index, display in enumerate(channels):
+        display.update(
+            low=0.0,
+            high=65_535.0,
+            gamma=1.3 if index == 1 else 0.8,
+            color="#00ffff" if index == 1 else "#ff00ff",
+            opacity=0.0 if index in {2, 5} else 0.75,
+            visible=index not in {0, 3},
+        )
+    try:
+        view = {
+            "source_id": source["id"],
+            "channels": channels,
+            "projection": projection,
+            **(
+                {"overview": True, "max_edge": 1024, "z_stop": 3}
+                if overview
+                else {"selection": {"x": 0, "y": 0, "width": 96, "height": 72, "z_stop": 3}}
+            ),
+        }
+        standalone = workbench.execute("viewer_tile", view)
+        reads = []
+        original = NativeImageSession.read_region
+
+        def guarded(self, selection):
+            assert selection.c in {1, 4}
+            reads.append((selection.c, selection.z))
+            return original(self, selection)
+
+        monkeypatch.setattr(NativeImageSession, "read_region", guarded)
+        request = {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "format": export_format,
+            "view": {
+                **view,
+                "figure": {
+                    "layout": "channels-and-merge-row",
+                    "channel_labels": [
+                        {"channel": idx, "name": name, "color": channels[idx]["color"]}
+                        for idx, name in ((1, "ChB"), (4, "ChE"))
+                    ],
+                },
+            },
+        }
+        target = tmp_path / f"z-{projection}.{export_format}"
+        receipt = export_rendered_source(workbench, request, target)
+        assert set(reads) == {(channel, z) for channel in (1, 4) for z in range(3)}
+        assert receipt["display_revision"] == standalone["display_revision"]
+        if export_format == "png":
+            with Image.open(target) as img:
+                raster = np.asarray(img)
+                provenance = json.loads(img.info["Loci rendering provenance"])
+            rendering = provenance["rendering"]
+            assert rendering["selection"]["c"] == 0  # Default remains the first request mapping.
+            assert provenance["request"]["channels"] == channels
+            bit_depth = 8
+        else:
+            with tifffile.TiffFile(target) as tif:
+                raster = tif.pages[0].asarray()
+                provenance = json.loads(tif.pages[0].description)
+            rendering = provenance
+            bit_depth = 16
+        assert rendering["display"] == standalone["display"]
+        assert rendering["projection"] == projection
+        assert provenance["source_sha256"] == source["sha256"]
+        assert provenance["figure"]["footer"] is None
+        projected = np.max(data, axis=1) if projection == "max" else np.mean(data, axis=1)
+        expected_grays, expected_merge = _expected_gray_and_merge(
+            projected, channels, bit_depth=bit_depth, invert=False
+        )
+        for panel in provenance["figure"]["panels"]:
+            px, py, pw, ph = panel["raster_xywh"]
+            region = raster[py : py + ph, px : px + pw]
+            if panel["kind"] == "grayscale":
+                np.testing.assert_array_equal(region, expected_grays[panel["channel"]])
+            else:
+                assert panel["channels"] == [1, 4]
+                np.testing.assert_array_equal(region, expected_merge)
+    finally:
+        workbench.close()
+
+
+def test_split_tiff16_reads_only_bounded_tiles_across_multi_tile_layout(tmp_path, monkeypatch):
+    path = tmp_path / "tiled-split.ome.tiff"
+    data = np.zeros((2, 300, 320), dtype=np.uint16)
+    data[0] = np.arange(300 * 320, dtype=np.uint16).reshape(300, 320)
+    data[1] = 65_535 - data[0]
+    tifffile.imwrite(
+        path,
+        data,
+        ome=True,
+        metadata={"axes": "CYX", "Channel": {"Name": ["First", "Second"]}},
+    )
+    workbench = Workbench(ResearchProject.create(tmp_path / "tile-split.loci-study", "TileSplit"))
+    source = workbench.import_native(str(path))
+    channels = workbench.execute("viewer_defaults", {"source_id": source["id"]})["channels"]
+    channels[0].update(
+        low=0.0, high=65_535.0, gamma=1.0, color="#ffffff", opacity=1.0, visible=True
+    )
+    channels[1].update(
+        low=0.0, high=65_535.0, gamma=1.0, color="#ff00ff", opacity=1.0, visible=True
+    )
+    observed = []
+    original = NativeImageSession.read_region
+
+    def guarded(self, sel):
+        assert sel.width <= 256 and sel.height <= 256
+        observed.append((sel.width, sel.height))
+        return original(self, sel)
+
+    monkeypatch.setattr(NativeImageSession, "read_region", guarded)
+    try:
+        request = {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "format": "tiff",
+            "view": {
+                "source_id": source["id"],
+                "selection": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 320,
+                    "height": 300,
+                    "level": 0,
+                    "c": 0,
+                    "z": 0,
+                    "t": 0,
+                },
+                "channels": channels,
+                "figure": {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": False,
+                    "channel_labels": [
+                        {"channel": 0, "name": "First", "color": "#ffffff"},
+                        {"channel": 1, "name": "Second", "color": "#ff00ff"},
+                    ],
+                },
+            },
+        }
+        target = tmp_path / "tiled-split.tiff"
+        receipt = export_rendered_source(workbench, request, target)
+        assert observed
+        assert receipt["image_width"] == 320 and receipt["image_height"] == 300
+        with tifffile.TiffFile(target) as tif:
+            raster = tif.pages[0].asarray()
+            prov = json.loads(tif.pages[0].description)
+        expected_grays, expected_merge = _expected_gray_and_merge(
+            data, channels, bit_depth=16, invert=False
+        )
+        for panel in prov["figure"]["panels"]:
+            px, py, pw, ph = panel["raster_xywh"]
+            region = raster[py : py + ph, px : px + pw]
+            if panel["kind"] == "grayscale":
+                np.testing.assert_array_equal(region, expected_grays[panel["channel"]])
+            else:
+                np.testing.assert_array_equal(region, expected_merge)
+    finally:
+        workbench.close()
+
+
+def test_split_channel_invalid_inputs_refuse_cleanly_without_publishing(tmp_path):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    try:
+        base_selection = {
+            "x": 0,
+            "y": 0,
+            "width": 96,
+            "height": 72,
+            "level": 0,
+            "c": 0,
+            "z": 0,
+            "t": 0,
+        }
+        labels = [
+            {"channel": 0, "name": "Channel Alpha", "color": "#ff00ff"},
+            {"channel": 1, "name": "Channel Beta", "color": "#00ff00"},
+        ]
+
+        bad_cases = [
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "merge",
+                    "invert_grayscale": True,
+                    "channel_labels": [],
+                },
+                channels,
+                "Inverted grayscale applies only to separate grayscale channel panels",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "grid",
+                    "invert_grayscale": False,
+                    "channel_labels": labels,
+                },
+                channels,
+                "Rendered figure layout must be",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": "yes",
+                    "channel_labels": labels,
+                },
+                channels,
+                "Inverted grayscale option must be boolean",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": False,
+                    "channel_labels": [],
+                },
+                channels,
+                "Channel labels must be present",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": False,
+                    "channel_labels": [{"channel": 0, "name": "Only One", "color": "#ff00ff"}],
+                },
+                [channels[0], {**channels[1], "visible": False}, channels[2]],
+                "at least two visible scalar channels",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": False,
+                    "channel_labels": [{"channel": 0, "name": "Only One", "color": "#ff00ff"}],
+                },
+                [channels[0], {**channels[1], "opacity": 0.0}, channels[2]],
+                "at least two visible scalar channels",
+            ),
+            (
+                {
+                    "dpi": 300,
+                    "scale_bar": False,
+                    "channel_legend": False,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": False,
+                    "channel_labels": [
+                        {"channel": 0, "name": "Wrong Color", "color": "#00ffff"},
+                        labels[1],
+                    ],
+                },
+                channels,
+                "colors must match",
+            ),
+        ]
+        for idx, (fig, chs, pattern) in enumerate(bad_cases):
+            target = tmp_path / f"bad-{idx}.png"
+            with pytest.raises(ValueError, match=pattern):
+                export_rendered_source(
+                    workbench,
+                    {
+                        "source_id": source["id"],
+                        "source_sha256": source["sha256"],
+                        "format": "png",
+                        "view": {
+                            "source_id": source["id"],
+                            "selection": base_selection,
+                            "channels": chs,
+                            "figure": fig,
+                        },
+                    },
+                    target,
+                )
+            assert not target.exists()
+
+        # Too-narrow panel (< 64 px) is refused cleanly.
+        narrow_target = tmp_path / "narrow.png"
+        with pytest.raises(ValueError, match="at least 64 pixels wide"):
+            export_rendered_source(
+                workbench,
+                {
+                    "source_id": source["id"],
+                    "source_sha256": source["sha256"],
+                    "format": "png",
+                    "view": {
+                        "source_id": source["id"],
+                        "selection": {**base_selection, "width": 48},
+                        "channels": channels,
+                        "figure": {
+                            "dpi": 300,
+                            "scale_bar": False,
+                            "channel_legend": False,
+                            "layout": "channels-and-merge-row",
+                            "invert_grayscale": False,
+                            "channel_labels": labels,
+                        },
+                    },
+                },
+                narrow_target,
+            )
+        assert not narrow_target.exists()
+
+        # Column layout narrower than MIN_FOOTER_WIDTH with footer enabled fails cleanly.
+        narrow_col_target = tmp_path / "narrow-col-footer.png"
+        with pytest.raises(ValueError, match="at least 160 pixels wide"):
+            export_rendered_source(
+                workbench,
+                {
+                    "source_id": source["id"],
+                    "source_sha256": source["sha256"],
+                    "format": "png",
+                    "view": {
+                        "source_id": source["id"],
+                        "selection": base_selection,
+                        "channels": channels,
+                        "figure": {
+                            "dpi": 300,
+                            "scale_bar": True,
+                            "channel_legend": False,
+                            "layout": "channels-and-merge-column",
+                            "invert_grayscale": False,
+                            "channel_labels": labels,
+                        },
+                    },
+                },
+                narrow_col_target,
+            )
+        assert not narrow_col_target.exists()
+    finally:
+        workbench.close()
+
+    # RGB source is refused cleanly.
+    rgb_wb, rgb_source, rgb_req, _ = fixture(tmp_path)
+    try:
+        rgb_req["view"]["figure"] = {
+            "dpi": 300,
+            "scale_bar": False,
+            "channel_legend": False,
+            "layout": "channels-and-merge-row",
+            "invert_grayscale": False,
+            "channel_labels": [
+                {"channel": 0, "name": "Red?", "color": "#ffffff"},
+                {"channel": 1, "name": "Green?", "color": "#ffffff"},
+            ],
+        }
+        rgb_target = tmp_path / "rgb-split.png"
+        with pytest.raises(ValueError, match="scalar source channels"):
+            export_rendered_source(rgb_wb, rgb_req, rgb_target)
+        assert not rgb_target.exists()
+    finally:
+        rgb_wb.close()
+
+
+def _guard_figure_rasters(monkeypatch):
+    original_new = Image.new
+
+    def small_measurement_only(mode, size, *args, **kwargs):
+        assert size == (1, 1), f"Allocated Pillow raster {size} before preflight"
+        return original_new(mode, size, *args, **kwargs)
+
+    def unexpected_array(*_args, **_kwargs):
+        pytest.fail("Allocated NumPy raster before preflight")
+
+    monkeypatch.setattr(Image, "new", small_measurement_only)
+    monkeypatch.setattr(rendered_export_module.np, "full", unexpected_array)
+
+
+def _split_export_request(source, channels, *, overview=False, export_format="png"):
+    return {
+        "source_id": source["id"],
+        "source_sha256": source["sha256"],
+        "format": export_format,
+        "view": {
+            "source_id": source["id"],
+            **(
+                {"overview": True}
+                if overview
+                else {"selection": {"x": 0, "y": 0, "width": 96, "height": 72}}
+            ),
+            "channels": channels,
+            "figure": {
+                "layout": "channels-and-merge-row",
+                "channel_labels": [
+                    {
+                        "channel": display["channel"],
+                        "name": f"Ch {display['channel']}",
+                        "color": display["color"],
+                    }
+                    for display in channels
+                    if display["visible"] and display["opacity"] > 0
+                ],
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("overview", [False, True])
+def test_split_png_limit_includes_footer_before_raster_allocation(tmp_path, monkeypatch, overview):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    try:
+        request = _split_export_request(source, channels, overview=overview)
+        baseline = export_rendered_source(workbench, request, tmp_path / "no-footer.png")
+        monkeypatch.setattr(
+            rendered_export_module, "MAX_SPLIT_PNG_PIXELS", baseline["width"] * baseline["height"]
+        )
+        request["view"]["figure"]["channel_legend"] = True
+        _guard_figure_rasters(monkeypatch)
+        monkeypatch.setattr(
+            NativeImageSession, "read_region", lambda *_: pytest.fail("Decoded before preflight")
+        )
+        target = tmp_path / "guarded-split.png"
+        with pytest.raises(ValueError, match="bounded raster limit"):
+            export_rendered_source(workbench, request, target)
+        assert not target.exists()
+    finally:
+        workbench.close()
+
+
+@pytest.mark.parametrize(
+    ("height", "visible_count", "channel_count", "error"),
+    [
+        (1_700, 4, 4, "aggregate working-memory budget"),
+        (2_048, 8, 8, "bounded raster limit"),
+        (1_200, 2, 6, None),
+        (1_200, 6, 6, "aggregate working-memory budget"),
+    ],
+)
+def test_split_mean_png_preflight_at_real_limits(
+    tmp_path, monkeypatch, height, visible_count, channel_count, error
+):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+
+    class DecodeReached(Exception):
+        pass
+
+    try:
+        metadata = workbench._session(source["id"]).metadata
+        dimensions = replace(metadata.dimensions, x=2_048, y=height, c=channel_count, z=2)
+        metadata = replace(
+            metadata,
+            dimensions=dimensions,
+            levels=(replace(metadata.levels[0], dimensions=dimensions),),
+            channel_dtypes=(metadata.channel_dtypes[0],) * channel_count,
+        )
+
+        def read_region(selection):
+            if error is not None:
+                pytest.fail("Decoded before preflight")
+            assert selection.c < visible_count
+            raise DecodeReached
+
+        session = SimpleNamespace(
+            metadata=metadata,
+            geometry=lambda *_: SimpleNamespace(to_dict=dict),
+            read_region=read_region,
+        )
+        monkeypatch.setattr(workbench, "_session", lambda *_: session)
+        channels = [
+            {**channels[0], "channel": index, "visible": index < visible_count}
+            for index in range(channel_count)
+        ]
+        request = _split_export_request(source, channels)
+        request["view"]["selection"].update(width=2_048, height=height, z_stop=2)
+        request["view"]["projection"] = "mean"
+        target = tmp_path / "guarded-mean.png"
+        if error is None:
+            with pytest.raises(DecodeReached):
+                export_rendered_source(workbench, request, target)
+        else:
+            _guard_figure_rasters(monkeypatch)
+            with pytest.raises(ValueError, match=error):
+                export_rendered_source(workbench, request, target)
+        assert not target.exists()
+    finally:
+        workbench.close()
+
+
+@pytest.mark.parametrize("storage_guard", [False, True])
+def test_split_tiff_guards_precede_header_and_footer_rasters(tmp_path, monkeypatch, storage_guard):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    try:
+        request = _split_export_request(source, channels, export_format="tiff")
+        request["view"]["figure"]["channel_legend"] = True
+        if storage_guard:
+            monkeypatch.setattr(
+                rendered_export_module.shutil, "disk_usage", lambda _: SimpleNamespace(free=0)
+            )
+            error = "free destination storage"
+        else:
+            monkeypatch.setattr(rendered_export_module, "MAX_RENDERED_TIFF_BYTES", 1)
+            error = "64 GiB output guard"
+        _guard_figure_rasters(monkeypatch)
+        monkeypatch.setattr(
+            NativeImageSession, "read_region", lambda *_: pytest.fail("Decoded before preflight")
+        )
+        target = tmp_path / "guarded-split.tiff"
+        with pytest.raises(ValueError, match=error):
+            export_rendered_source(workbench, request, target)
+        assert not target.exists()
+        assert not list(tmp_path.glob(".loci-rendered-*"))
+    finally:
+        workbench.close()
+
+
+def test_split_channel_normal_rpc_entry_point_exports_png_and_tiff16(tmp_path):
+    import loci_engine.research_rpc as research_rpc_module
+
+    workbench, source, _, planes, channels = _multichannel_split_fixture(tmp_path)
+    project_root = str(workbench.project.root)
+    workbench.close()
+    try:
+        request = {
+            "source_id": source["id"],
+            "source_sha256": source["sha256"],
+            "format": "png",
+            "view": {
+                "source_id": source["id"],
+                "selection": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 192,
+                    "height": 128,
+                    "level": 0,
+                    "c": 0,
+                    "z": 0,
+                    "t": 0,
+                },
+                "channels": channels,
+                "figure": {
+                    "dpi": 300,
+                    "scale_bar": True,
+                    "channel_legend": True,
+                    "layout": "channels-and-merge-row",
+                    "invert_grayscale": True,
+                    "channel_labels": [
+                        {"channel": 0, "name": "Channel Alpha", "color": "#ff00ff"},
+                        {"channel": 1, "name": "Channel Beta", "color": "#00ff00"},
+                    ],
+                },
+            },
+        }
+        png_dest = tmp_path / "rpc-split.png"
+        png_receipt = research_rpc_module.dispatch_research(
+            "research_source_rendered_export",
+            {"project": project_root, "request": request, "destination": str(png_dest)},
+        )
+        assert png_receipt["format"] == "png"
+        assert png_receipt["layout"] == "channels-and-merge-row"
+        with Image.open(png_dest) as img:
+            prov = json.loads(img.info["Loci rendering provenance"])
+            assert prov["figure"]["invert_grayscale"] is True
+            assert [p["name"] for p in prov["figure"]["panels"]] == [
+                "Channel Alpha",
+                "Channel Beta",
+                "Merge",
+            ]
+
+        tiff_dest = tmp_path / "rpc-split.tiff"
+        tiff_receipt = research_rpc_module.dispatch_research(
+            "research_source_rendered_export",
+            {
+                "project": project_root,
+                "request": {**request, "format": "tiff"},
+                "destination": str(tiff_dest),
+            },
+        )
+        assert tiff_receipt["format"] == "tiff"
+        assert tiff_receipt["layout"] == "channels-and-merge-row"
+        with tifffile.TiffFile(tiff_dest) as tif:
+            raster = tif.pages[0].asarray()
+            tiff_prov = json.loads(tif.pages[0].description)
+        expected_grays, _ = _expected_gray_and_merge(planes, channels, bit_depth=16, invert=True)
+        p0 = tiff_prov["figure"]["panels"][0]["raster_xywh"]
+        np.testing.assert_array_equal(
+            raster[p0[1] : p0[1] + p0[3], p0[0] : p0[0] + p0[2]],
+            expected_grays[0],
+        )
+    finally:
+        if research_rpc_module._ACTIVE is not None:
+            research_rpc_module._ACTIVE.close()
+            research_rpc_module._ACTIVE = None
+
+
+def test_split_channel_preserves_saved_measurements_and_refuses_single_and_palette_sources(
+    tmp_path,
+):
+    from loci_engine.research_jobs import run_job, submit_job
+
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    try:
+        job = submit_job(
+            workbench,
+            {
+                "source_id": source["id"],
+                "recipe": {
+                    "segmentation": {"method": "components", "threshold": 15_000, "min_size": 10},
+                    "measurement_channels": [0, 1],
+                },
+            },
+            "split-preserve-check",
+        )
+        measured = run_job(workbench, job["id"])["result"]
+        rows_before = workbench.execute(
+            "result",
+            {"result_id": measured["id"], "offset": 0, "limit": 100},
+        )
+        assert rows_before["total_rows"] > 0
+        target = tmp_path / "preserve-measure.png"
+        export_rendered_source(
+            workbench,
+            {
+                "source_id": source["id"],
+                "source_sha256": source["sha256"],
+                "format": "png",
+                "view": {
+                    "source_id": source["id"],
+                    "overview": True,
+                    "max_edge": 1024,
+                    "channels": channels,
+                    "figure": {
+                        "dpi": 300,
+                        "scale_bar": False,
+                        "channel_legend": False,
+                        "layout": "channels-and-merge-row",
+                        "invert_grayscale": False,
+                        "channel_labels": [
+                            {"channel": 0, "name": "Channel Alpha", "color": "#ff00ff"},
+                            {"channel": 1, "name": "Channel Beta", "color": "#00ff00"},
+                        ],
+                    },
+                },
+            },
+            target,
+        )
+        rows_after = workbench.execute(
+            "result",
+            {"result_id": measured["id"], "offset": 0, "limit": 100},
+        )
+        assert rows_after == rows_before
+        assert len(workbench.project.list_results()) == 1
+    finally:
+        workbench.close()
+
+    single = np.full((64, 64), 100, dtype=np.uint16)
+    single_wb, single_src, single_req, _ = _tiff_fixture(tmp_path, single)
+    try:
+        single_req["format"] = "png"
+        single_req["view"]["figure"] = {
+            "dpi": 300,
+            "scale_bar": False,
+            "channel_legend": False,
+            "layout": "channels-and-merge-row",
+            "invert_grayscale": False,
+            "channel_labels": [{"channel": 0, "name": "Single", "color": "#ffffff"}],
+        }
+        with pytest.raises(ValueError, match="at least two visible scalar channels"):
+            export_rendered_source(single_wb, single_req, tmp_path / "single-split.png")
+        assert not (tmp_path / "single-split.png").exists()
+    finally:
+        single_wb.close()
+
+    palette_path = tmp_path / "palette-split.tiff"
+    indices = np.zeros((64, 64), dtype=np.uint8)
+    indices[:, 32:] = 1
+    lut = np.zeros((3, 256), dtype=np.uint16)
+    lut[0, 1] = 65_535
+    lut[1, 0] = 32_768
+    tifffile.imwrite(palette_path, indices, photometric="palette", colormap=lut)
+    pal_wb = Workbench(ResearchProject.create(tmp_path / "pal-study.loci-study", "Palette"))
+    try:
+        pal_source = pal_wb.import_native(str(palette_path))
+        pal_channels = pal_wb.execute("viewer_defaults", {"source_id": pal_source["id"]})[
+            "channels"
+        ]
+        with pytest.raises(ValueError, match="scalar source channels"):
+            export_rendered_source(
+                pal_wb,
+                {
+                    "source_id": pal_source["id"],
+                    "source_sha256": pal_source["sha256"],
+                    "format": "png",
+                    "view": {
+                        "source_id": pal_source["id"],
+                        "overview": True,
+                        "max_edge": 1024,
+                        "channels": pal_channels,
+                        "figure": {
+                            "dpi": 300,
+                            "scale_bar": False,
+                            "channel_legend": False,
+                            "layout": "channels-and-merge-row",
+                            "invert_grayscale": False,
+                            "channel_labels": [
+                                {"channel": 0, "name": "C1", "color": "#ffffff"},
+                                {"channel": 1, "name": "C2", "color": "#ff00ff"},
+                            ],
+                        },
+                    },
+                },
+                tmp_path / "palette-split.png",
+            )
+        assert not (tmp_path / "palette-split.png").exists()
+    finally:
+        pal_wb.close()
+
+
+def test_split_channel_header_pixel_guard_rejects_before_allocation(tmp_path, monkeypatch):
+    workbench, source, _, _, channels = _multichannel_split_fixture(tmp_path)
+    monkeypatch.setattr(rendered_export_module, "MAX_HEADER_PIXELS", 1)
+    try:
+        target = tmp_path / "guarded-header.png"
+        with pytest.raises(ValueError, match="headers exceed the bounded size"):
+            export_rendered_source(
+                workbench,
+                {
+                    "source_id": source["id"],
+                    "source_sha256": source["sha256"],
+                    "format": "png",
+                    "view": {
+                        "source_id": source["id"],
+                        "overview": True,
+                        "max_edge": 1024,
+                        "channels": channels,
+                        "figure": {
+                            "dpi": 300,
+                            "scale_bar": False,
+                            "channel_legend": False,
+                            "layout": "channels-and-merge-row",
+                            "invert_grayscale": False,
+                            "channel_labels": [
+                                {"channel": 0, "name": "Channel Alpha", "color": "#ff00ff"},
+                                {"channel": 1, "name": "Channel Beta", "color": "#00ff00"},
+                            ],
+                        },
+                    },
+                },
+                target,
+            )
+        assert not target.exists()
     finally:
         workbench.close()

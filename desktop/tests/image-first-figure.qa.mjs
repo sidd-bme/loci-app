@@ -34,6 +34,8 @@ const medical = path.join(runRoot, "medical-geometry-phantom.nii");
 const study = path.join(runRoot, "figure-controls.loci-study");
 const png = path.join(runRoot, "scalar-figure.png");
 const tiff = path.join(runRoot, "scalar-figure.tiff");
+const rowPng = path.join(runRoot, "channel-row.png");
+const columnTiff = path.join(runRoot, "channel-column.tiff");
 const rgbTiff = path.join(runRoot, "rgb-tone.tiff");
 const references = path.join(runRoot, "references.json");
 await run(python, ["-c", String.raw`
@@ -198,6 +200,17 @@ try {
   await page.getByLabel('Rendered export format').selectOption('tiff');
   await page.getByRole('button', { name: 'Export TIFF16…', exact: true }).click(); await waitSaved(tiff);
   await page.screenshot({ path: path.join(shots, 'calibrated-figure-controls.png') });
+  const layout = page.getByLabel('Rendered export layout');
+  await page.getByLabel('Rendered export format').selectOption('png');
+  await layout.selectOption('channels-and-merge-row');
+  destination = rowPng; await dialogTargets();
+  await page.getByRole('button', { name: 'Export PNG…', exact: true }).click(); await waitSaved(rowPng);
+  await page.getByLabel('Rendered export format').selectOption('tiff');
+  await layout.selectOption('channels-and-merge-column');
+  await page.getByLabel('Invert grayscale channel panels').check();
+  destination = columnTiff; await dialogTargets();
+  await page.getByRole('button', { name: 'Export TIFF16…', exact: true }).click(); await waitSaved(columnTiff);
+  await layout.selectOption('merge');
   await choose(rgb);
   await number('RGB black point', 0); await number('RGB white point', 65535); await number('RGB gamma', 2);
   const rgbExport = page.locator('.source-export');
@@ -242,6 +255,29 @@ with Image.open(out/'scalar-figure.png') as image:
  image.load(); png=np.asarray(image); pngmeta=json.loads(image.info['Loci rendering provenance'])
  np.testing.assert_array_equal(png[:200],np.rint(expected16.astype(np.float64)/257).astype(np.uint8))
  assert abs(image.info['dpi'][0]-600)<.01 and pngmeta['figure']['footer']['offset_y']==200
+def verify_panels(pixels, metadata, layout, expected_merge, inverted):
+ figure=metadata['figure']
+ assert figure['layout']==layout and figure['invert_grayscale']==inverted
+ panels=figure['panels']
+ assert [p['kind'] for p in panels]==['grayscale','grayscale','merge']
+ assert [p['name'] for p in panels[:2]]==['Reference A','Reference B']
+ assert [p['channel'] for p in panels[:2]]==[0,1]
+ assert figure['footer']['scale_bar']['applies_to']=='each-panel'
+ assert figure['footer']['scale_bar']['micrometres_per_output_pixel']==.5
+ for panel in panels:
+  x,y,w,h=panel['raster_xywh']
+  assert (h,w)==expected_merge.shape[:2]
+  expected=expected_merge
+  if panel['kind']=='grayscale':
+   gray=expected_merge[:,:,panel['channel']]
+   if inverted: gray=np.iinfo(gray.dtype).max-gray
+   expected=np.repeat(gray[:,:,None],3,axis=2)
+  np.testing.assert_array_equal(pixels[y:y+h,x:x+w],expected)
+with Image.open(out/'channel-row.png') as split:
+ verify_panels(np.asarray(split),json.loads(split.info['Loci rendering provenance']),
+               'channels-and-merge-row',png[:200],False)
+with tifffile.TiffFile(out/'channel-column.tiff') as f:
+ verify_panels(f.asarray(),json.loads(f.pages[0].description),'channels-and-merge-column',expected16,True)
 rgb=tifffile.imread(out/'native-rgb16.tiff').astype(np.float64)
 with tifffile.TiffFile(out/'rgb-tone.tiff') as f:
  result=f.asarray(); rgbmeta=json.loads(f.pages[0].description)

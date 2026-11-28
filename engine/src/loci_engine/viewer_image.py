@@ -19,7 +19,8 @@ import stat
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext, suppress
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,23 @@ def _metadata(session: Any) -> NativeImageMetadata:
     return metadata
 
 
+def _retained_scalar_bytes_per_pixel(
+    metadata: NativeImageMetadata,
+    settings: Sequence[ResolvedChannelDisplay],
+    projection: str | None,
+) -> int:
+    total = 0
+    for setting in settings:
+        try:
+            dtype = np.dtype(metadata.channel_dtypes[setting.channel])
+        except TypeError as exc:
+            raise ViewerImageError("A viewer channel dtype is invalid.") from exc
+        if dtype.kind not in "buif" or dtype.itemsize > 8:
+            raise ViewerImageError("Viewer channels require bounded real native dtypes.")
+        total += 8 if projection == "mean" else dtype.itemsize
+    return total
+
+
 def _require_working_budget(
     metadata: NativeImageMetadata,
     settings: Sequence[ResolvedChannelDisplay],
@@ -100,18 +118,10 @@ def _require_working_budget(
         # PNG encoder input and scratch. Native segment reads have their own gate.
         required = pixels * 64
     else:
-        source_bytes = 0
-        for setting in settings:
-            try:
-                dtype = np.dtype(metadata.channel_dtypes[setting.channel])
-            except TypeError as exc:
-                raise ViewerImageError("A viewer channel dtype is invalid.") from exc
-            if dtype.kind not in "buif" or dtype.itemsize > 8:
-                raise ViewerImageError("Viewer channels require bounded real native dtypes.")
-            source_bytes += pixels * (8 if projection == "mean" else dtype.itemsize)
         # Retained source planes, float64 composite, one float64 normalized
         # channel, uint8 output and bounded PNG encoder scratch.
-        required = source_bytes + pixels * (24 + 8 + 3 + 4)
+        source_bytes_per_pixel = _retained_scalar_bytes_per_pixel(metadata, settings, projection)
+        required = pixels * (source_bytes_per_pixel + 24 + 8 + 3 + 4)
     if required > MAX_VIEWER_WORKING_BYTES:
         raise ViewerImageError(
             "The requested viewer render exceeds its aggregate working-memory budget."
@@ -1204,15 +1214,33 @@ def _canvas_rgb(pixels: np.ndarray) -> np.ndarray:
     return pixels
 
 
-def _normal_tile(
-    session: Any,
+def _validated_tile_request(
+    session: Any, request: Mapping[str, Any]
+) -> tuple[bool, NativeImageMetadata, tuple[ResolvedChannelDisplay, ...]]:
+    if not isinstance(request, Mapping):
+        raise ViewerImageError("viewer_tile request must be a mapping.")
+    overview = request.get("overview", False)
+    if not isinstance(overview, bool):
+        raise ViewerImageError("overview must be boolean.")
+    allowed = (
+        {"source_id", "overview", "t", "z", "c", "channels", "projection", "z_stop", "max_edge"}
+        if overview
+        else {"source_id", "selection", "channels", "projection"}
+    )
+    _exact_keys(request, allowed, "viewer_tile request")
+    _source_id(request.get("source_id"))
+    metadata = _metadata(session)
+    if len(metadata.channel_dtypes) != metadata.dimensions.c:
+        raise ViewerImageError("Histogram metadata channel dtype count differs from C.")
+    settings = _request_settings(request.get("channels"), metadata)
+    return overview, metadata, settings
+
+
+def _normal_tile_plan(
     metadata: NativeImageMetadata,
     request: Mapping[str, Any],
     settings: tuple[ResolvedChannelDisplay, ...],
-    *,
-    embedded_icc: bytes | None,
-    cancellation_check: Callable[[], None] | None,
-) -> dict[str, Any]:
+) -> tuple[dict[str, int], str | None]:
     selection_value = request.get("selection")
     if not isinstance(selection_value, Mapping):
         raise ViewerImageError("selection must be an explicit mapping.")
@@ -1234,9 +1262,8 @@ def _normal_tile(
     z_stop_value = selection_value.get("z_stop")
     z_stop = None if z_stop_value is None else _integer(z_stop_value, "z_stop", z + 1, dimensions.z)
     projection = _projection(request.get("projection"), z_stop)
-    _require_working_budget(metadata, settings, width, height, projection=projection)
     active_c = _integer(selection_value.get("c", settings[0].channel), "c", 0, dimensions.c - 1)
-    resolved_selection = {
+    resolved_selection: dict[str, int] = {
         "x": x,
         "y": y,
         "width": width,
@@ -1248,27 +1275,68 @@ def _normal_tile(
     }
     if z_stop is not None:
         resolved_selection["z_stop"] = z_stop
+    return resolved_selection, projection
+
+
+def _read_scalar_selection_arrays(
+    session: Any,
+    metadata: NativeImageMetadata,
+    selection: Mapping[str, int],
+    projection: str | None,
+    settings: Sequence[ResolvedChannelDisplay],
+    *,
+    cancellation_check: Callable[[], None] | None,
+) -> dict[int, np.ndarray]:
+    z = selection["z"]
+    return {
+        display.channel: _read_plane_or_projection(
+            session,
+            metadata,
+            x=selection["x"],
+            y=selection["y"],
+            width=selection["width"],
+            height=selection["height"],
+            t=selection["t"],
+            channel=display.channel,
+            level=selection["level"],
+            z_start=z,
+            z_stop=selection.get("z_stop", z + 1),
+            projection=projection,
+            cancellation_check=cancellation_check,
+        )
+        for display in settings
+    }
+
+
+def _normal_tile(
+    session: Any,
+    metadata: NativeImageMetadata,
+    request: Mapping[str, Any],
+    settings: tuple[ResolvedChannelDisplay, ...],
+    *,
+    embedded_icc: bytes | None,
+    cancellation_check: Callable[[], None] | None,
+) -> dict[str, Any]:
+    resolved_selection, projection = _normal_tile_plan(metadata, request, settings)
+    _require_working_budget(
+        metadata,
+        settings,
+        resolved_selection["width"],
+        resolved_selection["height"],
+        projection=projection,
+    )
     if metadata.sample_semantics == "none":
-        arrays = {
-            display.channel: _read_plane_or_projection(
-                session,
-                metadata,
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-                t=t,
-                channel=display.channel,
-                level=level,
-                z_start=z,
-                z_stop=z_stop or z + 1,
-                projection=projection,
-                cancellation_check=cancellation_check,
-            )
-            for display in settings
-        }
+        arrays = _read_scalar_selection_arrays(
+            session,
+            metadata,
+            resolved_selection,
+            projection,
+            settings,
+            cancellation_check=cancellation_check,
+        )
         pixels = _render_scalar(arrays, settings)
     else:
+        active_c = resolved_selection["c"]
         if len(settings) != 1 or settings[0].channel != active_c or projection is not None:
             raise ViewerImageError(
                 "Interleaved RGB uses one mapping for the selected logical channel "
@@ -1278,14 +1346,14 @@ def _normal_tile(
             session,
             metadata,
             NativeSelection(
-                x=x,
-                y=y,
-                width=width,
-                height=height,
-                t=t,
+                x=resolved_selection["x"],
+                y=resolved_selection["y"],
+                width=resolved_selection["width"],
+                height=resolved_selection["height"],
+                t=resolved_selection["t"],
                 c=active_c,
-                z=z,
-                level=level,
+                z=resolved_selection["z"],
+                level=resolved_selection["level"],
                 series=metadata.selected_series,
                 expected_sha256=metadata.sha256,
             ),
@@ -1486,15 +1554,10 @@ def _validate_cached_source(session: Any) -> None:
     verify()
 
 
-def _overview_tile(
-    session: Any,
+def _overview_tile_plan(
     metadata: NativeImageMetadata,
     request: Mapping[str, Any],
     settings: tuple[ResolvedChannelDisplay, ...],
-    *,
-    cache_root: str | Path | None,
-    embedded_icc: bytes | None,
-    cancellation_check: Callable[[], None] | None,
 ) -> dict[str, Any]:
     max_edge = _integer(
         request.get("max_edge", MAX_OVERVIEW_EDGE), "max_edge", 16, MAX_OVERVIEW_EDGE
@@ -1524,7 +1587,6 @@ def _overview_tile(
         width, height = source_dimensions.x, source_dimensions.y
         geometry_level = level
         geometry_z = _mapped_z(z, metadata.dimensions.z, source_dimensions.z)
-    _require_working_budget(metadata, settings, width, height, projection=projection)
     basis = {
         "mode": "explicit",
         "overview": preparation,
@@ -1536,6 +1598,95 @@ def _overview_tile(
         "viewport_dependent": False,
     }
     display_revision = _revision(metadata, display, basis)
+    return {
+        "max_edge": max_edge,
+        "t": t,
+        "z": z,
+        "z_stop": z_stop,
+        "projection": projection,
+        "requested_c": requested_c,
+        "level": level,
+        "preparation": preparation,
+        "source_dimensions": source_dimensions,
+        "width": width,
+        "height": height,
+        "geometry_level": geometry_level,
+        "geometry_z": geometry_z,
+        "display": display,
+        "basis": basis,
+        "display_revision": display_revision,
+    }
+
+
+def _read_scalar_overview_arrays(
+    session: Any,
+    metadata: NativeImageMetadata,
+    plan: Mapping[str, Any],
+    settings: Sequence[ResolvedChannelDisplay],
+    *,
+    cancellation_check: Callable[[], None] | None,
+) -> dict[int, np.ndarray]:
+    if plan["preparation"] == "derived-cache":
+        return {
+            setting.channel: _sample_scalar_plane(
+                session,
+                metadata,
+                channel=setting.channel,
+                t=plan["t"],
+                z=plan["z"],
+                z_stop=plan["z_stop"],
+                projection=plan["projection"],
+                output_width=plan["width"],
+                output_height=plan["height"],
+                cancellation_check=cancellation_check,
+            )
+            for setting in settings
+        }
+    level = plan["level"]
+    assert level is not None
+    return {
+        setting.channel: _native_overview_scalar(
+            session,
+            metadata,
+            channel=setting.channel,
+            level=level,
+            t=plan["t"],
+            z=plan["z"],
+            z_stop=plan["z_stop"],
+            projection=plan["projection"],
+            cancellation_check=cancellation_check,
+        )
+        for setting in settings
+    }
+
+
+def _overview_tile(
+    session: Any,
+    metadata: NativeImageMetadata,
+    request: Mapping[str, Any],
+    settings: tuple[ResolvedChannelDisplay, ...],
+    *,
+    cache_root: str | Path | None,
+    embedded_icc: bytes | None,
+    cancellation_check: Callable[[], None] | None,
+) -> dict[str, Any]:
+    plan = _overview_tile_plan(metadata, request, settings)
+    max_edge = plan["max_edge"]
+    t = plan["t"]
+    z = plan["z"]
+    z_stop = plan["z_stop"]
+    projection = plan["projection"]
+    requested_c = plan["requested_c"]
+    level = plan["level"]
+    preparation = plan["preparation"]
+    source_dimensions = plan["source_dimensions"]
+    width = plan["width"]
+    height = plan["height"]
+    _require_working_budget(metadata, settings, width, height, projection=projection)
+    geometry_level = plan["geometry_level"]
+    geometry_z = plan["geometry_z"]
+    display = plan["display"]
+    display_revision = plan["display_revision"]
     cache_value = {
         "source_sha256": metadata.sha256,
         "display_revision": display_revision,
@@ -1583,39 +1734,14 @@ def _overview_tile(
                     display=settings[0],
                     cancellation_check=cancellation_check,
                 )
-        elif preparation == "derived-cache":
-            arrays = {
-                setting.channel: _sample_scalar_plane(
-                    session,
-                    metadata,
-                    channel=setting.channel,
-                    t=t,
-                    z=z,
-                    z_stop=z_stop,
-                    projection=projection,
-                    output_width=width,
-                    output_height=height,
-                    cancellation_check=cancellation_check,
-                )
-                for setting in settings
-            }
-            pixels = _render_scalar(arrays, settings)
         else:
-            assert level is not None
-            arrays = {
-                setting.channel: _native_overview_scalar(
-                    session,
-                    metadata,
-                    channel=setting.channel,
-                    level=level,
-                    t=t,
-                    z=z,
-                    z_stop=z_stop,
-                    projection=projection,
-                    cancellation_check=cancellation_check,
-                )
-                for setting in settings
-            }
+            arrays = _read_scalar_overview_arrays(
+                session,
+                metadata,
+                plan,
+                settings,
+                cancellation_check=cancellation_check,
+            )
             pixels = _render_scalar(arrays, settings)
         pixels = _canvas_rgb(pixels)
         encoded = _png_bytes(pixels)
@@ -1647,6 +1773,95 @@ def _overview_tile(
     }
 
 
+@dataclass(frozen=True, slots=True)
+class ScalarPlaneView:
+    rendering: dict[str, Any]
+    visible_settings: tuple[ResolvedChannelDisplay, ...]
+    read_arrays: Callable[[], dict[int, np.ndarray]]
+
+
+def prepare_viewer_scalar_planes(
+    session: Any,
+    request: Mapping[str, Any],
+) -> ScalarPlaneView:
+    """Resolve a split figure's viewer grid before reading its visible scalar planes."""
+
+    overview, metadata, settings = _validated_tile_request(session, request)
+    if metadata.sample_semantics != "none":
+        raise ViewerImageError("Scalar plane reads require independently mapped scalar channels.")
+    visible_settings = tuple(
+        setting for setting in settings if setting.visible and setting.opacity > 0
+    )
+    if overview:
+        plan = _overview_tile_plan(metadata, request, settings)
+        source_dimensions = plan["source_dimensions"]
+        geometry = _overview_geometry(
+            session,
+            level=plan["geometry_level"],
+            z=plan["geometry_z"],
+            source_width=source_dimensions.x,
+            source_height=source_dimensions.y,
+            output_width=plan["width"],
+            output_height=plan["height"],
+        )
+        rendering = {
+            "source_sha256": metadata.sha256,
+            "source_extent": [metadata.dimensions.x, metadata.dimensions.y],
+            "width": plan["width"],
+            "height": plan["height"],
+            "display": plan["display"],
+            "display_revision": plan["display_revision"],
+            "geometry": geometry,
+            "preparation": plan["preparation"],
+            "selection": {
+                "t": plan["t"],
+                "z": plan["z"],
+                "c": plan["requested_c"],
+                "z_stop": plan["z_stop"],
+            },
+            "projection": plan["projection"],
+        }
+        return ScalarPlaneView(
+            rendering,
+            visible_settings,
+            partial(
+                _read_scalar_overview_arrays,
+                session,
+                metadata,
+                plan,
+                visible_settings,
+                cancellation_check=None,
+            ),
+        )
+    resolved_selection, projection = _normal_tile_plan(metadata, request, settings)
+    geometry = session.geometry(resolved_selection, False).to_dict()
+    display = _display_payload(settings)
+    basis = {"mode": "explicit", "viewport_dependent": False}
+    rendering = {
+        "selection": resolved_selection,
+        "width": resolved_selection["width"],
+        "height": resolved_selection["height"],
+        "source_sha256": metadata.sha256,
+        "display": display,
+        "display_revision": _revision(metadata, display, basis),
+        "geometry": geometry,
+        "projection": projection,
+    }
+    return ScalarPlaneView(
+        rendering,
+        visible_settings,
+        partial(
+            _read_scalar_selection_arrays,
+            session,
+            metadata,
+            resolved_selection,
+            projection,
+            visible_settings,
+            cancellation_check=None,
+        ),
+    )
+
+
 def viewer_tile(
     session: Any,
     request: Mapping[str, Any],
@@ -1657,22 +1872,7 @@ def viewer_tile(
 ) -> dict[str, Any]:
     """Render one bounded crop or one full-extent overview from a source session."""
 
-    if not isinstance(request, Mapping):
-        raise ViewerImageError("viewer_tile request must be a mapping.")
-    overview = request.get("overview", False)
-    if not isinstance(overview, bool):
-        raise ViewerImageError("overview must be boolean.")
-    allowed = (
-        {"source_id", "overview", "t", "z", "c", "channels", "projection", "z_stop", "max_edge"}
-        if overview
-        else {"source_id", "selection", "channels", "projection"}
-    )
-    _exact_keys(request, allowed, "viewer_tile request")
-    _source_id(request.get("source_id"))
-    metadata = _metadata(session)
-    if len(metadata.channel_dtypes) != metadata.dimensions.c:
-        raise ViewerImageError("Histogram metadata channel dtype count differs from C.")
-    settings = _request_settings(request.get("channels"), metadata)
+    overview, metadata, settings = _validated_tile_request(session, request)
     if overview:
         return _overview_tile(
             session,
